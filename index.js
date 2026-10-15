@@ -4242,17 +4242,34 @@ bot.catch((err, ctx) => {
   console.warn(`⚠️ Handled bot error [${ctx?.updateType || 'unknown'}]:`, err.message);
 });
 
-// Launch bot
+// Launch bot with retry resilience for cloud container handover
 console.log('🚀 Connecting to Telegram Bot API...');
-bot.telegram.getMe().then((me) => {
-  console.log(`🤖 Logged in as @${me.username} (${me.first_name}) [ID: ${me.id}]`);
-  bot.launch({ dropPendingUpdates: true }).catch((err) => {
-    console.error('❌ Failed to launch bot:', err);
-  });
-  console.log('🤖 Telegram Swiggy Real OTP Flow Bot is running live!');
-}).catch((err) => {
-  console.error('❌ Failed to connect to Telegram:', err);
-});
+async function startBotWithRetry() {
+  try {
+    const me = await bot.telegram.getMe();
+    console.log(`🤖 Logged in as @${me.username} (${me.first_name}) [ID: ${me.id}]`);
+
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      try {
+        await bot.launch({ dropPendingUpdates: true });
+        console.log('🤖 Telegram Swiggy Real OTP Flow Bot is running live on Railway Cloud!');
+        break;
+      } catch (err) {
+        if ((err.message?.includes('409') || err.description?.includes('Conflict')) && attempt < 10) {
+          console.log(`⏳ [Attempt ${attempt}/10] Telegram 409 Conflict (previous cloud container shutting down). Retrying in 4 seconds...`);
+          await new Promise(r => setTimeout(r, 4000));
+        } else {
+          console.error('❌ Launch error:', err.message);
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('❌ Failed to connect to Telegram:', err);
+  }
+}
+
+startBotWithRetry();
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
