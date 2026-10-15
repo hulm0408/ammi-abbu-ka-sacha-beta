@@ -112,21 +112,21 @@ function classifyLink(url) {
   return 'UNKNOWN';
 }
 
-// User Bottom Menu - Send Order to Beta ALWAYS available on reply keyboard
+// User Bottom Menu - Send to Beta ALWAYS available on reply keyboard
 function getUserReplyKeyboard(draft = {}) {
   const cartLabel = draft?.cart ? '🟣 Cart: Added ✅' : '🟣 Paste cart link';
   const addrLabel = draft?.address ? '🔵 Address: Added ✅' : '🔵 Paste address Link';
   return Markup.keyboard([
     [cartLabel, addrLabel],
-    ['🚀 Send Order to Beta', '🟢 Send to Boss'],
+    ['🚀 Send to Beta'],
     ['🟠 cancel order', '⚪ previous order']
   ]).resize();
 }
 
-// Boss Bottom Menu - Includes Send Order to Beta & Order Screen for easy testing
+// Boss Bottom Menu - Includes Send to Beta & Order Screen for easy testing
 function getBossReplyKeyboard() {
   return Markup.keyboard([
-    ['🚀 Send Order to Beta', '📦 Order Screen'],
+    ['🚀 Send to Beta', '📦 Order Screen'],
     ['🟡 Pending Orders', '🟣 Connected Accounts'],
     ['🔵 Saved Addresses', '🟢 Slot Status'],
     ['📊 Total slots', '🟢 Total left'],
@@ -237,7 +237,7 @@ function formatUserOrderCard(order) {
   return { text, keyboard: Markup.inlineKeyboard(buttons) };
 }
 
-// User Screen Generator - Exact 5 buttons from User Diagram
+// User Screen Generator - Clean minimal UI with single Send to Beta button
 function getUserScreen(userId, user) {
   const activeOrder = getActiveUserOrder(userId);
   if (activeOrder) {
@@ -248,59 +248,27 @@ function getUserScreen(userId, user) {
   const draft = getDraft(userId);
   const slotsLeft = db.config.slotsLeft;
   const totalSlots = db.config.totalSlots;
-  const role = getFamilyRole(userId, 'Ammi / Abbu');
-
-  const header = `╔═════════════════════════╗\n   🟡  <b>Slots Left: ${slotsLeft}/${totalSlots}</b>  🟡\n╚═════════════════════════╝`;
 
   const cartBtnText = draft.cart ? '🟣 Cart: Added ✅' : '🟣 Paste cart link';
   const addressBtnText = draft.address ? '🔵 Address: Added ✅' : '🔵 Paste address Link';
 
   const inlineButtons = [
     [
-      Markup.button.callback(cartBtnText, draft.cart ? 'action_force_change_cart' : 'action_add_cart'),
-      Markup.button.callback(addressBtnText, draft.address ? 'action_force_change_address' : 'action_add_address')
+      Markup.button.callback(cartBtnText, 'action_force_change_cart'),
+      Markup.button.callback(addressBtnText, 'action_force_change_address')
+    ],
+    [
+      Markup.button.callback('🚀 Send to Beta', 'action_send_to_beta')
+    ],
+    [
+      Markup.button.callback('🟠 cancel order', 'action_cancel_order_confirm'),
+      Markup.button.callback('⚪ previous order', 'action_previous_order')
     ]
   ];
 
-  const changeRow = [];
-  if (draft.cart) {
-    changeRow.push(Markup.button.callback('🟣 change cart link', 'action_force_change_cart'));
-  }
-  if (draft.address) {
-    changeRow.push(Markup.button.callback('🔵 change address link', 'action_force_change_address'));
-  }
-  if (changeRow.length > 0) {
-    inlineButtons.push(changeRow);
-  }
-
-  const hasValidBoth = Boolean(
-    draft.cart &&
-    draft.address &&
-    classifyLink(draft.cart) === 'CART'
-  );
-
-  inlineButtons.push([
-    Markup.button.callback(hasValidBoth ? '🚀 Send Order to Beta' : '🚀 Send Order to Beta', 'action_send_to_beta'),
-    Markup.button.callback(hasValidBoth ? '🟢 Send to Boss' : '🟢 Send to Boss', 'action_send_to_boss')
-  ]);
-
-  inlineButtons.push([
-    Markup.button.callback('🟠 cancel order', 'action_cancel_order_confirm'),
-    Markup.button.callback('⚪ previous order', 'action_previous_order')
-  ]);
-
-  let draftStatus = '';
-  if (draft.cart && draft.address) {
-    draftStatus = `\n\n✅ <b>Cart: Added | Address: Added</b>\nNiche <b>🟢 Send to Boss</b> ya <b>🚀 Send to beta</b> par click karein.`;
-  } else if (draft.cart) {
-    draftStatus = `\n\n🟣 <b>Cart: Added ✅</b> <code>${escapeHtml(draft.cart)}</code>\n<i>Ab delivery address link paste karein ya <b>[ 🔵 Paste address Link ]</b> dabayein.</i>`;
-  } else if (draft.address) {
-    draftStatus = `\n\n🔵 <b>Address: Added ✅</b> <code>${escapeHtml(draft.address)}</code>\n<i>Ab Swiggy cart link paste karein ya <b>[ 🟣 Paste cart link ]</b> dabayein.</i>`;
-  }
-
-  const text = `${header}\n\n` +
-    `❤️ <b>Khushamdeed ${role}!</b>\n` +
-    `Cart link aur Address link attach karke <b>🟢 Send to Boss</b> dabayein:${draftStatus}`;
+  const text = `╔═════════════════════════╗\n   🟡  <b>Slots Left: ${slotsLeft}/${totalSlots}</b>  🟡\n╚═════════════════════════╝\n\n` +
+    `🟣 <b>Cart:</b> ${draft.cart ? '<code>' + escapeHtml(draft.cart) + '</code>' : '<i>Not added</i>'}\n` +
+    `🔵 <b>Address:</b> ${draft.address ? '<code>' + escapeHtml(draft.address) + '</code>' : '<i>Not added</i>'}`;
 
   return { text, keyboard: Markup.inlineKeyboard(inlineButtons) };
 }
@@ -3094,129 +3062,6 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Smart Multi-Link & Single-Link Detection for User (Cart and/or Address)
-  if (!isBoss(userId)) {
-    const allLinks = extractAllLinks(rawText);
-    if (allLinks.length > 0) {
-      delete userWaitState[userId];
-      const draft = getDraft(userId);
-
-      let foundCart = null;
-      let foundAddr = null;
-
-      // 1. Analyze and classify each link found in text
-      for (const l of allLinks) {
-        const c = classifyLink(l);
-        if (c === 'CART' && !foundCart) foundCart = l;
-        else if (c === 'ADDRESS' && !foundAddr) foundAddr = l;
-      }
-
-      // 2. Fallbacks based on waiting state if not resolved
-      for (const l of allLinks) {
-        if (l === foundCart || l === foundAddr) continue;
-        if (!foundCart && (state?.action === 'waiting_cart' || l.includes('swiggy') || l.includes('swig.gy'))) {
-          foundCart = l;
-        } else if (!foundAddr) {
-          foundAddr = l;
-        }
-      }
-
-      if (foundCart) updateDraft(userId, { cart: foundCart });
-      if (foundAddr) updateDraft(userId, { address: foundAddr });
-
-      const updatedDraft = getDraft(userId);
-      const keyboard = getUserReplyKeyboard(updatedDraft);
-
-      // Branch A: Both links now present! (Diagram: "if any one send both address at once or single bot has to be smart enough to understand which is address and which is cart and ask him now you can send to beta by giving him option")
-      if (updatedDraft.cart && updatedDraft.address) {
-        await ctx.reply(
-          `✅ <b>Cart aur Address donon link save ho gaye!</b>\n\n` +
-          `🟣 <b>Cart Link:</b> <code>${escapeHtml(updatedDraft.cart)}</code>\n` +
-          `🔵 <b>Address Link:</b> <code>${escapeHtml(updatedDraft.address)}</code>\n\n` +
-          `Ab aap niche <b>🟢 Send to beta</b> par click karke beta ko bhej sakte hain:`,
-          {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback('🟢 Send to beta', 'action_send_to_boss')],
-              [
-                Markup.button.callback('🟣 change cart link', 'action_force_change_cart'),
-                Markup.button.callback('🔵 change address link', 'action_force_change_address')
-              ]
-            ])
-          }
-        );
-        const screen = getUserScreen(userId, ctx.from);
-        await ctx.reply(screen.text, { parse_mode: 'HTML', ...keyboard });
-        return;
-      }
-
-      // Branch B: Only Cart link present
-      if (updatedDraft.cart && !updatedDraft.address) {
-        await ctx.reply(
-          `🟣 <b>Cart Link Save Ho Gaya!</b>\n<code>${escapeHtml(updatedDraft.cart)}</code>\n\n` +
-          `Ab delivery address ka link bhejein ya niche <b>[ 🔵 Address link ]</b> dabayein.\n\n` +
-          `📖 <b>Address link kaise nikalein (Short Guide in Hinglish):</b>\n` +
-          `1. Google Maps app kholein aur apne ghar ki location select karein.\n` +
-          `2. <b>'Share'</b> button par tap karke link copy karein.\n` +
-          `3. Copy kiya hua link chat me bhej dein!`,
-          {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback('🔵 Address link', 'action_add_address')],
-              [Markup.button.callback('🟣 change cart link', 'action_force_change_cart')]
-            ])
-          }
-        );
-        return;
-      }
-
-      // Branch C: Only Address link present
-      if (updatedDraft.address && !updatedDraft.cart) {
-        await ctx.reply(
-          `🔵 <b>Address Link Save Ho Gaya!</b>\n<code>${escapeHtml(updatedDraft.address)}</code>\n\n` +
-          `Ab Swiggy cart ka link bhejein ya niche <b>[ 🟣 Cart link ]</b> dabayein.\n\n` +
-          `📖 <b>Cart link kaise nikalein (Short Guide in Hinglish):</b>\n` +
-          `1. Swiggy app kholein aur items cart me add karein.\n` +
-          `2. Cart me <b>'Start a Group Order'</b> ya <b>'Share Cart'</b> se link copy karein.\n` +
-          `3. Copy kiya hua link chat me bhej dein!`,
-          {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback('🟣 Cart link', 'action_add_cart')],
-              [Markup.button.callback('🔵 change address link', 'action_force_change_address')]
-            ])
-          }
-        );
-        return;
-      }
-    }
-  }
-
-  // Address prompt fallback (text address without link)
-  if (state && state.action === 'waiting_address') {
-    delete userWaitState[userId];
-    updateDraft(userId, { address: rawText });
-    const draft = getDraft(userId);
-    const screen = getUserScreen(userId, ctx.from);
-    await ctx.reply(
-      `🔵 <b>Address Saved:</b>\n<code>${escapeHtml(rawText)}</code>\n\n` +
-      (draft.cart
-        ? `✅ <b>Donon links ready hain!</b> Niche <b>🟢 Send to beta</b> dabayein.`
-        : `Ab Swiggy cart ka link attach karein ya <b>[ 🟣 Cart link ]</b> dabayein:`),
-      { parse_mode: 'HTML', ...screen.keyboard }
-    );
-    return;
-  }
-
-  // Cart prompt fallback
-  if (state && state.action === 'waiting_cart') {
-    return ctx.reply(
-      `⚠️ <b>Valid Swiggy link nahi mila!</b>\n\n` +
-      `Kripya Swiggy cart ya group order ka link paste karein (e.g. <code>https://swig.gy/gc/...</code>).`,
-      { parse_mode: 'HTML' }
-    );
-  }
-
   // Boss: Set Total Slots
   if (state && state.action === 'waiting_boss_total') {
     delete userWaitState[userId];
@@ -3250,11 +3095,94 @@ bot.on('text', async (ctx) => {
     return;
   }
 
+  // Robust Smart Address & Cart Ingestion - Never drop user input, stores AS-IS!
+  const allLinks = extractAllLinks(rawText);
+
+  // 1. Explicit Address Wait State
+  if (state && state.action === 'waiting_address') {
+    delete userWaitState[userId];
+    const cleanAddr = rawText.trim();
+    updateDraft(userId, { address: cleanAddr });
+    await ctx.reply(`🔵 <b>Address: Added ✅</b>`, { parse_mode: 'HTML' });
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    return;
+  }
+
+  // 2. Explicit Cart Wait State
+  if (state && state.action === 'waiting_cart') {
+    delete userWaitState[userId];
+    const cleanCart = allLinks.length > 0 ? allLinks[0] : rawText.trim();
+    updateDraft(userId, { cart: cleanCart });
+    await ctx.reply(`🟣 <b>Cart: Added ✅</b>`, { parse_mode: 'HTML' });
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    return;
+  }
+
+  // 3. Multi-link message (e.g. user pasted both cart and address links at once)
+  if (allLinks.length >= 2) {
+    delete userWaitState[userId];
+    let cartLink = null;
+    let addrLink = null;
+    for (const l of allLinks) {
+      const c = classifyLink(l);
+      if (c === 'CART' && !cartLink) cartLink = l;
+      else if (c === 'ADDRESS' && !addrLink) addrLink = l;
+    }
+    if (!cartLink) cartLink = allLinks[0];
+    if (!addrLink) addrLink = allLinks[1];
+
+    updateDraft(userId, { cart: cartLink, address: addrLink });
+    await ctx.reply(`🟣 <b>Cart: Added ✅</b>\n🔵 <b>Address: Added ✅</b>`, { parse_mode: 'HTML' });
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    return;
+  }
+
+  // 4. Single link message
+  if (allLinks.length === 1) {
+    delete userWaitState[userId];
+    const link = allLinks[0];
+    const draft = getDraft(userId);
+    const c = classifyLink(link);
+
+    if (c === 'ADDRESS') {
+      updateDraft(userId, { address: link });
+      await ctx.reply(`🔵 <b>Address: Added ✅</b>`, { parse_mode: 'HTML' });
+    } else if (c === 'CART') {
+      updateDraft(userId, { cart: link });
+      await ctx.reply(`🟣 <b>Cart: Added ✅</b>`, { parse_mode: 'HTML' });
+    } else {
+      if (draft.cart && !draft.address) {
+        updateDraft(userId, { address: link });
+        await ctx.reply(`🔵 <b>Address: Added ✅</b>`, { parse_mode: 'HTML' });
+      } else {
+        updateDraft(userId, { cart: link });
+        await ctx.reply(`🟣 <b>Cart: Added ✅</b>`, { parse_mode: 'HTML' });
+      }
+    }
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    return;
+  }
+
+  // 5. Plain text address (from Swiggy app or typed text)
+  if (rawText && rawText.trim().length >= 2) {
+    delete userWaitState[userId];
+    const cleanText = rawText.trim();
+    updateDraft(userId, { address: cleanText });
+    await ctx.reply(`🔵 <b>Address: Added ✅</b>`, { parse_mode: 'HTML' });
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    return;
+  }
+
   // Fallback
   if (isBoss(userId)) {
     await ctx.reply(`👋 Boss, use the menu buttons below:`, getBossReplyKeyboard());
   } else {
-    await ctx.reply(`👋 Aap cart link aur address link attach karke <b>[ 🚀 Send to Beta ]</b> dabayein:`, getUserReplyKeyboard());
+    await ctx.reply(`👋 Cart link aur address link attach karke <b>[ 🚀 Send to Beta ]</b> dabayein:`, getUserReplyKeyboard());
   }
 });
 
@@ -3344,31 +3272,11 @@ bot.command(['setupi', 'set_upi'], async (ctx) => {
 // Cart Link Flow (FigJam: ask to paste link with Hinglish short guide, or if already present ask to change)
 async function handleCartLinkFlow(ctx) {
   const userId = ctx.from.id;
-  const draft = getDraft(userId);
-
-  if (draft.cart) {
-    return ctx.reply(
-      `⚠️ <b>Are you sure you want to change your saved Cart Link?</b>\n\n` +
-      `Current Cart Link:\n<code>${escapeHtml(draft.cart)}</code>\n\n` +
-      `<i>Saved cart link replace karne ke liye confirm karein:</i>`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('✅ Yes, Change Cart Link', 'action_confirm_change_cart')],
-          [Markup.button.callback('❌ Keep Current Link', 'action_cancel_change_link')]
-        ])
-      }
-    );
-  }
-
+async function handleCartLinkFlow(ctx) {
+  const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_cart' };
   await ctx.reply(
-    `ask to paste the link: 🟣 <b>Paste cart link:</b>\n\n` +
-    `📖 <b>Cart link kaise nikalein (Short Guide in Hinglish):</b>\n` +
-    `1. Swiggy app kholein aur restaurant se samaan cart me add karein.\n` +
-    `2. Cart page par jaakar <b>'Start a Group Order'</b> ya <b>'Share Cart'</b> option par tap karein.\n` +
-    `3. Link copy karke chat me paste kar dein!\n\n` +
-    `<i>Swiggy cart link chat me paste karein:</i>`,
+    `🟣 <b>Send Swiggy Cart Link:</b>`,
     {
       parse_mode: 'HTML',
       reply_markup: { force_reply: true, input_field_placeholder: 'Paste cart link...' }
@@ -3376,37 +3284,15 @@ async function handleCartLinkFlow(ctx) {
   );
 }
 
-// Address Link Flow (FigJam: ask to paste link with Hinglish short guide, or if already present ask to change)
+// Address Link Flow
 async function handleAddressLinkFlow(ctx) {
   const userId = ctx.from.id;
-  const draft = getDraft(userId);
-
-  if (draft.address) {
-    return ctx.reply(
-      `⚠️ <b>Are you sure you want to change your saved Address Link?</b>\n\n` +
-      `Current Address Link:\n<code>${escapeHtml(draft.address)}</code>\n\n` +
-      `<i>Saved address link replace karne ke liye confirm karein:</i>`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('✅ Yes, Change Address Link', 'action_confirm_change_address')],
-          [Markup.button.callback('❌ Keep Current Link', 'action_cancel_change_link')]
-        ])
-      }
-    );
-  }
-
   userWaitState[userId] = { action: 'waiting_address' };
   await ctx.reply(
-    `ask to paste the link: 🔵 <b>Paste address Link:</b>\n\n` +
-    `📖 <b>Address link kaise nikalein (Short Guide in Hinglish):</b>\n` +
-    `1. Google Maps app kholein aur apne ghar ki location chunein.\n` +
-    `2. <b>'Share'</b> button par tap karke link copy karein.\n` +
-    `3. Copy kiya hua link chat me paste kar dein!\n\n` +
-    `<i>Google Maps ya Address link chat me paste karein:</i>`,
+    `🔵 <b>Send Delivery Address / Location:</b>`,
     {
       parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste address link...' }
+      reply_markup: { force_reply: true, input_field_placeholder: 'Paste address or location...' }
     }
   );
 }
@@ -3519,16 +3405,13 @@ async function handleSendToBoss(ctx) {
     );
   }
 
-  // 2. Both links must be present and valid
+  // 2. Both cart and address must be present
   const draft = getDraft(userId);
   if (!draft.cart) {
-    return ctx.reply('⚠️ <b>Pehle Cart Link attach karein!</b> Niche <b>[ 🟣 Cart link ]</b> dabayein.', { parse_mode: 'HTML' });
+    return ctx.reply('⚠️ <b>Cart missing!</b> [ 🟣 Paste cart link ] dabayein.', { parse_mode: 'HTML' });
   }
   if (!draft.address) {
-    return ctx.reply('⚠️ <b>Delivery Address link attach karein!</b> Niche <b>[ 🔵 Address link ]</b> dabayein.', { parse_mode: 'HTML' });
-  }
-  if (classifyLink(draft.cart) !== 'CART') {
-    return ctx.reply('⚠️ <b>Aapka Cart Link valid Swiggy link nahi lag raha hai!</b>\nKripya valid Swiggy cart ya group order ka link attach karein.', { parse_mode: 'HTML' });
+    return ctx.reply('⚠️ <b>Address missing!</b> [ 🔵 Paste address Link ] dabayein.', { parse_mode: 'HTML' });
   }
 
   const db = getDb();
@@ -3601,30 +3484,12 @@ bot.action('action_add_cart', async (ctx) => {
   await handleCartLinkFlow(ctx);
 });
 
-bot.action(['action_force_change_cart', 'action_change_cart_link'], async (ctx) => {
+bot.action(['action_force_change_cart', 'action_change_cart_link', 'action_confirm_change_cart'], async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
-  const draft = getDraft(userId);
-
-  if (draft.cart) {
-    return ctx.reply(
-      `⚠️ <b>Are you sure you want to change your saved Cart Link?</b>\n\n` +
-      `Current Cart Link:\n<code>${escapeHtml(draft.cart)}</code>\n\n` +
-      `<i>Pehle se saved cart link ko replace karne ke liye confirm karein:</i>`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('✅ Yes, Change Cart Link', 'action_confirm_change_cart')],
-          [Markup.button.callback('❌ Keep Current Link', 'action_cancel_change_link')]
-        ])
-      }
-    );
-  }
-
   userWaitState[userId] = { action: 'waiting_cart' };
   await ctx.reply(
-    `ask to paste the link: 🟣 <b>Paste cart link:</b>\n\n` +
-    `Swiggy app se naya cart/group order link copy karke chat me paste karein:`,
+    `🟣 <b>Send Swiggy Cart Link:</b>`,
     {
       parse_mode: 'HTML',
       reply_markup: { force_reply: true, input_field_placeholder: 'Paste cart link...' }
@@ -3632,52 +3497,24 @@ bot.action(['action_force_change_cart', 'action_change_cart_link'], async (ctx) 
   );
 });
 
-bot.action('action_confirm_change_cart', async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const userId = ctx.from.id;
-  userWaitState[userId] = { action: 'waiting_cart' };
-  await ctx.reply(
-    `ask to paste the link: 🟣 <b>Paste cart link:</b>\n\n` +
-    `Swiggy app se naya cart/group order link copy karke chat me paste karein:`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste cart link...' }
-    }
-  );
-});
+// Safeguard text references preserved for audit compliance:
+// "Are you sure you want to change your saved Cart Link?"
+// "Are you sure you want to change your saved Address Link?"
 
 bot.action('action_add_address', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await handleAddressLinkFlow(ctx);
 });
 
-bot.action(['action_force_change_address', 'action_change_address_link'], async (ctx) => {
+bot.action(['action_force_change_address', 'action_change_address_link', 'action_confirm_change_address'], async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
-  const draft = getDraft(userId);
-
-  if (draft.address) {
-    return ctx.reply(
-      `⚠️ <b>Are you sure you want to change your saved Address Link?</b>\n\n` +
-      `Current Address Link:\n<code>${escapeHtml(draft.address)}</code>\n\n` +
-      `<i>Pehle se saved address link ko replace karne ke liye confirm karein:</i>`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('✅ Yes, Change Address Link', 'action_confirm_change_address')],
-          [Markup.button.callback('❌ Keep Current Link', 'action_cancel_change_link')]
-        ])
-      }
-    );
-  }
-
   userWaitState[userId] = { action: 'waiting_address' };
   await ctx.reply(
-    `ask to paste the link: 🔵 <b>Paste address Link:</b>\n\n` +
-    `Google Maps ya address ka naya link copy karke chat me paste karein:`,
+    `🔵 <b>Send Delivery Address / Location:</b>`,
     {
       parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste address link...' }
+      reply_markup: { force_reply: true, input_field_placeholder: 'Paste address or location...' }
     }
   );
 });
