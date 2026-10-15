@@ -3269,9 +3269,7 @@ bot.command(['setupi', 'set_upi'], async (ctx) => {
 
 // ================= USER FLOWCHART & BOTTOM BUTTON HANDLERS =================
 
-// Cart Link Flow (FigJam: ask to paste link with Hinglish short guide, or if already present ask to change)
-async function handleCartLinkFlow(ctx) {
-  const userId = ctx.from.id;
+// Cart Link Flow
 async function handleCartLinkFlow(ctx) {
   const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_cart' };
