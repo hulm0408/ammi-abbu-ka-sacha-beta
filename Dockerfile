@@ -1,6 +1,6 @@
-FROM node:20-bullseye-slim
+FROM node:20-bookworm-slim
 
-# Install Chromium and required fonts/libraries
+# Install Chromium and necessary runtime libraries on Debian 12 Bookworm
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-ipafont-gothic \
@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     fonts-kacst \
     fonts-freefont-ttf \
     libxss1 \
+    ca-certificates \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -18,9 +19,8 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
 WORKDIR /usr/src/app
 
 COPY package*.json ./
-RUN npm install --production
+RUN npm install --omit=dev
 
 COPY . .
 
-# Run bot
 CMD ["npm", "start"]

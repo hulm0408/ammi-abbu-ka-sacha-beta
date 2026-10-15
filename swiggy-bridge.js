@@ -1,9 +1,26 @@
+import fs from 'fs';
 import puppeteer from 'puppeteer-core';
 import { updateAccount } from './store.js';
 
-const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || (process.platform === 'win32'
-  ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-  : '/usr/bin/chromium');
+function findChromePath() {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (process.env.CHROME_BIN) return process.env.CHROME_BIN;
+  if (process.platform === 'win32') {
+    return 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  }
+  const linuxPaths = [
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable'
+  ];
+  for (const p of linuxPaths) {
+    try { if (fs.existsSync(p)) return p; } catch (e) {}
+  }
+  return '/usr/bin/chromium';
+}
+
+const CHROME_PATH = findChromePath();
 
 // Active login sessions keyed by userId: { [userId]: { browser, page, phone, targetAcc } }
 const activeSessions = {};
