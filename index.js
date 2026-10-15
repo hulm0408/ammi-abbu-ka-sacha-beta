@@ -112,22 +112,21 @@ function classifyLink(url) {
   return 'UNKNOWN';
 }
 
-// User Bottom Menu - Exactly matching User Diagram (Send to Boss ONLY when both links valid)
+// User Bottom Menu - Send Order to Beta ALWAYS available on reply keyboard
 function getUserReplyKeyboard(draft = {}) {
   const cartLabel = draft?.cart ? '🟣 Cart: Added ✅' : '🟣 Paste cart link';
   const addrLabel = draft?.address ? '🔵 Address: Added ✅' : '🔵 Paste address Link';
-  const rows = [[cartLabel, addrLabel]];
-
-  if (draft?.cart && draft?.address && classifyLink(draft.cart) === 'CART') {
-    rows.push(['🟢 Send to Boss', '🚀 Send to beta']);
-  }
-  rows.push(['🟠 cancel order', '⚪ previous order']);
-  return Markup.keyboard(rows).resize();
+  return Markup.keyboard([
+    [cartLabel, addrLabel],
+    ['🚀 Send Order to Beta', '🟢 Send to Boss'],
+    ['🟠 cancel order', '⚪ previous order']
+  ]).resize();
 }
 
-// Boss Bottom Menu - Colors instead of random icons, Boss ONLY
+// Boss Bottom Menu - Includes Send Order to Beta & Order Screen for easy testing
 function getBossReplyKeyboard() {
   return Markup.keyboard([
+    ['🚀 Send Order to Beta', '📦 Order Screen'],
     ['🟡 Pending Orders', '🟣 Connected Accounts'],
     ['🔵 Saved Addresses', '🟢 Slot Status'],
     ['📊 Total slots', '🟢 Total left'],
@@ -280,12 +279,10 @@ function getUserScreen(userId, user) {
     classifyLink(draft.cart) === 'CART'
   );
 
-  if (hasValidBoth) {
-    inlineButtons.push([
-      Markup.button.callback('🟢 Send to Boss', 'action_send_to_boss'),
-      Markup.button.callback('🚀 Send to beta', 'action_send_to_beta')
-    ]);
-  }
+  inlineButtons.push([
+    Markup.button.callback(hasValidBoth ? '🚀 Send Order to Beta' : '🚀 Send Order to Beta', 'action_send_to_beta'),
+    Markup.button.callback(hasValidBoth ? '🟢 Send to Boss' : '🟢 Send to Boss', 'action_send_to_boss')
+  ]);
 
   inlineButtons.push([
     Markup.button.callback('🟠 cancel order', 'action_cancel_order_confirm'),
@@ -622,6 +619,8 @@ bot.start(async (ctx) => {
       parse_mode: 'HTML',
       ...getBossPanelKeyboard()
     });
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
     return;
   }
 
@@ -2587,11 +2586,17 @@ bot.hears([
 });
 
 bot.hears([
-  '🟢 Send to Boss', 'Send to Boss',
+  '🚀 Send Order to Beta', 'Send Order to Beta', 'send order to beta', 'SEND ORDER TO BETA',
+  '🚀 Send Order to Beta ✅', '🚀 Send to beta', 'Send to beta', 'send to beta', 'Send to Beta',
+  '🟢 Send to Boss', 'Send to Boss', 'send to boss', 'SEND TO BOSS',
   '🟢 Send to Admin', 'Send to Admin', '🚀 Send to Admin',
-  '🟢 Send to beta', 'Send to beta', '🚀 Send to Beta',
-  /send to boss/i, /send to admin/i, /send to beta/i
+  '📦 Order Screen', 'Customer Screen',
+  /send.*order.*beta/i, /send.*beta/i, /send.*boss/i, /send.*admin/i
 ], async (ctx) => {
+  await handleSendToBoss(ctx);
+});
+
+bot.command(['sendtobeta', 'send_to_beta', 'sendorder', 'send_order', 'order'], async (ctx) => {
   await handleSendToBoss(ctx);
 });
 
@@ -3718,7 +3723,7 @@ bot.action('boss_prompt_slots_left', async (ctx) => {
   });
 });
 
-bot.action(['action_send_to_admin', 'action_send_to_boss', 'action_send_to_beta'], async (ctx) => {
+bot.action(['action_send_to_admin', 'action_send_to_boss', 'action_send_to_beta', 'action_send_order_to_beta'], async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await handleSendToBoss(ctx);
 });
