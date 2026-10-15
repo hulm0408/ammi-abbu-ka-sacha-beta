@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: telegram-slot-bot
+    env: docker
+    plan: free
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: BOSS_SECRET
+        value: boss123

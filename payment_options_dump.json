@@ -1,0 +1,649 @@
+{
+  "statusCode": 0,
+  "statusMessage": "Executed Successfully",
+  "data": {
+    "smartPaymentApplied": true,
+    "codEnabled": false,
+    "newUser": false,
+    "foodCardBalanceApiInvoked": false,
+    "foodCardAllowed": true,
+    "swiggyOneBenefitsApplicable": false,
+    "tradeDiscountApplied": false,
+    "payment_banner_message": "",
+    "cart_banner_message": "",
+    "coupon_code": "",
+    "offer_header_text": "",
+    "coupon_applied": false,
+    "reward_applied": false,
+    "payment_group": [
+      {
+        "preferredGroup": false,
+        "group_name": "card",
+        "display_name": "Credit & Debit Cards",
+        "fold_size": 100,
+        "coupon_applicable": false,
+        "meta": {
+          "tokenization_meta": {
+            "title": "Save your card as per RBI guidelines",
+            "message": "This will enable a seamless payment experience",
+            "points": [
+              {
+                "iconUrl": "PaymentLogos/paymentIcons/tokenization/payment_cards",
+                "message": "No need to enter your card details every time"
+              },
+              {
+                "iconUrl": "PaymentLogos/paymentIcons/tokenization/secure_lock",
+                "message": "Upgraded payment security"
+              },
+              {
+                "iconUrl": "PaymentLogos/paymentIcons/tokenization/swiggy_circle",
+                "message": "You can delete your saved card from account section at any time"
+              }
+            ]
+          },
+          "merchant_id_card": "com.swiggy",
+          "merchant_name_card": "Swiggy",
+          "non_tokenize_card_removal_msg": "",
+          "merchant_name": "Swiggy",
+          "web_merchant_id": "com.swiggy",
+          "merchant_id": "com.swiggy",
+          "return_to_url": "http://www.swiggy.com/justpay/response.php"
+        },
+        "payment_methods": [
+          {
+            "groupName": "card",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "/wp-content/themes/swiggy/",
+              "promo_msg": "Save and Pay via Cards.",
+              "disable_message": "Please try another payment method",
+              "merchant_id": "com.swiggy"
+            },
+            "upiCollect": false,
+            "name": "NEW_CARD",
+            "display_name": "Add New Card",
+            "payment_code": "Juspay",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": true,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "/wp-content/themes/swiggy/",
+              "promo_msg": "Save and Pay via Cards.",
+              "disable_message": "Please try another payment method",
+              "merchant_id": "com.swiggy"
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          }
+        ],
+        "is_friction_hidden_group": false,
+        "enabled": true
+      },
+      {
+        "preferredGroup": false,
+        "group_name": "food_card",
+        "display_name": "Pluxee",
+        "fold_size": 5,
+        "coupon_applicable": false,
+        "meta": {
+          "icon_url": "PaymentLogos/instruments/4x/food_card",
+          "merchant_name_nb": "Swiggy",
+          "merchant_id_nb": "com.swiggy",
+          "web_merchant_id": "com.swiggy",
+          "cta_subtext": "Pluxee card valid only on Food & Instamart",
+          "merchant_id": "com.swiggy",
+          "web_merchant_id_nb": "com.swiggy",
+          "client_id": "swiggy_android"
+        },
+        "payment_methods": [
+          {
+            "groupName": "food_card",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "/wp-content/themes/swiggy/",
+              "promo_msg": "Pluxee card needs to be added separately for restaurant orders",
+              "disable_message": "Please try another payment method",
+              "merchant_id": "com.swiggy"
+            },
+            "upiCollect": false,
+            "name": "NEW_FOOD_CARD",
+            "display_name": "Add New Food Card",
+            "payment_code": "Juspay",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": true,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "/wp-content/themes/swiggy/",
+              "promo_msg": "Pluxee card needs to be added separately for restaurant orders",
+              "disable_message": "Please try another payment method",
+              "merchant_id": "com.swiggy"
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          }
+        ],
+        "is_friction_hidden_group": true,
+        "enabled": true
+      },
+      {
+        "preferredGroup": false,
+        "group_name": "wallet_web",
+        "display_name": "Wallets",
+        "fold_size": 6,
+        "coupon_applicable": false,
+        "meta": {
+          "icon_url": "PaymentLogos/instruments/4x/Wallet",
+          "cta_subtext": "PhonePe, Amazon Pay & more"
+        },
+        "payment_methods": [
+          {
+            "groupName": "wallet_web",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "payments/upi/apay.png",
+              "promo_msg": "",
+              "isRedirectFlow": true,
+              "disable_message": "Please try another payment method"
+            },
+            "upiCollect": false,
+            "name": "AmazonPay",
+            "display_name": "Amazon Pay",
+            "payment_code": "AmazonPayWeb",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": true,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "payments/upi/apay.png",
+              "promo_msg": "",
+              "isRedirectFlow": true,
+              "disable_message": "Please try another payment method"
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          },
+          {
+            "groupName": "wallet_web",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "PaymentLogos/paymentIcons/wallets/phonepe",
+              "promo_msg": "",
+              "disable_message": "Please try another payment method"
+            },
+            "upiCollect": false,
+            "name": "PhonePe",
+            "display_name": "PhonePe (Wallet/UPI/Cards)",
+            "payment_code": "PhonePe",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": true,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "PaymentLogos/paymentIcons/wallets/phonepe",
+              "promo_msg": "",
+              "disable_message": "Please try another payment method"
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          },
+          {
+            "groupName": "wallet_web",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "v1612413183/PaymentLogos/Mobikwik",
+              "dweb_icon_url": "mobiKwik_ayw97n",
+              "promo_msg": "",
+              "disable_message": "Please try another payment method"
+            },
+            "upiCollect": false,
+            "name": "Mobikwik",
+            "display_name": "MobiKwik",
+            "payment_code": "Mobikwik",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": true,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "v1612413183/PaymentLogos/Mobikwik",
+              "dweb_icon_url": "mobiKwik_ayw97n",
+              "promo_msg": "",
+              "disable_message": "Please try another payment method"
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          }
+        ],
+        "is_friction_hidden_group": true,
+        "enabled": true
+      },
+      {
+        "preferredGroup": false,
+        "group_name": "netbanking",
+        "display_name": "Netbanking",
+        "fold_size": 5,
+        "coupon_applicable": false,
+        "meta": {
+          "icon_url": "PaymentLogos/instruments/4x/Net_banking",
+          "merchant_name_nb": "Swiggy",
+          "merchant_id_nb": "com.swiggy",
+          "web_merchant_id": "com.swiggy",
+          "cta_subtext": "Select from a list of banks",
+          "merchant_id": "com.swiggy",
+          "web_merchant_id_nb": "com.swiggy",
+          "client_id": "swiggy_android"
+        },
+        "payment_methods": [
+          {
+            "groupName": "netbanking",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "nbCode": "NB_HDFC",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "PaymentLogos/paymentIcons/netbanking/hdfc",
+              "icon_web_url": "hdfc_edwzub",
+              "promo_msg": "",
+              "code": "NB_HDFC",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "upiCollect": false,
+            "name": "HDFC Bank",
+            "display_name": "HDFC",
+            "payment_code": "Juspay-NB",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": true,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "PaymentLogos/paymentIcons/netbanking/hdfc",
+              "icon_web_url": "hdfc_edwzub",
+              "promo_msg": "",
+              "code": "NB_HDFC",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          },
+          {
+            "groupName": "netbanking",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "nbCode": "NB_ICICI",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "PaymentLogos/paymentIcons/netbanking/icici",
+              "icon_web_url": "icici_hckjq4",
+              "promo_msg": "",
+              "code": "NB_ICICI",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "upiCollect": false,
+            "name": "ICICI Netbanking",
+            "display_name": "ICICI",
+            "payment_code": "Juspay-NB",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": true,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "PaymentLogos/paymentIcons/netbanking/icici",
+              "icon_web_url": "icici_hckjq4",
+              "promo_msg": "",
+              "code": "NB_ICICI",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          },
+          {
+            "groupName": "netbanking",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "nbCode": "NB_SBI",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "PaymentLogos/paymentIcons/netbanking/sbi",
+              "icon_web_url": "sbi_ts3ab8",
+              "promo_msg": "",
+              "code": "NB_SBI",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "upiCollect": false,
+            "name": "State Bank of India",
+            "display_name": "SBI",
+            "payment_code": "Juspay-NB",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": true,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "PaymentLogos/paymentIcons/netbanking/sbi",
+              "icon_web_url": "sbi_ts3ab8",
+              "promo_msg": "",
+              "code": "NB_SBI",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          },
+          {
+            "groupName": "netbanking",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "nbCode": "NB_AXIS",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "PaymentLogos/paymentIcons/netbanking/axis",
+              "icon_web_url": "axis_i472hk",
+              "promo_msg": "",
+              "code": "NB_AXIS",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "upiCollect": false,
+            "name": "Axis Bank",
+            "display_name": "Axis",
+            "payment_code": "Juspay-NB",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": true,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "PaymentLogos/paymentIcons/netbanking/axis",
+              "icon_web_url": "axis_i472hk",
+              "promo_msg": "",
+              "code": "NB_AXIS",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          },
+          {
+            "groupName": "netbanking",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "nbCode": "NB_KOTAK",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "kotak_gjlw24",
+              "icon_web_url": "kotak_gjlw24",
+              "promo_msg": "",
+              "code": "NB_KOTAK",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "upiCollect": false,
+            "name": "Kotak Bank",
+            "display_name": "Kotak",
+            "payment_code": "Juspay-NB",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": true,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "kotak_gjlw24",
+              "icon_web_url": "kotak_gjlw24",
+              "promo_msg": "",
+              "code": "NB_KOTAK",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          },
+          {
+            "groupName": "netbanking",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "nbCode": "NB_YESB",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "yes_lpixdu",
+              "icon_web_url": "yes_lpixdu",
+              "promo_msg": "",
+              "code": "NB_YESB",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "upiCollect": false,
+            "name": "Yes Bank",
+            "display_name": "Yes",
+            "payment_code": "Juspay-NB",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": true,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "yes_lpixdu",
+              "icon_web_url": "yes_lpixdu",
+              "promo_msg": "",
+              "code": "NB_YESB",
+              "disable_message": "",
+              "merchant_id": "com.swiggy"
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          }
+        ],
+        "is_friction_hidden_group": true,
+        "enabled": true
+      },
+      {
+        "preferredGroup": false,
+        "group_name": "cod",
+        "display_name": "Pay on Delivery",
+        "fold_size": 1,
+        "coupon_applicable": false,
+        "meta": {
+          "icon_url": "PaymentLogos/instruments/4x/Cash",
+          "cta_subtext": "Pay in cash or pay online."
+        },
+        "payment_methods": [
+          {
+            "groupName": "cod",
+            "isPreferred": false,
+            "preferred": false,
+            "cardBrand": "",
+            "upiIntent": false,
+            "cardBank": "",
+            "metaOrDefault": {
+              "icon_url": "portal/m/COD_icon.png",
+              "promo_msg": "Pay cash or ask for QR code",
+              "popup_message": "Please confirm your payment via cash on delivery",
+              "disable_message": "Cash on delivery is not available."
+            },
+            "upiCollect": false,
+            "name": "cod",
+            "display_name": "Pay on Delivery (Cash/UPI)",
+            "payment_code": "Cash",
+            "payable_amount": "237",
+            "coupon_applicable": false,
+            "reward_applicable": false,
+            "enabled": false,
+            "tooltip": false,
+            "meta": {
+              "icon_url": "portal/m/COD_icon.png",
+              "promo_msg": "Pay cash or ask for QR code",
+              "popup_message": "Please confirm your payment via cash on delivery",
+              "disable_message": "Cash on delivery is not available."
+            },
+            "full_view": false,
+            "preferred_priority": 0,
+            "eligibility_check_required": false,
+            "split_pay_enabled": true,
+            "show_add_money_cta": false,
+            "show_learn_more_half_card": false
+          }
+        ],
+        "is_friction_hidden_group": true,
+        "enabled": true
+      }
+    ],
+    "payment_amount": "237",
+    "payment_amount_without_discount": "237",
+    "item_quantity": 1,
+    "juspay_meta": {
+      "tokenization_meta": {
+        "title": "Save your card as per RBI guidelines",
+        "message": "This will enable a seamless payment experience",
+        "points": [
+          {
+            "iconUrl": "PaymentLogos/paymentIcons/tokenization/payment_cards",
+            "message": "No need to enter your card details every time"
+          },
+          {
+            "iconUrl": "PaymentLogos/paymentIcons/tokenization/secure_lock",
+            "message": "Upgraded payment security"
+          },
+          {
+            "iconUrl": "PaymentLogos/paymentIcons/tokenization/swiggy_circle",
+            "message": "You can delete your saved card from account section at any time"
+          }
+        ]
+      },
+      "merchant_id_card": "com.swiggy",
+      "merchant_name_card": "Swiggy",
+      "non_tokenize_card_removal_msg": "",
+      "merchant_name": "Swiggy",
+      "web_merchant_id": "com.swiggy",
+      "merchant_id": "com.swiggy",
+      "return_to_url": "http://www.swiggy.com/justpay/response.php"
+    },
+    "presentation_details": {
+      "pickUpAddress": {
+        "name": "The Sattvic Food Express",
+        "address": "Delivery in: 30-35 mins",
+        "annotation": "Restaurant"
+      },
+      "deliveryAddress": {
+        "name": "Home",
+        "address": "None, 504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India",
+        "annotation": "Home"
+      },
+      "deliveryType": null,
+      "deliverySla": null,
+      "deliveryPrice": null,
+      "itemTotal": "237",
+      "deliveryTimeAnnotation": null,
+      "deliveryTime": null,
+      "headerTitle": "Payment Options",
+      "headerSubtitle": "1 item. Total:",
+      "discountMessage": " Savings of ₹28",
+      "sla_message": "30-35 mins"
+    },
+    "tenant": "SW-FOOD",
+    "request_channel": "SWIGGY",
+    "friction_view_more_payment_subtext": "Cash, Wallets, Netbanking, Food cards, Credit",
+    "friction_layout_id": "two_click",
+    "payment_amount_changed": false,
+    "user_part_of_one_click": false,
+    "one_click_eligibility_check": false,
+    "payment_page_offer_enabled": true,
+    "rewards_enabled": false,
+    "xpData": {
+      "upi_intent_show_cancel": "true"
+    },
+    "flipkart_coins_eligible": false,
+    "is_comparison_successful": false
+  },
+  "tid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJ1c2VyX2lkIjoiMjg0OTQxMDQ0IiwiaXNzIjoiaGFwIiwic3ViIjoiOWFmN2MyNjQtYjdjYS00Mzc3LThkZDUtM2Y0NzQ5OTMzYzVjIiwiaWF0IjoxNzkyMDI1MjI4LCJzaWQiOiJ1NnU2MzkwZDJmZC1iMTkxLTRmMjEtYTYzZi1lNDJmNWFhZGYiLCJleHAiOjE3OTQ2MTcyMjgsInNlc3Npb25fZGF0YSI6IlE5WUgxK3k0NlJ5cEQyR2lqOUdUWDRYZzhjdUFVeFJTSTFZVGpVUW5PSEVnNlRFenAxb21iTkh4MkVzL3lHbXpib3Jpd21VZFU1K0FseEc1NGpobEJhYmR1MUhCaHEvWXFKRzJ1bEc3am9kMXZxOHhVdTJXR1pNK3pRRVVFSVZSVWNRUlJaNUhuTTZuKzZiWm95cVRFY2FrMXVoRXh1UW8rVUNRdDNFdUlMTUZsWERLRGRuZzFROG0wdHZlS1dVY2RaaE5pZno5UVRtWU1KNnhIRlBPUXdLczdMTTVUN29hYWUydmlnYTl2VzZIZ2pkNUZob2FBL3I0WXEvNWVaN081d2M3VVUzS0kzV2pKUT09In0.N1ZDDtr939Ag0rqU1dQK8v0N1lUb-VGoOgRQx1zEr9A",
+  "sid": "u6pe9a1ee88-5340-4a2b-862a-f7358981b",
+  "deviceId": "ca7f856e-f8f6-dc73-76d6-fa6d0db1c9ae",
+  "successful": true
+}

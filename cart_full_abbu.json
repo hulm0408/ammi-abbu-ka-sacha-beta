@@ -1,0 +1,2336 @@
+{
+  "statusCode": 0,
+  "statusMessage": "CART_UPDATED_SUCCESSFULLY",
+  "data": {
+    "cartMeta": {
+      "originalCartId": 120109599,
+      "basePackagingCharges": 16.33,
+      "appliedTradeCampaignHeaders": [],
+      "crouton": {
+        "icon": "App_Crouton/Call_DE",
+        "message": "Want your order left outside? Call delivery executive",
+        "subtext": null,
+        "frequency_cap": null
+      },
+      "deliveryFeeCouponBreakup": {
+        "thresholdFee": 0,
+        "distanceFee": 0,
+        "timeFee": 0,
+        "specialFee": 0,
+        "totalDeliveryFeeDiscount": 0,
+        "discountShare": {
+          "swiggyDiscount": 0,
+          "restaurantDiscount": 0
+        }
+      },
+      "offerPresentationInfo": {
+        "nudgeInfo": null,
+        "cartMessageCard": null,
+        "deliveryFeeSavingsInfo": null,
+        "rewardOffersSavingsInfo": null,
+        "magicItemTimerDisabled": false
+      },
+      "offerCartMeta": {
+        "tdMeta": "[{\"id\":\"206500dc-ba9e-4a58-be62-bb3f830ec1f3\",\"discount_share\":{\"swiggy_discount\":31,\"store_discount\":0,\"alliance_discount\":0},\"offer_usage_counter\":1}]"
+      },
+      "swiggyOneInfo": {
+        "presentationInfo": {
+          "title": "",
+          "subtitles": [],
+          "cta": null,
+          "benefits": [
+            {
+              "title": "Free delivery savings of ₹31",
+              "sub_title": "",
+              "show_shimmer": false,
+              "attribute_values": {}
+            }
+          ],
+          "ctas": [],
+          "expressNudgeCta": null,
+          "header": "",
+          "disableSingleTapNudge": false,
+          "nudge_type": null,
+          "is_super": true,
+          "badge_info": null,
+          "plan_details": null,
+          "active_plan_details": {
+            "name": "3 Months Plan",
+            "shown_as": null,
+            "plan_id": "773",
+            "base_price": 100,
+            "final_price": 100,
+            "type": "PLAN_TYPE_PLUS",
+            "program": "PLAN_PROGRAM_ONE"
+          },
+          "logo_ctx": {
+            "text": "BENEFITS",
+            "logo": "cart_two_dot_o/One_paddingfix.png",
+            "lottie": null
+          },
+          "tooltip_info": null,
+          "footer_comms": null,
+          "remove_plan_message": null,
+          "line_item_comms": null,
+          "m2c_card_comms": null,
+          "m2c_gratification_card_comms": null,
+          "bill_details_comms": null,
+          "bill_details_card_comms": null,
+          "delivery_tag_info": null,
+          "header_note": "",
+          "secondary_subtitles": [],
+          "identifiers": {},
+          "attribute_values": {
+            "exercised_food_lm": "7",
+            "svg_value": "₹31",
+            "exercised_food_mov": "₹199"
+          },
+          "swiggy_one_nudge_gratification_card_comms": null,
+          "item_nudge_comms": null,
+          "reinforcement_comms": null,
+          "crouton_comms": null,
+          "benefit_reinforcement_comms": null,
+          "comparison_nudge_comms": null,
+          "super": true
+        }
+      },
+      "swiggyOneExclusiveDiscount": 0,
+      "swiggyOneBenefitsApplicable": true,
+      "oneLiteBenefitsApplicable": false,
+      "hideSwiggyOneNudgeForAutoAddPlan": false,
+      "disableSingleTapNudge": false,
+      "disableApplyCoupon": false,
+      "showCouponLessSavingsInfo": false,
+      "isRestaurantSelfDeliveryV2Enabled": false,
+      "expressFeeApplied": false,
+      "potentialExpressFeesWithoutTax": 24,
+      "potentialAnchorExpressFeesWithoutTax": 29,
+      "cartGstAndChargesTitle": "GST & Other Charges",
+      "taxesAndCharges": 49.98,
+      "positiveDeliveryChargesExclusive": 0,
+      "positiveDeliveryChargesExclusiveWithoutTotalDeliveryFeeDiscount": 0,
+      "noRushDeliveryFeeDiscountEnabled": false,
+      "deliveryPartnerFeeCTA": "",
+      "cbccWidgetAmount": 35,
+      "feeLevelPricingModelKey": {
+        "distanceFee": "667ee9dc-05da-4f1d-b846-794ece744164",
+        "timeFee": "",
+        "specialFee": "",
+        "stress": ""
+      },
+      "tradeDiscountRewardAmountWithoutPocketHeroDiscount": 0,
+      "itemTotalBillPresentation": 297,
+      "deliveryFeeGst": 0,
+      "deliveryChargeStrikeOffAmount": "31.0",
+      "totalTDAppliedOnItems": 0,
+      "weatherRainFeeText": "Rain Fee",
+      "gstAndChargesPresentationInfo": {
+        "highlightColor": "#7CA3DC",
+        "intermediateTextStriked": null,
+        "windowWidth": "XXXL",
+        "valueTextColor": null,
+        "dataType": null,
+        "tooltipBgGradiantColor": null
+      },
+      "croutonList": [
+        {
+          "type": "FREE_DEL_AND_CASHBACK_TOAST",
+          "data": {
+            "text": "",
+            "errorText": null,
+            "subText": null,
+            "states": null,
+            "icon": "",
+            "timer": 0,
+            "endTimestamp": 0,
+            "showTimer": false,
+            "timeout": null,
+            "backgroundColor": null,
+            "textColor": null,
+            "timerTextColor": null,
+            "borderRadius": null
+          }
+        },
+        {
+          "type": "FOOTER_CROUTON",
+          "data": {
+            "text": "Want your order left outside? Call delivery executive",
+            "errorText": null,
+            "subText": null,
+            "states": null,
+            "icon": "App_Crouton/Call_DE",
+            "timer": 0,
+            "endTimestamp": 0,
+            "showTimer": false,
+            "timeout": null,
+            "backgroundColor": null,
+            "textColor": null,
+            "timerTextColor": null,
+            "borderRadius": null
+          }
+        }
+      ],
+      "toShowAffordableQuickPrepComms": false,
+      "offerCashRewardDisplayText": "Extra discount for you",
+      "rainMode": false,
+      "restaurantSelfDeliveryV2Enabled": false,
+      "flatFeeApplied": false,
+      "fullCouponLessFreeDeliveryApplied": true,
+      "newPricingModel": true,
+      "cards": [
+        {
+          "version": "v1",
+          "widget-style": "CONTAINER",
+          "details": {
+            "header": [
+              {
+                "type": "collapsible",
+                "details": [
+                  {
+                    "items": [
+                      {
+                        "type": "icon",
+                        "icon": "cart_two_dot_o/Bill.png",
+                        "properties": {
+                          "style": {
+                            "marginRight": "8px",
+                            "width": "20px",
+                            "height": "20px"
+                          }
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "To Pay",
+                        "properties": {
+                          "dls": {
+                            "textVariant": "V2.body2.neutral.medium",
+                            "textColor": "text_High_Emphasis"
+                          },
+                          "style": {
+                            "marginRight": "4px"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "items": [
+                      {
+                        "type": "text",
+                        "text": "₹378",
+                        "properties": {
+                          "dls": {
+                            "textVariant": "V2.body2.neutral.medium",
+                            "textColor": "text_Med_Emphasis"
+                          },
+                          "style": {
+                            "textDecoration": "line-through"
+                          }
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "₹347",
+                        "properties": {
+                          "dls": {
+                            "textVariant": "V2.body2.neutral.medium",
+                            "textColor": "text_High_Emphasis"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "analytics": {
+                  "screen_name": "checkout",
+                  "impression_action": "impression-bill-view-chevron",
+                  "click_action": "click-bill-view-chevron",
+                  "context": "{\"totalSaved\":\"₹31\",\"cartId\":\"120338546\",\"surgeApplied\":\"false\",\"strikeValue\":\"₹378\",\"toPay\":\"₹347\",\"currentState\":\"uncollapsed\"}"
+                },
+                "default_state": "collapsed",
+                "info_text": [
+                  {
+                    "type": "text",
+                    "text": "₹31",
+                    "properties": {
+                      "dls": {
+                        "textColor": "special_positive"
+                      }
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": " saved on the total!",
+                    "properties": {
+                      "dls": {
+                        "textColor": "special_positive"
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "line_items": [
+              {
+                "type": "display",
+                "details": [
+                  {
+                    "items": [
+                      {
+                        "type": "text",
+                        "text": "Item Total"
+                      }
+                    ]
+                  },
+                  {
+                    "items": [
+                      {
+                        "type": "text",
+                        "text": "₹297"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "separator"
+              },
+              {
+                "type": "tooltip",
+                "details": [
+                  {
+                    "items": [
+                      {
+                        "type": "icon",
+                        "icon": "cart_two_dot_o/ONE_bill_details_section.png",
+                        "properties": {
+                          "style": {
+                            "marginRight": "3px",
+                            "width": "36px",
+                            "height": "11px"
+                          }
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "Delivery Fee"
+                      },
+                      {
+                        "type": "text",
+                        "text": " | "
+                      },
+                      {
+                        "type": "text",
+                        "text": "4.0"
+                      },
+                      {
+                        "type": "text",
+                        "text": " kms"
+                      }
+                    ],
+                    "sub_line_items": [
+                      {
+                        "type": "title",
+                        "details": [
+                          {
+                            "items": [
+                              {
+                                "type": "text",
+                                "text": "Delivery fee breakup for this order",
+                                "properties": {
+                                  "dls": {
+                                    "textVariant": "V2.body1.neutral.bold",
+                                    "textColor": "text_High_Emphasis"
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "display",
+                        "details": [
+                          {
+                            "items": [
+                              {
+                                "type": "text",
+                                "text": "Standard Fee",
+                                "properties": {
+                                  "dls": {
+                                    "textVariant": "V2.body2.neutral.medium"
+                                  }
+                                }
+                              }
+                            ],
+                            "info_text": [
+                              {
+                                "type": "text",
+                                "text": "Inclusive of GST"
+                              }
+                            ]
+                          },
+                          {
+                            "items": [
+                              {
+                                "type": "text",
+                                "text": "₹31",
+                                "properties": {
+                                  "dls": {
+                                    "textColor": "text_High_Emphasis"
+                                  },
+                                  "style": {
+                                    "textDecoration": "line-through"
+                                  }
+                                }
+                              },
+                              {
+                                "type": "text",
+                                "text": "FREE",
+                                "properties": {
+                                  "dls": {
+                                    "textColor": "positive"
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "items": [
+                      {
+                        "type": "text",
+                        "text": "₹31",
+                        "properties": {
+                          "style": {
+                            "textDecoration": "line-through"
+                          }
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "FREE",
+                        "properties": {
+                          "dls": {
+                            "textColor": "positive"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "analytics": {
+                  "screen_name": "checkout",
+                  "click_action": "click-infoicon",
+                  "context": "positive_delivery_charges_exclusive"
+                },
+                "tooltip_width": "XXL"
+              },
+              {
+                "type": "separator"
+              },
+              {
+                "type": "display",
+                "details": [
+                  {
+                    "items": [
+                      {
+                        "type": "text",
+                        "text": "Delivery Tip"
+                      }
+                    ]
+                  },
+                  {
+                    "items": [
+                      {
+                        "type": "button",
+                        "text": "Add tip",
+                        "ctaAction": "addTip"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "tooltip",
+                "details": [
+                  {
+                    "items": [
+                      {
+                        "type": "text",
+                        "text": "GST & Other Charges"
+                      }
+                    ],
+                    "sub_line_items": [
+                      {
+                        "type": "title",
+                        "details": [
+                          {
+                            "items": [
+                              {
+                                "type": "text",
+                                "text": "GST & Other Charges",
+                                "properties": {
+                                  "dls": {
+                                    "textVariant": "V2.body1.neutral.bold",
+                                    "textColor": "text_High_Emphasis"
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "display",
+                        "details": [
+                          {
+                            "items": [
+                              {
+                                "type": "text",
+                                "text": "Restaurant Packaging",
+                                "properties": {
+                                  "dls": {
+                                    "textVariant": "V2.body2.neutral.medium"
+                                  }
+                                }
+                              }
+                            ]
+                          },
+                          {
+                            "items": [
+                              {
+                                "type": "text",
+                                "text": "₹16.34",
+                                "properties": {
+                                  "dls": {
+                                    "textColor": "text_High_Emphasis"
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "display",
+                        "details": [
+                          {
+                            "items": [
+                              {
+                                "type": "text",
+                                "text": "Platform Fee",
+                                "properties": {
+                                  "dls": {
+                                    "textVariant": "V2.body2.neutral.medium"
+                                  }
+                                }
+                              }
+                            ],
+                            "info_text": [
+                              {
+                                "type": "text",
+                                "text": "Inclusive of GST.",
+                                "properties": {
+                                  "dls": {
+                                    "textColor": "positive"
+                                  }
+                                }
+                              },
+                              {
+                                "type": "text",
+                                "text": "This fee helps us operate and maintain Swiggy platform"
+                              }
+                            ]
+                          },
+                          {
+                            "items": [
+                              {
+                                "type": "text",
+                                "text": "₹17.98",
+                                "properties": {
+                                  "dls": {
+                                    "textColor": "text_High_Emphasis"
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "display",
+                        "details": [
+                          {
+                            "items": [
+                              {
+                                "type": "text",
+                                "text": "Restaurant GST",
+                                "properties": {
+                                  "dls": {
+                                    "textVariant": "V2.body2.neutral.medium"
+                                  }
+                                }
+                              }
+                            ],
+                            "info_text": [
+                              {
+                                "type": "text",
+                                "text": "Swiggy plays no role in govt. or restaurant related taxes & charges"
+                              }
+                            ]
+                          },
+                          {
+                            "items": [
+                              {
+                                "type": "text",
+                                "text": "₹15.67",
+                                "properties": {
+                                  "dls": {
+                                    "textColor": "text_High_Emphasis"
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "items": [
+                      {
+                        "type": "text",
+                        "text": "₹49.98"
+                      }
+                    ]
+                  }
+                ],
+                "analytics": {
+                  "screen_name": "checkout",
+                  "click_action": "click-infoicon",
+                  "context": "taxes_and_charges"
+                },
+                "tooltip_width": "XXXL"
+              },
+              {
+                "type": "separator"
+              },
+              {
+                "type": "display",
+                "details": [
+                  {
+                    "items": [
+                      {
+                        "type": "text",
+                        "text": "To Pay",
+                        "properties": {
+                          "dls": {
+                            "textVariant": "V2.body2.neutral.bold",
+                            "textColor": "text_High_Emphasis"
+                          },
+                          "style": {
+                            "padding": "4px 0"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "items": [
+                      {
+                        "type": "text",
+                        "text": "₹347",
+                        "properties": {
+                          "dls": {
+                            "textVariant": "V2.body2.neutral.bold",
+                            "textColor": "text_High_Emphasis"
+                          },
+                          "style": {
+                            "padding": "4px 0"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "widget-type": "bill-details"
+        }
+      ],
+      "cartId": 120338546,
+      "result": "success",
+      "email_id": "",
+      "phone_no": "6296591407",
+      "user_swiggy_money": 0,
+      "cart_subtotal_without_packing": 297,
+      "cart_subtotal": 297,
+      "taxes": {
+        "service_tax": 0,
+        "vat": 0,
+        "service_charges": 0,
+        "GST": 15.67
+      },
+      "del_fee_taxes": 0,
+      "is_tax_exclusive": true,
+      "restaurant_packing_charges": 16.33,
+      "restaurant_fulfilment_charges": 0,
+      "cart_total_shown_to_coupon": 297,
+      "cart_total": 347,
+      "order_total": 347,
+      "total_without_coupon_discount": 347,
+      "subscription_item_base_price": 0,
+      "subscription_item_tax": 0,
+      "total_packing_charges": 16.33,
+      "discount_total": 0,
+      "discount_effective": 0,
+      "offer_with_reward_benefit_sink": false,
+      "discount_message": "Savings of ₹31",
+      "discount_message_type": "SUPER_V3",
+      "group_tag_details": [],
+      "coupon_discount_total": 0,
+      "subscription_trade_discount": 0,
+      "coupon_discount_effective": 0,
+      "trade_discount_without_freebie": 0,
+      "trade_discount_without_freebie_with_exclusions": 0,
+      "trade_discount_total": 0,
+      "trade_discount_effective": 0,
+      "batch_opt_in_discount": 0,
+      "trade_discount_reward_type": "",
+      "discount_total_without_freebie": -31,
+      "super_specific_discount": 31,
+      "trade_discount_reward_list": [
+        "FREE_DELIVERY"
+      ],
+      "swiggy_money": 0,
+      "coupon_code": "",
+      "cart_total_count": 1,
+      "restaurant_details": {
+        "endTimestamp": 1792020600000,
+        "id": "803172",
+        "lat": "26.8682532443739",
+        "lng": "80.9079895102925",
+        "phone_no": "9336970590",
+        "address": "CHOWK LUCKNOW,PLOT NO-23 COMMERCIAL COMPLEX ,Utter Pradesh -226003",
+        "name": "Burger King",
+        "third_party_vendor_type": null,
+        "cloudinary_image_id": "RX_THUMBNAIL/IMAGES/VENDOR/2025/6/18/8a756a59-97b2-4020-9ffb-aa706eb78cee_803172.jpg",
+        "slug": "burger-king-chowk-mahanagar",
+        "city": "Lucknow",
+        "area_name": "Lucknow",
+        "sla": {
+          "slaString": "ETA 25-30 MINS"
+        },
+        "closing_in_ms": 0,
+        "special_instructions_opted": true,
+        "restaurant_special_instruction": "We will communicate your request to the restaurant. They will try their best to follow it. However, we cannot process refunds or cancellations since we do not have control over the restaurant's cooking process."
+      },
+      "is_coupon_valid": 0,
+      "is_group_parent": true,
+      "free_gifts": [],
+      "free_shipping": 0,
+      "coupon_error_message": "",
+      "is_sla_honored": false,
+      "sla_time": 28,
+      "sla_range_min": 25,
+      "sla_range_max": 30,
+      "payment_banner_message": "",
+      "cart_banner_message": "",
+      "cod_enabled": true,
+      "cod_disabled_message": "",
+      "delivery_fee_type": 0,
+      "next_stale_cart_refresh_timestamp": 1792022411494,
+      "offers": [],
+      "is_assured": 0,
+      "select": false,
+      "order_incoming": 0,
+      "order_spending": 0,
+      "new_rendering_model": false,
+      "rendering_details": [
+        {
+          "type": "delivery_speed",
+          "key": "delivery_speed",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "display_text": "\"\"",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "coupon_button",
+          "key": "apply_coupon_button",
+          "intermediateText": "",
+          "value": "APPLY COUPON",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "meta": {
+            "fontweight": "light",
+            "color": "#60b245"
+          },
+          "display_text": "Apply Coupon",
+          "is_negative": 1,
+          "info_text": "",
+          "icon": "portal/m/apply_coupon_1.png",
+          "discount_message": ""
+        },
+        {
+          "type": "transparent_separator",
+          "key": "transparent_separator",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "display_text": "Transparent Separator",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "payment_coupon_button",
+          "key": "apply_payment_coupon_button",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "meta": {
+            "fontweight": "light",
+            "color": "#60b245"
+          },
+          "display_text": "",
+          "is_negative": 1,
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "transparent_separator",
+          "key": "transparent_separator",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "display_text": "Transparent Separator",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "SUPER_V3_BENEFITS",
+          "key": "super_v3_benefits",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "meta": {
+            "benefits": [
+              {
+                "title": "Free delivery savings of ₹31",
+                "sub_title": "",
+                "show_shimmer": false,
+                "attribute_values": {}
+              }
+            ],
+            "is_super": true,
+            "tooltip_info": null,
+            "swiggy_one_nudge_gratification_card_comms": null,
+            "title": "",
+            "delivery_tag_info": null,
+            "ctas": [],
+            "logo_ctx": {
+              "text": "BENEFITS",
+              "logo": "cart_two_dot_o/One_paddingfix.png",
+              "lottie": null
+            },
+            "cta": null,
+            "crouton_comms": null,
+            "benefit_reinforcement_comms": null,
+            "bill_details_comms": null,
+            "secondary_subtitles": [],
+            "attribute_values": {
+              "exercised_food_lm": "7",
+              "svg_value": "₹31",
+              "exercised_food_mov": "₹199"
+            },
+            "reinforcement_comms": null,
+            "m2c_gratification_card_comms": null,
+            "m2c_card_comms": null,
+            "bill_details_card_comms": null,
+            "subtitles": [],
+            "remove_plan_message": null,
+            "badge_info": null,
+            "disableSingleTapNudge": false,
+            "active_plan_details": {
+              "name": "3 Months Plan",
+              "shown_as": null,
+              "plan_id": "773",
+              "base_price": 100,
+              "final_price": 100,
+              "type": "PLAN_TYPE_PLUS",
+              "program": "PLAN_PROGRAM_ONE"
+            },
+            "identifiers": {},
+            "nudge_type": null,
+            "line_item_comms": null,
+            "item_nudge_comms": null,
+            "footer_comms": null,
+            "super": true,
+            "header_note": "",
+            "header": "",
+            "expressNudgeCta": null,
+            "plan_details": null,
+            "comparison_nudge_comms": null
+          },
+          "display_text": "",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "transparent_separator",
+          "key": "transparent_separator",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "display_text": "Transparent Separator",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "card_information",
+          "key": "delivery_tip_card_information",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "display_text": "\"\"",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "transparent_separator",
+          "key": "transparent_separator",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "display_text": "Transparent Separator",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "delivery_instructions",
+          "key": "delivery_instructions",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "meta": {
+            "is_collapsible": false
+          },
+          "display_text": "",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "transparent_separator",
+          "key": "transparent_sep",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "display_text": "Transparent Separator",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "title",
+          "key": "bill_heading",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "meta": {
+            "height": "X"
+          },
+          "display_text": "Bill Details",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "display",
+          "key": "item_total",
+          "intermediateText": "",
+          "value": "297",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "display_text": "Item Total",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "separator",
+          "key": "line_separator",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "display_text": "Line Separator",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "tooltipdisplay",
+          "key": "positive_delivery_charges_exclusive_swiggy_one",
+          "intermediateText": "31.00",
+          "value": "FREE",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "meta": {
+            "intermediateTextStriked": true,
+            "dataType": "string",
+            "valueTextColor": "#1BA672",
+            "intermediateTextColor": "#D3D3D3"
+          },
+          "display_text": "Delivery Fee | 4.0 kms",
+          "info_text": "",
+          "icon": "",
+          "discount_message": "",
+          "sub_details": [
+            {
+              "type": "title",
+              "key": "delivery_fee",
+              "value": "",
+              "hierarchy": 1,
+              "currency": "rupees",
+              "intermediateText": "",
+              "meta": {
+                "highlightColor": null,
+                "intermediateTextStriked": null,
+                "windowWidth": null,
+                "valueTextColor": null,
+                "dataType": null,
+                "tooltipBgGradiantColor": null
+              },
+              "display_text": "Delivery fee breakup for this order",
+              "is_collapsible": 1,
+              "info_text": "",
+              "icon": ""
+            },
+            {
+              "type": "infodisplay",
+              "key": "distance_fee",
+              "value": "FREE",
+              "hierarchy": 1,
+              "currency": "rupees",
+              "intermediateText": "31.00",
+              "meta": {
+                "highlightColor": "",
+                "intermediateTextStriked": true,
+                "windowWidth": "",
+                "valueTextColor": "#1BA672",
+                "dataType": "string",
+                "tooltipBgGradiantColor": null
+              },
+              "display_text": "Standard Fee",
+              "info_text": "",
+              "icon": ""
+            }
+          ]
+        },
+        {
+          "type": "separator",
+          "key": "line_separator",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "display_text": "Line Separator",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "tooltipdisplay",
+          "key": "taxes_and_charges",
+          "intermediateText": "",
+          "value": "49.98",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "meta": {
+            "tooltipBgGradiantColor": null,
+            "highlightColor": "#7CA3DC",
+            "intermediateTextStriked": null,
+            "dataType": null,
+            "valueTextColor": null,
+            "windowWidth": "XXXL"
+          },
+          "display_text": "GST & Other Charges",
+          "info_text": "",
+          "icon": "",
+          "discount_message": "",
+          "sub_details": [
+            {
+              "type": "title",
+              "key": "taxes_and_charges_heading",
+              "value": "",
+              "hierarchy": 1,
+              "currency": "rupees",
+              "intermediateText": "",
+              "display_text": "GST & Other Charges",
+              "info_text": "",
+              "icon": ""
+            },
+            {
+              "type": "infodisplay",
+              "key": "restaurant_packaging",
+              "value": "16.33",
+              "hierarchy": 1,
+              "currency": "rupees",
+              "intermediateText": "",
+              "display_text": "Restaurant Packaging",
+              "info_text": "",
+              "icon": ""
+            },
+            {
+              "type": "infodisplay",
+              "key": "platform_fee_tax_inclusive",
+              "value": "17.98",
+              "hierarchy": 1,
+              "currency": "rupees",
+              "intermediateText": "",
+              "display_text": "Platform Fee",
+              "info_text": "[[Inclusive of GST.]] This fee helps us operate and maintain Swiggy platform",
+              "icon": ""
+            },
+            {
+              "type": "infodisplay",
+              "key": "restaurant_GST",
+              "value": "15.67",
+              "hierarchy": 1,
+              "currency": "rupees",
+              "intermediateText": "",
+              "display_text": "Restaurant GST",
+              "info_text": "Swiggy plays no role in govt. or restaurant related taxes & charges",
+              "icon": ""
+            }
+          ]
+        },
+        {
+          "type": "separator",
+          "key": "line_separator",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "display_text": "Line Separator",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "display",
+          "key": "grand_total",
+          "intermediateText": "",
+          "value": "347",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "meta": {
+            "bold": true,
+            "align": "right"
+          },
+          "display_text": "To Pay",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        },
+        {
+          "type": "bill_details_section_end",
+          "key": "bill_details_section_end",
+          "intermediateText": "",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "display_text": "",
+          "info_text": "",
+          "icon": "",
+          "discount_message": ""
+        }
+      ],
+      "display_sequence": [
+        "cart_menu_items",
+        "meal_items",
+        "rendering_details",
+        "addresses",
+        "cancellation_message"
+      ],
+      "cancellation_message": {
+        "message": {
+          "inline": {
+            "icon_url": "CancellationPolicyAssets/CancellationsReviewOrderCollapsed.png",
+            "buttons": [
+              {
+                "type": "clickable_text",
+                "title": "Read cancellation policy",
+                "css_properties": {
+                  "color": "#5d8ed5",
+                  "border_color": "#6d99d9",
+                  "background_color": "#ffffff"
+                },
+                "cta": "open_policy",
+                "meta": {
+                  "url": "https://www.swiggy.com/refund-policy"
+                }
+              }
+            ],
+            "title": "Review your order and address details to avoid cancellations",
+            "message": "<p><span style=\"color:red\">Note:</span> If you cancel within 60 seconds of placing your order, a 100% refund will be issued. No refund for cancellations made after 60 seconds.<br><br><span style=\"color:grey\">Avoid cancellation as it leads to food wastage.</span></p>",
+            "points": [
+              {
+                "icon_url": "CancellationPolicyAssets/Cancellations60Seconds.png",
+                "message": "If you choose to cancel, you can do it within 60 seconds after placing the order."
+              },
+              {
+                "icon_url": "CancellationPolicyAssets/CancellationsFee.png",
+                "message": "Post 60 seconds, you will be charged a 100% cancellation fee."
+              },
+              {
+                "icon_url": "CancellationPolicyAssets/CancellationException.png",
+                "message": "However, in the event of an unusual delay of your order, you will not be charged a cancellation fee."
+              },
+              {
+                "icon_url": "CancellationPolicyAssets/CancellationCompensation.png",
+                "message": "This policy helps us avoid food wastage and compensate restaurants / delivery partners for their efforts."
+              }
+            ]
+          },
+          "popup": {
+            "icon_url": "CancellationPolicyAssets/CancellationsHalfCard60Seconds.png",
+            "subtext": "This policy helps us avoid food wastage and compensate restaurants / delivery partners for their efforts.",
+            "buttons": [
+              {
+                "type": "Button",
+                "title": "Read policy",
+                "css_properties": {
+                  "color": "#ec6148",
+                  "border_color": "#ec6148",
+                  "background_color": "#ffffff"
+                },
+                "cta": "open_policy",
+                "meta": {
+                  "url": "https://www.swiggy.com/refund-policy"
+                }
+              },
+              {
+                "type": "Button",
+                "title": "I UNDERSTAND, PROCEED WITH ORDER",
+                "css_properties": {
+                  "color": "#ffffff",
+                  "border_color": "#ec6148",
+                  "background_color": "#ec6148"
+                },
+                "cta": "proceed",
+                "meta": {
+                  "timer": 3
+                }
+              }
+            ],
+            "message_separator_icon_url": "CancellationPolicyAssets/message_seperator_989.png",
+            "title": "Cancellation Policy",
+            "message": "<p>If you choose to cancel, you can do it within <b>60 seconds</b> after placing the order. Post which you will be charged a <b> 100% cancellation fee.</b> However, in the event of an unusual delay of the order, you will not be charged a cancellation fee.</p>",
+            "title_separator_icon_url": "CancellationPolicyAssets/title_seperator_2.png"
+          },
+          "crouton": {
+            "icon_url": "CancellationPolicyAssets/arrow_crouton67_5x.png",
+            "css_properties": {
+              "color": "#ffffff",
+              "border_color": "#282C3F",
+              "background_color": "#282C3F"
+            },
+            "title": "We've updated our cancellation policy"
+          }
+        }
+      },
+      "cancellation_policy_widget": {
+        "title": {
+          "text": "Cancellation policy:",
+          "color": "border_Subtle_Secondary",
+          "variant": "V2.body3.neutral.bold"
+        },
+        "description": {
+          "text": "Please double-check your order and address details. Orders are non-refundable once placed.",
+          "color": "border_Subtle_Secondary",
+          "variant": "V2.body3.neutral.regular"
+        }
+      },
+      "addresses": [
+        {
+          "version": 2,
+          "name": "Umbashiya",
+          "mobile": "6296591407",
+          "address": "504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India",
+          "landmark": "",
+          "area": "Al Noor Informations",
+          "lat": "26.8658609",
+          "lng": "80.9307755",
+          "instructions": "",
+          "annotation": "Home",
+          "addressCategory": 1,
+          "userIntentAddressCategory": 0,
+          "assured": false,
+          "rainMode": 0,
+          "delivery_valid": 1,
+          "estimated_sla": 25,
+          "estimated_sla_min": 20,
+          "estimated_sla_max": 25,
+          "recalculation_required": true,
+          "sla_message": "20-25 MINS",
+          "id": "db6i9141d96q94ubebs0",
+          "user_id": "284941044",
+          "default": 1,
+          "alternate_mobile": "",
+          "address_line2": "",
+          "voice_directions_s3_uri": "",
+          "is_verified": false,
+          "created_on": "1970-01-01 05:30:00.0",
+          "updated_on": "2026-10-15 04:30:11.463775175",
+          "updated_by": "",
+          "is_deleted": "0",
+          "is_edited": "0",
+          "city": "Lucknow",
+          "flat_no": "None",
+          "reverse_geo_code_failed": "0",
+          "image_url": "other/address/icon/url",
+          "delivery_charge_info": "",
+          "selected": true,
+          "sort_score": 0,
+          "delivery_delay_bg_color": "linear-gradient(89deg, rgba(245, 245, 250, 0.8) -0.28%, rgba(245, 245, 250, 0.4) 82.93%, rgba(255, 255, 255, 0.66) 99.47%)",
+          "selected_sla_option": "STANDARD",
+          "sla_options": [
+            {
+              "type": "STANDARD",
+              "sla": 28,
+              "strategy": "VISIBLE",
+              "o2r": {
+                "point": 25,
+                "min": 20,
+                "max": 25,
+                "cod_sla_range_min": 0,
+                "cod_sla_range_max": 0
+              },
+              "unavailabilityReason": null,
+              "sla_range_min": 25,
+              "sla_range_max": 30,
+              "cod_sla_range_min": 0,
+              "cod_sla_range_max": 0,
+              "sla_message": null
+            },
+            {
+              "type": "EXPRESS",
+              "sla": 20,
+              "strategy": "VISIBLE",
+              "o2r": {
+                "point": 20,
+                "min": 15,
+                "max": 25,
+                "cod_sla_range_min": 0,
+                "cod_sla_range_max": 0
+              },
+              "unavailabilityReason": null,
+              "sla_range_min": 15,
+              "sla_range_max": 25,
+              "cod_sla_range_min": 0,
+              "cod_sla_range_max": 0,
+              "sla_message": null
+            },
+            {
+              "type": "BATCH_NO_RUSH",
+              "sla": 38,
+              "strategy": "NOT_VISIBLE",
+              "o2r": {
+                "point": 35,
+                "min": 25,
+                "max": 35,
+                "cod_sla_range_min": 0,
+                "cod_sla_range_max": 0
+              },
+              "unavailabilityReason": null,
+              "sla_range_min": 30,
+              "sla_range_max": 40,
+              "cod_sla_range_min": 0,
+              "cod_sla_range_max": 0,
+              "sla_message": null
+            }
+          ]
+        },
+        {
+          "version": 2,
+          "name": "Umbashiya",
+          "mobile": "6296591407",
+          "address": "Annapurna Flour Mills and Oils & CAFÉ PLC, Factory Padi, Champakara, Karukachal, Keralam 686542, India",
+          "landmark": "",
+          "area": "Annapurna Flour Mills and Oils &CAFÈ",
+          "lat": "9.5173475",
+          "lng": "76.6410508",
+          "instructions": "",
+          "annotation": "Work",
+          "addressCategory": 2,
+          "userIntentAddressCategory": 0,
+          "assured": false,
+          "rainMode": 0,
+          "delivery_valid": 0,
+          "recalculation_required": true,
+          "id": "db7ibes1d96ndq6cp000",
+          "user_id": "284941044",
+          "default": 0,
+          "alternate_mobile": "6297837475",
+          "address_line2": "",
+          "voice_directions_s3_uri": "",
+          "is_verified": false,
+          "created_on": "1970-01-01 05:30:00.0",
+          "updated_on": "1970-01-01 05:30:00.0",
+          "updated_by": "",
+          "is_deleted": "0",
+          "is_edited": "0",
+          "city": "Kottayam",
+          "flat_no": "Ground",
+          "reverse_geo_code_failed": "0",
+          "image_url": "other/address/icon/url",
+          "delivery_charge_info": "",
+          "selected": false,
+          "sort_score": 0,
+          "selected_sla_option": ""
+        },
+        {
+          "version": 2,
+          "name": "Umbashiya",
+          "mobile": "6296591407",
+          "address": "504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India",
+          "landmark": "",
+          "area": "Al Noor Informations",
+          "lat": "26.8658609",
+          "lng": "80.9307755",
+          "instructions": "",
+          "annotation": "Mine",
+          "addressCategory": 3,
+          "userIntentAddressCategory": 0,
+          "assured": false,
+          "rainMode": 0,
+          "delivery_valid": 1,
+          "estimated_sla": 25,
+          "estimated_sla_min": 20,
+          "estimated_sla_max": 25,
+          "recalculation_required": true,
+          "sla_message": "20-25 MINS",
+          "id": "db7saps1d96r53m4mgcg",
+          "user_id": "284941044",
+          "default": 0,
+          "alternate_mobile": "",
+          "address_line2": "",
+          "voice_directions_s3_uri": "",
+          "is_verified": false,
+          "created_on": "1970-01-01 05:30:00.0",
+          "updated_on": "1970-01-01 05:30:00.0",
+          "updated_by": "",
+          "is_deleted": "0",
+          "is_edited": "0",
+          "city": "Lucknow",
+          "flat_no": "Ground",
+          "reverse_geo_code_failed": "0",
+          "image_url": "other/address/icon/url",
+          "delivery_charge_info": "",
+          "selected": false,
+          "sort_score": 0,
+          "delivery_delay_bg_color": "linear-gradient(89deg, rgba(245, 245, 250, 0.8) -0.28%, rgba(245, 245, 250, 0.4) 82.93%, rgba(255, 255, 255, 0.66) 99.47%)",
+          "selected_sla_option": "STANDARD",
+          "sla_options": [
+            {
+              "type": "STANDARD",
+              "sla": 28,
+              "strategy": "VISIBLE",
+              "o2r": {
+                "point": 25,
+                "min": 20,
+                "max": 25,
+                "cod_sla_range_min": 0,
+                "cod_sla_range_max": 0
+              },
+              "unavailabilityReason": null,
+              "sla_range_min": 25,
+              "sla_range_max": 30,
+              "cod_sla_range_min": 0,
+              "cod_sla_range_max": 0,
+              "sla_message": null
+            },
+            {
+              "type": "EXPRESS",
+              "sla": 20,
+              "strategy": "VISIBLE",
+              "o2r": {
+                "point": 20,
+                "min": 15,
+                "max": 25,
+                "cod_sla_range_min": 0,
+                "cod_sla_range_max": 0
+              },
+              "unavailabilityReason": null,
+              "sla_range_min": 15,
+              "sla_range_max": 25,
+              "cod_sla_range_min": 0,
+              "cod_sla_range_max": 0,
+              "sla_message": null
+            },
+            {
+              "type": "BATCH_NO_RUSH",
+              "sla": 38,
+              "strategy": "NOT_VISIBLE",
+              "o2r": {
+                "point": 35,
+                "min": 25,
+                "max": 35,
+                "cod_sla_range_min": 0,
+                "cod_sla_range_max": 0
+              },
+              "unavailabilityReason": null,
+              "sla_range_min": 30,
+              "sla_range_max": 40,
+              "cod_sla_range_min": 0,
+              "cod_sla_range_max": 0,
+              "sla_message": null
+            }
+          ]
+        }
+      ],
+      "cancellation_fee": 0,
+      "total_tax": 15.67,
+      "address_id": "db6i9141d96q94ubebs0",
+      "cart_type": "REGULAR",
+      "configurations": {
+        "show_cutlery_opt_in_widget": true
+      },
+      "messages": [],
+      "GST_details": {
+        "item_SGST": 7.425,
+        "item_CGST": 7.425,
+        "item_IGST": 0,
+        "packaging_SGST": 0.408375,
+        "packaging_IGST": 0,
+        "packaging_CGST": 0.408375,
+        "service_charge_SGST": 0,
+        "service_charge_IGST": 0,
+        "service_charge_CGST": 0,
+        "external_GST": 0,
+        "cart_SGST": 7.833375,
+        "cart_CGST": 7.833375,
+        "cart_IGST": 0
+      },
+      "restaurant_compliance": {
+        "gst": {
+          "gst_applicable": true
+        },
+        "compliance": {
+          "compliance": true,
+          "compliance_message": "restaurant is compliant on the platform"
+        }
+      },
+      "threshold_fee": 0,
+      "distance_fee": 0,
+      "time_fee": 0,
+      "special_fee": 0,
+      "threshold_fee_effective": 0,
+      "distance_fee_effective": 0,
+      "time_fee_effective": 0,
+      "special_fee_effective": 0,
+      "convenience_fee": 0,
+      "delivery_charges": 0,
+      "delivery_charge_base_price": 31,
+      "threshold_fee_message": "",
+      "distance_fee_message": "",
+      "time_fee_message": "",
+      "special_fee_message": "",
+      "surge_fee_icon": "",
+      "bill_total": 329,
+      "item_total": 297,
+      "item_total_strike_off_amount": 297,
+      "subscription_total": 0,
+      "item_total_no_td_with_norush_disc": 297,
+      "item_total_no_coupon_no_td_with_norush_disc": 297,
+      "item_total_no_td_with_swiggy_one_excl_disc_with_norush_disc": 297,
+      "batch_opt_in_type": "NOT_SHOWN",
+      "show_super_nudge": false,
+      "is_super_trade_discount": true,
+      "free_delivery_discount": 31,
+      "free_delivery_discount_break_up": {
+        "thresholdFee": 0,
+        "distanceFee": 31,
+        "timeFee": 0,
+        "specialFee": 0,
+        "rainFee": false
+      },
+      "delivery_fee_reversal": 0,
+      "delivery_fee_reversal_breakup": {
+        "thresholdFee": 0,
+        "distanceFee": 0,
+        "timeFee": 0,
+        "specialFee": 0
+      },
+      "cart_token": "",
+      "original_order_total": 0,
+      "coupon_details": {
+        "cart_total_shown_to_coupon": 0,
+        "total_without_coupon_discount": 0,
+        "coupon_discount_total": 0,
+        "coupon_code": "",
+        "coupon_codes": {},
+        "is_coupon_valid": 0,
+        "coupons_valid": {
+          "restaurant_coupon": 0,
+          "payment_coupon": 0
+        },
+        "coupon_discounts": {},
+        "is_coupon_auto_applied": null,
+        "is_payment_coupon_auto_applied": null,
+        "coupon_success_card": null,
+        "coupon_error_card": null,
+        "toast_message": null,
+        "coupon_selective_discounting_card": null,
+        "coupon_selective_discounting_nudge_card": null,
+        "coupon_selective_discounting_card_list": null,
+        "preferred_payment_method": null
+      },
+      "cart_continuity_state_attributes": {
+        "non_auto_applicable_coupon_codes": "[]"
+      },
+      "collapsed_bill_details": {
+        "title": "To Pay",
+        "totalAmount": 378,
+        "subtitle": "Incl. all taxes & charges",
+        "strikeoffAmount": 347,
+        "discountMessage": "₹31 saved on the total!",
+        "savingsAmount": 31,
+        "upsellMessage": null,
+        "upsellIcon": null,
+        "icon": "cart_two_dot_o/Bill.png",
+        "discountMessageColor": "special_positive",
+        "toingStampIcon": null,
+        "uncollapsed": false,
+        "surgeApplied": false
+      },
+      "collapsed_bill_details_variants": "VARIANT_WITH_SAVING_UPSELL",
+      "delivery_fee_info_message": "",
+      "tipDetails": {
+        "optIn": false,
+        "experimentId": "1",
+        "optInBoxVisibility": false,
+        "addedTipTextVisibility": false,
+        "honorPreSelectedOptions": true
+      },
+      "tipExperimentData": {
+        "experimentId": "1",
+        "tipOptions": [
+          {
+            "amount": 20,
+            "preSelected": false,
+            "mostTipped": false
+          },
+          {
+            "amount": 30,
+            "preSelected": false,
+            "mostTipped": true
+          },
+          {
+            "amount": 50,
+            "preSelected": false,
+            "mostTipped": false
+          }
+        ],
+        "customAmount": 0,
+        "tipForThisOrder": 0,
+        "minValidTipAmount": 1,
+        "maxValidTipAmount": 1000,
+        "prefixToAmount": "₹",
+        "defaultOptIn": false,
+        "tipMessages": {
+          "imageId": "DEtipping/tip_icon_cart/tip_icon_cart3",
+          "head": "Say thanks with a Tip!",
+          "linkName": "How it works",
+          "longMessage": "Day & night, our delivery partners bring your favourite meals. Thank them with a tip.",
+          "checkBoxMessage": "Add this tip automatically to future orders",
+          "addTipButtonName": "Add tip",
+          "clearTipButtonName": "clear tip",
+          "manualTipText": "you added",
+          "mostTippedText": "Most tipped",
+          "manualAmountButtonName": "Other",
+          "halfCard": {
+            "imageId": "DETippingAssets/DETippingHowItWorksBannerImage",
+            "title": "A small tip goes a long way",
+            "headMessage": "Our delivery partners continue to brave the streets, to deliver food, groceries & essentials to those in need. A small tip goes a long way in recognising their efforts.",
+            "smallMessages": [
+              "Choose or enter preferred tip amount",
+              "Delivery Partner gets the entire tip amount at the end of the day",
+              "If you're unhappy with the delivery experience, you can get a tip refund later"
+            ],
+            "messageIconId": "DETippingAssets/DETippingHowItWorksBulletPoints",
+            "buttonName": "Choose tip amount now"
+          },
+          "tipWarnMessage": {
+            "minTipHeadMessage": "Tip amount too low",
+            "maxTipHeadMessage": "Tip amount too high",
+            "minTipDescription": "Please add a minimum Tip of ₹1 for your delivery partner.",
+            "maxTipDescription": "You are allowed to add a maximum tip of ₹1000 for your delivery partner\n"
+          }
+        }
+      },
+      "last_mile": 4,
+      "routing_service_distance": 4016,
+      "super_v2_enabled_city": true,
+      "category_info": "GhkKABoAKgAyCwoJMTg2ODgxMTIwOgQKAhIAIgECKiYIDxIHTHVja25vdxgBIgwwODAgNjc0NjY3OTIoATIHbHVja25vdw==",
+      "category_info_json": "{\n  \"attributes\": {\n    \"selectedSlot\": {\n    },\n    \"issueType\": {\n    },\n    \"offerTagsBasedCategoryFlags\": {\n    },\n    \"itemCategoryAttributes\": [{\n      \"itemId\": \"186881120\"\n    }],\n    \"noRushDynamicBatchingCategoryAttribute\": {\n      \"batchingPrediction\": {\n        \"batchingExpiryTime\": \"1970-01-01T00:00:00Z\"\n      }\n    }\n  },\n  \"subCategories\": [\"SUB_CATEGORY_FAST_DELIVERY\"],\n  \"cityInfo\": {\n    \"id\": 15,\n    \"name\": \"Lucknow\",\n    \"isOpen\": true,\n    \"customerCareNumber\": \"080 67466792\",\n    \"enabled\": true,\n    \"slug\": \"lucknow\"\n  }\n}",
+      "restaurant_category": "",
+      "tool_tip_rendering_via_plutus": true,
+      "delivery_fee_tooltip_info": [
+        {
+          "type": "title",
+          "key": "delivery_fee",
+          "value": "",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "intermediateText": "",
+          "meta": {
+            "highlightColor": null,
+            "intermediateTextStriked": null,
+            "windowWidth": null,
+            "valueTextColor": null,
+            "dataType": null,
+            "tooltipBgGradiantColor": null
+          },
+          "display_text": "Delivery fee breakup for this order",
+          "is_collapsible": 1,
+          "info_text": "",
+          "icon": ""
+        },
+        {
+          "type": "infodisplay",
+          "key": "distance_fee",
+          "value": "FREE",
+          "hierarchy": 1,
+          "currency": "rupees",
+          "intermediateText": "31.00",
+          "meta": {
+            "highlightColor": "",
+            "intermediateTextStriked": true,
+            "windowWidth": "",
+            "valueTextColor": "#1BA672",
+            "dataType": "string",
+            "tooltipBgGradiantColor": null
+          },
+          "display_text": "Standard Fee",
+          "info_text": "",
+          "icon": ""
+        }
+      ],
+      "express_fee_tooltip_info": [],
+      "XPData": {
+        "si_half_card": "false",
+        "new_apply_coupon_listing_page_enabled": "true",
+        "por_config_checkout": "v1_disable",
+        "savings_stamp_enabled": "false",
+        "show_ph_nudge_in_cross_sell": "false",
+        "show_ph_nudge_in_cross_sell_m4": "false",
+        "cart_2_0_xp": "cart_2_0",
+        "batch_no_rush_mvp_variant": "11",
+        "cross_sell_items_size_variant": "VERTICAL_WITH_LARGE_IMAGE",
+        "cart_address_nudge_enabled": "true",
+        "splash_lottie_xp": "true"
+      },
+      "is_reorder": false,
+      "user_flow_info": {
+        "flow_type": "self",
+        "flow_data": {}
+      },
+      "strike_off_amount": 31,
+      "strike_off_amount_without_tax": 31,
+      "drop_off_instructions": [],
+      "delivery_speed_crouton": {
+        "icon": "",
+        "message": "",
+        "subtext": "",
+        "frequency_cap": {
+          "count": 0,
+          "id": "frequency_cap_id"
+        }
+      },
+      "user_super_status_details": {
+        "user_status": "SUPER",
+        "super_states": [
+          "ACTIVE"
+        ],
+        "super_plan_program": "PLAN_PROGRAM_ONE"
+      },
+      "discount_message_v2": {
+        "title": "{{total_discount}} saved!",
+        "subtitle": "With Swiggy One benefits",
+        "message_details": {
+          "total_discount": 31,
+          "sub_discount": 0
+        },
+        "header_savings_strip_presentation_config": null
+      },
+      "external_promo_meta_data": {
+        "dominos_discount_at_swiggy_end": 0,
+        "external_promo_discount": null,
+        "is_swiggy_promo_applied": false,
+        "is_external_promo_applied": false,
+        "promo_external_error_msg": null,
+        "is_external_promo_code_present": false,
+        "external_coupon_code": null
+      },
+      "apply_coupons_widget_info": {},
+      "presentation_attributes_keys": {
+        "delivery_speed_presentation_info": {
+          "delivery_speed_widget_info": {
+            "delivery_speed_options": [
+              {
+                "delivery_speed": "EXPRESS",
+                "heading_text": "Express",
+                "highlight_colour": "primary",
+                "highlight_bullet_points": [
+                  "((strikethrough|₹29)) ₹24"
+                ],
+                "bottom_banner": "",
+                "bottom_meta": {
+                  "banner_color": "",
+                  "icon_id": "",
+                  "banner_bg_color": "",
+                  "cta_info": {
+                    "cta_enabled": ""
+                  }
+                },
+                "bullet_points": [
+                  "Fastest delivery, directly to you!"
+                ]
+              },
+              {
+                "bottom_banner": "",
+                "bullet_points": [
+                  "Minimal order grouping"
+                ],
+                "delivery_speed": "STANDARD",
+                "heading_text": "Standard",
+                "delivery_speed_with_icon": "",
+                "delivery_speed_only_presentation_icon": "",
+                "delivery_speed_only_presentation": "",
+                "highlight_bullet_points": [
+                  ""
+                ]
+              },
+              {
+                "bottom_banner": "Greener Choice",
+                "bottom_meta": {
+                  "lottie_id": "No%20Rush/PP/Pre%20selection_Plant%20Lottie.json",
+                  "banner_color": "#1BA676",
+                  "icon_id": ""
+                },
+                "lottie_id": "No%20Rush/PP/Post%20selection_checkmark+Earth+%20leaves.json",
+                "savings_type": "ECO_SAVER",
+                "bullet_points": [
+                  "Lesser CO2 by order grouping"
+                ],
+                "delivery_speed": "BATCH_NO_RUSH",
+                "offer_info": {
+                  "offer_timer_expiry": "",
+                  "offer_timer_start": "",
+                  "color": "#FF5200",
+                  "gradient": "",
+                  "offer_message": "",
+                  "offer_pre_timer_message": ""
+                },
+                "discount_type": "",
+                "popup_info": {
+                  "icon": "",
+                  "message": "",
+                  "ctaText": "",
+                  "lottie_id": ""
+                },
+                "heading_text": "Eco Saver",
+                "highlight_bullet_points": [
+                  ""
+                ],
+                "highlight_bullet_points_meta": [
+                  {
+                    "highlight_color": "",
+                    "title": "",
+                    "description": "",
+                    "shimmer": ""
+                  }
+                ]
+              }
+            ],
+            "standard_only_available_text": "Standard delivery auto-selected since Eco Saver delivery is currently unavailable.",
+            "single_mode_servicable_sla_text": "Other delivery types are currently unavailable",
+            "delivery_speed_widget_subtext": "Your food will always be fresh!",
+            "optin_text": ""
+          },
+          "delivery_speed_metadata": {
+            "address_text_prefix": "",
+            "address_text_lottie_id": ""
+          }
+        },
+        "cart_address_nudge_presentation_keys": {
+          "cart_address_nudge_threshold_distance": 1000,
+          "cart_address_nudge_popup_duration": 10000,
+          "cart_address_nudge_message": "You have moved {0} away from this address"
+        }
+      },
+      "priority_delivery_fee": 0,
+      "is_swiggy_one_free_delivery_applicable": true,
+      "is_new_user": false,
+      "is_guest_user": false,
+      "item_total_strike_off": false,
+      "discount_cap_trade_discount": 0,
+      "trade_discount_reward_amount": 0,
+      "convenience_fees": 17.98,
+      "anchor_convenience_fees": 17.98,
+      "convenience_fees_without_tax": 15.24,
+      "anchor_convenience_fees_without_tax": 15.24,
+      "is_convenience_fees_tax_inclusive": true,
+      "convenience_fees_tax": 2.74,
+      "convenience_fees_m3_eligible": true,
+      "train_platform_fees_with_tax_and_discount": 0,
+      "anchor_train_platform_fees": 0,
+      "train_platform_fee_tax": 0,
+      "aggregator_fee": 0,
+      "express_fees_without_tax": 0,
+      "express_fees_discount": 0,
+      "express_fees_tax": 0,
+      "anchor_express_fees_without_tax": 0,
+      "convenience_comms": "[[Inclusive of GST.]] This fee helps us operate and maintain Swiggy platform",
+      "is_restaurant_packaging_display_enabled": false,
+      "packaging_fee_discount": 0,
+      "no_rush_delivery_discount": 0,
+      "is_offer_bundle_pack_added": false,
+      "irctc_info": {
+        "is_irctc_regular_cart": false,
+        "user_enabled_for_irctc_tcf_changes": true,
+        "presentation_info": null,
+        "non_pnr": null,
+        "pnr_tool_tip_data": null
+      },
+      "irctcInfo": {
+        "is_irctc_regular_cart": false,
+        "user_enabled_for_irctc_tcf_changes": true,
+        "presentation_info": null,
+        "non_pnr": null,
+        "pnr_tool_tip_data": null
+      },
+      "item_total_including_coupon_based_freebie": 297,
+      "pocket_hero_cashback_applicable": false,
+      "pocket_hero_cashback_amount": 0,
+      "is_bulk_cart": false,
+      "is_bolt_cart": false,
+      "is_splittable_bulk_order": false,
+      "item_discount_bill_presentation": 0,
+      "payment_discount_bill_presentation": 0,
+      "is_partner_type_dominos": false,
+      "is_incognito_cart": false,
+      "is_swiggy_black_applicable": false,
+      "is_swiggy_black_otp_applicable": false,
+      "is_pop_cart": false,
+      "is_toing_cart": false,
+      "cart_saved_preferences": {
+        "is_cutlery_opted": "false"
+      },
+      "refresh_menu_flag": false,
+      "cartItemWidgetReposition": [
+        {
+          "type": "ADD_MORE_ITEM",
+          "text": "Add Items",
+          "config": null
+        },
+        {
+          "type": "COOKING_INSTRUCTIONS",
+          "text": "Cooking requests",
+          "config": null
+        },
+        {
+          "type": "SEND_CUTLERY",
+          "text": "Cutlery Needed",
+          "config": null
+        }
+      ],
+      "is_bolt_experience_enabled_for_bolt_cart": false,
+      "is_client_eligible_for_de_tip": false,
+      "menu_items_widget_presentation_data": {
+        "dish_style": {
+          "social_marker_style": []
+        }
+      },
+      "delivery_instructions_display_text": "",
+      "cart_context_drop": [],
+      "fullBillCouponApplied": false,
+      "statusMessage": "CART_UPDATED_SUCCESSFULLY",
+      "ctaAction": null,
+      "ctaText": null
+    },
+    "cartItemsCount": 1,
+    "totalItemsCount": 1,
+    "cartItems": {
+      "186881120": {
+        "quantity": 1,
+        "items": [
+          {
+            "rewardType": null,
+            "freebieType": null,
+            "mealQuantity": 1,
+            "menu_item_id": 186881120,
+            "name": "Crispy Veg Burger Peri Peri Meal (R)",
+            "item_group_tag_id": null,
+            "color": null,
+            "base_price": 0,
+            "variants_price": 29700,
+            "addons_price": null,
+            "quantity": 1,
+            "free_item_quantity": 0,
+            "subtotal": 29700,
+            "subtotal_trade_discount": 0,
+            "subtotal_coupon_discount": 0,
+            "packing_charge": 0,
+            "total": 29700,
+            "final_price": 29700,
+            "effective_item_price": 311.85,
+            "strike_off_enabled": false,
+            "is_customized": null,
+            "id_hash": "54fbec74f4091a4c86ebcd4e87a7601c",
+            "valid_addons": [
+              {
+                "group_id": 302457053,
+                "group_name": "Choose Any Beverage",
+                "choices": [
+                  {
+                    "id": 149007315,
+                    "name": "Coke",
+                    "price": 0,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 100000,
+                    "selected": 1,
+                    "default": 0
+                  },
+                  {
+                    "id": 149007316,
+                    "name": "Thums Up",
+                    "price": 0,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 99999,
+                    "default": 0
+                  },
+                  {
+                    "id": 149007313,
+                    "name": "Fanta",
+                    "price": 0,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 99998,
+                    "default": 0
+                  },
+                  {
+                    "id": 149007314,
+                    "name": "Sprite",
+                    "price": 0,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 99997,
+                    "default": 0
+                  },
+                  {
+                    "id": 149007317,
+                    "name": "Coke Zero",
+                    "price": 0,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 99996,
+                    "default": 0
+                  }
+                ],
+                "maxAddons": 1,
+                "maxFreeAddons": -1,
+                "minAddons": 1,
+                "order": 100000
+              },
+              {
+                "group_id": 254451350,
+                "group_name": "Choose your Sides & Dessert",
+                "choices": [
+                  {
+                    "id": 116143061,
+                    "name": "Peri Peri Spice Mix",
+                    "price": 2857,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 100000,
+                    "default": 0
+                  },
+                  {
+                    "id": 138646121,
+                    "name": "Fiery Hell Dip",
+                    "price": 2381,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 99999,
+                    "default": 0
+                  },
+                  {
+                    "id": 116143054,
+                    "name": "Chocolava Cake",
+                    "price": 11900,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 99998,
+                    "default": 0
+                  },
+                  {
+                    "id": 138646116,
+                    "name": "Chilli Sauce With Oregano",
+                    "price": 1905,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 99997,
+                    "default": 0
+                  },
+                  {
+                    "id": 119165959,
+                    "name": "BK Veg Pizza Puff",
+                    "price": 6500,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 99996,
+                    "default": 0
+                  },
+                  {
+                    "id": 136483455,
+                    "name": "Chilli Oregano Dip",
+                    "price": 2381,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 99995,
+                    "default": 0
+                  },
+                  {
+                    "id": 136483457,
+                    "name": "Saucy Jalapeno Dip",
+                    "price": 2381,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 99994,
+                    "default": 0
+                  },
+                  {
+                    "id": 138378451,
+                    "name": "BK Fusion Sundae  (made with Kit Kat)",
+                    "price": 12900,
+                    "inStock": 1,
+                    "isVeg": 1,
+                    "order": 99993,
+                    "default": 0
+                  }
+                ],
+                "maxAddons": 1,
+                "maxFreeAddons": -1,
+                "minAddons": 0,
+                "order": 99999
+              }
+            ],
+            "valid_variants": null,
+            "valid_variants_v2": {
+              "variant_groups": [
+                {
+                  "group_id": "68541054",
+                  "name": "Customized",
+                  "variations": [
+                    {
+                      "name": "Crispy Veg Burger Peri Peri Meal (R)",
+                      "price": 29700,
+                      "id": "205492197",
+                      "inStock": 1,
+                      "isVeg": 1,
+                      "order": 100000,
+                      "priceUpdated": true,
+                      "default": 1,
+                      "variant_group_id": "68541054"
+                    }
+                  ]
+                }
+              ],
+              "pricing_models": [
+                {
+                  "price": 29700,
+                  "finalPrice": 29700,
+                  "priceUpdated": true,
+                  "variations": [
+                    {
+                      "group_id": "68541054",
+                      "variation_id": "205492197"
+                    }
+                  ],
+                  "addon_combinations": [
+                    {
+                      "group_id": "254451350",
+                      "addon_id": "116143061"
+                    },
+                    {
+                      "group_id": "254451350",
+                      "addon_id": "138646121"
+                    },
+                    {
+                      "group_id": "254451350",
+                      "addon_id": "116143054"
+                    },
+                    {
+                      "group_id": "254451350",
+                      "addon_id": "138646116"
+                    },
+                    {
+                      "group_id": "254451350",
+                      "addon_id": "119165959"
+                    },
+                    {
+                      "group_id": "254451350",
+                      "addon_id": "136483455"
+                    },
+                    {
+                      "group_id": "254451350",
+                      "addon_id": "136483457"
+                    },
+                    {
+                      "group_id": "254451350",
+                      "addon_id": "138378451"
+                    },
+                    {
+                      "group_id": "302457053",
+                      "addon_id": "149007315"
+                    },
+                    {
+                      "group_id": "302457053",
+                      "addon_id": "149007316"
+                    },
+                    {
+                      "group_id": "302457053",
+                      "addon_id": "149007313"
+                    },
+                    {
+                      "group_id": "302457053",
+                      "addon_id": "149007314"
+                    },
+                    {
+                      "group_id": "302457053",
+                      "addon_id": "149007317"
+                    }
+                  ]
+                }
+              ]
+            },
+            "is_veg": "1",
+            "isVeg": 1,
+            "addons": [
+              {
+                "choice_id": "149007315",
+                "group_id": "302457053",
+                "name": "Coke",
+                "price": 0,
+                "external_choice_id": "A::9002372",
+                "external_group_id": "AG::281211",
+                "addon_tax_charges": {
+                  "GST": "0"
+                }
+              }
+            ],
+            "variants": [
+              {
+                "variation_id": 205492197,
+                "group_id": 68541054,
+                "name": "Crispy Veg Burger Peri Peri Meal (R)",
+                "group_name": "Customized",
+                "price": 0,
+                "external_choice_id": "V::9001719",
+                "external_group_id": "VG::1882628",
+                "variant_tax_charges": {
+                  "GST": "0.0"
+                }
+              }
+            ],
+            "item_taxes": {
+              "service_tax": 0,
+              "vat": 0,
+              "service_charges": 0,
+              "GST": 14.85
+            },
+            "GST_details": {
+              "SGST": 7.425,
+              "CGST": 7.425,
+              "IGST": 0,
+              "SGST_percentage": 0.025,
+              "CGST_percentage": 0.025,
+              "IGST_percentage": 0
+            },
+            "description": "",
+            "cloudinaryImageId": "FOOD_CATALOG/IMAGES/CMS/2025/11/20/e0ca39c1-9ba4-4444-b0a4-aba37764620f_f238679e-1f8f-4b4f-8299-e767f9e24fb9.jpg",
+            "in_stock": 1,
+            "item_orderability_status": {
+              "status": "ORDERABLE",
+              "reason": "INVALID"
+            },
+            "added_by_user_id": -1,
+            "added_by_user_name": "",
+            "group_user_item_map": {},
+            "is_gstInclusive": false,
+            "attributes": null,
+            "item_status": null,
+            "item_sub_status": null,
+            "new_item_price": 0,
+            "hide_customisation": false,
+            "item_price_strike_off": false,
+            "default_variant_combination_final_price": 0,
+            "disable_increase_qty": false,
+            "item_limit_reached_message": null,
+            "item_limit_reached_menu_message": null,
+            "auto_added_bxgy_qty": 0,
+            "itemTags": [],
+            "offer_ids": [],
+            "item_offer_cart_meta": null,
+            "customer_request_messages": [],
+            "cart_context": "",
+            "item_offer_tags": [],
+            "offers_applied": [],
+            "item_discount_percentage": 0,
+            "toing_item_attributes": null,
+            "fromCart": true
+          }
+        ],
+        "itemId": 186881120
+      }
+    },
+    "mealItems": {},
+    "cartFreebieItems": {},
+    "subscriptionNudge": {},
+    "subscriptionItems": []
+  },
+  "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI5YWY3YzI2NC1iN2NhLTQzNzctOGRkNS0zZjQ3NDk5MzNjNWMiLCJ1c2VyX2lkIjoiMjg0OTQxMDQ0Iiwic2Vzc2lvbl9kYXRhIjoiUTlZSDEreTQ2UnlwRDJHaWo5R1RYNFhnOGN1QVV4UlNJMVlUalVRbk9IRWc2VEV6cDFvbWJOSHgyRXMveUdtemJvcml3bVVkVTUrQWx4RzU0amhsQmFiZHUxSEJocS9ZcUpHMnVsRzdqb2QxdnE4eFV1MldHWk0relFFVUVJVlJVY1FSUlo1SG5NNm4rNmJab3lxVEVjYWsxdWhFeHVRbytVQ1F0M0V1SUxNRmxYREtEZG5nMVE4bTB0dmVLV1VjZFpoTmlmejlRVG1ZTUo2eEhGUE9Rd0tzN0xNNVQ3b2FhZTJ2aWdhOXZXNkhnamQ1RmhvYUEvcjRZcS81ZVo3TzV3YzdVVTNLSTNXakpRPT0iLCJzaWQiOiJ1NnBlOWExZWU4OC01MzQwLTRhMmItODYyYS1mNzM1ODk4MWIiLCJpYXQiOjE3OTIwMDgxNDcsImV4cCI6MTc5MjAxMDU0N30.YJrdT6IKocakTSSPi40gHGkRo6eZnt235zlKxuxMoYY",
+  "sid": "u6pe9a1ee88-5340-4a2b-862a-f7358981b",
+  "deviceId": "ca7f856e-f8f6-dc73-76d6-fa6d0db1c9ae",
+  "csrfToken": "rbLdqTdNIvEU-LMvNux5eJCBmu6uh9SH401ifmCs"
+}

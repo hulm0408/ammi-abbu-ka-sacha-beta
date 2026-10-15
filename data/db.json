@@ -1,0 +1,1083 @@
+{
+  "config": {
+    "totalSlots": 100,
+    "slotsLeft": 100,
+    "bossId": 6484999726,
+    "bossIds": [
+      6484999726
+    ],
+    "bossUpiId": "6296591407@ybl",
+    "familyMembers": {},
+    "accounts": {
+      "ammi": {
+        "id": "ammi",
+        "name": "Ammi",
+        "phone": "7667327578",
+        "token": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIxMWU5NDY3ZC04NmZmLTQ2ZWYtOTU2YS1iNWIxODBiMTkwNjUiLCJ1c2VyX2lkIjoiMjUxOTA3OTgyIiwic2Vzc2lvbl9kYXRhIjoieVJZL1B5Zit5cTlTMDFrY0U1b2xJempOSXVmdTl2bFhTbTBTeGJ2VkUzVG9VRU9BV09jMmhGdE5DdXZwdGk5NGhDOExIbjJVSTU4Zm9hMW1wb3F6SDFTVTMxcEpTRStycDc5Z1ZBcHRBbHJkaEdHei9VQlJjcTF5QzcxR2tvQ2IvME5CdG5kbzNVaFFZR250VER4aE4xdjNKcERtM2lYcEE3NUhyV2xPWFBFSWtNUUtidXl0dXh4eGVHV0ZrbEtNTUZMbDl1NlJRYzhuQTQrY0Q4VjhwV0xwL0M5bngrTC83KzlEenQya1k1SUY0cjNqUU5pVVBweXozOTNERjFRaE1MZDRJM1YzIiwic2lkIjoidTZ1YWMzZTZmNDEtMGY0YS00NGQ0LWE5YTYtYjdkOGRlMDJlIiwiaWF0IjoxNzkyMDI3NjQ3LCJleHAiOjE3OTIwMzAwNDd9.LI6dHEde1ueRD9pZkqXJ9z0wMRbnci2ZuNBV3Z2w2pg",
+        "address": "Ammi ka Ghar",
+        "isLoggedIn": true,
+        "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIxMWU5NDY3ZC04NmZmLTQ2ZWYtOTU2YS1iNWIxODBiMTkwNjUiLCJ1c2VyX2lkIjoiMjUxOTA3OTgyIiwic2Vzc2lvbl9kYXRhIjoieVJZL1B5Zit5cTlTMDFrY0U1b2xJempOSXVmdTl2bFhTbTBTeGJ2VkUzVG9VRU9BV09jMmhGdE5DdXZwdGk5NGhDOExIbjJVSTU4Zm9hMW1wb3F6SDFTVTMxcEpTRStycDc5Z1ZBcHRBbHJkaEdHei9VQlJjcTF5QzcxR2tvQ2IvME5CdG5kbzNVaFFZR250VER4aE4xdjNKcERtM2lYcEE3NUhyV2xPWFBFSWtNUUtidXl0dXh4eGVHV0ZrbEtNTUZMbDl1NlJRYzhuQTQrY0Q4VjhwV0xwL0M5bngrTC83KzlEenQya1k1SUY0cjNqUU5pVVBweXozOTNERjFRaE1MZDRJM1YzIiwic2lkIjoidTZ1YWMzZTZmNDEtMGY0YS00NGQ0LWE5YTYtYjdkOGRlMDJlIiwiaWF0IjoxNzkyMDI3NjQ3LCJleHAiOjE3OTIwMzAwNDd9.LI6dHEde1ueRD9pZkqXJ9z0wMRbnci2ZuNBV3Z2w2pg; _sid=u6uac3e6f41-0f4a-44d4-a9a6-b7d8de02e; aws-waf-token=18d50fa8-ee8a-4687-b6ae-457afc840214:BQoAagZppD4IBQAA:pZiY0opyPMBV2d/0AGiNLAaQF/gx+KuE/uYX4k2ANo58K69jzlvmBaJZo5ejtfJuj1quAiG5pIaS17aWGRWOhrXXjuANyv7HKtR72GRYBeAhNKp5qih3VVRyJio8Qq1JVxnzjocUHQ1lMmOjEtdyxrtHqnzHQP8rM3GEqV9hVQfRvbKPWunBUkSjc+fIU+aXZEJGbLqo6gjQQbiH5Y2bHGAD98piVhtmnTZ3/+jUh/xPE+/Jxkq+IYzFiUix3T07CdDY2YfF6y84czNVen+kEArq19il9eCJtrc=; _device_id=a7137ef4-687d-c6ad-293b-fce982ebae72; token=b2bfa834-0040-449e-8ec9-8acafb39c61aebfb6548-e95f-44b9-ac4c-4c9ed14d5594; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fc26df0e5031fbae139e6cdfcbbd864e5af4e2c2946865b7ef6de999ee38c6d929f3a43d2fd672e05049004150bc59f55a631efa93f73f1c4f603887d7fe4ce6a62bcaf64e36fa198cfe2e7d5b90028759c05fc9b13a868451336a345fa69ff3ccb9dfa03e0139d17520d3f5205bad695ed55c7cabe64a404058fa05e48ca142b7e293ed6fc9cfaa8e9f69f2b6d262957ba09fe27082a616d91bd7424305d3171c9e4adada319b1a3e4b537731dbbb8f172b4d587a0f84110cd25fe3b05a0777e380724ef2c78b50fb82fbbc165863a22b35c9c7a6821d761fb5a52cddbad2ea9247b620107818f35131efa454cb8750be741a06e475f671944133e2ff0f7233892dc1008f26c9e61a4518b6cd13ef5ba033b183f6994fac95c89cc6308ec3a2097302bf6adca3fa3b3ba0bd598ed5b9a8b5c071e3ef7b611db1453b4711ecfd8364f49b20ada81d87703e9ef434906a958ae1c4548210e7b0caeee5a028154c4bad25653b168dcbb13b6b41a3d020bf96e3a8aa57dbb89c9a9eaa16d76fbd272cb6e5ac43ba0141ddb33451aacaa1b9a351f0d6127b7da4a557dd647bb0329829aa655043273b7fb5d7ac04785e10645dcb15b3b18763c6aafd63b70ed8e691015653142d69a614e8fe561e41edb81c86f6df4375a1457dfdeae4d311ad9c97eb241dfe83e75f5995419cfd3a77200b2ada85dc56a705317bb8d893d7c89af6a82c8053275953a78ed9a9c1df1387d11afddb421037899a8dd4b7a3a414d0726630eec6167937a5aa10c70be6d864be6f69ed7c6136086d467c4abb00f164d1fd7a735036339d6454575bfd44b545f3e6ec8dcb11533bb9564523bad9f709761421ff516c63db7cc65f0a33d84844cb3305e22a00a0c9838193f2f0ed6dab3eb257964f59f3eff956a31bf92b0af754169f6d55fa84a7e3630d38ec2471a27f1afcc4b2e64bc29da40371733297d0e0aef964a9e1f81802b39b8a2be6b888012; _is_logged_in=1",
+        "savedAt": "2026-10-15T01:27:29.936Z",
+        "customerId": "251907982",
+        "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIxMWU5NDY3ZC04NmZmLTQ2ZWYtOTU2YS1iNWIxODBiMTkwNjUiLCJ1c2VyX2lkIjoiMjUxOTA3OTgyIiwic2Vzc2lvbl9kYXRhIjoieVJZL1B5Zit5cTlTMDFrY0U1b2xJempOSXVmdTl2bFhTbTBTeGJ2VkUzVG9VRU9BV09jMmhGdE5DdXZwdGk5NGhDOExIbjJVSTU4Zm9hMW1wb3F6SDFTVTMxcEpTRStycDc5Z1ZBcHRBbHJkaEdHei9VQlJjcTF5QzcxR2tvQ2IvME5CdG5kbzNVaFFZR250VER4aE4xdjNKcERtM2lYcEE3NUhyV2xPWFBFSWtNUUtidXl0dXh4eGVHV0ZrbEtNTUZMbDl1NlJRYzhuQTQrY0Q4VjhwV0xwL0M5bngrTC83KzlEenQya1k1SUY0cjNqUU5pVVBweXozOTNERjFRaE1MZDRJM1YzIiwic2lkIjoidTZ1YWMzZTZmNDEtMGY0YS00NGQ0LWE5YTYtYjdkOGRlMDJlIiwiaWF0IjoxNzkyMDI3NjQ3LCJleHAiOjE3OTIwMzAwNDd9.LI6dHEde1ueRD9pZkqXJ9z0wMRbnci2ZuNBV3Z2w2pg",
+        "sid": "u6uac3e6f41-0f4a-44d4-a9a6-b7d8de02e",
+        "deviceId": "a7137ef4-687d-c6ad-293b-fce982ebae72"
+      },
+      "abbu": {
+        "id": "abbu",
+        "name": "Abbu",
+        "phone": "6296591407",
+        "token": "",
+        "address": "Abbu ka Address",
+        "isLoggedIn": true,
+        "cookies": "_gcl_au=1.1.482828862.1792008112; _device_id=ca7f856e-f8f6-dc73-76d6-fa6d0db1c9ae; __SW=VI_krr9X15Lk7kl4XuHv0hbBrFBWnZYw; _sid=u6pe9a1ee88-5340-4a2b-862a-f7358981b; _ga_YE38MFJRBZ=GS2.1.s1792008116$o1$g0$t1792008116$j60$l0$h0; _ga=GA1.1.635386552.1792008117; _ga_34JYJ0BCRN=GS2.1.s1792008116$o1$g0$t1792008116$j60$l0$h0; fontsLoaded=1; aws-waf-token=e72efe48-eec1-4826-8e6d-ae27400ab281:HgoAlaNp64o8CAAA:3CIdwHCzFq99KBE1G0zDhQfxkfjKMTLanjxhyXJgxNRuzTl3pNsTouKVChA2KVNKMIYyyqoimuWYxPmzGwN8twP3YcwrB9PjOkBtIS50bLnEZMCd9UJX7O3TlNDCLOYEGj/u6CBVo/LFOcj+/cV+PB9IB3LfmdYAELW3Mpwt8rxwpQtrjO92XlPCUOSdDyDYzAllf+QBSnNgSJ/ihENW5wNnfxPzV75aGuAAkQXTEXKzSmZYVNWbhLv99ueZFuO4kLeWDzQvcGMRqxzKWn9gMP8u5NU7UWzrYuFogdB5jdUODdh3c/arz1IH5RHG4bcNwtSTstty0Wi+Yqh11HdP; _is_logged_in=1; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f91053ed8a105c591738b8d1ed58e9c791dcf1aade459fe706df587d199bf8d5dfd1521564cf421d9b712b68ab79657c41c0fd8c3d145e8b82edabe31e4292ea23562fe63e505c5b7c8344f8edf984f49b39b12df2bc0561a7f74fc249b34d21478e7f93bbaff791c2ddd8a521675e0f3384f99681f44da1e6f66ad32879e53f3d8ca68db6dd576f275df288c2a720d67abf74590fa6edbb0aeb1a12f8936b46141ac098444a5b7b687fef27ddc92b2a3145cafaa9fe4d002d5225c5dd74ab59e93008db7872b450ec53b78745a7e8d42b79f758c451d1649971df3add42f78885226c580666ba222e34d75a85ad7350dcbd6fcf564872f37011743943219c96677369ae402694ae1dcfecb9b3fe509eb6611d5b7264a6d8b2112ad1f13876d31c13d83b4fda31b46f92a18a61cd93ebb53025b57a6f15c5610772081ebf97d0cf04bfe4bc44ca5c56932f9a6cb2990348f7e1d644d499b2952ba498f814d3456c30cfb0f7b690b454181a2986786cc70786d5a861080451fdebb3ddf2c5e5eb6dac119c243dc1fb9f0f59ef541d5624263c5394185e0c7823f245e67cde422581d76bfe572a3e6b206131d5fbba8cd2a2b626bed65e85071ab1815e1470d5614d22dd36f9120dd772a1994c8e46ef153324299ea31fc88b20684a3e3502f5eb54d0ffc8aae88982560b75012b941147cccc6c0195e3edfc41cfd83f22d3779bac3866789986c136a1e8d1b3db7dc0c972087c85a236b1b02d762024924adcceef9a5f9700c19b07d882489f68b18c355a1d241ad57d44c840429a67f5d399d99f4d812b9048af2b2b26a517c89c977f30b5d3b0ce801f0c6f7b6c5be7a0f1b179727d870e756e5bf3e1561c8b9631ba84f52d0cd60827b8771ff0970edf3ffbc9f173c1c938aa899b26302943c78fe1d9130bbf3b8ecb20219140fd2091ba8b13a4b9969af60f5e9f2a05c3483ea214d076475dfa844bfd3f555f08a15146164; tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI5YWY3YzI2NC1iN2NhLTQzNzctOGRkNS0zZjQ3NDk5MzNjNWMiLCJ1c2VyX2lkIjoiMjg0OTQxMDQ0Iiwic2Vzc2lvbl9kYXRhIjoiUTlZSDEreTQ2UnlwRDJHaWo5R1RYNFhnOGN1QVV4UlNJMVlUalVRbk9IRWc2VEV6cDFvbWJOSHgyRXMveUdtemJvcml3bVVkVTUrQWx4RzU0amhsQmFiZHUxSEJocS9ZcUpHMnVsRzdqb2QxdnE4eFV1MldHWk0relFFVUVJVlJVY1FSUlo1SG5NNm4rNmJab3lxVEVjYWsxdWhFeHVRbytVQ1F0M0V1SUxNRmxYREtEZG5nMVE4bTB0dmVLV1VjZFpoTmlmejlRVG1ZTUo2eEhGUE9Rd0tzN0xNNVQ3b2FhZTJ2aWdhOXZXNkhnamQ1RmhvYUEvcjRZcS81ZVo3TzV3YzdVVTNLSTNXakpRPT0iLCJzaWQiOiJ1NnBlOWExZWU4OC01MzQwLTRhMmItODYyYS1mNzM1ODk4MWIiLCJpYXQiOjE3OTIwMDgxNDcsImV4cCI6MTc5MjAxMDU0N30.YJrdT6IKocakTSSPi40gHGkRo6eZnt235zlKxuxMoYY; token=7a6d339e-72eb-45af-85b1-95a5d7edaa13cbf076f1-f80d-4af8-8997-5cbd636a632c; userLocation={%22lat%22:%2226.83730%22%2C%22lng%22:%2280.91650%22%2C%22address%22:%22%22%2C%22area%22:%22%22%2C%22showUserDefaultAddressHint%22:false}",
+        "savedAt": "2026-10-14T20:02:27.747Z"
+      },
+      "dada": {
+        "id": "dada",
+        "name": "Dada",
+        "phone": "8102424968",
+        "token": "",
+        "address": "Dada ka Ghar",
+        "isLoggedIn": true,
+        "customerId": "285347101",
+        "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI5MDgwNDc4ZS05NjJmLTRkMWItYjkxYS1hZGRiNzY4NThiNjAiLCJ1c2VyX2lkIjoiMjg1MzQ3MTAxIiwic2Vzc2lvbl9kYXRhIjoicDhLK0I0eXpYZ2laTlFPRm44V0x5ZnFocjBBaUZBMW9DSU4ranMra1l0OXhHVUJiWlkyTVFWTVlROG1NR3QxczMvZldiZG91N2x0bVI2REhrM09wMG5uQjdoMmU2QzNqaEhpRHZaaXdvdEp2RlM0dWZyMnhEZGxSUC93QXhVMjRQWHlhencwYndMeDBSSnBrQjZ1ZG1Weml5T1FoVTI1M295NENVNEtldDdtbmlYYS9HVTVQRW91QWlKYzJIM21ZbDA0SHFhQXZsMGNkbkFuQmlXVi85Qm12VG0wOG1tTTZpMUxMWUFrQVVhZ3FOOTliS3RBbEgrS0pGVng5cC9idlJla3ZGYUtRK1N5UE9RUmkwOXdYR2dHWXhUWjBoUXI0clRtbGhuTkRLZzNwQ0xsTGZUR2lMWEpsaDNydW1tMVdxNVRnQlJTZnUvbVZTK1hEVEpqYlFIVUFHTkFjVTViZXlUQkFqTi9QYXBralNRPT0iLCJzaWQiOiJ1NmUwMzlmZTJhZC04ZDhiLTRkMDktOGI5ZS1hNDkyMDdkNmEiLCJpYXQiOjE3OTE5Njc5MzAsImV4cCI6MTc5MTk3MDMzMH0.sw9mSxWw7wYRAv-gWYSiLi3d7XBa-4JekN0JWHIMIx0",
+        "sid": "u6e039fe2ad-8d8b-4d09-8b9e-a49207d6a",
+        "deviceId": "31b83f25-78ff-4f29-bb40-6789ca0dbe03",
+        "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI5MDgwNDc4ZS05NjJmLTRkMWItYjkxYS1hZGRiNzY4NThiNjAiLCJ1c2VyX2lkIjoiMjg1MzQ3MTAxIiwic2Vzc2lvbl9kYXRhIjoicDhLK0I0eXpYZ2laTlFPRm44V0x5ZnFocjBBaUZBMW9DSU4ranMra1l0OXhHVUJiWlkyTVFWTVlROG1NR3QxczMvZldiZG91N2x0bVI2REhrM09wMG5uQjdoMmU2QzNqaEhpRHZaaXdvdEp2RlM0dWZyMnhEZGxSUC93QXhVMjRQWHlhencwYndMeDBSSnBrQjZ1ZG1Weml5T1FoVTI1M295NENVNEtldDdtbmlYYS9HVTVQRW91QWlKYzJIM21ZbDA0SHFhQXZsMGNkbkFuQmlXVi85Qm12VG0wOG1tTTZpMUxMWUFrQVVhZ3FOOTliS3RBbEgrS0pGVng5cC9idlJla3ZGYUtRK1N5UE9RUmkwOXdYR2dHWXhUWjBoUXI0clRtbGhuTkRLZzNwQ0xsTGZUR2lMWEpsaDNydW1tMVdxNVRnQlJTZnUvbVZTK1hEVEpqYlFIVUFHTkFjVTViZXlUQkFqTi9QYXBralNRPT0iLCJzaWQiOiJ1NmUwMzlmZTJhZC04ZDhiLTRkMDktOGI5ZS1hNDkyMDdkNmEiLCJpYXQiOjE3OTE5Njc5MzAsImV4cCI6MTc5MTk3MDMzMH0.sw9mSxWw7wYRAv-gWYSiLi3d7XBa-4JekN0JWHIMIx0; _sid=u6e039fe2ad-8d8b-4d09-8b9e-a49207d6a; _device_id=31b83f25-78ff-4f29-bb40-6789ca0dbe03",
+        "savedAt": "2026-10-14T20:24:09.548Z"
+      },
+      "news": {
+        "phone": "7667327578",
+        "customerId": "251907982",
+        "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJhZDhiMmFhYS0yMmMzLTQ3YzYtYjNiYS05ODk4OGIxMTg5ZDAiLCJ1c2VyX2lkIjoiMjUxOTA3OTgyIiwic2Vzc2lvbl9kYXRhIjoiZnBVeGcxQ0RnUkUzNVNjckZlNFFBcXVnMnZ4TGcxa3VrTEg4cjFraERUeWdGaVdrUEhKTGtJSi9Kd3NhN2pXenlWNW1NTncyWGJRQXV4RW9MalZic2NqZzl6VVVjcnFhSWlsUEd5THBVNmNiSENuRWZkbTdmTzhQcDQrSElwZVlSOTNXZ2Nya2RDSWkzd2RNUCtTYmhqSkZ2VCtnTVlqRUhrbnRSb0NnOUdsT2QxUmJiVVo0RnZsd2NFTm5TQ08rWXhFdXJUQnJHTEYrOXN5aVMyZjZYNzJjdTdvaXFZV0pBSTZ5bEtIMjltOU00MlNJeXZWWC9wUkNLaW42T0FjOWhtNTFUVllFIiwic2lkIjoidTZ1NTc2YTgzZGQtMzA4ZC00YTA3LWE2NDItZmNkMDNmMWY5IiwiaWF0IjoxNzkyMDI3NDgxLCJleHAiOjE3OTIwMjk4ODF9.rbjwNjjUe9L7kUW2AkhuBm_yhTLOObEMKK8A9v3JRDI",
+        "sid": "u6u576a83dd-308d-4a07-a642-fcd03f1f9",
+        "deviceId": "11f6fe77-623f-7ec0-0932-d67b155aba90",
+        "token": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJhZDhiMmFhYS0yMmMzLTQ3YzYtYjNiYS05ODk4OGIxMTg5ZDAiLCJ1c2VyX2lkIjoiMjUxOTA3OTgyIiwic2Vzc2lvbl9kYXRhIjoiZnBVeGcxQ0RnUkUzNVNjckZlNFFBcXVnMnZ4TGcxa3VrTEg4cjFraERUeWdGaVdrUEhKTGtJSi9Kd3NhN2pXenlWNW1NTncyWGJRQXV4RW9MalZic2NqZzl6VVVjcnFhSWlsUEd5THBVNmNiSENuRWZkbTdmTzhQcDQrSElwZVlSOTNXZ2Nya2RDSWkzd2RNUCtTYmhqSkZ2VCtnTVlqRUhrbnRSb0NnOUdsT2QxUmJiVVo0RnZsd2NFTm5TQ08rWXhFdXJUQnJHTEYrOXN5aVMyZjZYNzJjdTdvaXFZV0pBSTZ5bEtIMjltOU00MlNJeXZWWC9wUkNLaW42T0FjOWhtNTFUVllFIiwic2lkIjoidTZ1NTc2YTgzZGQtMzA4ZC00YTA3LWE2NDItZmNkMDNmMWY5IiwiaWF0IjoxNzkyMDI3NDgxLCJleHAiOjE3OTIwMjk4ODF9.rbjwNjjUe9L7kUW2AkhuBm_yhTLOObEMKK8A9v3JRDI",
+        "isLoggedIn": true,
+        "cookies": "userLocation={%22lat%22:%2226.83730%22%2C%22lng%22:%2280.91650%22%2C%22address%22:%22%22%2C%22area%22:%22%22%2C%22showUserDefaultAddressHint%22:false}; _device_id=11f6fe77-623f-7ec0-0932-d67b155aba90; __SW=OhQpB0RK0NlPwxikZA5dia-Zw_yHj8oo; _gcl_au=1.1.1729111648.1792027421; fontsLoaded=1; _ga_34JYJ0BCRN=GS2.1.s1792027430$o1$g0$t1792027430$j60$l0$h0; _ga=GA1.1.205263139.1792027430; aws-waf-token=e72efe48-eec1-4826-8e6d-ae27400ab281:HgoApWRp0lJADQAA:siZbzIWm55YusR/N+0ON6sKp8MoHZH7Uui/3P6tN/eqn3t1/1GSbGmUW+Cwafg1muaPutYyGBaT0ZcS2l7MZ514EMpjNpoXRYZ7wVgOHp9MY11DEC8GK4AQaOR0cipguCxzDoSiqsIqNDvw0Qbue7cFG/DFgZAqEl1/TRkJ/nqox9ff66ZcvRvHHtyjq0y5jdQZvTu8447F5rHoo3rwca1arnYq8tSlE91nir56WuBFQE61Y5lEiLoU0GALz4qja5D2RaHKbRTEajYzlsJLr5ge0adqtL5bxvnsm8Jukg0BlYDRNiwp2J2OAQ6dquZTmvuNCI7kuezO3yRP/BJBw; _sid=u6u576a83dd-308d-4a07-a642-fcd03f1f9; _is_logged_in=1; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fd1f547018f3fdf19e650ccbded45f45523e5d96c58a80f9a60da973e905b23a6769b47fc4aa321ef0720da303720249932773c352e8f864b072510e0fef5f9dbe3db1f912272f165829949d2449d71c1c99f46ddb797dcbd56b6d89c16782f7233f9c2040a9cda91b9e55f6d8fdeb9dbc245648a39c3cb67c6f4650ed8ca2e9435a99a03d5b08ad1bca2159b1dfb0318108a095ab183fb0a3a647d5b0429f6773fa964e1ca283aa7827c0bd24ca683f4fef5cbb62d8f14185df828860927a4fe238c8d228974c0237c1e8a451bd3b159da26176fd5550041d55a0c2ed21f6d4e796bd3c6426b01b49e252829f678ec4f317cba4145b77a5be7a78f488d04737643f90226797df93e4d3e973f8e1cd6426a66290b1468b0de5fa817d06e5d3f89a953a09cbd9ece8362b7a503b74f5c89282e85770998b34b528aac1557143014494db7bdaa53b2848027ee6d01dadaa69343e5dc93f44ebc9c6d23bdea78928ed72b286ff910d15b154888b977a823295eaa4e2ccb547b807880d854fd4da1bb3131ddcee51f26e9b0718347c2c0c98860fb0d36cb5487555f9ea7a9274aff0c422bfe8ae144aa614291cace69db02926d83b227544c5d4cee94ba2c19c410be7a356b7f108b462094e9b43b67b1c1bfc0176742799f98bb936b501997ee253889e1f94c9a0ed19c2b0d86defc099c8a44ad560e80876bde7e5a870dafc13e6e75e0f86612aacf5b984766b92ad8ec8f92a76519703067dbd30641f1df2a74e6c56d4e7ef04bd2b1348d84f24e4ae2608dd79d92b4b9880aff39b699fac7ded8d476f319ad70515c9df48e86502e57ec87130115db786b08ba4351a42cf48b96cb235ca4c430dd70899da59e2fa8cb84b0bf0ddbe0f3605e0f80f6918925e4e72c1a7c83ff6c6b3c177a81a0b59335964a5802e83b49bc7e1f4aa60e5f4e8a253862e17bad1666c31656aefa63b378a7094751fbfb0a566619acfd3f32afb7ae; tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJhZDhiMmFhYS0yMmMzLTQ3YzYtYjNiYS05ODk4OGIxMTg5ZDAiLCJ1c2VyX2lkIjoiMjUxOTA3OTgyIiwic2Vzc2lvbl9kYXRhIjoiZnBVeGcxQ0RnUkUzNVNjckZlNFFBcXVnMnZ4TGcxa3VrTEg4cjFraERUeWdGaVdrUEhKTGtJSi9Kd3NhN2pXenlWNW1NTncyWGJRQXV4RW9MalZic2NqZzl6VVVjcnFhSWlsUEd5THBVNmNiSENuRWZkbTdmTzhQcDQrSElwZVlSOTNXZ2Nya2RDSWkzd2RNUCtTYmhqSkZ2VCtnTVlqRUhrbnRSb0NnOUdsT2QxUmJiVVo0RnZsd2NFTm5TQ08rWXhFdXJUQnJHTEYrOXN5aVMyZjZYNzJjdTdvaXFZV0pBSTZ5bEtIMjltOU00MlNJeXZWWC9wUkNLaW42T0FjOWhtNTFUVllFIiwic2lkIjoidTZ1NTc2YTgzZGQtMzA4ZC00YTA3LWE2NDItZmNkMDNmMWY5IiwiaWF0IjoxNzkyMDI3NDgxLCJleHAiOjE3OTIwMjk4ODF9.rbjwNjjUe9L7kUW2AkhuBm_yhTLOObEMKK8A9v3JRDI; token=2ea6f6a2-4f8a-4b32-a388-de9ddade08aa1e7a4703-4b9e-4c59-9a6e-65984eed432e; _ga_YE38MFJRBZ=GS2.1.s1792027431$o1$g0$t1792027431$j60$l0$h0",
+        "savedAt": "2026-10-15T01:24:43.872Z"
+      },
+      "_strat": {
+        "id": "_strat",
+        "name": "/strat",
+        "phone": "",
+        "token": "",
+        "address": "",
+        "isLoggedIn": false,
+        "createdAt": "2026-10-15T01:50:02.472Z"
+      },
+      "jin": {
+        "id": "jin",
+        "name": "Jin",
+        "phone": "",
+        "token": "",
+        "address": "",
+        "isLoggedIn": false,
+        "createdAt": "2026-10-15T01:56:34.482Z"
+      },
+      "asak": {
+        "id": "asak",
+        "name": "Asak",
+        "phone": "7667327578",
+        "token": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIwNzk3YjhkMi05YWM1LTQ4MDQtYmY5Zi1jZGVmNzExYjU2N2MiLCJ1c2VyX2lkIjoiMjUxOTA3OTgyIiwic2Vzc2lvbl9kYXRhIjoiM01BNWNjc2pGR0xLeThyYUlSZTM1TG1zdXlRbm5vS2IzOHU5VjFkQ0E0Y01QcGk5V0dZbkN4MlRaTkFPWE1SWTZ2QmljbnQ4Y25hWnJYNTlablRUYkVWUnRvdW1NRUFGby9pZTdqMDBCRkFEQ1dYTVBLNkdtdU13MUxOZllzNXppdTBMVHNqZlErTWJ1MXVMcW5ic1BpUHNhNFNCcHhueUMzYStsc3Jzd0ZxQldEMDl1emtGMytIZnNZT0UwT0JLREJPaFBDUTkwN2FCNFBXemxac1hsN3lQUlVLdll4Vjl6dFR4N0tjSlBjQzFUVmtzbXZYa3prSEpOc0pDMmsxeS95RjBJL1c2Iiwic2lkIjoidTZ2YTUwMjBmYzAtNzk5YS00MTViLWJiYjEtMGRjZmQ2N2YxIiwiaWF0IjoxNzkyMDMwODQ2LCJleHAiOjE3OTIwMzMyNDZ9.cYQVr_e4s3Fn1tb8_D53Dc43_gG5V9gCzydFk7imR1M",
+        "address": "",
+        "isLoggedIn": true,
+        "createdAt": "2026-10-15T02:20:05.109Z",
+        "customerId": "251907982",
+        "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIwNzk3YjhkMi05YWM1LTQ4MDQtYmY5Zi1jZGVmNzExYjU2N2MiLCJ1c2VyX2lkIjoiMjUxOTA3OTgyIiwic2Vzc2lvbl9kYXRhIjoiM01BNWNjc2pGR0xLeThyYUlSZTM1TG1zdXlRbm5vS2IzOHU5VjFkQ0E0Y01QcGk5V0dZbkN4MlRaTkFPWE1SWTZ2QmljbnQ4Y25hWnJYNTlablRUYkVWUnRvdW1NRUFGby9pZTdqMDBCRkFEQ1dYTVBLNkdtdU13MUxOZllzNXppdTBMVHNqZlErTWJ1MXVMcW5ic1BpUHNhNFNCcHhueUMzYStsc3Jzd0ZxQldEMDl1emtGMytIZnNZT0UwT0JLREJPaFBDUTkwN2FCNFBXemxac1hsN3lQUlVLdll4Vjl6dFR4N0tjSlBjQzFUVmtzbXZYa3prSEpOc0pDMmsxeS95RjBJL1c2Iiwic2lkIjoidTZ2YTUwMjBmYzAtNzk5YS00MTViLWJiYjEtMGRjZmQ2N2YxIiwiaWF0IjoxNzkyMDMwODQ2LCJleHAiOjE3OTIwMzMyNDZ9.cYQVr_e4s3Fn1tb8_D53Dc43_gG5V9gCzydFk7imR1M",
+        "sid": "u6va5020fc0-799a-415b-bbb1-0dcfd67f1",
+        "deviceId": "5e829ff4-8d90-a108-2804-70c9a38c102f",
+        "cookies": "_ga_34JYJ0BCRN=GS2.1.s1792030788$o1$g0$t1792030788$j60$l0$h0; _ga=GA1.1.793223159.1792030787; _device_id=5e829ff4-8d90-a108-2804-70c9a38c102f; __SW=zE1DBPAbhW1_qc4kSzYo9zucYhqVeYFP; _gcl_au=1.1.1930350526.1792030768; _ga_YE38MFJRBZ=GS2.1.s1792030787$o1$g0$t1792030787$j60$l0$h0; userLocation={%22lat%22:%2226.83730%22%2C%22lng%22:%2280.91650%22%2C%22address%22:%22%22%2C%22area%22:%22%22%2C%22showUserDefaultAddressHint%22:false}; fontsLoaded=1; aws-waf-token=e72efe48-eec1-4826-8e6d-ae27400ab281:HgoAvowvrbKfDwAA:vuU7ZUKj87nvPvaUtQkw7QHlN3tFfe3VSssRMhC5PsntPaC1vEGnlG2YRKuLVl1Z641GwnxLkqabCd7wOC025cA6vQKc25Ce3cgPWhhskfsbGCKuzWizGd8+tqu65Aj7CaCFty83y6Geqvp5RlwPS5jHI5UEABHNXDsF/Uw4CdEKqcCS0dtpWUipHMGH4+FWGAced/H0eeoiyPYDqH27BQH7i2CVHrkJkeXqvYq/4k/4UdfFZNQeflKe/5v1djmpPnwk21Xj9gRAEatSfiTHnzEnGm5AhKWIN3B6l7RQ2nkzmWAWdInIENxvUiQXebSMhDSAygVM1HMYcSSuT05dHmU=; _sid=u6va5020fc0-799a-415b-bbb1-0dcfd67f1; _is_logged_in=1; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f06feea1c97fef7c8351410f7b5409808bf7998b9926a1d214ee7bdfe2f2ee2cc41da08b8ffb65929f81ffab03a82ad5347e01610817b288f3dfb414631395c42564bad1dd5d6156aaaae01dc8856272ce59340113ce7a0ffb83c1bd3a74963cc20ebf3b86c45caf881bb37305fbbb2001d2514962d9920d644492a6cae5029163dcb648d99bf50ad0cdff840b047956be3df61daf510ba3aaffeeacae84be3d71f8b40ea8f27d197a27e157740e7dbd160bbfaf00e4e3cfb5772269cee00573116f13e8622451bc02993ed24f4059e3b534f6ab8215cf2212f44f9079661c8765d0f9a5ac37443464a0a48f2b318a572e94793ae8a75da9389f75d41816c2aba973b73bd6458845ac262e0b93d8da9c6aa86fa29d48f5322301485126207f684eff2a06617c6aaca4ffbff9c0bbdfc7a0553c5fc16f3842931f2b2467a853ee6392947806bf413a2635097c4ccb88e47d9fd7bc5a47d2b9a3a55a3d84baf6cc7ba84ba477a2cf10687948088f131c6353fc7d639ef36c22769a464e96048f5a68bdb83ed9ebeedd3fc91af4869d1ccede7a991ef1dfcda8c66297bb1940a1e5de934dd59955393fc8b9acbdbd8d5319f18bcc4bbbd26e9963f1b8bd2c017ed93d756a91e411ab68417482a54574835b67629e5b375b97a8fda5fc3c97a0c0e3b8b6830319f790499364e63b686a4def8fd41b0871d388ad9d7e7fde41d9fc46433be78144b77dbd457221e0d140d91c5129fb81be7c5bbc6bd9f16816055d0ac66450b5f3c3e8c007a394f77abe0f9a949814213c70c545d28289ff5335db4c421228aa86b2615db7ccb0845e83afec3eebbf96eba17eadc58035c807ef32fbff19d2d6847f99eedc8d2ec4adff5a6b5e240b70e42b8e8ec6a6ed495442bff204e8c63a161e6d6da7605366418f6bf581a1f792f1b1113cce077a281594cb3f1b2cac4a77ade7022c01825111819dc6ec071f5a11d9eeb965a51b154d1696561; tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIwNzk3YjhkMi05YWM1LTQ4MDQtYmY5Zi1jZGVmNzExYjU2N2MiLCJ1c2VyX2lkIjoiMjUxOTA3OTgyIiwic2Vzc2lvbl9kYXRhIjoiM01BNWNjc2pGR0xLeThyYUlSZTM1TG1zdXlRbm5vS2IzOHU5VjFkQ0E0Y01QcGk5V0dZbkN4MlRaTkFPWE1SWTZ2QmljbnQ4Y25hWnJYNTlablRUYkVWUnRvdW1NRUFGby9pZTdqMDBCRkFEQ1dYTVBLNkdtdU13MUxOZllzNXppdTBMVHNqZlErTWJ1MXVMcW5ic1BpUHNhNFNCcHhueUMzYStsc3Jzd0ZxQldEMDl1emtGMytIZnNZT0UwT0JLREJPaFBDUTkwN2FCNFBXemxac1hsN3lQUlVLdll4Vjl6dFR4N0tjSlBjQzFUVmtzbXZYa3prSEpOc0pDMmsxeS95RjBJL1c2Iiwic2lkIjoidTZ2YTUwMjBmYzAtNzk5YS00MTViLWJiYjEtMGRjZmQ2N2YxIiwiaWF0IjoxNzkyMDMwODQ2LCJleHAiOjE3OTIwMzMyNDZ9.cYQVr_e4s3Fn1tb8_D53Dc43_gG5V9gCzydFk7imR1M; token=0368547c-ea5f-4107-a11b-d3fc9a2b80fd7fc4d39e-c28d-498a-9aaf-3b0cd79fa8d7",
+        "savedAt": "2026-10-15T02:20:48.529Z"
+      }
+    }
+  },
+  "orders": {
+    "10058": {
+      "id": "10058",
+      "userId": 1792014309,
+      "userName": "🥢🅽🅴🆆❖᭄🫧 🆄🆂🅴🆁™ᴮᵒˢˢ≛⃝",
+      "handle": "Trust_me_i_will_trust_youuu",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swiggy.onelink.me/JgkQ/75a9c75r",
+      "cart": "https://swig.gy/gc/1271597/Umbashiya-442849410",
+      "selectedAccount": "ammi",
+      "swiggyVerified": true,
+      "amountAccepted": true,
+      "qrSent": true,
+      "restaurantName": "Boba Bhai - Bubble Tea & Korean Street Food",
+      "items": [
+        {
+          "name": "Crispy Fried Chicken Burger",
+          "qty": 1,
+          "price": 299,
+          "lineTotal": 299
+        }
+      ],
+      "subtotal": 299,
+      "finalPayable": 357,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-15T01:08:30.062Z",
+      "userChatId": 1792014309,
+      "userMessageId": 937,
+      "bossMessageIds": {
+        "6484999726": 938
+      },
+      "cancelledAt": "2026-10-15T01:19:40.351Z"
+    },
+    "12788": {
+      "id": "12788",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "address": "[Home] 504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India",
+      "selectedAccount": "abbu",
+      "swiggyVerified": true,
+      "amountAccepted": true,
+      "qrSent": false,
+      "paidByUser": false,
+      "restaurantName": "Burger King",
+      "items": [
+        {
+          "name": "Crispy Veg Burger Peri Peri Meal (R)",
+          "qty": 1,
+          "price": 297
+        }
+      ],
+      "subtotal": 347,
+      "finalPayable": 347,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T22:23:32.792Z",
+      "userChatId": 6938858013,
+      "userMessageId": 570,
+      "bossMessageIds": {
+        "6484999726": 571
+      },
+      "cancelledAt": "2026-10-15T01:29:32.855Z"
+    },
+    "12978": {
+      "id": "12978",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "selectedAccount": null,
+      "swiggyVerified": false,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": null,
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T23:18:32.982Z",
+      "userChatId": 6938858013,
+      "userMessageId": 639,
+      "bossMessageIds": {
+        "6484999726": 640
+      }
+    },
+    "13728": {
+      "id": "13728",
+      "userId": 1792014309,
+      "userName": "🥢🅽🅴🆆❖᭄🫧 🆄🆂🅴🆁™ᴮᵒˢˢ≛⃝",
+      "handle": "Trust_me_i_will_trust_youuu",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swiggy.onelink.me/JgkQ/75a9c75r",
+      "cart": "https://swig.gy/gc/978746/Umbashiya-442849410",
+      "selectedAccount": "ammi",
+      "swiggyVerified": true,
+      "amountAccepted": true,
+      "qrSent": true,
+      "restaurantName": "The Ultimate Burgers And Rolls",
+      "items": [
+        {
+          "name": "Peri Peri Chicken Burger",
+          "qty": 1,
+          "price": 315
+        }
+      ],
+      "subtotal": 359,
+      "finalPayable": 359,
+      "status": "CANCELLED",
+      "paymentStatus": "VERIFIED",
+      "createdAt": "2026-10-14T23:51:53.735Z",
+      "userChatId": 1792014309,
+      "userMessageId": 756,
+      "bossMessageIds": {
+        "6484999726": 757
+      },
+      "bestCoupon": {
+        "code": "TRYNEW"
+      },
+      "paidByUser": true,
+      "trackingLink": "https://www.swiggy.com/orders/track/250974746182642",
+      "cancelledAt": "2026-10-15T01:55:10.466Z"
+    },
+    "14725": {
+      "id": "14725",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/1044719/Umbashiya-442849410",
+      "selectedAccount": "dada",
+      "swiggyVerified": true,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": "Umbashiya's Group Order",
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T23:46:54.727Z",
+      "userChatId": 6938858013,
+      "userMessageId": 737,
+      "bossMessageIds": {
+        "6484999726": 738
+      }
+    },
+    "16541": {
+      "id": "16541",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "selectedAccount": "dada",
+      "swiggyVerified": true,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": "Umbashiya's Group Order",
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T23:18:36.546Z",
+      "userChatId": 6938858013,
+      "userMessageId": 642,
+      "bossMessageIds": {
+        "6484999726": 643
+      }
+    },
+    "17111": {
+      "id": "17111",
+      "userId": 1792014309,
+      "userName": "🥢🅽🅴🆆❖᭄🫧 🆄🆂🅴🆁™ᴮᵒˢˢ≛⃝",
+      "handle": "Trust_me_i_will_trust_youuu",
+      "type": "SWIGGY_GROUP_CART",
+      "cart": "https://swiggy.onelink.me/JgkQ/apph141j",
+      "address": "Ammi ka Ghar",
+      "selectedAccount": "abbu",
+      "restaurantName": "Swiggy Restaurant",
+      "items": [
+        {
+          "name": "Selected Food Items (Group Order)",
+          "qty": 1,
+          "price": 450
+        }
+      ],
+      "subtotal": 450,
+      "bestCoupon": {
+        "code": "STEALDEAL",
+        "type": "percentage",
+        "value": 60,
+        "maxDiscount": 120,
+        "minOrder": 199,
+        "desc": "60% OFF up to ₹120",
+        "calculatedDiscount": 120
+      },
+      "discountAmount": 120,
+      "finalPayable": 388,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T20:55:17.112Z",
+      "acceptedAt": "2026-10-14T20:58:16.807Z",
+      "amountAccepted": true,
+      "cancelledAt": "2026-10-15T01:55:20.800Z"
+    },
+    "19796": {
+      "id": "19796",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "VOICE",
+      "fileId": "AwACAgUAAxkBAAPsas_UYoOrQ9wIL2R5xvBwYiuJYbcAApciAAJuoYFWPbHccoErfeQ9BA",
+      "address": null,
+      "cart": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T19:13:39.796Z",
+      "selectedAccount": "ammi"
+    },
+    "20521": {
+      "id": "20521",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "selectedAccount": "ammi",
+      "swiggyVerified": true,
+      "amountAccepted": true,
+      "qrSent": true,
+      "restaurantName": "Burger King",
+      "items": [
+        {
+          "name": "Double Crispy Veg + Double Crispy Veg.",
+          "qty": 1,
+          "price": 198
+        }
+      ],
+      "subtotal": 237,
+      "finalPayable": 237,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T23:22:00.525Z",
+      "userChatId": 6938858013,
+      "userMessageId": 663,
+      "bossMessageIds": {
+        "6484999726": 664
+      }
+    },
+    "21022": {
+      "id": "21022",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "selectedAccount": "ammi",
+      "swiggyVerified": true,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": "Burger King",
+      "items": [
+        {
+          "name": "Crispy Veg Burger Peri Peri Meal (R)",
+          "qty": 1,
+          "price": 297
+        }
+      ],
+      "subtotal": 347,
+      "finalPayable": 347,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T23:20:21.026Z",
+      "userChatId": 6938858013,
+      "userMessageId": 654,
+      "bossMessageIds": {
+        "6484999726": 655
+      }
+    },
+    "21656": {
+      "id": "21656",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "selectedAccount": "dada",
+      "swiggyVerified": false,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": null,
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": 350,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T22:18:41.660Z",
+      "userChatId": 6938858013,
+      "userMessageId": 550,
+      "bossMessageIds": {
+        "6484999726": 551
+      }
+    },
+    "24633": {
+      "id": "24633",
+      "userId": 1792014309,
+      "userName": "🥢🅽🅴🆆❖᭄🫧 🆄🆂🅴🆁™ᴮᵒˢˢ≛⃝",
+      "handle": "Trust_me_i_will_trust_youuu",
+      "address": "https://t.me/NobiXreferbot?start=6484999726",
+      "cart": "https://t.me/NobiXreferbot?start=6484999726",
+      "status": "REJECTED",
+      "createdAt": "2026-10-14T15:00:24.633Z",
+      "rejectedAt": "2026-10-14T15:00:45.369Z"
+    },
+    "30031": {
+      "id": "30031",
+      "userId": 1792014309,
+      "userName": "🥢🅽🅴🆆❖᭄🫧 🆄🆂🅴🆁™ᴮᵒˢˢ≛⃝",
+      "handle": "Trust_me_i_will_trust_youuu",
+      "type": "SWIGGY_GROUP_CART",
+      "cart": "https://swiggy.onelink.me/JgkQ/apph141j",
+      "address": "Ammi ka Ghar",
+      "selectedAccount": "ammi",
+      "restaurantName": "Swiggy Restaurant",
+      "items": [
+        {
+          "name": "Selected Food Items (Group Order)",
+          "qty": 1,
+          "price": 450
+        }
+      ],
+      "subtotal": 450,
+      "bestCoupon": {
+        "code": "STEALDEAL",
+        "type": "percentage",
+        "value": 60,
+        "maxDiscount": 120,
+        "minOrder": 199,
+        "desc": "60% OFF up to ₹120",
+        "calculatedDiscount": 120
+      },
+      "discountAmount": 120,
+      "finalPayable": 388,
+      "status": "COMPLETED",
+      "paymentStatus": "VERIFIED",
+      "createdAt": "2026-10-14T21:30:30.032Z",
+      "completedAt": "2026-10-14T22:15:27.233Z",
+      "trackingLink": "https://www.swiggy.com/orders/track/30031"
+    },
+    "30056": {
+      "id": "30056",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "selectedAccount": "abbu",
+      "swiggyVerified": true,
+      "amountAccepted": true,
+      "qrSent": true,
+      "restaurantName": "Burger King",
+      "items": [
+        {
+          "name": "Original Whopper Veg(XL size Bun)",
+          "qty": 1,
+          "price": 199
+        },
+        {
+          "name": "Original Whopper Chicken(XL size Bun)",
+          "qty": 1,
+          "price": 219
+        },
+        {
+          "name": "Crispy Veg Burger",
+          "qty": 1,
+          "price": 75
+        }
+      ],
+      "subtotal": 493,
+      "finalPayable": 493,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T22:32:10.060Z",
+      "userChatId": 6938858013,
+      "userMessageId": 581,
+      "bossMessageIds": {
+        "6484999726": 582
+      }
+    },
+    "31206": {
+      "id": "31206",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_GROUP_CART",
+      "cart": "https://swiggy.onelink.me/JgkQ/6hv3lo4l.",
+      "address": "Ammi ka Ghar",
+      "selectedAccount": "ammi",
+      "restaurantName": "Swiggy Restaurant",
+      "items": [
+        {
+          "name": "Selected Food Items (Group Order)",
+          "qty": 1,
+          "price": 450
+        }
+      ],
+      "subtotal": 450,
+      "bestCoupon": {
+        "code": "STEALDEAL",
+        "type": "percentage",
+        "value": 60,
+        "maxDiscount": 120,
+        "minOrder": 199,
+        "desc": "60% OFF up to ₹120",
+        "calculatedDiscount": 120
+      },
+      "discountAmount": 120,
+      "finalPayable": 388,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T21:47:11.206Z"
+    },
+    "34290": {
+      "id": "34290",
+      "userId": 1792014309,
+      "userName": "🥢🅽🅴🆆❖᭄🫧 🆄🆂🅴🆁™ᴮᵒˢˢ≛⃝",
+      "handle": "Trust_me_i_will_trust_youuu",
+      "type": "SWIGGY_ORDER",
+      "address": "Ammi ka Ghar",
+      "cart": "https://swiggy.onelink.me/JgkQ/apph141j",
+      "selectedAccount": null,
+      "swiggyVerified": false,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": null,
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T22:22:14.295Z",
+      "userChatId": 1792014309,
+      "userMessageId": null,
+      "bossMessageIds": {}
+    },
+    "35674": {
+      "id": "35674",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "selectedAccount": "dada",
+      "swiggyVerified": true,
+      "amountAccepted": true,
+      "qrSent": true,
+      "restaurantName": "Burger King",
+      "items": [
+        {
+          "name": "Original Whopper Veg(XL size Bun)",
+          "qty": 1,
+          "price": 199
+        },
+        {
+          "name": "Original Whopper Chicken(XL size Bun)",
+          "qty": 1,
+          "price": 219
+        },
+        {
+          "name": "Crispy Veg Burger",
+          "qty": 1,
+          "price": 75
+        }
+      ],
+      "subtotal": 493,
+      "finalPayable": 493,
+      "status": "CANCELLED",
+      "paymentStatus": "PENDING",
+      "createdAt": "2026-10-14T22:53:55.677Z",
+      "userChatId": 6938858013,
+      "userMessageId": 602,
+      "bossMessageIds": {
+        "6484999726": 603
+      },
+      "paidByUser": true,
+      "trackingLink": "https://www.swiggy.com/orders/track/35674",
+      "cancelledAt": "2026-10-15T02:28:50.429Z"
+    },
+    "38247": {
+      "id": "38247",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "Address pending / not provided",
+      "cart": "https://swig.gy/gc/1271597/Umbashiya-442849410",
+      "selectedAccount": null,
+      "swiggyVerified": false,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": null,
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-15T00:43:58.253Z",
+      "userChatId": 6938858013,
+      "userMessageId": null,
+      "bossMessageIds": {}
+    },
+    "39830": {
+      "id": "39830",
+      "userId": 1792014309,
+      "userName": "🥢🅽🅴🆆❖᭄🫧 🆄🆂🅴🆁™ᴮᵒˢˢ≛⃝",
+      "handle": "Trust_me_i_will_trust_youuu",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swiggy.onelink.me/JgkQ/75a9c75r",
+      "cart": "https://swig.gy/gc/978746/Umbashiya-442849410",
+      "selectedAccount": "dada",
+      "swiggyVerified": true,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": "Umbashiya's Group Order",
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-15T00:07:19.834Z",
+      "userChatId": 1792014309,
+      "userMessageId": 784,
+      "bossMessageIds": {
+        "6484999726": 785
+      }
+    },
+    "40394": {
+      "id": "40394",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swiggy.onelink.me/JgkQ/9f9wkl6y",
+      "cart": "https://swig.gy/gc/978746/Umbashiya-442849410",
+      "selectedAccount": "dada",
+      "swiggyVerified": true,
+      "amountAccepted": false,
+      "qrSent": true,
+      "restaurantName": "Umbashiya's Group Order",
+      "items": [
+        {
+          "name": "Jain Thali [Without Potato, Onion & Garlic]",
+          "qty": 1,
+          "price": 199
+        }
+      ],
+      "subtotal": 206,
+      "finalPayable": 206,
+      "status": "CANCELLED",
+      "paymentStatus": "VERIFIED",
+      "createdAt": "2026-10-15T00:20:40.396Z",
+      "userChatId": 6938858013,
+      "userMessageId": 810,
+      "bossMessageIds": {
+        "6484999726": 811
+      },
+      "paidByUser": true,
+      "trackingLink": "https://www.swiggy.com/orders/track/40394",
+      "cancelledAt": "2026-10-15T02:29:15.709Z"
+    },
+    "40511": {
+      "id": "40511",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/1044719/Umbashiya-442849410",
+      "selectedAccount": "dada",
+      "swiggyVerified": true,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": "Umbashiya's Group Order",
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T23:44:00.515Z",
+      "userChatId": 6938858013,
+      "userMessageId": 726,
+      "bossMessageIds": {
+        "6484999726": 727
+      }
+    },
+    "46475": {
+      "id": "46475",
+      "userId": 1792014309,
+      "userName": "🥢🅽🅴🆆❖᭄🫧 🆄🆂🅴🆁™ᴮᵒˢˢ≛⃝",
+      "handle": "Trust_me_i_will_trust_youuu",
+      "address": "https://t.me/NobiXreferbot?start=6484999726",
+      "cart": "https://t.me/NobiXreferbot?start=6484999726",
+      "status": "CANCELLED",
+      "createdAt": "2026-10-14T14:40:46.475Z",
+      "acceptedAt": "2026-10-14T14:47:39.669Z",
+      "cancelledAt": "2026-10-15T01:55:30.145Z"
+    },
+    "52333": {
+      "id": "52333",
+      "userId": 6484999726,
+      "userName": "It's ✌️ Life",
+      "handle": "Its_life_001",
+      "type": "LINK_ORDER",
+      "address": "https://t.me/NobiXreferbot?start=6484999726",
+      "cart": "https://t.me/NobiXreferbot?start=6484999726",
+      "selectedAccount": "ammi",
+      "status": "CANCELLED",
+      "createdAt": "2026-10-14T19:34:12.336Z",
+      "amountAccepted": true,
+      "swiggyVerified": false,
+      "restaurantName": null,
+      "items": [],
+      "finalPayable": 350
+    },
+    "53105": {
+      "id": "53105",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "selectedAccount": null,
+      "swiggyVerified": false,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": null,
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T22:15:53.112Z",
+      "userChatId": 6938858013,
+      "userMessageId": 538,
+      "bossMessageIds": {
+        "6484999726": 539
+      }
+    },
+    "55633": {
+      "id": "55633",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "selectedAccount": "abbu",
+      "swiggyVerified": true,
+      "amountAccepted": false,
+      "qrSent": true,
+      "restaurantName": "Burger King",
+      "items": [
+        {
+          "name": "Crispy Veg Burger Peri Peri Meal (R)",
+          "qty": 1,
+          "price": 297
+        }
+      ],
+      "subtotal": 347,
+      "finalPayable": 347,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T22:12:35.638Z",
+      "userChatId": 6938858013,
+      "userMessageId": 526,
+      "bossMessageIds": {
+        "6484999726": 527
+      }
+    },
+    "59113": {
+      "id": "59113",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "address": "https://t.me/NobiXreferbot?start=6484999726",
+      "cart": "https://swiggy.onelink.me/JgkQ/dn7p39ck.",
+      "status": "COMPLETED",
+      "paymentStatus": "VERIFIED",
+      "createdAt": "2026-10-14T15:19:19.114Z",
+      "acceptedAt": "2026-10-14T15:19:53.517Z",
+      "paymentSentAt": "2026-10-14T15:26:41.016Z",
+      "paymentVerifiedAt": "2026-10-14T15:28:46.291Z",
+      "completedAt": "2026-10-14T17:55:14.443Z"
+    },
+    "88768": {
+      "id": "88768",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/1044719/Umbashiya-442849410",
+      "selectedAccount": "dada",
+      "swiggyVerified": true,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": "Umbashiya's Group Order",
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-15T00:06:28.773Z",
+      "userChatId": 6938858013,
+      "userMessageId": 779,
+      "bossMessageIds": {
+        "6484999726": 780
+      }
+    },
+    "89767": {
+      "id": "89767",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "selectedAccount": "dada",
+      "swiggyVerified": true,
+      "amountAccepted": false,
+      "qrSent": true,
+      "restaurantName": "Umbashiya's Group Order",
+      "items": [
+        {
+          "name": "Double Crispy Veg + Double Crispy Veg.",
+          "qty": 1,
+          "price": 198
+        },
+        {
+          "name": "Crispy Chicken Double Patty Burger.",
+          "qty": 1,
+          "price": 139
+        },
+        {
+          "name": "Crispy Veg Burger Peri Peri Meal (R)",
+          "qty": 1,
+          "price": 297
+        }
+      ],
+      "subtotal": 714,
+      "finalPayable": 714,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T23:24:49.768Z",
+      "userChatId": 6938858013,
+      "userMessageId": 679,
+      "bossMessageIds": {
+        "6484999726": 680
+      }
+    },
+    "90516": {
+      "id": "90516",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "Address pending / not provided",
+      "cart": "https://swig.gy/gc/1271597/Umbashiya-442849410",
+      "selectedAccount": null,
+      "swiggyVerified": false,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": null,
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-15T01:08:10.522Z",
+      "userChatId": 6938858013,
+      "userMessageId": 933,
+      "bossMessageIds": {
+        "6484999726": 934
+      }
+    },
+    "92716": {
+      "id": "92716",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swiggy.onelink.me/JgkQ/9f9wkl6y",
+      "cart": "https://swig.gy/gc/1271597/Umbashiya-442849410",
+      "selectedAccount": "abbu",
+      "swiggyVerified": true,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": "Boba Bhai - Bubble Tea & Korean Street Food",
+      "items": [
+        {
+          "name": "Chicken Popcorn Regular- 12 Pcs",
+          "qty": 1,
+          "price": 239,
+          "lineTotal": 239
+        }
+      ],
+      "subtotal": 239,
+      "finalPayable": 401,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-15T00:43:12.719Z",
+      "userChatId": 6938858013,
+      "userMessageId": null,
+      "bossMessageIds": {},
+      "bestCoupon": {
+        "code": "SWIGGYIT"
+      }
+    },
+    "97030": {
+      "id": "97030",
+      "userId": 1792014309,
+      "userName": "🥢🅽🅴🆆❖᭄🫧 🆄🆂🅴🆁™ᴮᵒˢˢ≛⃝",
+      "handle": "Trust_me_i_will_trust_youuu",
+      "address": "https://t.me/NobiXreferbot?start=6484999726",
+      "cart": "https://t.me/NobiXreferbot?start=6484999726",
+      "status": "COMPLETED",
+      "createdAt": "2026-10-14T14:46:37.030Z",
+      "acceptedAt": "2026-10-14T14:47:33.865Z"
+    },
+    "97216": {
+      "id": "97216",
+      "userId": 6484999726,
+      "userName": "It's ✌️ Life",
+      "handle": "Its_life_001",
+      "address": "https://t.me/NobiXreferbot?start=6484999726",
+      "cart": "https://t.me/NobiXreferbot?start=6484999726",
+      "status": "COMPLETED",
+      "createdAt": "2026-10-14T14:38:17.216Z",
+      "acceptedAt": "2026-10-14T14:50:43.141Z"
+    },
+    "03052": {
+      "id": "03052",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "Trustpulser",
+      "type": "SWIGGY_ORDER",
+      "address": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "cart": "https://swig.gy/gc/803172/Umbashiya-442849410",
+      "selectedAccount": "abbu",
+      "swiggyVerified": false,
+      "amountAccepted": true,
+      "qrSent": true,
+      "restaurantName": null,
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": 350,
+      "status": "COMPLETED",
+      "paymentStatus": "VERIFIED",
+      "createdAt": "2026-10-14T21:48:23.056Z",
+      "userChatId": 6938858013,
+      "userMessageId": 488,
+      "bossMessageIds": {
+        "6484999726": 489
+      },
+      "completedAt": "2026-10-14T21:53:02.834Z",
+      "trackingLink": "https://www.swiggy.com/orders/track/03052"
+    },
+    "03468": {
+      "id": "03468",
+      "userId": 1792014309,
+      "userName": "🥢🅽🅴🆆❖᭄🫧 🆄🆂🅴🆁™ᴮᵒˢˢ≛⃝",
+      "handle": "Trust_me_i_will_trust_youuu",
+      "type": "SWIGGY_ORDER",
+      "address": "Ammi ka Ghar",
+      "cart": "https://swiggy.onelink.me/JgkQ/apph141j",
+      "selectedAccount": "dada",
+      "swiggyVerified": false,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": null,
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": 350,
+      "status": "COMPLETED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T22:20:03.472Z",
+      "userChatId": 1792014309,
+      "userMessageId": 557,
+      "bossMessageIds": {
+        "6484999726": 559
+      },
+      "completedAt": "2026-10-14T22:21:12.765Z"
+    },
+    "04329": {
+      "id": "04329",
+      "userId": 1792014309,
+      "userName": "🥢🅽🅴🆆❖᭄🫧 🆄🆂🅴🆁™ᴮᵒˢˢ≛⃝",
+      "handle": "Trust_me_i_will_trust_youuu",
+      "type": "SWIGGY_ORDER",
+      "address": "Address pending / not provided",
+      "cart": "https://swig.gy/gc/978746/Umbashiya-442849410",
+      "selectedAccount": "dada",
+      "swiggyVerified": true,
+      "amountAccepted": false,
+      "qrSent": false,
+      "restaurantName": "Umbashiya's Group Order",
+      "items": [],
+      "subtotal": 0,
+      "finalPayable": null,
+      "status": "CANCELLED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-14T23:50:04.333Z",
+      "userChatId": 1792014309,
+      "userMessageId": 747,
+      "bossMessageIds": {
+        "6484999726": 748
+      }
+    }
+  },
+  "drafts": {
+    "1361483960": {
+      "address": null,
+      "cart": null,
+      "submitted": false,
+      "currentOrderId": null
+    },
+    "1792014309": {
+      "address": null,
+      "cart": null,
+      "submitted": false,
+      "currentOrderId": null
+    },
+    "6484999726": {
+      "address": null,
+      "cart": null,
+      "submitted": false,
+      "currentOrderId": null
+    },
+    "6814613953": {
+      "address": null,
+      "cart": null,
+      "submitted": false,
+      "currentOrderId": null
+    },
+    "8315217027": {
+      "address": null,
+      "cart": null,
+      "submitted": false,
+      "currentOrderId": null
+    },
+    "6938858013": {
+      "address": null,
+      "cart": "https://swiggy.onelink.me/JgkQ/jns8ggyg",
+      "submitted": false,
+      "currentOrderId": null
+    },
+    "5127390090": {
+      "address": null,
+      "cart": null,
+      "submitted": false,
+      "currentOrderId": null
+    },
+    "6530320076": {
+      "address": null,
+      "cart": null,
+      "submitted": false,
+      "currentOrderId": null
+    }
+  },
+  "bossState": null,
+  "userStates": {}
+}
