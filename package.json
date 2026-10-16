@@ -11,5 +11,8 @@
     "dotenv": "^16.4.7",
     "puppeteer-core": "^25.14.0",
     "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@railway/cli": "^5.69.0"
   }
 }
