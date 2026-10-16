@@ -873,26 +873,35 @@ bot.action(/^boss_choose_acc_(.+)_(.+)$/, async (ctx) => {
   order.amountAccepted = false; // Must be accepted by user!
   saveDb(db);
 
-  const accName = db.config.accounts?.[acc]?.name || acc;
+  const accountData = db.config.accounts?.[acc];
+  const accName = accountData?.name || acc;
   await ctx.answerCbQuery(`Selected: ${accName} | Verifying with Swiggy... ⏳`).catch(() => {});
 
   try {
     await ctx.deleteMessage();
   } catch (e) {}
 
+  let sessionWarning = '';
+  if (!accountData || !accountData.isLoggedIn) {
+    sessionWarning = `\n⚠️ <b>Warning:</b> Account "<b>${escapeHtml(accName)}</b>" Swiggy me logged in nahi hai! Kripya [ 📱 Login with Number ] ya [ 🔑 Login with JSON ] se login karein.\n`;
+  }
+
   // Verify real Swiggy cart & items using account cookies (NO FAKE ITEMS)
-  const accountData = db.config.accounts?.[acc];
-  if (order.cart) {
-    const swiggyData = await verifyAndInspectSwiggyLink(order.cart, accountData?.cookies || '');
-    if (swiggyData.verified) {
+  if (order.cart && accountData?.cookies) {
+    const swiggyData = await verifyAndInspectSwiggyLink(order.cart, accountData.cookies);
+    if (swiggyData.sessionExpired) {
+      if (accountData) accountData.isLoggedIn = false;
+      sessionWarning = `\n⚠️ <b>Session Expired:</b> Swiggy session expire ho chuka hai! Kripya dobara login karein.\n`;
+      order.swiggyVerified = false;
+    } else if (swiggyData.verified && swiggyData.finalPayable > 0) {
       order.swiggyVerified = true;
       if (swiggyData.restaurantName) order.restaurantName = swiggyData.restaurantName;
       if (swiggyData.items && swiggyData.items.length > 0) order.items = swiggyData.items;
       if (swiggyData.subtotal > 0) order.subtotal = swiggyData.subtotal;
       if (swiggyData.discountAmount > 0) order.discountAmount = swiggyData.discountAmount;
       if (swiggyData.couponCode) order.bestCoupon = { code: swiggyData.couponCode };
-      if (swiggyData.finalPayable > 0) order.finalPayable = swiggyData.finalPayable;
-      else if (order.subtotal > 0) order.finalPayable = order.subtotal;
+      order.finalPayable = swiggyData.finalPayable;
+      if (swiggyData.totalSavings > 0) order.totalSavings = swiggyData.totalSavings;
     } else {
       order.swiggyVerified = false;
       if (swiggyData.restaurantName) order.restaurantName = swiggyData.restaurantName;
@@ -906,17 +915,26 @@ bot.action(/^boss_choose_acc_(.+)_(.+)$/, async (ctx) => {
   // Update in-place on single cards for both Boss and User!
   await updateOrderCards(order);
 
-  await ctx.reply(
-    `🌸 <b>Selected: ${accName}'s Account (Order #${orderId})</b>\n\n` +
-    (order.restaurantName ? `🏨 Restaurant: <b>${escapeHtml(order.restaurantName)}</b>\n` : '') +
-    (order.swiggyVerified && order.finalPayable > 0
-      ? `✅ <b>Swiggy Verified:</b> ₹${order.finalPayable}\n`
-      : (order.finalPayable && order.finalPayable > 0
-          ? `💰 <b>Swiggy Total:</b> ₹${order.finalPayable}\n`
-          : `⏳ <b>Swiggy Total:</b> <i>Fetching from Swiggy...</i>\n`)) +
-    `\n<i>User ke card par amount accept ka option dikh raha hai. User ke "Accept Order" karte hi [ ⚡ Generate Qr ] unlock hoga.</i>`,
-    { parse_mode: 'HTML' }
-  );
+  let replyText = `🌸 <b>Selected: ${escapeHtml(accName)}'s Account (Order #${orderId})</b>\n\n` +
+    (order.restaurantName ? `🏨 Restaurant: <b>${escapeHtml(order.restaurantName)}</b>\n` : '');
+
+  if (sessionWarning) {
+    replyText += sessionWarning;
+  }
+
+  if (order.swiggyVerified && order.finalPayable > 0) {
+    replyText += `✅ <b>Swiggy Verified Total:</b> ₹${order.finalPayable}\n` +
+      (order.totalSavings > 0 ? `🎉 <b>Discounts Saved:</b> ₹${order.totalSavings}\n` : '') +
+      `\n<i>User ke card par ₹${order.finalPayable} accept karne ka option unlock ho gaya hai. User ke accept karte hi [ ⚡ Generate Qr ] unlock hoga.</i>`;
+  } else if (order.finalPayable && order.finalPayable > 0) {
+    replyText += `💰 <b>Payable Amount:</b> ₹${order.finalPayable}\n` +
+      `\n<i>User ke card par ₹${order.finalPayable} accept karne ka option dikh raha hai.</i>`;
+  } else {
+    replyText += `⏳ <b>Swiggy Total:</b> <i>Cart empty hai ya items sync nahi hue.</i>\n\n` +
+      `👉 <i>Aap order card me <b>[ 🟢 Amount: Set Amount ]</b> button se genuine payable amount set kar sakte hain taaki User accept kar sake.</i>`;
+  }
+
+  await ctx.reply(replyText, { parse_mode: 'HTML' });
 });
 
 // Text User Button
@@ -1370,6 +1388,10 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
   const accKey = order.selectedAccount || getActiveOrderAccountKey(db);
   const acc = db.config?.accounts?.[accKey];
 
+  if (!acc || !acc.isLoggedIn) {
+    return ctx.answerCbQuery(`⚠️ Account "${acc?.name || accKey}" Swiggy me logged in nahi hai! Pehle Login karein.`, { show_alert: true }).catch(() => {});
+  }
+
   const userButtons = [
     [Markup.button.url('🌐 Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
     [Markup.button.callback('💸 Verify Payment Status', `user_confirm_order_${orderId}`)]
@@ -1392,6 +1414,8 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
     bossButtons.unshift([Markup.button.url('🛒 Swiggy Cart / Group Order', order.cart)]);
   }
 
+  let qrDelivered = false;
+
   // Case 1: Genuine uploaded QR image
   if (order.customQrFileId) {
     try {
@@ -1404,6 +1428,7 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard(userButtons)
       });
+      qrDelivered = true;
     } catch (err) {
       console.error('Failed to send genuine QR to user:', err.message);
     }
@@ -1411,7 +1436,7 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
     try {
       await ctx.replyWithPhoto(order.customQrFileId, {
         caption: `⚡ <b>GENUINE PAYMENT QR DELIVERED!</b>\n\n` +
-          `📌 <b>Request #${orderId}</b> | Amount: <b>₹${payable}</b>\n` +
+          `📌 <b>Order #${orderId}</b> | Amount: <b>₹${payable}</b>\n` +
           `🌐 <b>Swiggy Checkout:</b> <code>https://www.swiggy.com/payments</code>\n\n` +
           `<i>Genuine QR image successfully delivered to User and Boss.</i>`,
         parse_mode: 'HTML',
@@ -1439,12 +1464,13 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard(userButtons)
         });
+        qrDelivered = true;
       } catch (err) {}
 
       try {
         await ctx.replyWithPhoto({ source: liveBuf }, {
           caption: `📸 <b>Live Swiggy Checkout Screen Captured & Delivered!</b>\n\n` +
-            `📌 <b>Request #${orderId}</b> | Amount: <b>₹${payable}</b>\n` +
+            `📌 <b>Order #${orderId}</b> | Amount: <b>₹${payable}</b>\n` +
             `🌐 <b>Swiggy Payment Page:</b> <code>https://www.swiggy.com/payments</code>\n\n` +
             `<i>Tip: Agar aapne Swiggy mobile app me QR generate kiya hai, toh 'Upload Real QR Screenshot' se bhej sakte hain.</i>`,
           parse_mode: 'HTML',
@@ -1452,40 +1478,27 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
         });
       } catch (err) {}
     } else {
-      // Case 3: Official Swiggy payment session link (Swiggy Web API does not provide a dynamic UPI QR in get-payment-options)
-      try {
-        await bot.telegram.sendMessage(
-          order.userId,
-          `🟢 <b>Swiggy Official Payment Session</b>\n\n` +
-          `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
-          `💰 <b>Total Payable Amount:</b> <b>₹${payable}</b>\n` +
-          (order.totalSavings > 0 ? `🎉 <b>Discounts Saved:</b> ₹${order.totalSavings}\n` : '') +
-          `\n<i>Niche button par tap karke Swiggy secure payment page kholein aur UPI / Card / Netbanking se pay karein:</i>`,
-          {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard(userButtons)
-          }
-        );
-      } catch (err) {}
-
-      try {
-        await ctx.reply(
-          `⚡ <b>Official Swiggy Payment Link Delivered!</b>\n\n` +
-          `📌 <b>Request #${orderId}</b> | Amount: <b>₹${payable}</b>\n` +
-          `🌐 <b>Swiggy Payment Page:</b> <code>https://www.swiggy.com/payments</code>\n\n` +
-          `ℹ️ <i>Swiggy Desktop Web checkout me dynamic UPI QR code expose nahi hota hai. User direct payment page se linked UPI/Cards se pay kar sakte hain ya aap Swiggy App ka real QR screenshot upload kar sakte hain.</i>`,
-          {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard(bossButtons)
-          }
-        );
-      } catch (err) {}
+      // Case 3: Live screen could not be captured
+      await ctx.reply(
+        `⚠️ <b>Swiggy Live Checkout Screen capture nahi ho saki!</b>\n\n` +
+        `👤 Account: <b>${escapeHtml(acc?.name || accKey)}</b>\n` +
+        `Karan: Cart me items nahi mile ya address select nahi hua hai.\n\n` +
+        `👉 <b>Asli QR Bhejne Ka Tarika:</b>\n` +
+        `Swiggy mobile app me jakar order payment screen / UPI QR ka screenshot lein aur niche <b>[ 📷 Upload Real QR Screenshot ]</b> button se bhej dein. Yeh turant User ko deliver ho jayega!`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard(bossButtons)
+        }
+      );
+      return;
     }
   }
 
-  order.qrSent = true;
-  saveDb(db);
-  await updateOrderCards(order);
+  if (qrDelivered) {
+    order.qrSent = true;
+    saveDb(db);
+    await updateOrderCards(order);
+  }
 });
 
 // Boss Get QR button (Card 3 in FigJam)

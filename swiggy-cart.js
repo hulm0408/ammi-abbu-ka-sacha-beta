@@ -133,6 +133,10 @@ async function extractAndOptimizeCartData(page) {
           cartRes = await r.json();
         } catch (e) {}
 
+        if (cartRes?.statusCode === 1 && (cartRes?.statusMessage?.includes('Session expired') || cartRes?.statusMessage?.includes('login'))) {
+          return { sessionExpired: true };
+        }
+
         if (!cartRes?.data) return null;
         const d = cartRes.data;
         const cm = d.cartMeta || {};
@@ -316,7 +320,7 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '') {
   // 1. Fast resolve link metadata (Group Cart, Restaurant ID, Host)
   const meta = await resolveSwiggyLink(cleanUrl);
 
-  let restaurantName = meta.hostName ? `${meta.hostName}'s Group Order` : null;
+  let restaurantName = null;
   let items = [];
   let itemTotal = 0;
   let subtotal = 0;
@@ -333,140 +337,121 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '') {
   let address = null;
   let addressDetails = null;
   let taxesAndCharges = 0;
-  let verified = Boolean(meta.groupCartId || meta.restaurantId);
+  let verified = false;
 
-  // 2. Puppeteer extraction with session cookies & AWS WAF bypass
-  try {
-    const browser = await puppeteer.launch({
-      executablePath: CHROME_PATH,
-      headless: PUPPETEER_HEADLESS,
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--window-position=-32000,-32000',
-        '--no-sandbox'
-      ]
-    });
+  // 2. Fetch authentic Restaurant Name directly from Swiggy's menu API if restaurantId is found
+  if (meta.restaurantId) {
+    try {
+      const restRes = await fetch(`https://www.swiggy.com/dapi/menu/pl?page-type=REGULAR_MENU&complete-menu=true&lat=26.8467&lng=80.9462&restaurantId=${meta.restaurantId}`);
+      const restJson = await restRes.json();
+      const rInfo = restJson?.data?.cards?.find(c => c.card?.card?.info)?.card?.card?.info;
+      if (rInfo?.name) {
+        restaurantName = rInfo.name;
+        verified = true;
+      }
+    } catch (e) {}
+  }
 
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 900 });
+  // 3. Inspect live cart with account session cookies & fresh AWS WAF token
+  if (cookies) {
+    let browser = null;
+    try {
+      browser = await puppeteer.launch({
+        executablePath: CHROME_PATH,
+        headless: PUPPETEER_HEADLESS,
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--no-sandbox',
+          '--disable-gpu',
+          '--disable-dev-shm-usage',
+          '--no-first-run'
+        ]
+      });
 
-    if (cookies) {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1280, height: 900 });
+
+      // First solve fresh WAF challenge on swiggy.com
+      await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 25000 });
+      for (let i = 0; i < 20; i++) {
+        const pageCookies = await page.cookies();
+        const waf = pageCookies.find(c => c.name === 'aws-waf-token');
+        if (waf && waf.value.length > 50) break;
+        await new Promise(r => setTimeout(r, 600));
+      }
+      await new Promise(r => setTimeout(r, 2000));
+
+      // Inject account cookies EXCLUDING aws-waf-token to keep the fresh WAF token
       const cookiePairs = cookies.split(';').map(s => s.trim()).filter(Boolean);
       const parsedCookies = cookiePairs.map(p => {
         const [name, ...val] = p.split('=');
         return { name, value: val.join('='), domain: '.swiggy.com', path: '/' };
-      });
-      await page.setCookie(...parsedCookies).catch(() => {});
-    }
+      }).filter(c => c.name !== 'aws-waf-token');
 
-    // Go to swiggy.com root to trigger & solve AWS WAF challenge
-    await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded' });
-    for (let i = 0; i < 15; i++) {
-      const pageCookies = await page.cookies();
-      const waf = pageCookies.find(c => c.name === 'aws-waf-token');
-      if (waf && waf.value.length > 50) break;
-      await new Promise(r => setTimeout(r, 600));
-    }
-    // Settle delay for WAF reload to complete
-    await new Promise(r => setTimeout(r, 2500));
+      if (parsedCookies.length > 0) {
+        await page.setCookie(...parsedCookies).catch(() => {});
+      }
 
-    // Extract cart from current account
-    let cartData = await extractAndOptimizeCartData(page);
-
-    if (cartData && cartData.items && cartData.items.length > 0) {
-      items = cartData.items;
-      if (cartData.restaurantName) restaurantName = cartData.restaurantName;
-      itemTotal = cartData.itemTotal;
-      subtotal = cartData.subtotal;
-      deliveryFee = cartData.deliveryFee;
-      freeDeliveryDiscount = cartData.freeDeliveryDiscount;
-      swiggyOneApplied = cartData.swiggyOneApplied;
-      swiggyOneSavings = cartData.swiggyOneSavings;
-      couponCode = cartData.couponCode;
-      discountAmount = cartData.discountAmount;
-      freeCashBalance = cartData.freeCashBalance;
-      freeCashApplied = cartData.freeCashApplied;
-      finalPayable = cartData.finalPayable;
-      totalSavings = cartData.totalSavings;
-      address = cartData.address;
-      addressDetails = cartData.addressDetails;
-      taxesAndCharges = cartData.taxesAndCharges || 0;
-      verified = true;
-    }
-
-    // If items are still empty, check all other configured family accounts in db
-    if (items.length === 0) {
-      try {
-        const db = getDb();
-        for (const [accKey, accObj] of Object.entries(db.config?.accounts || {})) {
-          if (!accObj.cookies || accObj.cookies === cookies) continue;
-          const otherPage = await browser.newPage();
-          const cookiePairs = accObj.cookies.split(';').map(s => s.trim()).filter(Boolean);
-          const parsedCookies = cookiePairs.map(p => {
-            const [name, ...val] = p.split('=');
-            return { name, value: val.join('='), domain: '.swiggy.com', path: '/' };
-          });
-          await otherPage.setCookie(...parsedCookies).catch(() => {});
-          await otherPage.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded' });
-          await new Promise(r => setTimeout(r, 2000));
-
-          const otherCart = await extractAndOptimizeCartData(otherPage);
-          await otherPage.close().catch(() => {});
-
-          if (otherCart && otherCart.items && otherCart.items.length > 0) {
-            items = otherCart.items;
-            if (otherCart.restaurantName) restaurantName = otherCart.restaurantName;
-            itemTotal = otherCart.itemTotal;
-            subtotal = otherCart.subtotal;
-            deliveryFee = otherCart.deliveryFee;
-            freeDeliveryDiscount = otherCart.freeDeliveryDiscount;
-            swiggyOneApplied = otherCart.swiggyOneApplied;
-            swiggyOneSavings = otherCart.swiggyOneSavings;
-            couponCode = otherCart.couponCode;
-            discountAmount = otherCart.discountAmount;
-            freeCashBalance = otherCart.freeCashBalance;
-            freeCashApplied = otherCart.freeCashApplied;
-            finalPayable = otherCart.finalPayable;
-            totalSavings = otherCart.totalSavings;
-            address = otherCart.address;
-            addressDetails = otherCart.addressDetails;
-            taxesAndCharges = otherCart.taxesAndCharges || 0;
-            verified = true;
-            break;
-          }
-        }
-      } catch (e) {}
-    }
-
-    // Fallback: If restaurant name is still missing but we have restaurantId from link
-    if (!restaurantName && meta.restaurantId) {
-      try {
-        const menuData = await page.evaluate(async (rid) => {
-          try {
-            const res = await fetch(`https://www.swiggy.com/dapi/menu/pl?page-type=REGULAR_MENU&complete-menu=true&lat=26.83730&lng=80.91650&restaurantId=${rid}`);
-            const json = await res.json();
-            if (json?.data?.cards) {
-              const restCard = json.data.cards.find(c => c.card?.card?.info?.name);
-              return restCard?.card?.card?.info?.name || null;
+      // If restaurantId is still not resolved, query menu inside page
+      if (!restaurantName && meta.restaurantId) {
+        try {
+          const fetchedName = await page.evaluate(async (rid) => {
+            try {
+              const r = await fetch(`https://www.swiggy.com/dapi/menu/pl?page-type=REGULAR_MENU&complete-menu=true&lat=26.8467&lng=80.9462&restaurantId=${rid}`);
+              const json = await r.json();
+              const info = json?.data?.cards?.find(c => c.card?.card?.info)?.card?.card?.info;
+              return info?.name || null;
+            } catch (e) {
+              return null;
             }
-          } catch (e) {}
-          return null;
-        }, meta.restaurantId);
-        if (menuData) restaurantName = menuData;
-      } catch (e) {}
-    }
+          }, meta.restaurantId);
+          if (fetchedName) restaurantName = fetchedName;
+        } catch (e) {}
+      }
 
-    await browser.close().catch(() => {});
-  } catch (err) {
-    console.error('Swiggy link verification error:', err.message);
+      // Extract cart from current account
+      const cartData = await extractAndOptimizeCartData(page);
+
+      if (cartData?.sessionExpired) {
+        await browser.close().catch(() => {});
+        return {
+          verified: false,
+          sessionExpired: true,
+          restaurantName,
+          message: 'Swiggy session expired for this account'
+        };
+      }
+
+      if (cartData && cartData.items && cartData.items.length > 0) {
+        items = cartData.items;
+        if (cartData.restaurantName) restaurantName = cartData.restaurantName;
+        itemTotal = cartData.itemTotal;
+        subtotal = cartData.subtotal;
+        deliveryFee = cartData.deliveryFee;
+        freeDeliveryDiscount = cartData.freeDeliveryDiscount;
+        swiggyOneApplied = cartData.swiggyOneApplied;
+        swiggyOneSavings = cartData.swiggyOneSavings;
+        couponCode = cartData.couponCode;
+        discountAmount = cartData.discountAmount;
+        freeCashBalance = cartData.freeCashBalance;
+        freeCashApplied = cartData.freeCashApplied;
+        finalPayable = cartData.finalPayable;
+        totalSavings = cartData.totalSavings;
+        address = cartData.address;
+        addressDetails = cartData.addressDetails;
+        taxesAndCharges = cartData.taxesAndCharges || 0;
+        verified = true;
+      }
+
+      await browser.close().catch(() => {});
+    } catch (err) {
+      if (browser) await browser.close().catch(() => {});
+      console.error('verifyAndInspectSwiggyLink error:', err.message);
+    }
   }
 
-  // If group cart metadata was verified from link
-  if (meta.groupCartId || meta.restaurantId) {
-    verified = true;
-    if (!restaurantName) {
-      restaurantName = meta.hostName ? `${meta.hostName}'s Group Order` : `Swiggy Order #${meta.restaurantId}`;
-    }
+  if (!restaurantName && meta.hostName) {
+    restaurantName = `${meta.hostName}'s Group Order`;
   }
 
   return {
@@ -835,11 +820,11 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
 // Live capture real Swiggy checkout & payment screen using account cookies (Lightweight Headless)
 export async function captureSwiggyPaymentScreenshot(cookies) {
   if (!cookies) return null;
-  let browser;
+  let browser = null;
   try {
     browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: 'new',
+      headless: PUPPETEER_HEADLESS,
       args: [
         '--disable-blink-features=AutomationControlled',
         '--no-sandbox',
@@ -852,6 +837,17 @@ export async function captureSwiggyPaymentScreenshot(cookies) {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 900 });
 
+    // 1. Solve WAF on swiggy.com root first
+    await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 25000 });
+    for (let i = 0; i < 20; i++) {
+      const pageCookies = await page.cookies();
+      const waf = pageCookies.find(c => c.name === 'aws-waf-token');
+      if (waf && waf.value.length > 50) break;
+      await new Promise(r => setTimeout(r, 600));
+    }
+    await new Promise(r => setTimeout(r, 2000));
+
+    // 2. Set account cookies EXCLUDING aws-waf-token
     const cookiePairs = typeof cookies === 'string'
       ? cookies.split(';').map(s => s.trim()).filter(Boolean)
       : Array.isArray(cookies)
@@ -860,37 +856,62 @@ export async function captureSwiggyPaymentScreenshot(cookies) {
     const parsedCookies = cookiePairs.map(p => {
       const [name, ...val] = p.split('=');
       return { name, value: val.join('='), domain: '.swiggy.com', path: '/' };
-    });
+    }).filter(c => c.name !== 'aws-waf-token');
+
     if (parsedCookies.length > 0) {
       await page.setCookie(...parsedCookies).catch(() => {});
     }
 
-    await page.goto('https://www.swiggy.com/checkout', { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await new Promise(r => setTimeout(r, 2000));
+    // 3. Open checkout
+    await page.goto('https://www.swiggy.com/checkout', { waitUntil: 'domcontentloaded', timeout: 25000 });
+    await new Promise(r => setTimeout(r, 3000));
 
-    // Deliver here
+    // Check if cart is empty or requires login
+    const stateInfo = await page.evaluate(() => {
+      const text = document.body.innerText || '';
+      return {
+        isEmpty: text.includes('Your cart is empty'),
+        isSignIn: text.includes('To place your order now, log in') || text.includes('Sign in')
+      };
+    });
+
+    if (stateInfo.isEmpty || stateInfo.isSignIn) {
+      console.log('[captureSwiggyPaymentScreenshot] Checkout cannot proceed: empty cart or not logged in');
+      await browser.close().catch(() => {});
+      return null;
+    }
+
+    // 4. Click Deliver Here if needed
     await page.evaluate(() => {
       const els = Array.from(document.querySelectorAll('*'));
       const btn = els.find(e => e.innerText?.trim() === 'DELIVER HERE');
       if (btn) btn.click();
     });
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, 2000));
 
-    // Proceed to pay
+    // 5. Click Proceed to Pay
     await page.evaluate(() => {
       const els = Array.from(document.querySelectorAll('*'));
       const btn = els.find(e => e.innerText?.trim() === 'PROCEED TO PAY');
       if (btn) btn.click();
     });
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, 5000));
+
+    // 6. Expand UPI / QR section if present
+    await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('*'));
+      const pp = els.find(e => e.innerText && (e.innerText.includes('PhonePe') || e.innerText.includes('UPI')));
+      if (pp) pp.click();
+    });
+    await new Promise(r => setTimeout(r, 2000));
 
     const buffer = await page.screenshot({ fullPage: false });
+    await browser.close().catch(() => {});
     return buffer;
   } catch (err) {
     console.error('Failed to capture Swiggy payment screenshot:', err.message);
-    return null;
-  } finally {
     if (browser) await browser.close().catch(() => {});
+    return null;
   }
 }
 
