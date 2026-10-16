@@ -14,11 +14,7 @@ const defaultData = {
     slotsLeft: 5,
     bossIds: [6484999726],
     familyMembers: {},
-    accounts: {
-      ammi: { id: 'ammi', name: 'Ammi', phone: '', token: '', address: 'Ammi ka Ghar' },
-      abbu: { id: 'abbu', name: 'Abbu', phone: '', token: '', address: 'Abbu ka Address' },
-      dada: { id: 'dada', name: 'Dada', phone: '', token: '', address: 'Dada ka Ghar' }
-    }
+    accounts: {}
   },
   orders: {},
   drafts: {},
@@ -247,20 +243,25 @@ export function importSessionJson(rawJson, targetKey = null) {
       return { success: false, message: 'Invalid session JSON: missing cookies or tid' };
     }
 
-    const key = targetKey || data.account || 'ammi';
-    const db = getDb();
-    if (!db.config.accounts[key]) {
-      db.config.accounts[key] = { id: key, name: key.charAt(0).toUpperCase() + key.slice(1) };
-    }
-
     let cookieStr = data.cookies || '';
     if (!cookieStr && data.tid) {
       cookieStr = `tid=${data.tid}; _sid=${data.sid || ''}; _device_id=${data.deviceId || ''}`;
     }
 
+    const phone = data.phone || data.mobile || '';
+    const cleanPhone = phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : '';
+    const key = targetKey || (cleanPhone ? `acc_${cleanPhone}` : (data.account || 'acc_' + Date.now()));
+
+    const db = getDb();
+    if (!db.config.accounts) db.config.accounts = {};
+    if (!db.config.accounts[key]) {
+      db.config.accounts[key] = { id: key, name: data.name || (cleanPhone ? `Swiggy ${cleanPhone}` : 'Swiggy User') };
+    }
+
     db.config.accounts[key] = {
       ...db.config.accounts[key],
-      phone: data.phone || data.mobile || db.config.accounts[key].phone || '',
+      phone: cleanPhone || db.config.accounts[key].phone || '',
+      name: data.name || db.config.accounts[key].name || (cleanPhone ? `Swiggy ${cleanPhone}` : 'Swiggy User'),
       customerId: data.customerId || data.userId || db.config.accounts[key].customerId || '',
       tid: data.tid || db.config.accounts[key].tid || '',
       sid: data.sid || db.config.accounts[key].sid || '',
@@ -270,8 +271,12 @@ export function importSessionJson(rawJson, targetKey = null) {
       savedAt: new Date().toISOString()
     };
 
+    if (!db.config.activeOrderAccount) {
+      db.config.activeOrderAccount = key;
+    }
+
     saveDb(db);
-    return { success: true, account: key, phone: db.config.accounts[key].phone };
+    return { success: true, account: key, name: db.config.accounts[key].name, phone: db.config.accounts[key].phone };
   } catch (err) {
     return { success: false, message: 'Invalid JSON format: ' + err.message };
   }
@@ -279,14 +284,15 @@ export function importSessionJson(rawJson, targetKey = null) {
 
 export function getActiveOrderAccountKey() {
   const db = getDb();
-  if (db.config?.activeOrderAccount && db.config?.accounts?.[db.config.activeOrderAccount]) {
+  if (db.config?.activeOrderAccount && db.config?.accounts?.[db.config.activeOrderAccount]?.isLoggedIn) {
     return db.config.activeOrderAccount;
   }
   // Fallback to first logged in account
   for (const [k, a] of Object.entries(db.config?.accounts || {})) {
     if (a.isLoggedIn && a.cookies) return k;
   }
-  return 'abbu';
+  const first = Object.keys(db.config?.accounts || {})[0];
+  return first || null;
 }
 
 export function setActiveOrderAccountKey(key) {

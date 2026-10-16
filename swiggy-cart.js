@@ -1128,4 +1128,52 @@ export async function checkAccountFreeCash(cookies) {
   return claimInstamartFreeCash(cookies);
 }
 
+// Fetch verified profile name and mobile number directly from Swiggy account
+export async function fetchSwiggyProfileFromCookies(cookies) {
+  if (!cookies) return { name: null, phone: null };
+  let browser = null;
+  try {
+    browser = await puppeteer.launch({
+      executablePath: CHROME_PATH,
+      headless: PUPPETEER_HEADLESS,
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--no-sandbox',
+        '--disable-gpu',
+        '--disable-dev-shm-usage',
+        '--no-first-run'
+      ]
+    });
+    const page = await browser.newPage();
+    const cookiePairs = cookies.split(';').map(s => s.trim()).filter(Boolean);
+    const parsedCookies = cookiePairs.map(p => {
+      const [name, ...val] = p.split('=');
+      return { name, value: val.join('='), domain: '.swiggy.com', path: '/' };
+    });
+    await page.setCookie(...parsedCookies).catch(() => {});
+    await page.goto('https://www.swiggy.com/my-account', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 2000));
+
+    const result = await page.evaluate(() => {
+      const editBtn = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.trim() === 'EDIT PROFILE');
+      if (editBtn && editBtn.parentElement) {
+        const lines = editBtn.parentElement.innerText.split('\n').map(s => s.trim()).filter(Boolean);
+        if (lines.length >= 2) {
+          const name = lines[1] !== 'EDIT PROFILE' ? lines[1] : (lines[0] || null);
+          const phone = lines[2] || (lines[1].match(/\d{10}/) ? lines[1] : null);
+          return { name, phone };
+        }
+      }
+      return { name: null, phone: null };
+    });
+
+    await browser.close().catch(() => {});
+    return result || { name: null, phone: null };
+  } catch (err) {
+    console.error('fetchSwiggyProfileFromCookies error:', err.message);
+    if (browser) await browser.close().catch(() => {});
+    return { name: null, phone: null };
+  }
+}
+
 

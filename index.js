@@ -37,7 +37,8 @@ import {
   formatSwiggyWorldCartReceipt,
   captureSwiggyPaymentScreenshot,
   checkAccountFreeCash,
-  claimInstamartFreeCash
+  claimInstamartFreeCash,
+  fetchSwiggyProfileFromCookies
 } from './swiggy-cart.js';
 
 dotenv.config();
@@ -127,10 +128,11 @@ function getUserReplyKeyboard(draft = {}) {
 function getBossReplyKeyboard() {
   return Markup.keyboard([
     ['🚀 Send to Beta', '📦 Order Screen'],
+    ['🔑 Login with JSON', '📱 Login with Number'],
     ['🟡 Pending Orders', '🟣 Connected Accounts'],
     ['🔵 Saved Addresses', '🟢 Slot Status'],
     ['📊 Total slots', '🟢 Total left'],
-    ['🎁 Claim Free Cash', '🟠 Set UPI ID', '⚪ Login Swiggy']
+    ['🎁 Claim Free Cash', '🟠 Set UPI ID']
   ]).resize();
 }
 
@@ -298,8 +300,8 @@ function getBossPanelText() {
 function getBossPanelKeyboard() {
   return Markup.inlineKeyboard([
     [
-      Markup.button.callback('➕ Add New Account', 'boss_add_new_account_menu'),
-      Markup.button.callback('🔑 Login an Account', 'boss_prompt_login')
+      Markup.button.callback('🔑 Login with JSON', 'boss_login_with_json'),
+      Markup.button.callback('📱 Login with Number', 'boss_login_with_number')
     ],
     [
       Markup.button.callback('👥 View Accounts', 'boss_view_accounts'),
@@ -691,126 +693,37 @@ bot.action('boss_prompt_login', async (ctx) => {
 async function handlePromptLogin(ctx) {
   const keyboard = Markup.inlineKeyboard([
     [
-      Markup.button.callback('🌸 Login Ammi', 'boss_start_otp_ammi'),
-      Markup.button.callback('👴 Login Abbu', 'boss_start_otp_abbu'),
-      Markup.button.callback('🧓 Login Dada', 'boss_start_otp_dada')
+      Markup.button.callback('🔑 Login with JSON', 'boss_login_with_json'),
+      Markup.button.callback('📱 Login with Number', 'boss_login_with_number')
     ],
     [
-      Markup.button.callback('📤 Export Session JSON', 'boss_export_menu'),
-      Markup.button.callback('📥 Import / Login via JSON', 'boss_prompt_import')
+      Markup.button.callback('👥 View Connected Accounts', 'boss_view_accounts'),
+      Markup.button.callback('📤 Export Session JSON', 'boss_export_picker')
     ]
   ]);
 
-  await ctx.reply(
-    `🔑 <b>Swiggy Account Access & Session Manager:</b>\n\n` +
-    `• <b>Fast OTP:</b> Number bhejte hi 1 second ke andar OTP aayega (Pre-warmed Chrome active)\n` +
-    `• <b>Auto-Signup:</b> Agar number Swiggy par naya hai toh automatically register karke login hoga\n` +
-    `• <b>Session JSON:</b> Bina OTP ke login karna ho ya Mom se Dad me transfer karna ho, JSON use karein!`,
-    { parse_mode: 'HTML', ...keyboard }
-  );
+  const text = `🔑 <b>Swiggy Account Access & Login Manager:</b>\n\n` +
+    `• <b>🔑 Login with JSON:</b> Session / Cookie JSON bhej kar turant login karein (Swiggy se profile name auto-fetch hoga!)\n` +
+    `• <b>📱 Login with Number:</b> Mobile number se instant OTP aayega (Naya number hone par naam puchega, existing par direct OTP)`;
+
+  if (ctx.callbackQuery) {
+    try {
+      await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      return;
+    } catch (e) {}
+  }
+  await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
 }
 
-bot.action(/^boss_start_otp_(ammi|abbu|dada)$/, async (ctx) => {
+// 1. Login with JSON Prompt
+bot.action('boss_login_with_json', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const acc = ctx.match[1];
   await ctx.answerCbQuery().catch(() => {});
-
-  userWaitState[ctx.from.id] = {
-    action: 'waiting_phone_for_otp',
-    targetAcc: acc
-  };
-
-  const name = acc.charAt(0).toUpperCase() + acc.slice(1);
+  userWaitState[ctx.from.id] = { action: 'waiting_json_login' };
   await ctx.reply(
-    `📱 <b>Enter ${name}'s 10-digit mobile number:</b>\n\n` +
-    `<i>(Tip: Aap chat me kabhi bhi seedha 10-digit number likh kar bhej sakte hain!)</i>`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit number...' }
-    }
-  );
-});
-
-// Fast OTP Trigger from 1-tap buttons
-bot.action(/^boss_fast_otp_(ammi|abbu|dada)_(.+)$/, async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const targetAcc = ctx.match[1];
-  const cleanPhone = ctx.match[2];
-  await ctx.answerCbQuery().catch(() => {});
-
-  const userId = ctx.from.id;
-  await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${cleanPhone}...</b>`, { parse_mode: 'HTML' });
-
-  const result = await requestSwiggyOtpViaBridge(userId, cleanPhone, targetAcc);
-
-  if (result.success) {
-    userWaitState[userId] = {
-      action: 'waiting_swiggy_otp_bridge',
-      targetAcc,
-      phone: cleanPhone
-    };
-
-    await ctx.reply(
-      `📲 <b>OTP Sent to ${cleanPhone}!</b>\n\n` +
-      `Please enter the 6-digit OTP received on the phone:`,
-      {
-        parse_mode: 'HTML',
-        reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
-      }
-    );
-  } else {
-    delete userWaitState[userId];
-    await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}\nPlease check the number and try again.`, getBossPanelKeyboard());
-  }
-});
-
-// Export Session Menu
-bot.action('boss_export_menu', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  await ctx.answerCbQuery().catch(() => {});
-
-  await ctx.reply(
-    `📤 <b>Choose Account to Export Session JSON:</b>\n\n` +
-    `Is JSON ko aap Telegram Saved Messages me rakh sakte hain. Kisi bhi waqt bina OTP ke restore kar sakte hain!`,
-    Markup.inlineKeyboard([
-      [Markup.button.callback('🌸 Export Ammi\'s JSON', 'boss_export_ammi')],
-      [Markup.button.callback('👴 Export Abbu\'s JSON', 'boss_export_abbu')],
-      [Markup.button.callback('🧓 Export Dada\'s JSON', 'boss_export_dada')],
-      [Markup.button.callback('🔙 Back', 'boss_prompt_login')]
-    ])
-  );
-});
-
-bot.action(/^boss_export_(ammi|abbu|dada)$/, async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const acc = ctx.match[1];
-  await ctx.answerCbQuery().catch(() => {});
-
-  const data = exportSessionJson(acc);
-  const accName = acc.charAt(0).toUpperCase() + acc.slice(1);
-
-  if (!data) {
-    return ctx.reply(`⚠️ <b>${accName}'s account is not logged in yet.</b>\nPehle OTP daal kar ya JSON import karke login karein!`, getBossPanelKeyboard());
-  }
-
-  const jsonStr = JSON.stringify(data, null, 2);
-  await ctx.reply(
-    `📦 <b>[ SESSION BACKUP JSON: ${accName.toUpperCase()} ]</b>\n\n` +
-    `<code>${escapeHtml(jsonStr)}</code>\n\n` +
-    `<i>💡 Tip: Is block ko copy karke Saved Messages me rakh lein. Agar non-veg ke dar se Ammi se Abbu me switch karna ho, toh bas ye JSON chat me paste kar dena!</i>`,
-    { parse_mode: 'HTML', ...getBossPanelKeyboard() }
-  );
-});
-
-// Prompt Import JSON
-bot.action('boss_prompt_import', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  await ctx.answerCbQuery().catch(() => {});
-
-  userWaitState[ctx.from.id] = { action: 'waiting_json_import' };
-  await ctx.reply(
-    `📥 <b>Paste your Swiggy Session JSON here:</b>\n\n` +
-    `<i>Saved Messages ya backup se JSON copy karke chat me bhej dein:</i>`,
+    `🔑 <b>LOGIN WITH JSON:</b>\n\n` +
+    `Swiggy session / cookie JSON chat me paste karein ya <code>.json</code> file bhej dein:\n\n` +
+    `<i>💡 Swiggy se registered profile name automatically fetch hokar account save ho jayega!</i>`,
     {
       parse_mode: 'HTML',
       reply_markup: { force_reply: true, input_field_placeholder: 'Paste session JSON here...' }
@@ -818,34 +731,88 @@ bot.action('boss_prompt_import', async (ctx) => {
   );
 });
 
-// Apply Import JSON to specific account
-bot.action(/^boss_apply_import_(ammi|abbu|dada)$/, async (ctx) => {
+// 2. Login with Number Prompt
+bot.action('boss_login_with_number', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const targetAcc = ctx.match[1];
   await ctx.answerCbQuery().catch(() => {});
+  userWaitState[ctx.from.id] = { action: 'waiting_phone_for_number_login' };
+  await ctx.reply(
+    `📱 <b>LOGIN WITH NUMBER:</b>\n\n` +
+    `Swiggy account ka 10-digit mobile number chat me likhein:\n\n` +
+    `<i>• Naya number hoga toh pehle naam puchega fir OTP aayega.\n• Pehle se registered number hoga toh turant direct OTP bhejega!</i>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
+    }
+  );
+});
 
-  const userId = ctx.from.id;
-  const state = userWaitState[userId];
-  if (!state || !state.pendingJson) {
-    return ctx.reply('⚠️ No session JSON found in memory. Please paste the JSON again.');
+// Process JSON login and fetch authentic profile name from Swiggy
+async function handleProcessJsonLogin(ctx, rawJson, userId) {
+  delete userWaitState[userId];
+  let parsed = null;
+  try {
+    parsed = typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson;
+  } catch (e) {
+    return ctx.reply('⚠️ Invalid JSON format. Kripya valid Swiggy session JSON string bhein.');
   }
 
-  const result = importSessionJson(state.pendingJson, targetAcc);
-  delete userWaitState[userId];
+  let cookieStr = parsed.cookies || '';
+  if (!cookieStr && parsed.tid) {
+    cookieStr = `tid=${parsed.tid}; _sid=${parsed.sid || ''}; _device_id=${parsed.deviceId || ''}`;
+  }
+
+  if (!cookieStr && !parsed.tid) {
+    return ctx.reply('⚠️ Invalid session: Isme Swiggy cookies ya tid token nahi mila.');
+  }
+
+  const statusMsg = await ctx.reply('⏳ <i>Swiggy session verify kiya ja raha hai & profile name fetch ho raha hai...</i>', { parse_mode: 'HTML' });
+
+  // 1. Fetch real profile from Swiggy using cookies
+  const profile = await fetchSwiggyProfileFromCookies(cookieStr).catch(() => ({ name: null, phone: null }));
+  const parsedPhone = parsed.phone || parsed.mobile || '';
+  const cleanPhone = (profile?.phone || parsedPhone ? String(profile?.phone || parsedPhone).replace(/[^0-9]/g, '').slice(-10) : '');
+  const swiggyName = profile?.name || parsed.name || (cleanPhone ? `User ${cleanPhone}` : 'Swiggy User');
+
+  const accKey = cleanPhone ? `acc_${cleanPhone}` : (parsed.account || 'acc_' + Date.now());
+
+  // 2. Import into database
+  const result = importSessionJson({
+    ...parsed,
+    name: swiggyName,
+    phone: cleanPhone,
+    cookies: cookieStr
+  }, accKey);
+
+  try {
+    await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id);
+  } catch (e) {}
 
   if (result.success) {
-    const accName = targetAcc.charAt(0).toUpperCase() + targetAcc.slice(1);
-    await ctx.reply(
-      `✅ <b>Session Imported Successfully!</b>\n\n` +
-      `<b>${accName}</b>'s Swiggy account is now 🟢 <b>Logged In & Active</b>!\n` +
-      `📱 Phone: <b>${result.phone || 'Linked'}</b>\n\n` +
-      `<i>No OTP was needed. You can now order from ${accName}'s account seamlessly!</i>`,
-      { parse_mode: 'HTML', ...getBossPanelKeyboard() }
-    );
+    const db = getDb();
+    if (!db.config.activeOrderAccount) {
+      db.config.activeOrderAccount = accKey;
+      saveDb(db);
+    }
+
+    const successText = `✅ <b>Swiggy Account Connected via JSON!</b> 🎉\n\n` +
+      `👤 <b>Name (from Swiggy):</b> <b>${escapeHtml(swiggyName)}</b>\n` +
+      `📱 <b>Mobile:</b> <code>${cleanPhone || 'Linked'}</code>\n` +
+      `🔑 <b>Session:</b> Verified & Active 🟢\n\n` +
+      `<i>Aap is account se bina kisi manual setup ke direct orders process kar sakte hain!</i>`;
+
+    const buttons = [
+      [Markup.button.callback('👥 View Connected Accounts', 'boss_view_accounts')],
+      [Markup.button.callback('📱 Login Another (Number)', 'boss_login_with_number')],
+      [Markup.button.callback('🔑 Login Another (JSON)', 'boss_login_with_json')]
+    ];
+
+    await ctx.reply(successText, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
   } else {
     await ctx.reply(`❌ <b>Import Failed:</b> ${result.message}`, getBossPanelKeyboard());
   }
-});
+}
+
 
 // ================= ACCOUNT SELECTOR IN BOSS CARD =================
 
@@ -858,19 +825,36 @@ bot.action(/^boss_choose_acc_picker_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
 
   const db = getDb();
-  const ammiLogged = db.config.accounts?.ammi?.isLoggedIn ? '✅' : '';
-  const abbuLogged = db.config.accounts?.abbu?.isLoggedIn ? '✅' : '';
-  const dadaLogged = db.config.accounts?.dada?.isLoggedIn ? '✅' : '';
+  const accounts = db.config.accounts || {};
+  const buttons = [];
+  const accEntries = Object.entries(accounts);
+
+  if (accEntries.length === 0) {
+    buttons.push([
+      Markup.button.callback('🔑 Login with JSON', 'boss_login_with_json'),
+      Markup.button.callback('📱 Login with Number', 'boss_login_with_number')
+    ]);
+  } else {
+    for (let i = 0; i < accEntries.length; i += 2) {
+      const row = [];
+      const [k1, a1] = accEntries[i];
+      const m1 = a1.isLoggedIn ? '🟢' : '⚪';
+      row.push(Markup.button.callback(`${m1} ${a1.name || k1}`, `boss_choose_acc_${k1}_${orderId}`));
+      if (accEntries[i + 1]) {
+        const [k2, a2] = accEntries[i + 1];
+        const m2 = a2.isLoggedIn ? '🟢' : '⚪';
+        row.push(Markup.button.callback(`${m2} ${a2.name || k2}`, `boss_choose_acc_${k2}_${orderId}`));
+      }
+      buttons.push(row);
+    }
+    buttons.push([
+      Markup.button.callback('➕ Login Another Account', 'boss_prompt_login')
+    ]);
+  }
 
   await ctx.reply(
     `👥 <b>Choose Account to order for #${orderId}:</b>`,
-    Markup.inlineKeyboard([
-      [
-        Markup.button.callback(`🌸 Ammi ${ammiLogged}`, `boss_choose_acc_ammi_${orderId}`),
-        Markup.button.callback(`👴 Abbu ${abbuLogged}`, `boss_choose_acc_abbu_${orderId}`),
-        Markup.button.callback(`🧓 Dada ${dadaLogged}`, `boss_choose_acc_dada_${orderId}`)
-      ]
-    ])
+    Markup.inlineKeyboard(buttons)
   );
 });
 
@@ -889,7 +873,7 @@ bot.action(/^boss_choose_acc_(.+)_(.+)$/, async (ctx) => {
   order.amountAccepted = false; // Must be accepted by user!
   saveDb(db);
 
-  const accName = acc.charAt(0).toUpperCase() + acc.slice(1);
+  const accName = db.config.accounts?.[acc]?.name || acc;
   await ctx.answerCbQuery(`Selected: ${accName} | Verifying with Swiggy... ⏳`).catch(() => {});
 
   try {
@@ -1907,24 +1891,32 @@ bot.hears('👥 Family Accounts', async (ctx) => {
 async function showFamilyAccounts(ctx) {
   const db = getDb();
   const accounts = db.config.accounts || {};
+  const activeKey = db.config.activeOrderAccount;
 
-  let text = `👥 <b>CONFIGURED SWIGGY ACCOUNTS (${Object.keys(accounts).length}):</b>\n\n`;
-  for (const [key, acc] of Object.entries(accounts)) {
-    const status = acc.isLoggedIn ? `🟢 Logged In (${acc.phone || 'Ready'})` : '⚪ Not Logged In';
-    text += `• <b>${acc.name || key}:</b>\n` +
-      `  📌 Status: <b>${status}</b>\n` +
-      `  📱 Phone: <code>${acc.phone || 'Not set'}</code>\n` +
-      `  🏠 Address: ${acc.address || 'Saved Address'}\n\n`;
+  let text = `👥 <b>CONNECTED SWIGGY ACCOUNTS (${Object.keys(accounts).length}):</b>\n\n`;
+  if (Object.keys(accounts).length === 0) {
+    text += `<i>Koi bhi account connected nahi hai.\nNiche diye buttons se JSON ya Number se login karein!</i>\n\n`;
+  } else {
+    for (const [key, acc] of Object.entries(accounts)) {
+      const status = acc.isLoggedIn ? `🟢 Logged In` : '⚪ Logged Out';
+      const isActive = key === activeKey ? ' ⭐ <b>[ACTIVE FOR ORDERS]</b>' : '';
+      text += `• <b>${escapeHtml(acc.name || key)}</b>${isActive}\n` +
+        `  📌 Status: <b>${status}</b>\n` +
+        `  📱 Phone: <code>${acc.phone || 'Not set'}</code>\n` +
+        `  🆔 Customer ID: <code>${acc.customerId || 'Linked'}</code>\n\n`;
+    }
   }
-  text += `<i>Aap naye accounts independent naam se add kar sakte hain (e.g. Bhai, Chacha, Personal) aur bina kisi limit ke OTP ya JSON se login kar sakte hain!</i>`;
 
   const buttons = [
     [
-      Markup.button.callback('➕ Add New Account', 'boss_add_new_account_menu'),
-      Markup.button.callback('🔑 Login via OTP', 'boss_prompt_login')
+      Markup.button.callback('🔑 Login with JSON', 'boss_login_with_json'),
+      Markup.button.callback('📱 Login with Number', 'boss_login_with_number')
     ],
     [
-      Markup.button.callback('📤 Export Session JSON', 'boss_export_picker'),
+      Markup.button.callback('🔄 Switch Active Account', 'boss_switch_active_picker'),
+      Markup.button.callback('📤 Export Session JSON', 'boss_export_picker')
+    ],
+    [
       Markup.button.callback('🗑️ Delete Account', 'boss_delete_picker')
     ]
   ];
@@ -1940,6 +1932,39 @@ async function showFamilyAccounts(ctx) {
     ...Markup.inlineKeyboard(buttons)
   });
 }
+
+// Switch Active Account Picker
+bot.action('boss_switch_active_picker', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  const db = getDb();
+  const accounts = db.config.accounts || {};
+  const buttons = [];
+  for (const [k, a] of Object.entries(accounts)) {
+    const isAct = db.config.activeOrderAccount === k ? '⭐ ' : '';
+    buttons.push([Markup.button.callback(`${isAct}${a.name || k} (${a.phone || ''})`, `boss_set_active_${k}`)]);
+  }
+  buttons.push([Markup.button.callback('🔙 Back', 'boss_view_accounts')]);
+
+  await ctx.reply(
+    `🔄 <b>SELECT ACTIVE ACCOUNT FOR ORDERS:</b>\n\n` +
+    `Orders place karte waqt by-default kaunsa account use karna hai?`,
+    Markup.inlineKeyboard(buttons)
+  );
+});
+
+bot.action(/^boss_set_active_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const key = ctx.match[1];
+  const db = getDb();
+  const acc = db.config?.accounts?.[key];
+  if (!acc) return ctx.answerCbQuery('Account not found').catch(() => {});
+
+  setActiveOrderAccountKey(key);
+  await ctx.answerCbQuery(`Active account set to ${acc.name || key} ⭐`).catch(() => {});
+  await showFamilyAccounts(ctx);
+});
+
 
 // ================= VOICE MESSAGE HANDLER =================
 
@@ -2109,6 +2134,19 @@ bot.on('document', async (ctx) => {
   const state = userWaitState[userId];
   const doc = ctx.message.document;
   if (!doc) return;
+
+  // Handle .json file upload for Login with JSON
+  if (doc.file_name && doc.file_name.toLowerCase().endsWith('.json') && isBoss(userId)) {
+    try {
+      const fileLink = await ctx.telegram.getFileLink(doc.file_id);
+      const res = await fetch(fileLink.href);
+      const fileText = await res.text();
+      await handleProcessJsonLogin(ctx, fileText, userId);
+      return;
+    } catch (e) {
+      return ctx.reply('⚠️ JSON file process karne me error aaya: ' + e.message);
+    }
+  }
 
   if (state && (state.action === 'waiting_qr' || state.action === 'waiting_custom_qr_photo')) {
     const orderId = state.orderId;
@@ -2634,6 +2672,34 @@ bot.hears(['⚪ Login Swiggy', 'Login Swiggy', '🔑 Login Swiggy Account'], asy
   if (isBoss(ctx.from.id)) await handlePromptLogin(ctx);
 });
 
+bot.hears(['🔑 Login with JSON', 'Login with JSON'], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return;
+  userWaitState[ctx.from.id] = { action: 'waiting_json_login' };
+  await ctx.reply(
+    `🔑 <b>LOGIN WITH JSON:</b>\n\n` +
+    `Swiggy session / cookie JSON chat me paste karein ya <code>.json</code> file bhej dein:\n\n` +
+    `<i>💡 Swiggy se registered profile name automatically fetch hokar account save ho jayega!</i>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { force_reply: true, input_field_placeholder: 'Paste session JSON here...' }
+    }
+  );
+});
+
+bot.hears(['📱 Login with Number', 'Login with Number'], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return;
+  userWaitState[ctx.from.id] = { action: 'waiting_phone_for_number_login' };
+  await ctx.reply(
+    `📱 <b>LOGIN WITH NUMBER:</b>\n\n` +
+    `Swiggy account ka 10-digit mobile number chat me likhein:\n\n` +
+    `<i>• Naya number hoga toh pehle naam puchega fir OTP aayega.\n• Pehle se registered number hoga toh turant direct OTP bhejega!</i>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
+    }
+  );
+});
+
 bot.hears('🔢 Set Total Slots', async (ctx) => {
   if (!isBoss(ctx.from.id)) return;
   userWaitState[ctx.from.id] = { action: 'waiting_boss_total' };
@@ -2799,101 +2865,165 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // A: Check if message is a JSON Session string (either waiting for import or pasted directly)
-  if ((state && state.action === 'waiting_json_import') || (rawText.startsWith('{') && (rawText.includes('cookies') || rawText.includes('tid')))) {
+  // A: Login with JSON (either waiting_json_login or directly pasted JSON string)
+  if ((state && (state.action === 'waiting_json_login' || state.action === 'waiting_json_import')) || (rawText.startsWith('{') && (rawText.includes('cookies') || rawText.includes('tid')))) {
     try {
       const parsed = JSON.parse(rawText);
       if (parsed.cookies || parsed.tid) {
-        if (state && state.targetAcc) {
-          const result = importSessionJson(parsed, state.targetAcc);
-          const orderId = state.orderId;
-          delete userWaitState[userId];
-          if (result.success) {
-            const db = getDb();
-            const accName = db.config.accounts?.[state.targetAcc]?.name || state.targetAcc;
-            if (orderId && db.orders[orderId]) {
-              const order = db.orders[orderId];
-              order.selectedAccount = state.targetAcc;
-              saveDb(db);
-              updateOrderCards(order).catch(() => {});
-            }
-            await ctx.reply(`✅ <b>Session JSON Imported into ${accName}!</b>\nAccount is now logged in without OTP.`, getBossPanelKeyboard());
-            return;
-          }
-        }
-
-        userWaitState[userId] = { action: 'confirm_json_import', pendingJson: parsed };
-        const foundPhone = parsed.phone || parsed.mobile || 'Unknown';
-        const foundId = parsed.customerId || parsed.userId || 'Detected';
-
-        const db = getDb();
-        const accounts = db.config.accounts || {};
-        const buttons = [];
-        const accList = Object.entries(accounts);
-        for (let i = 0; i < accList.length; i += 2) {
-          const row = [];
-          const [k1, a1] = accList[i];
-          row.push(Markup.button.callback(`📥 ${a1.name || k1}`, `boss_apply_import_${k1}`));
-          if (accList[i + 1]) {
-            const [k2, a2] = accList[i + 1];
-            row.push(Markup.button.callback(`📥 ${a2.name || k2}`, `boss_apply_import_${k2}`));
-          }
-          buttons.push(row);
-        }
-        buttons.push([Markup.button.callback('➕ Import as New Account', 'boss_apply_import_new')]);
-
-        await ctx.reply(
-          `📥 <b>Swiggy Session JSON Detected!</b>\n\n` +
-          `• 📱 Mobile: <b>${foundPhone}</b>\n` +
-          `• 🆔 Customer ID: <b>${foundId}</b>\n` +
-          `• 🔑 Session Cookies / TID: <b>Valid ✅</b>\n\n` +
-          `Aap is session ko kiske account me import karna chahte hain? (Bina OTP ke login ho jayega!):`,
-          {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard(buttons)
-          }
-        );
+        await handleProcessJsonLogin(ctx, rawText, userId);
         return;
       }
     } catch (e) {
-      if (state && state.action === 'waiting_json_import') {
+      if (state && (state.action === 'waiting_json_login' || state.action === 'waiting_json_import')) {
         return ctx.reply('⚠️ Invalid JSON format. Please send a valid Swiggy session JSON string.');
       }
     }
   }
 
-  // B: Fast 10-Digit Mobile Number Detection (typed directly anywhere by Boss)
-  const cleanPhoneInput = rawText.replace(/[^0-9]/g, '').slice(-10);
-  if (isBoss(userId) && (!state || !state.action) && cleanPhoneInput.length === 10 && /^[6-9]\d{9}$/.test(cleanPhoneInput)) {
-    userWaitState[userId] = { action: 'choose_acc_for_fast_otp', phone: cleanPhoneInput };
-    const db = getDb();
-    const accounts = db.config.accounts || {};
-    const buttons = [];
-    const accList = Object.entries(accounts);
-    for (let i = 0; i < accList.length; i += 2) {
-      const row = [];
-      const [k1, a1] = accList[i];
-      row.push(Markup.button.callback(`⚡ ${a1.name || k1}`, `boss_fast_otp_${k1}_${cleanPhoneInput}`));
-      if (accList[i + 1]) {
-        const [k2, a2] = accList[i + 1];
-        row.push(Markup.button.callback(`⚡ ${a2.name || k2}`, `boss_fast_otp_${k2}_${cleanPhoneInput}`));
-      }
-      buttons.push(row);
+  // B: Login with Number - Phone Input
+  if (state && state.action === 'waiting_phone_for_number_login') {
+    const cleanPhone = rawText.replace(/[^0-9]/g, '').slice(-10);
+    if (cleanPhone.length !== 10 || !/^[6-9]\d{9}$/.test(cleanPhone)) {
+      return ctx.reply('⚠️ Kripya valid 10-digit Indian mobile number bhejein (Jaise: 9876543210):');
     }
-    buttons.push([Markup.button.callback(`➕ Send to New Account (${cleanPhoneInput})`, `boss_fast_otp_new_${cleanPhoneInput}`)]);
 
-    await ctx.reply(
-      `⚡ <b>Mobile Number Detected: ${cleanPhoneInput}</b>\n\n` +
-      `Instant OTP bhejne ke liye account select karein:`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard(buttons)
+    const db = getDb();
+    const existing = Object.entries(db.config?.accounts || {}).find(([k, a]) => a.phone === cleanPhone);
+
+    if (existing) {
+      // Existing number: send OTP immediately without asking name
+      const [accKey, accData] = existing;
+      delete userWaitState[userId];
+
+      await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${cleanPhone} (${escapeHtml(accData.name || accKey)})...</b>`, { parse_mode: 'HTML' });
+      const result = await requestSwiggyOtpViaBridge(userId, cleanPhone, accKey);
+
+      if (result.success) {
+        userWaitState[userId] = {
+          action: 'waiting_swiggy_otp_bridge',
+          targetAcc: accKey,
+          phone: cleanPhone,
+          name: accData.name || accKey
+        };
+        await ctx.reply(
+          `📲 <b>OTP Sent to ${cleanPhone}!</b>\n\n` +
+          `👤 <b>Account:</b> ${escapeHtml(accData.name || accKey)}\n\n` +
+          `Kripya 6-digit OTP chat me bhejein:`,
+          {
+            parse_mode: 'HTML',
+            reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
+          }
+        );
+      } else {
+        await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}`, getBossPanelKeyboard());
       }
-    );
+      return;
+    } else {
+      // New number: ask for account name first
+      userWaitState[userId] = {
+        action: 'waiting_name_for_new_number',
+        phone: cleanPhone
+      };
+      await ctx.reply(
+        `🆕 <b>Yeh naya number hai (${cleanPhone})!</b>\n\n` +
+        `📝 <b>Is account ka kya naam rakhna hai?</b>\n` +
+        `<i>(Jaise: Rahul, Aman, Office, Personal):</i>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { force_reply: true, input_field_placeholder: 'Enter account name (e.g. Rahul)...' }
+        }
+      );
+      return;
+    }
+  }
+
+  // C: New Account Name for Number Login
+  if (state && state.action === 'waiting_name_for_new_number') {
+    const enteredName = rawText.trim();
+    const cleanPhone = state.phone;
+    delete userWaitState[userId];
+
+    if (!enteredName || enteredName.length > 50) {
+      return ctx.reply('⚠️ Please enter a valid name (1-50 characters):');
+    }
+
+    const cleanKey = 'acc_' + cleanPhone;
+    createAccount(cleanKey, enteredName, cleanPhone);
+
+    await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${cleanPhone} for ${escapeHtml(enteredName)}...</b>`, { parse_mode: 'HTML' });
+    const result = await requestSwiggyOtpViaBridge(userId, cleanPhone, cleanKey);
+
+    if (result.success) {
+      userWaitState[userId] = {
+        action: 'waiting_swiggy_otp_bridge',
+        targetAcc: cleanKey,
+        phone: cleanPhone,
+        name: enteredName
+      };
+      await ctx.reply(
+        `📲 <b>OTP Sent to ${cleanPhone}!</b>\n\n` +
+        `👤 <b>Account Name:</b> ${escapeHtml(enteredName)}\n\n` +
+        `Kripya 6-digit OTP chat me bhejein:`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
+        }
+      );
+    } else {
+      await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}`, getBossPanelKeyboard());
+    }
     return;
   }
 
-  // Step 1: User entered 10-digit number for Swiggy after prompt
+  // D: Fast 10-Digit Mobile Number Detection (typed directly anywhere by Boss)
+  const cleanPhoneInput = rawText.replace(/[^0-9]/g, '').slice(-10);
+  if (isBoss(userId) && (!state || !state.action) && cleanPhoneInput.length === 10 && /^[6-9]\d{9}$/.test(cleanPhoneInput)) {
+    const db = getDb();
+    const existing = Object.entries(db.config?.accounts || {}).find(([k, a]) => a.phone === cleanPhoneInput);
+
+    if (existing) {
+      const [accKey, accData] = existing;
+      await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${cleanPhoneInput} (${escapeHtml(accData.name || accKey)})...</b>`, { parse_mode: 'HTML' });
+      const result = await requestSwiggyOtpViaBridge(userId, cleanPhoneInput, accKey);
+      if (result.success) {
+        userWaitState[userId] = {
+          action: 'waiting_swiggy_otp_bridge',
+          targetAcc: accKey,
+          phone: cleanPhoneInput,
+          name: accData.name || accKey
+        };
+        await ctx.reply(
+          `📲 <b>OTP Sent to ${cleanPhoneInput}!</b>\n\n` +
+          `👤 <b>Account:</b> ${escapeHtml(accData.name || accKey)}\n\n` +
+          `Kripya 6-digit OTP chat me bhejein:`,
+          {
+            parse_mode: 'HTML',
+            reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
+          }
+        );
+      } else {
+        await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}`, getBossPanelKeyboard());
+      }
+      return;
+    } else {
+      userWaitState[userId] = {
+        action: 'waiting_name_for_new_number',
+        phone: cleanPhoneInput
+      };
+      await ctx.reply(
+        `🆕 <b>Yeh naya number hai (${cleanPhoneInput})!</b>\n\n` +
+        `📝 <b>Is account ka kya naam rakhna hai?</b>\n` +
+        `<i>(Jaise: Rahul, Aman, Office, Personal):</i>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { force_reply: true, input_field_placeholder: 'Enter account name (e.g. Rahul)...' }
+        }
+      );
+      return;
+    }
+  }
+
+  // Step 1: User entered 10-digit number for Swiggy after legacy prompt
   if (state && state.action === 'waiting_phone_for_otp') {
     const targetAcc = state.targetAcc;
     const cleanPhone = rawText.replace(/[^0-9]/g, '').slice(-10);
@@ -2942,26 +3072,46 @@ bot.on('text', async (ctx) => {
 
     if (result.success) {
       const orderId = state.orderId;
+      const targetAcc = result.targetAcc;
+      const initialName = state.name;
       delete userWaitState[userId];
-      const accName = result.targetAcc.charAt(0).toUpperCase() + result.targetAcc.slice(1);
-      const jsonBackupStr = JSON.stringify(result.exportJson || {}, null, 2);
 
       const db = getDb();
+      if (!db.config.activeOrderAccount) {
+        db.config.activeOrderAccount = targetAcc;
+        saveDb(db);
+      }
+
       if (orderId && db.orders[orderId]) {
         const order = db.orders[orderId];
-        order.selectedAccount = result.targetAcc;
+        order.selectedAccount = targetAcc;
         saveDb(db);
         updateOrderCards(order).catch(() => {});
       }
 
+      // Fetch authentic Swiggy profile name in background and update account
+      if (result.exportJson?.cookies) {
+        fetchSwiggyProfileFromCookies(result.exportJson.cookies).then(prof => {
+          if (prof?.name) {
+            updateAccount(targetAcc, { name: prof.name });
+          }
+        }).catch(() => {});
+      }
+
+      const accObj = db.config?.accounts?.[targetAcc];
+      const displayName = accObj?.name || initialName || targetAcc;
+      const jsonBackupStr = JSON.stringify(result.exportJson || {}, null, 2);
+
       await ctx.reply(
-        `✅ <b>Logged In Successfully!</b>\n\n` +
-        `🌸 <b>${accName}'s Swiggy account (${result.phone}) is active!</b>\n` +
-        `🆔 Customer ID: <code>${result.customerId || 'Verified'}</code>\n\n` +
-        (orderId ? `📌 <b>Order #${orderId} is now linked to ${accName}!</b>\n\n` : '') +
+        `✅ <b>Logged In Successfully!</b> 🎉\n\n` +
+        `👤 <b>Account Name:</b> <b>${escapeHtml(displayName)}</b>\n` +
+        `📱 <b>Mobile:</b> <code>${result.phone}</code>\n` +
+        `🆔 Customer ID: <code>${result.customerId || 'Verified'}</code>\n` +
+        `🟢 <b>Status:</b> Connected & Ready for Orders!\n\n` +
+        (orderId ? `📌 <b>Order #${orderId} is now linked to ${escapeHtml(displayName)}!</b>\n\n` : '') +
         `📦 <b>[ SESSION BACKUP JSON ]</b> (Save to Telegram Saved Messages):\n` +
         `<code>${escapeHtml(jsonBackupStr)}</code>\n\n` +
-        `<i>💡 Tip: Is JSON ko apne Saved Messages me rakh lo. Kabhi bhi bina OTP ke login karna ho, bas ye JSON chat me paste kar dena!</i>`,
+        `<i>💡 Tip: Is JSON ko Saved Messages me rakh lo. Kabhi bhi bina OTP ke restore karna ho toh direct use kar sakte ho!</i>`,
         { parse_mode: 'HTML', ...getBossPanelKeyboard() }
       );
     } else {
@@ -2976,6 +3126,8 @@ bot.on('text', async (ctx) => {
     }
     return;
   }
+
+
 
   // Boss sending text to user
   if (state && state.action === 'waiting_text_user') {
