@@ -21,6 +21,7 @@ function findChromePath() {
 }
 
 const CHROME_PATH = findChromePath();
+const PUPPETEER_HEADLESS = (process.platform === 'linux' || process.env.RAILWAY_ENVIRONMENT || process.env.HEADLESS !== 'false') ? 'new' : false;
 
 // Verified payment data extraction - STOP synthetic QR generation via qrserver.com
 // Never fabricate upi://pay or guess amounts/VPAs.
@@ -338,7 +339,7 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '') {
   try {
     const browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: false,
+      headless: PUPPETEER_HEADLESS,
       args: [
         '--disable-blink-features=AutomationControlled',
         '--window-position=-32000,-32000',
@@ -500,7 +501,7 @@ export async function inspectCartForAccount(cookies) {
   try {
     const browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: false,
+      headless: PUPPETEER_HEADLESS,
       args: [
         '--disable-blink-features=AutomationControlled',
         '--window-position=-32000,-32000',
@@ -545,7 +546,7 @@ export async function extractRealSwiggyTracking(cookies = '') {
   try {
     const browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: false,
+      headless: PUPPETEER_HEADLESS,
       args: [
         '--disable-blink-features=AutomationControlled',
         '--window-position=-32000,-32000',
@@ -632,7 +633,7 @@ export async function fetchAccountAddresses(cookies) {
   try {
     const browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: false,
+      headless: PUPPETEER_HEADLESS,
       args: ['--disable-blink-features=AutomationControlled', '--window-position=-32000,-32000', '--no-sandbox']
     });
     const page = await browser.newPage();
@@ -686,7 +687,7 @@ export async function fetchAccountOrders(cookies) {
   try {
     const browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: false,
+      headless: PUPPETEER_HEADLESS,
       args: ['--disable-blink-features=AutomationControlled', '--window-position=-32000,-32000', '--no-sandbox']
     });
     const page = await browser.newPage();
