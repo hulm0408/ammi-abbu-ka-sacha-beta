@@ -264,7 +264,7 @@ async function extractAndOptimizeCartData(page) {
         const finalDiscount = updatedCm.coupon_discount_total || updatedCm.discount_total || 0;
         const finalFc = updatedCm.swiggy_money || 0;
         const deliveryFee = updatedCm.positiveDeliveryChargesExclusive || 0;
-        const taxesAndCharges = updatedCm.taxesAndCharges || 28.31;
+        const taxesAndCharges = updatedCm.taxesAndCharges || 0;
         
         // Exact final payable amount as shown on Swiggy Payment Page
         const finalPayable = updatedCm.order_total || updatedCm.cart_total || (itemTotal - finalDiscount - finalFc);
@@ -331,7 +331,7 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '') {
   let totalSavings = 0;
   let address = null;
   let addressDetails = null;
-  let taxesAndCharges = 28.31;
+  let taxesAndCharges = 0;
   let verified = Boolean(meta.groupCartId || meta.restaurantId);
 
   // 2. Puppeteer extraction with session cookies & AWS WAF bypass
@@ -389,7 +389,7 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '') {
       totalSavings = cartData.totalSavings;
       address = cartData.address;
       addressDetails = cartData.addressDetails;
-      taxesAndCharges = cartData.taxesAndCharges || 28.31;
+      taxesAndCharges = cartData.taxesAndCharges || 0;
       verified = true;
     }
 
@@ -429,7 +429,7 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '') {
             totalSavings = otherCart.totalSavings;
             address = otherCart.address;
             addressDetails = otherCart.addressDetails;
-            taxesAndCharges = otherCart.taxesAndCharges || 28.31;
+            taxesAndCharges = otherCart.taxesAndCharges || 0;
             verified = true;
             break;
           }
@@ -477,7 +477,7 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '') {
     items,
     address,
     addressDetails,
-    taxesAndCharges: taxesAndCharges || 28.31,
+    taxesAndCharges: taxesAndCharges || 0,
     itemTotal: itemTotal || subtotal || (finalPayable ? finalPayable : 0),
     subtotal: subtotal || (finalPayable ? finalPayable : 0),
     deliveryFee,
@@ -785,38 +785,48 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
     lines.push(`${totalQty} Items • Subtotal: ₹${sub}\n`);
   }
 
-  // Bill Summary
-  lines.push(`Bill Summary`);
-  lines.push(`Items Total: ₹${order.itemTotal || order.subtotal || 0}`);
+  // Bill Summary - Only shown when real items or verified finalPayable exist
+  const hasItems = order.items && order.items.length > 0;
+  const hasPayable = Boolean(order.finalPayable && Number(order.finalPayable) > 0);
 
-  if (order.couponCode) {
-    lines.push(`Coupon ${order.couponCode}: −₹${order.discountAmount || 0}`);
+  if (hasItems || hasPayable) {
+    lines.push(`Bill Summary`);
+    const sub = order.itemTotal || order.subtotal || (hasPayable ? order.finalPayable - (order.taxesAndCharges || 0) : 0);
+    lines.push(`Items Total: ₹${sub > 0 ? sub : (order.finalPayable || 0)}`);
+
+    if (order.couponCode) {
+      lines.push(`Coupon ${order.couponCode}: −₹${order.discountAmount || 0}`);
+    } else {
+      lines.push(`Coupon: Not Applied`);
+    }
+
+    if (order.freeCashApplied > 0) {
+      lines.push(`Extra Discount ( Free Cash ): −₹${order.freeCashApplied}`);
+    }
+
+    lines.push(`Free Delivery upto 7km`);
+    if (order.freeDeliveryDiscount > 0 || order.swiggyOneApplied) {
+      const saved = order.freeDeliveryDiscount || order.swiggyOneSavings || 23;
+      lines.push(`Delivery Fee: FREE (₹${saved} saved)`);
+    } else if (order.deliveryFee > 0) {
+      lines.push(`Delivery Fee: ₹${order.deliveryFee}`);
+    } else {
+      lines.push(`Delivery Fee: FREE`);
+    }
+
+    const gst = order.taxesAndCharges || order.gstAndCharges || 0;
+    if (gst > 0) {
+      lines.push(`GST & Other Charges: ₹${gst}`);
+    }
+
+    lines.push(`━━━━━━━━━━━━━━`);
+    if (order.totalSavings > 0) {
+      lines.push(`Total Savings: ₹${order.totalSavings}`);
+    }
+    lines.push(`To Pay: ₹${order.finalPayable || sub || 0}`);
   } else {
-    lines.push(`Coupon: Not Applied`);
+    lines.push(`🛒 <b>Cart Status:</b> <i>Waiting for Swiggy items / cart verification...</i>`);
   }
-
-  if (order.freeCashApplied > 0) {
-    lines.push(`Extra Discount ( Free Cash ): −₹${order.freeCashApplied}`);
-  }
-
-  lines.push(`Free Delivery upto 7km`);
-  if (order.freeDeliveryDiscount > 0 || order.swiggyOneApplied) {
-    const saved = order.freeDeliveryDiscount || order.swiggyOneSavings || 23;
-    lines.push(`Delivery Fee: FREE (₹${saved} saved)`);
-  } else if (order.deliveryFee > 0) {
-    lines.push(`Delivery Fee: ₹${order.deliveryFee}`);
-  } else {
-    lines.push(`Delivery Fee: FREE`);
-  }
-
-  const gst = order.taxesAndCharges || order.gstAndCharges || 28.31;
-  lines.push(`GST & Other Charges: ₹${gst}`);
-
-  lines.push(`━━━━━━━━━━━━━━`);
-  if (order.totalSavings > 0) {
-    lines.push(`Total Savings: ₹${order.totalSavings}`);
-  }
-  lines.push(`To Pay: ₹${order.finalPayable || 0}`);
 
   return lines.join('\n');
 }

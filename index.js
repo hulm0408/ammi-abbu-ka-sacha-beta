@@ -925,7 +925,11 @@ bot.action(/^boss_choose_acc_(.+)_(.+)$/, async (ctx) => {
   await ctx.reply(
     `🌸 <b>Selected: ${accName}'s Account (Order #${orderId})</b>\n\n` +
     (order.restaurantName ? `🏨 Restaurant: <b>${escapeHtml(order.restaurantName)}</b>\n` : '') +
-    (order.swiggyVerified ? `✅ <b>Swiggy Verified:</b> ₹${order.finalPayable}\n` : `ℹ️ Amount: <b>₹${order.finalPayable}</b> (Aap [ 💰 Amount ] se edit kar sakte hain)\n`) +
+    (order.swiggyVerified && order.finalPayable > 0
+      ? `✅ <b>Swiggy Verified:</b> ₹${order.finalPayable}\n`
+      : (order.finalPayable && order.finalPayable > 0
+          ? `💰 <b>Swiggy Total:</b> ₹${order.finalPayable}\n`
+          : `⏳ <b>Swiggy Total:</b> <i>Fetching from Swiggy...</i>\n`)) +
     `\n<i>User ke card par amount accept ka option dikh raha hai. User ke "Accept Order" karte hi [ ⚡ Generate Qr ] unlock hoga.</i>`,
     { parse_mode: 'HTML' }
   );
@@ -1037,7 +1041,7 @@ bot.action(/^boss_select_acc_([^_]+)_(.+)$/, async (ctx) => {
         order.finalPayable = liveData.finalPayable;
         order.totalSavings = liveData.totalSavings;
         order.addressDetails = liveData.addressDetails;
-        order.taxesAndCharges = liveData.taxesAndCharges || 28.31;
+        order.taxesAndCharges = liveData.taxesAndCharges || 0;
         order.swiggyVerified = true;
       }
     } catch (e) {
@@ -3113,8 +3117,20 @@ bot.on('text', async (ctx) => {
   if (state && state.action === 'waiting_cart') {
     delete userWaitState[userId];
     const cleanCart = allLinks.length > 0 ? allLinks[0] : rawText.trim();
-    updateDraft(userId, { cart: cleanCart });
-    await ctx.reply(`🟣 <b>Cart: Added ✅</b>`, { parse_mode: 'HTML' });
+    let isAddr = false;
+    if (cleanCart.includes('onelink.me') || cleanCart.includes('swig.gy') || cleanCart.includes('ofo/address')) {
+      try {
+        const meta = await resolveSwiggyLink(cleanCart);
+        if (meta.isAddress || meta.type === 'ADDRESS' || meta.ofoUser) isAddr = true;
+      } catch (e) {}
+    }
+    if (isAddr) {
+      updateDraft(userId, { address: cleanCart });
+      await ctx.reply(`🔵 <b>Address: Added ✅</b>\n⚠️ <i>Yeh link address ka tha, isse address me save kar liya hai! Ab Swiggy group cart ka link share karein.</i>`, { parse_mode: 'HTML' });
+    } else {
+      updateDraft(userId, { cart: cleanCart });
+      await ctx.reply(`🟣 <b>Cart: Added ✅</b>`, { parse_mode: 'HTML' });
+    }
     const screen = getUserScreen(userId, ctx.from);
     await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
     return;
@@ -3126,15 +3142,30 @@ bot.on('text', async (ctx) => {
     let cartLink = null;
     let addrLink = null;
     for (const l of allLinks) {
-      const c = classifyLink(l);
+      let c = classifyLink(l);
+      if (l.includes('onelink.me') || l.includes('swig.gy')) {
+        try {
+          const meta = await resolveSwiggyLink(l);
+          if (meta.isAddress || meta.type === 'ADDRESS' || meta.ofoUser) c = 'ADDRESS';
+          else if (meta.isCart || meta.type === 'CART' || meta.groupCartId) c = 'CART';
+        } catch (e) {}
+      }
       if (c === 'CART' && !cartLink) cartLink = l;
       else if (c === 'ADDRESS' && !addrLink) addrLink = l;
     }
-    if (!cartLink) cartLink = allLinks[0];
-    if (!addrLink) addrLink = allLinks[1];
 
-    updateDraft(userId, { cart: cartLink, address: addrLink });
-    await ctx.reply(`🟣 <b>Cart: Added ✅</b>\n🔵 <b>Address: Added ✅</b>`, { parse_mode: 'HTML' });
+    if (cartLink && addrLink) {
+      updateDraft(userId, { cart: cartLink, address: addrLink });
+      await ctx.reply(`🟣 <b>Cart: Added ✅</b>\n🔵 <b>Address: Added ✅</b>`, { parse_mode: 'HTML' });
+    } else if (addrLink && !cartLink) {
+      updateDraft(userId, { address: addrLink });
+      await ctx.reply(`🔵 <b>Address: Added ✅</b>\n⚠️ <i>Yeh link address ka hai! Kripya Swiggy group cart ka link share karein (e.g. swig.gy/gc/...).</i>`, { parse_mode: 'HTML' });
+    } else {
+      if (!cartLink) cartLink = allLinks[0];
+      if (!addrLink) addrLink = allLinks[1];
+      updateDraft(userId, { cart: cartLink, address: addrLink });
+      await ctx.reply(`🟣 <b>Cart: Added ✅</b>\n🔵 <b>Address: Added ✅</b>`, { parse_mode: 'HTML' });
+    }
     const screen = getUserScreen(userId, ctx.from);
     await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
     return;
@@ -3145,7 +3176,14 @@ bot.on('text', async (ctx) => {
     delete userWaitState[userId];
     const link = allLinks[0];
     const draft = getDraft(userId);
-    const c = classifyLink(link);
+    let c = classifyLink(link);
+    if (link.includes('onelink.me') || link.includes('swig.gy')) {
+      try {
+        const meta = await resolveSwiggyLink(link);
+        if (meta.isAddress || meta.type === 'ADDRESS' || meta.ofoUser) c = 'ADDRESS';
+        else if (meta.isCart || meta.type === 'CART' || meta.groupCartId) c = 'CART';
+      } catch (e) {}
+    }
 
     if (c === 'ADDRESS') {
       updateDraft(userId, { address: link });
