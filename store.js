@@ -223,11 +223,35 @@ export function exportSessionJson(key) {
   const acc = db.config.accounts?.[key];
   if (!acc || !acc.cookies) return null;
 
+  let token = acc.token || '';
+  if (!token && acc.cookies) {
+    const m = acc.cookies.match(/(?:^|;\s*)token=([^;]+)/);
+    if (m) token = m[1];
+  }
+
+  let customerId = acc.customerId || acc.userId || '';
+  if (!customerId && acc.cookies) {
+    try {
+      const tidMatch = acc.cookies.match(/(?:^|;\s*)tid=([^;]+)/);
+      if (tidMatch) {
+        const payload = tidMatch[1].split('.')[1];
+        if (payload) {
+          const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+          customerId = decoded.user_id || decoded.sub || '';
+        }
+      }
+    } catch (e) {}
+  }
+
+  const phone = acc.phone || acc.mobile || '';
+
   return {
     account: key,
     name: acc.name || key,
-    phone: acc.phone || '',
-    customerId: acc.customerId || acc.userId || '',
+    mobile: phone,
+    phone: phone,
+    customerId: customerId,
+    token: token,
     tid: acc.tid || '',
     sid: acc.sid || '',
     deviceId: acc.deviceId || '',
@@ -248,6 +272,26 @@ export function importSessionJson(rawJson, targetKey = null) {
       cookieStr = `tid=${data.tid}; _sid=${data.sid || ''}; _device_id=${data.deviceId || ''}`;
     }
 
+    let token = data.token || '';
+    if (!token && cookieStr) {
+      const m = cookieStr.match(/(?:^|;\s*)token=([^;]+)/);
+      if (m) token = m[1];
+    }
+
+    let customerId = data.customerId || data.customer_id || data.userId || '';
+    if (!customerId && cookieStr) {
+      try {
+        const tidMatch = cookieStr.match(/(?:^|;\s*)tid=([^;]+)/);
+        if (tidMatch) {
+          const payload = tidMatch[1].split('.')[1];
+          if (payload) {
+            const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+            customerId = decoded.user_id || decoded.sub || '';
+          }
+        }
+      } catch (e) {}
+    }
+
     const phone = data.phone || data.mobile || '';
     const cleanPhone = phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : '';
     const key = targetKey || (cleanPhone ? `acc_${cleanPhone}` : (data.account || 'acc_' + Date.now()));
@@ -260,9 +304,11 @@ export function importSessionJson(rawJson, targetKey = null) {
 
     db.config.accounts[key] = {
       ...db.config.accounts[key],
-      phone: cleanPhone || db.config.accounts[key].phone || '',
+      mobile: cleanPhone || db.config.accounts[key].mobile || db.config.accounts[key].phone || '',
+      phone: cleanPhone || db.config.accounts[key].phone || db.config.accounts[key].mobile || '',
       name: data.name || db.config.accounts[key].name || (cleanPhone ? `Swiggy ${cleanPhone}` : 'Swiggy User'),
-      customerId: data.customerId || data.userId || db.config.accounts[key].customerId || '',
+      customerId: customerId || db.config.accounts[key].customerId || '',
+      token: token || db.config.accounts[key].token || '',
       tid: data.tid || db.config.accounts[key].tid || '',
       sid: data.sid || db.config.accounts[key].sid || '',
       deviceId: data.deviceId || db.config.accounts[key].deviceId || '',
@@ -276,7 +322,7 @@ export function importSessionJson(rawJson, targetKey = null) {
     }
 
     saveDb(db);
-    return { success: true, account: key, name: db.config.accounts[key].name, phone: db.config.accounts[key].phone };
+    return { success: true, account: key, name: db.config.accounts[key].name, phone: db.config.accounts[key].phone, mobile: db.config.accounts[key].mobile, customerId: db.config.accounts[key].customerId, token: db.config.accounts[key].token };
   } catch (err) {
     return { success: false, message: 'Invalid JSON format: ' + err.message };
   }

@@ -312,6 +312,7 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
       const tidCookie = cookies.find(c => c.name === 'tid');
       const sidCookie = cookies.find(c => c.name === '_sid');
       const deviceCookie = cookies.find(c => c.name === '_device_id');
+      const tokenCookie = cookies.find(c => c.name === 'token');
       const jwtPayload = decodeJwtPayload(tidCookie?.value);
       const customerId = (jwtPayload && jwtPayload.user_id && jwtPayload.user_id !== '0')
         ? jwtPayload.user_id
@@ -322,11 +323,12 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
       const savedData = {
         name: finalName,
         phone,
+        mobile: phone,
         customerId,
         tid: tidCookie?.value || '',
         sid: sidCookie?.value || '',
         deviceId: deviceCookie?.value || '',
-        token: tidCookie?.value || '',
+        token: tokenCookie?.value || tidCookie?.value || '',
         isLoggedIn: true,
         cookies: cookieStr,
         savedAt: new Date().toISOString()
@@ -340,8 +342,10 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
       const exportJson = {
         account: accKey,
         name: finalName,
+        mobile: phone,
         phone,
         customerId,
+        token: savedData.token,
         tid: savedData.tid,
         sid: savedData.sid,
         deviceId: savedData.deviceId,
@@ -426,14 +430,16 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
 
       const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
 
+      const tokenCookie = cookies.find(c => c.name === 'token');
       const savedData = {
         name: cleanName,
         phone,
+        mobile: phone,
         customerId,
         tid: tidCookie?.value || '',
         sid: sidCookie?.value || '',
         deviceId: deviceCookie?.value || '',
-        token: tidCookie?.value || '',
+        token: tokenCookie?.value || tidCookie?.value || '',
         isLoggedIn: true,
         cookies: cookieStr,
         savedAt: new Date().toISOString()
@@ -447,8 +453,10 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
       const exportJson = {
         account: accKey,
         name: cleanName,
+        mobile: phone,
         phone,
         customerId,
+        token: savedData.token,
         tid: savedData.tid,
         sid: savedData.sid,
         deviceId: savedData.deviceId,

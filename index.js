@@ -124,13 +124,12 @@ function getUserReplyKeyboard(draft = {}) {
   ]).resize();
 }
 
-// Boss Bottom Menu - Includes Send to Beta & Order Screen for easy testing
+// Boss Bottom Menu - Pure Admin Controls (Never customer buttons)
 function getBossReplyKeyboard() {
   return Markup.keyboard([
-    ['🚀 Send to Beta', '📦 Order Screen'],
+    ['📦 Order Screen', '🟡 Pending Orders'],
     ['🔑 Login with JSON', '📱 Login with Number'],
-    ['🟡 Pending Orders', '🟣 Connected Accounts'],
-    ['🔵 Saved Addresses', '🟢 Slot Status'],
+    ['🟣 Connected Accounts', '🟢 Slot Status'],
     ['📊 Total slots', '🟢 Total left'],
     ['🎁 Claim Free Cash', '🟠 Set UPI ID']
   ]).resize();
@@ -581,7 +580,7 @@ bot.start(async (ctx) => {
   delete userWaitState[userId];
 
   if (isBoss(userId)) {
-    await ctx.reply(`👑 Welcome back, <b>Boss</b>! Swiggy Family Care Mode is active.`, {
+    await ctx.reply(`👑 Welcome back, <b>Boss</b>! Swiggy Family Care Admin Mode is active.`, {
       parse_mode: 'HTML',
       ...getBossReplyKeyboard()
     });
@@ -589,8 +588,7 @@ bot.start(async (ctx) => {
       parse_mode: 'HTML',
       ...getBossPanelKeyboard()
     });
-    const screen = getUserScreen(userId, ctx.from);
-    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    await sendPendingOrdersToBoss(userId);
     return;
   }
 
@@ -2727,6 +2725,29 @@ bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const state = userWaitState[userId];
   const rawText = ctx.message.text.trim();
+
+  // Intercept any menu button, slash command, or cancel keyword to free user from wait state
+  const isMenuOrCancel = rawText.startsWith('/') || [
+    '📦 Order Screen', '🟡 Pending Orders', '🔑 Login with JSON', '📱 Login with Number',
+    '🟣 Connected Accounts', '🟢 Slot Status', '📊 Total slots', '🟢 Total left',
+    '🎁 Claim Free Cash', '🟠 Set UPI ID', '🔢 Set Total Slots',
+    '❌ Cancel', 'Cancel', 'cancel', 'Close', 'close', 'back', 'Back'
+  ].includes(rawText);
+
+  if (state && isMenuOrCancel) {
+    delete userWaitState[userId];
+    if (['❌ Cancel', 'Cancel', 'cancel', 'Close', 'close', 'back', 'Back'].includes(rawText)) {
+      if (isBoss(userId)) {
+        await ctx.reply('❌ Action cancelled.', getBossReplyKeyboard());
+        await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+      } else {
+        await ctx.reply('❌ Action cancelled.', getUserReplyKeyboard());
+        const screen = getUserScreen(userId, ctx.from);
+        await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+      }
+      return;
+    }
+  }
 
   // 0: Check if Boss is typing a new account name
   if (state && state.action === 'waiting_new_acc_name') {
