@@ -24,7 +24,7 @@ import {
   canTransitionOrder,
   ORDER_STATES
 } from './store.js';
-import { requestSwiggyOtpViaBridge, verifySwiggyOtpViaBridge } from './swiggy-bridge.js';
+import { requestSwiggyOtpViaBridge, verifySwiggyOtpViaBridge, signupSwiggyViaBridge } from './swiggy-bridge.js';
 import {
   verifyAndInspectSwiggyLink,
   inspectCartForAccount,
@@ -2880,6 +2880,40 @@ bot.on('text', async (ctx) => {
     }
   }
 
+  // Helper for starting phone number login
+  async function triggerPhoneNumberLogin(phoneToLogin, existingAccKey, existingAccName) {
+    const accKey = existingAccKey || `acc_${phoneToLogin}`;
+    delete userWaitState[userId];
+
+    if (existingAccName) {
+      await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${phoneToLogin} (${escapeHtml(existingAccName)})...</b>`, { parse_mode: 'HTML' });
+    } else {
+      await ctx.reply(`⚡ <b>Checking Swiggy & sending Instant OTP to ${phoneToLogin}...</b>`, { parse_mode: 'HTML' });
+    }
+
+    const result = await requestSwiggyOtpViaBridge(userId, phoneToLogin, accKey);
+
+    if (result.success) {
+      userWaitState[userId] = {
+        action: 'waiting_swiggy_otp_bridge',
+        targetAcc: accKey,
+        phone: phoneToLogin,
+        name: existingAccName
+      };
+      await ctx.reply(
+        `📲 <b>OTP Sent to ${phoneToLogin}!</b>\n\n` +
+        (existingAccName ? `👤 <b>Account:</b> ${escapeHtml(existingAccName)}\n\n` : '') +
+        `Kripya phone par aaya hua 6-digit OTP chat me likh kar bhejein:`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
+        }
+      );
+    } else {
+      await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}`, getBossPanelKeyboard());
+    }
+  }
+
   // B: Login with Number - Phone Input
   if (state && state.action === 'waiting_phone_for_number_login') {
     const cleanPhone = rawText.replace(/[^0-9]/g, '').slice(-10);
@@ -2889,88 +2923,56 @@ bot.on('text', async (ctx) => {
 
     const db = getDb();
     const existing = Object.entries(db.config?.accounts || {}).find(([k, a]) => a.phone === cleanPhone);
+    const existingKey = existing ? existing[0] : null;
+    const existingName = existing ? (existing[1]?.name || existing[0]) : null;
 
-    if (existing) {
-      // Existing number: send OTP immediately without asking name
-      const [accKey, accData] = existing;
-      delete userWaitState[userId];
-
-      await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${cleanPhone} (${escapeHtml(accData.name || accKey)})...</b>`, { parse_mode: 'HTML' });
-      const result = await requestSwiggyOtpViaBridge(userId, cleanPhone, accKey);
-
-      if (result.success) {
-        userWaitState[userId] = {
-          action: 'waiting_swiggy_otp_bridge',
-          targetAcc: accKey,
-          phone: cleanPhone,
-          name: accData.name || accKey
-        };
-        await ctx.reply(
-          `📲 <b>OTP Sent to ${cleanPhone}!</b>\n\n` +
-          `👤 <b>Account:</b> ${escapeHtml(accData.name || accKey)}\n\n` +
-          `Kripya 6-digit OTP chat me bhejein:`,
-          {
-            parse_mode: 'HTML',
-            reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
-          }
-        );
-      } else {
-        await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}`, getBossPanelKeyboard());
-      }
-      return;
-    } else {
-      // New number: ask for account name first
-      userWaitState[userId] = {
-        action: 'waiting_name_for_new_number',
-        phone: cleanPhone
-      };
-      await ctx.reply(
-        `🆕 <b>Yeh naya number hai (${cleanPhone})!</b>\n\n` +
-        `📝 <b>Is account ka kya naam rakhna hai?</b>\n` +
-        `<i>(Jaise: Rahul, Aman, Office, Personal):</i>`,
-        {
-          parse_mode: 'HTML',
-          reply_markup: { force_reply: true, input_field_placeholder: 'Enter account name (e.g. Rahul)...' }
-        }
-      );
-      return;
-    }
+    await triggerPhoneNumberLogin(cleanPhone, existingKey, existingName);
+    return;
   }
 
-  // C: New Account Name for Number Login
-  if (state && state.action === 'waiting_name_for_new_number') {
+  // C: Handle Name for New Swiggy User Signup
+  if (state && state.action === 'waiting_name_for_new_swiggy_signup') {
     const enteredName = rawText.trim();
     const cleanPhone = state.phone;
+    const orderId = state.orderId;
     delete userWaitState[userId];
 
     if (!enteredName || enteredName.length > 50) {
       return ctx.reply('⚠️ Please enter a valid name (1-50 characters):');
     }
 
-    const cleanKey = 'acc_' + cleanPhone;
-    createAccount(cleanKey, enteredName, cleanPhone);
+    await ctx.reply(`⚡ <b>Creating Swiggy account for ${escapeHtml(enteredName)} (${cleanPhone})...</b>`, { parse_mode: 'HTML' });
+    const signupRes = await signupSwiggyViaBridge(userId, enteredName);
 
-    await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${cleanPhone} for ${escapeHtml(enteredName)}...</b>`, { parse_mode: 'HTML' });
-    const result = await requestSwiggyOtpViaBridge(userId, cleanPhone, cleanKey);
+    if (signupRes.success) {
+      const targetAcc = signupRes.accountKey;
+      const db = getDb();
+      if (!db.config.activeOrderAccount) {
+        db.config.activeOrderAccount = targetAcc;
+        saveDb(db);
+      }
+      if (orderId && db.orders[orderId]) {
+        const order = db.orders[orderId];
+        order.selectedAccount = targetAcc;
+        saveDb(db);
+        updateOrderCards(order).catch(() => {});
+      }
 
-    if (result.success) {
-      userWaitState[userId] = {
-        action: 'waiting_swiggy_otp_bridge',
-        targetAcc: cleanKey,
-        phone: cleanPhone,
-        name: enteredName
-      };
+      const jsonBackupStr = JSON.stringify(signupRes.exportJson || {}, null, 2);
+
       await ctx.reply(
-        `📲 <b>OTP Sent to ${cleanPhone}!</b>\n\n` +
-        `👤 <b>Account Name:</b> ${escapeHtml(enteredName)}\n\n` +
-        `Kripya 6-digit OTP chat me bhejein:`,
-        {
-          parse_mode: 'HTML',
-          reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
-        }
+        `🎉 <b>Swiggy Account Created & Logged In!</b> 🎉\n\n` +
+        `👤 <b>Account Name:</b> <b>${escapeHtml(signupRes.name)}</b>\n` +
+        `📱 <b>Mobile:</b> <code>${signupRes.phone}</code>\n` +
+        `🆔 Customer ID: <code>${signupRes.customerId || 'Verified'}</code>\n` +
+        `🟢 <b>Status:</b> Connected & Ready for Orders!\n\n` +
+        (orderId ? `📌 <b>Order #${orderId} is now linked to ${escapeHtml(signupRes.name)}!</b>\n\n` : '') +
+        `📦 <b>[ SESSION BACKUP JSON ]</b> (Save to Telegram Saved Messages):\n` +
+        `<code>${escapeHtml(jsonBackupStr)}</code>`,
+        { parse_mode: 'HTML', ...getBossPanelKeyboard() }
       );
     } else {
-      await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}`, getBossPanelKeyboard());
+      await ctx.reply(`❌ <b>Swiggy Signup Error:</b> ${signupRes.message}`, getBossPanelKeyboard());
     }
     return;
   }
@@ -2980,47 +2982,11 @@ bot.on('text', async (ctx) => {
   if (isBoss(userId) && (!state || !state.action) && cleanPhoneInput.length === 10 && /^[6-9]\d{9}$/.test(cleanPhoneInput)) {
     const db = getDb();
     const existing = Object.entries(db.config?.accounts || {}).find(([k, a]) => a.phone === cleanPhoneInput);
+    const existingKey = existing ? existing[0] : null;
+    const existingName = existing ? (existing[1]?.name || existing[0]) : null;
 
-    if (existing) {
-      const [accKey, accData] = existing;
-      await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${cleanPhoneInput} (${escapeHtml(accData.name || accKey)})...</b>`, { parse_mode: 'HTML' });
-      const result = await requestSwiggyOtpViaBridge(userId, cleanPhoneInput, accKey);
-      if (result.success) {
-        userWaitState[userId] = {
-          action: 'waiting_swiggy_otp_bridge',
-          targetAcc: accKey,
-          phone: cleanPhoneInput,
-          name: accData.name || accKey
-        };
-        await ctx.reply(
-          `📲 <b>OTP Sent to ${cleanPhoneInput}!</b>\n\n` +
-          `👤 <b>Account:</b> ${escapeHtml(accData.name || accKey)}\n\n` +
-          `Kripya 6-digit OTP chat me bhejein:`,
-          {
-            parse_mode: 'HTML',
-            reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
-          }
-        );
-      } else {
-        await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}`, getBossPanelKeyboard());
-      }
-      return;
-    } else {
-      userWaitState[userId] = {
-        action: 'waiting_name_for_new_number',
-        phone: cleanPhoneInput
-      };
-      await ctx.reply(
-        `🆕 <b>Yeh naya number hai (${cleanPhoneInput})!</b>\n\n` +
-        `📝 <b>Is account ka kya naam rakhna hai?</b>\n` +
-        `<i>(Jaise: Rahul, Aman, Office, Personal):</i>`,
-        {
-          parse_mode: 'HTML',
-          reply_markup: { force_reply: true, input_field_placeholder: 'Enter account name (e.g. Rahul)...' }
-        }
-      );
-      return;
-    }
+    await triggerPhoneNumberLogin(cleanPhoneInput, existingKey, existingName);
+    return;
   }
 
   // Step 1: User entered 10-digit number for Swiggy after legacy prompt
@@ -3070,10 +3036,28 @@ bot.on('text', async (ctx) => {
 
     const result = await verifySwiggyOtpViaBridge(userId, enteredOtp);
 
+    if (result.isNewUser) {
+      userWaitState[userId] = {
+        action: 'waiting_name_for_new_swiggy_signup',
+        phone: result.phone,
+        orderId: state.orderId
+      };
+      await ctx.reply(
+        `🆕 <b>Yeh number Swiggy par registered nahi hai (${result.phone})!</b>\n\n` +
+        `📝 <b>Swiggy naya account create karne ke liye kripya apna Naam likh kar bhejein:</b>\n` +
+        `<i>(Jaise: Rahul, Aman)</i>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { force_reply: true, input_field_placeholder: 'Enter your name (e.g. Rahul)...' }
+        }
+      );
+      return;
+    }
+
     if (result.success) {
       const orderId = state.orderId;
-      const targetAcc = result.targetAcc;
-      const initialName = state.name;
+      const targetAcc = result.accountKey || result.targetAcc || state.targetAcc;
+      const displayName = result.name || state.name || targetAcc;
       delete userWaitState[userId];
 
       const db = getDb();
@@ -3089,22 +3073,11 @@ bot.on('text', async (ctx) => {
         updateOrderCards(order).catch(() => {});
       }
 
-      // Fetch authentic Swiggy profile name in background and update account
-      if (result.exportJson?.cookies) {
-        fetchSwiggyProfileFromCookies(result.exportJson.cookies).then(prof => {
-          if (prof?.name) {
-            updateAccount(targetAcc, { name: prof.name });
-          }
-        }).catch(() => {});
-      }
-
-      const accObj = db.config?.accounts?.[targetAcc];
-      const displayName = accObj?.name || initialName || targetAcc;
       const jsonBackupStr = JSON.stringify(result.exportJson || {}, null, 2);
 
       await ctx.reply(
-        `✅ <b>Logged In Successfully!</b> 🎉\n\n` +
-        `👤 <b>Account Name:</b> <b>${escapeHtml(displayName)}</b>\n` +
+        `✅ <b>Logged In Successfully via Swiggy!</b> 🎉\n\n` +
+        `👤 <b>Swiggy Registered Name:</b> <b>${escapeHtml(displayName)}</b>\n` +
         `📱 <b>Mobile:</b> <code>${result.phone}</code>\n` +
         `🆔 Customer ID: <code>${result.customerId || 'Verified'}</code>\n` +
         `🟢 <b>Status:</b> Connected & Ready for Orders!\n\n` +
