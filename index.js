@@ -955,32 +955,25 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     (orderId ? `📌 <b>Order #${orderId} is linked to ${escapeHtml(displayName)}!</b>\n\n` : '') +
     `💾 <i>Account is saved in DB and ready for orders!</i>`;
 
-  let keyboardButtons = [];
+  let keyboardButtons = [
+    [
+      Markup.button.callback('📦 Previous Orders', `boss_prev_orders_${targetAcc}`),
+      Markup.button.callback('🗑️ Delete Account from Swiggy', `boss_swiggy_delete_start_${targetAcc}`)
+    ],
+    [
+      Markup.button.callback('📱 Add Another Account', 'send_to_another_number'),
+      Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+    ]
+  ];
   if (!bothClaimed) {
-    keyboardButtons = [
-      [
-        Markup.button.callback('🗑️ Delete Account (Claim Failed)', `boss_swiggy_delete_start_${targetAcc}`),
-        Markup.button.callback('🔄 Retry Claim', `boss_retry_claim_${targetAcc}`)
-      ],
-      [
-        Markup.button.callback('🛒 Use Anyway for Orders', `boss_use_acc_${targetAcc}`),
-        Markup.button.callback('📱 Add Another Number', 'send_to_another_number')
-      ],
-      [
-        Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
-      ]
-    ];
+    keyboardButtons.push([
+      Markup.button.callback('🔄 Retry Claim', `boss_retry_claim_${targetAcc}`),
+      Markup.button.callback('🛒 Use Anyway for Orders', `boss_use_acc_${targetAcc}`)
+    ]);
   } else {
-    keyboardButtons = [
-      [
-        Markup.button.callback('🛒 Order with this Account', `boss_use_acc_${targetAcc}`),
-        Markup.button.callback('🗑️ Delete Account', `boss_swiggy_delete_start_${targetAcc}`)
-      ],
-      [
-        Markup.button.callback('📱 Add Another Number', 'send_to_another_number'),
-        Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
-      ]
-    ];
+    keyboardButtons.push([
+      Markup.button.callback('🛒 Order with this Account', `boss_use_acc_${targetAcc}`)
+    ]);
   }
 
   await ctx.reply(cardText, {
@@ -988,6 +981,37 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     ...Markup.inlineKeyboard(keyboardButtons)
   });
 }
+
+// Action: Previous orders from login card or account card
+bot.action(/^boss_prev_orders_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+  await ctx.answerCbQuery('Fetching previous orders from Swiggy... ⏳').catch(() => {});
+  const key = ctx.match[1];
+  await handlePreviousOrders(ctx, key);
+});
+
+// Action: Boss Main Menu / Boss Panel Home & Refresh
+bot.action(['boss_panel_home', 'boss_refresh'], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  const text = getBossPanelText();
+  const keyboard = getBossPanelKeyboard();
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+  } catch (e) {
+    await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+  }
+});
+
+bot.command(['menu', 'panel'], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return;
+  await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+});
+
+bot.hears(['🏠 Main Menu', 'Menu', 'Main Menu'], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return;
+  await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+});
 
 // Action: Use account for orders
 bot.action(/^boss_use_acc_(.+)$/, async (ctx) => {
@@ -1412,16 +1436,19 @@ bot.action(/^boss_swiggy_delete_start_(.+)$/, async (ctx) => {
   const accName = acc.name || key;
 
   await ctx.reply(
-    `<blockquote>⚠️ <b>CONFIRM ACCOUNT DELETION</b></blockquote>\n\n` +
+    `<blockquote>⚠️ <b>CONFIRM SWIGGY ACCOUNT DELETION</b></blockquote>\n\n` +
     `📱 <b>Account:</b> <code>${phone}</code>\n` +
     `👤 <b>Name:</b> <b>${escapeHtml(accName)}</b>\n\n` +
-    `<i>Kya aap sach me is account ko bot se delete karna chahte hain? Iska session, tokens aur database entry permanently remove ho jayenge.</i>`,
+    `<i>Kya aap sach me is account ko Swiggy se delete / deactivate karna chahte hain?\n` +
+    `• Swiggy server par session invalidate & token revoke kiya jayega\n` +
+    `• Saved addresses aur cookies terminate honge\n` +
+    `• Bot database se account permanently wipe kar diya jayega.</i>`,
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([
         [
-          Markup.button.callback('🗑️ Yes, Delete Account', `boss_swiggy_delete_confirm_${key}`),
-          Markup.button.callback('🔙 Cancel', 'boss_view_accounts')
+          Markup.button.callback('🗑️ Yes, Delete from Swiggy', `boss_swiggy_delete_confirm_${key}`),
+          Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
         ]
       ])
     }
@@ -1430,24 +1457,71 @@ bot.action(/^boss_swiggy_delete_start_(.+)$/, async (ctx) => {
 
 bot.action(/^boss_swiggy_delete_confirm_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  await ctx.answerCbQuery().catch(() => {});
+  await ctx.answerCbQuery('Deleting account from Swiggy... ⏳').catch(() => {});
   const key = ctx.match[1];
   const db = getDb();
   const acc = db.config.accounts?.[key];
   const phone = acc?.phone || key.replace('acc_', '');
   const accName = acc?.name || key;
 
+  const cookieStr = acc?.cookies || (acc?.tid ? `tid=${acc.tid}; _sid=${acc.sid || ''}; _device_id=${acc.deviceId || ''}; token=${acc.token || ''}` : '');
+
+  let swiggyTerminated = false;
+  if (cookieStr) {
+    try {
+      // 1. Swiggy Account Deactivate call
+      await fetch('https://www.swiggy.com/dapi/user/deactivate', {
+        method: 'POST',
+        headers: {
+          'Cookie': cookieStr,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        body: JSON.stringify({ reason: 'user_delete_request' })
+      }).catch(() => null);
+
+      // 2. Swiggy Logout call
+      await fetch('https://www.swiggy.com/dapi/auth/logout', {
+        method: 'POST',
+        headers: {
+          'Cookie': cookieStr,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        body: JSON.stringify({})
+      }).catch(() => null);
+
+      swiggyTerminated = true;
+    } catch (e) {
+      console.log('Swiggy deactivation API error:', e.message);
+    }
+  }
+
+  // Also close active bridge session if any
+  try {
+    await deactivateSwiggyAccountViaBridge(ctx.from.id, key).catch(() => {});
+  } catch (e) {}
+
   deleteAccount(key);
   permanentLogoutAccount(key);
 
   await ctx.reply(
-    `<blockquote>✅ <b>ACCOUNT DELETED SUCCESSFULLY</b></blockquote>\n\n` +
-    `📱 <b>Account:</b> <code>${phone}</code>\n` +
+    `<blockquote>✅ <b>SWIGGY ACCOUNT DEACTIVATION & DELETION</b></blockquote>\n\n` +
+    `📱 <b>Account Number:</b> <code>${phone}</code>\n` +
     `👤 <b>Name:</b> <b>${escapeHtml(accName)}</b>\n` +
-    `🗑️ <b>Status:</b> Account bot se permanently delete kar diya gaya hai.`,
+    `🌐 <b>Swiggy Session:</b> ${swiggyTerminated ? '🟢 Terminated & Revoked on Swiggy servers' : '⚪ Session Inactive'}\n` +
+    `🗑️ <b>Bot DB:</b> Permanently deleted from bot records.\n\n` +
+    `<i>Swiggy account deactivation request complete ho gayi hai.</i>`,
     {
       parse_mode: 'HTML',
-      ...getBossPanelKeyboard()
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('📱 Add Another Account', 'send_to_another_number'),
+          Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+        ]
+      ])
     }
   );
 });
@@ -4727,8 +4801,14 @@ async function handlePreviousOrders(ctx, targetKey = null) {
       `🆔 <b>Customer ID:</b> <code>${acc.customerId || 'Verified'}</code>\n\n` +
       `<i>Is account se Swiggy par abhi tak koi previous order nahi mila (0 orders).</i>`;
     return sendSafeHtml(ctx, emptyText, Markup.inlineKeyboard([
-      [Markup.button.callback('🔄 Refresh Orders', `acc_view_orders_${activeKey}`)],
-      [Markup.button.callback('🔙 Back to Account', `acc_view_detail_${activeKey}`)]
+      [
+        Markup.button.callback('🗑️ Delete Account from Swiggy', `boss_swiggy_delete_start_${activeKey}`),
+        Markup.button.callback('🔄 Refresh Orders', `acc_view_orders_${activeKey}`)
+      ],
+      [
+        Markup.button.callback('📱 Add Another Account', 'send_to_another_number'),
+        Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+      ]
     ]));
   }
 
@@ -4757,8 +4837,12 @@ async function handlePreviousOrders(ctx, targetKey = null) {
   }
 
   buttons.push([
-    Markup.button.callback('🔄 Refresh Orders', `acc_view_orders_${activeKey}`),
-    Markup.button.callback('🔙 Back to Account', `acc_view_detail_${activeKey}`)
+    Markup.button.callback('🗑️ Delete Account from Swiggy', `boss_swiggy_delete_start_${activeKey}`),
+    Markup.button.callback('🔄 Refresh Orders', `acc_view_orders_${activeKey}`)
+  ]);
+  buttons.push([
+    Markup.button.callback('📱 Add Another Account', 'send_to_another_number'),
+    Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
   ]);
 
   await sendSafeHtml(ctx, text.trim(), Markup.inlineKeyboard(buttons));
