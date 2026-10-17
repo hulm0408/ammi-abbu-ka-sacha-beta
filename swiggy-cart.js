@@ -110,19 +110,6 @@ export async function resolveSwiggyLink(url) {
   const isAddress = Boolean(ofoUser || cleanUrl.includes('ofo/address') || cleanUrl.includes('address') || cleanUrl.includes('maps.google') || cleanUrl.includes('goo.gl') || cleanUrl.includes('y313q1wv'));
   const isCart = Boolean(groupCartId || cleanUrl.includes('/gc/') || cleanUrl.includes('group-order') || cleanUrl.includes('/cart') || cleanUrl.includes('/menu'));
 
-  let addressDetails = null;
-  if (ofoToken === 'ZumeO9LnM' || cleanUrl.includes('y313q1wv') || cleanUrl.includes('ZumeO9LnM')) {
-    addressDetails = {
-      city: 'Vijayawada',
-      name: 'Shaikyounus',
-      mobile: '6304545292',
-      flat_no: '15-375',
-      address: '15-375\nVijayawada, Andhra Pradesh 522502',
-      lat: '16.455088',
-      lng: '80.588072'
-    };
-  }
-
   return {
     originalUrl: cleanUrl,
     resolvedUrl: resolved,
@@ -132,7 +119,7 @@ export async function resolveSwiggyLink(url) {
     hostName,
     ofoUser,
     ofoToken,
-    addressDetails
+    addressDetails: null
   };
 }
 
