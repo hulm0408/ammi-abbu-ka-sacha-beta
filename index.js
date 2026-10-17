@@ -25,7 +25,7 @@ import {
   canTransitionOrder,
   getNextAutoUserName,
 } from './store.js';
-import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser } from './swiggy-bridge.js';
+import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload } from './swiggy-bridge.js';
 import {
   verifyAndInspectSwiggyLink,
   inspectCartForAccount,
@@ -1456,6 +1456,26 @@ bot.action([
   const phone = acc.phone || key.replace('acc_', '');
   const accName = acc.name || key;
 
+  // 1. Verify that the selected account is genuinely authenticated before initiating deletion
+  const isAuth = checkLoggedInFromCookies(acc);
+  if (!isAuth && !acc.isLoggedIn) {
+    deleteInProgress.delete(userId);
+    deleteInProgress.delete(key);
+    return ctx.reply(
+      `⚠️ <b>Account "${escapeHtml(accName)}" is not logged in!</b>\n\n` +
+      `Swiggy account deletion requires an active, authenticated session.\n` +
+      `If initiated outside an authenticated account, Swiggy will prompt for login.\n\n` +
+      `👉 <i>Please log in to this account first to access <b>Settings → Delete Swiggy Account</b>:</i>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback(`📱 Login ${accName}`, `boss_login_acc_otp_${key}`)],
+          [Markup.button.callback('🏠 Main Menu', 'boss_panel_home')]
+        ])
+      }
+    );
+  }
+
   // Immediately answer callback query and set in-progress wait state so text listener never triggers login
   await ctx.answerCbQuery('Requesting Authentic Swiggy Delete OTP... ⏳').catch(() => {});
   userWaitState[userId] = {
@@ -1500,18 +1520,21 @@ bot.action([
     } else {
       delete userWaitState[userId];
       const errText = otpResult.swiggyStatus || otpResult.message || 'Failed to trigger Delete OTP';
+      const isAuthError = Boolean(otpResult.isAuthError);
       await ctx.reply(
         `<blockquote>${escapeHtml(errText)}</blockquote>\n\n` +
         `⚠️ <b>Swiggy Deletion OTP trigger nahi ho paya.</b>\n` +
         `Reason: <i>${escapeHtml(errText)}</i>\n\n` +
-        `<i>Swiggy account deletion ke liye authentic Swiggy OTP zaroori hai. Kripya retry karein:</i>`,
+        (isAuthError
+          ? `👉 <i>Kripya pehle is account me log in karein, fir <b>Settings → Delete Swiggy Account</b> open karein:</i>`
+          : `<i>Swiggy account deletion ke liye authentic Swiggy OTP zaroori hai. Kripya retry karein:</i>`),
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('🔄 Retry Send Delete OTP', `boss_swiggy_delete_start_${key}`),
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
-            ]
+            isAuthError
+              ? [Markup.button.callback(`📱 Login ${accName}`, `boss_login_acc_otp_${key}`)]
+              : [Markup.button.callback('🔄 Retry Send Delete OTP', `boss_swiggy_delete_start_${key}`)],
+            [Markup.button.callback('🏠 Main Menu', 'boss_panel_home')]
           ])
         }
       );

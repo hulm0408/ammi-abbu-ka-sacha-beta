@@ -49,11 +49,30 @@ export function decodeJwtPayload(jwtToken) {
   }
 }
 
-// Helper to check if cookies contain a verified logged-in user
-export function checkLoggedInFromCookies(cookies) {
-  const tidCookie = cookies.find(c => c.name === 'tid');
-  if (!tidCookie) return false;
-  const payload = decodeJwtPayload(tidCookie.value);
+// Helper to check if cookies or account contain a verified logged-in user
+export function checkLoggedInFromCookies(input) {
+  if (!input) return false;
+  let tidValue = '';
+
+  if (typeof input === 'object' && !Array.isArray(input)) {
+    if (input.tid) {
+      tidValue = input.tid;
+    } else if (input.cookies) {
+      input = input.cookies;
+    }
+  }
+
+  if (Array.isArray(input)) {
+    const tidCookie = input.find(c => c && c.name === 'tid');
+    tidValue = tidCookie?.value || '';
+  } else if (typeof input === 'string') {
+    const match = input.match(/(?:^|;\s*)tid=([^;]+)/);
+    if (match) tidValue = decodeURIComponent(match[1]);
+    else if (input.includes('.') && input.length > 50) tidValue = input;
+  }
+
+  if (!tidValue) return false;
+  const payload = decodeJwtPayload(tidValue);
   return Boolean(payload && payload.user_id && payload.user_id !== '0');
 }
 
@@ -284,6 +303,16 @@ export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc =
     };
   }
 
+  // 1. Verify the selected account is genuinely authenticated before accessing Settings -> Delete Account
+  const isAuth = checkLoggedInFromCookies(cookieString) || Boolean(acc?.tid && decodeJwtPayload(acc.tid)?.user_id);
+  if (!isAuth) {
+    return {
+      success: false,
+      isAuthError: true,
+      message: 'Selected account session is not authenticated or has expired. Please log in first to access Settings → Delete Account.'
+    };
+  }
+
   deleteOtpRequestCount++;
   const reqNum = deleteOtpRequestCount;
   const maskedPhone = cleanPhone.length >= 4 ? '******' + cleanPhone.slice(-4) : '***';
@@ -308,9 +337,13 @@ export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc =
     const isSent = res.status === 200 && (data.statusCode === 28 || data.statusCode === 0);
 
     if (!isSent) {
-      const errMsg = data.statusMessage || data.error || `Swiggy returned status ${res.status} (code ${data.statusCode || 'unknown'})`;
+      const isAuthError = res.status === 401 || res.status === 403 || data.statusCode === 1 || (data.statusMessage && data.statusMessage.toLowerCase().includes('login'));
+      const errMsg = isAuthError
+        ? 'Swiggy session has expired. Please log in first to access Settings → Delete Swiggy Account.'
+        : (data.statusMessage || data.error || `Swiggy returned status ${res.status} (code ${data.statusCode || 'unknown'})`);
       return {
         success: false,
+        isAuthError,
         message: errMsg,
         swiggyStatus: errMsg
       };
