@@ -116,25 +116,25 @@ function classifyLink(url) {
 
 // User Bottom Menu - Send to Beta ALWAYS available on reply keyboard
 function getUserReplyKeyboard(draft = {}) {
-  const cartLabel = draft?.cart ? '🟣 Cart: Added ✅' : '🟣 Paste cart link';
-  const addrLabel = draft?.address ? '🔵 Address: Added ✅' : '🔵 Paste address Link';
+  const cartLabel = draft?.cart ? 'Cart: Added' : 'Paste Cart Link';
+  const addrLabel = draft?.address ? 'Address: Added' : 'Paste Address Link';
   return Markup.keyboard([
     [cartLabel, addrLabel],
-    ['🚀 Send to Beta'],
-    ['🟠 cancel order', '⚪ previous order']
-  ]).resize();
+    ['Send to Beta'],
+    ['Cancel Order', 'Previous Orders']
+  ]).resize().persistent(false);
 }
 
 // Boss Bottom Menu - Pure Admin Controls (Never customer buttons)
 function getBossReplyKeyboard() {
   return Markup.keyboard([
-    ['📦 Order Screen', '🟡 Pending Orders'],
-    ['🔑 Login with JSON', '📱 Login with Number'],
-    ['🟣 Connected Accounts', '🟢 Slot Status'],
-    ['📊 Total slots', '🟢 Total left'],
-    ['🎁 Claim Free Cash', '🟠 Set UPI ID'],
-    ['🏠 Main Menu', '❌ Close']
-  ]).resize();
+    ['Order Screen', 'Pending Orders'],
+    ['Login with JSON', 'Login with Number'],
+    ['Connected Accounts', 'Slot Status'],
+    ['Total Slots', 'Total Left'],
+    ['Claim Free Cash', 'Set UPI ID'],
+    ['Main Menu', 'Close']
+  ]).resize().persistent(false);
 }
 
 // Format User (Ammi / Parent) Order Screen matching FigJam State Machine
@@ -301,27 +301,27 @@ function getBossPanelText() {
 function getBossPanelKeyboard() {
   return Markup.inlineKeyboard([
     [
-      Markup.button.callback('🔑 Login with JSON', 'boss_login_with_json'),
-      Markup.button.callback('📱 Login with Number', 'boss_login_with_number')
+      Markup.button.callback('Login with JSON', 'boss_login_with_json'),
+      Markup.button.callback('Login with Number', 'boss_login_with_number')
     ],
     [
-      Markup.button.callback('👥 View Accounts', 'boss_view_accounts'),
-      Markup.button.callback('🔄 Refresh All Accounts', 'boss_refresh_all_accounts')
+      Markup.button.callback('View Accounts', 'boss_view_accounts'),
+      Markup.button.callback('Refresh All Accounts', 'boss_refresh_all_accounts')
     ],
     [
-      Markup.button.callback('📤 Export Accounts', 'boss_export_picker'),
-      Markup.button.callback('📦 View Pending Orders', 'boss_view_pending')
+      Markup.button.callback('Export Accounts', 'boss_export_picker'),
+      Markup.button.callback('Pending Orders', 'boss_view_pending')
     ],
     [
-      Markup.button.callback('📊 Total slots', 'boss_prompt_total_slots'),
-      Markup.button.callback('🟢 Total left', 'boss_prompt_slots_left')
+      Markup.button.callback('Total Slots', 'boss_prompt_total_slots'),
+      Markup.button.callback('Total Left', 'boss_prompt_slots_left')
     ],
     [
-      Markup.button.callback('🎁 Claim Free Cash', 'boss_claim_freecash'),
-      Markup.button.callback('💳 Set Payment UPI', 'boss_prompt_set_upi')
+      Markup.button.callback('Claim Free Cash', 'boss_claim_freecash'),
+      Markup.button.callback('Set UPI ID', 'boss_prompt_set_upi')
     ],
     [
-      Markup.button.callback('🔄 Refresh Status', 'boss_refresh')
+      Markup.button.callback('Refresh Status', 'boss_refresh')
     ]
   ]);
 }
@@ -713,18 +713,22 @@ bot.action('boss_prompt_login', async (ctx) => {
 async function handlePromptLogin(ctx) {
   const keyboard = Markup.inlineKeyboard([
     [
-      Markup.button.callback('🔑 Login with JSON', 'boss_login_with_json'),
-      Markup.button.callback('📱 Login with Number', 'boss_login_with_number')
+      Markup.button.callback('Login with JSON', 'boss_login_with_json'),
+      Markup.button.callback('Login with Number', 'boss_login_with_number')
     ],
     [
-      Markup.button.callback('👥 View Connected Accounts', 'boss_view_accounts'),
-      Markup.button.callback('📤 Export Session JSON', 'boss_export_picker')
+      Markup.button.callback('Connected Accounts', 'boss_view_accounts'),
+      Markup.button.callback('Export Session JSON', 'boss_export_picker')
+    ],
+    [
+      Markup.button.callback('Main Menu', 'boss_panel_home'),
+      Markup.button.callback('Close', 'close_menu')
     ]
   ]);
 
-  const text = `🔑 <b>Swiggy Account Access & Login Manager:</b>\n\n` +
-    `• <b>🔑 Login with JSON:</b> Session / Cookie JSON bhej kar turant login karein (Swiggy se profile name auto-fetch hoga!)\n` +
-    `• <b>📱 Login with Number:</b> Mobile number se instant OTP aayega (Naya number hone par naam puchega, existing par direct OTP)`;
+  const text = `<b>Swiggy Account Access & Login Manager:</b>\n\n` +
+    `• <b>Login with JSON:</b> Session / Cookie JSON paste karein\n` +
+    `• <b>Login with Number:</b> Mobile number se instant OTP aayega`;
 
   if (ctx.callbackQuery) {
     try {
@@ -735,15 +739,42 @@ async function handlePromptLogin(ctx) {
   await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
 }
 
+// Helper to prompt for phone number with Auto-Keyboard Popup
+async function promptBossLoginWithNumber(ctx) {
+  const userId = ctx.from.id;
+  userWaitState[userId] = { action: 'waiting_phone_for_number_login' };
+
+  await ctx.reply(
+    `<b>Login with Number</b>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: 'Main Menu', callback_data: 'boss_panel_home' },
+            { text: 'Close', callback_data: 'close_menu' }
+          ]
+        ]
+      }
+    }
+  );
+
+  await ctx.reply('👉 Enter 10-digit Mobile Number:', {
+    reply_markup: {
+      force_reply: true,
+      input_field_placeholder: 'Enter 10-digit mobile number...'
+    }
+  });
+}
+
 // 1. Login with JSON Prompt
 bot.action('boss_login_with_json', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_json_login' };
   await ctx.reply(
-    `🔑 <b>LOGIN WITH JSON:</b>\n\n` +
-    `Swiggy session / cookie JSON chat me paste karein ya <code>.json</code> file bhej dein:\n\n` +
-    `<i>💡 Swiggy se registered profile name automatically fetch hokar account save ho jayega!</i>`,
+    `<b>LOGIN WITH JSON:</b>\n\n` +
+    `Swiggy session / cookie JSON chat me paste karein ya <code>.json</code> file bhej dein:`,
     {
       parse_mode: 'HTML',
       reply_markup: { force_reply: true, input_field_placeholder: 'Paste session JSON here...' }
@@ -755,19 +786,7 @@ bot.action('boss_login_with_json', async (ctx) => {
 bot.action('boss_login_with_number', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
-  userWaitState[ctx.from.id] = { action: 'waiting_phone_for_number_login' };
-  await ctx.reply(
-    `📱 <b>Enter Mobile Number:</b>`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [
-          Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-          Markup.button.callback('❌ Close', 'close_menu')
-        ]
-      ])
-    }
-  );
+  await promptBossLoginWithNumber(ctx);
 });
 
 // 2.1 Direct Send to Another Number
@@ -775,22 +794,10 @@ bot.action('send_to_another_number', async (ctx) => {
   const userId = ctx.from.id;
   delete userWaitState[userId];
   await ctx.answerCbQuery().catch(() => {});
-  userWaitState[userId] = { action: 'waiting_phone_for_number_login' };
-  await ctx.reply(
-    `📱 <b>Enter Mobile Number:</b>`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [
-          Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-          Markup.button.callback('❌ Close', 'close_menu')
-        ]
-      ])
-    }
-  );
+  await promptBossLoginWithNumber(ctx);
 });
 
-// 2.2 Cancel OTP Login Action -> Closes prompt cleanly
+// 2.2 Cancel OTP Login Action -> Closes prompt cleanly and restores reply keyboard
 bot.action(['cancel_otp_login', 'close_menu', 'action_close', 'cancel_menu'], async (ctx) => {
   const userId = ctx.from.id;
   delete userWaitState[userId];
@@ -799,8 +806,13 @@ bot.action(['cancel_otp_login', 'close_menu', 'action_close', 'cancel_menu'], as
     await ctx.deleteMessage();
   } catch (e) {
     try {
-      await ctx.editMessageText('❌ Closed.');
+      await ctx.editMessageText('Closed.');
     } catch (e2) {}
+  }
+  if (isBoss(userId)) {
+    await ctx.reply('Closed.', getBossReplyKeyboard());
+  } else {
+    await ctx.reply('Closed.', getUserReplyKeyboard());
   }
 });
 
@@ -823,32 +835,45 @@ bot.action(/^resend_otp_(\d{10})$/, async (ctx) => {
       name: existingName
     };
     await ctx.reply(
-      `📲 <b>OTP Sent</b>\n📱 <code>${phone}</code>\n\n👉 <i>Enter OTP:</i>`,
+      `<b>OTP Sent</b>\n<code>${phone}</code>`,
       {
         parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [
-            Markup.button.callback('🔄 Resend OTP', `resend_otp_${phone}`),
-            Markup.button.callback('📱 Another Number', 'send_to_another_number')
-          ],
-          [
-            Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-            Markup.button.callback('❌ Close', 'close_menu')
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: 'Copy Number', copy_text: { text: phone } }
+            ],
+            [
+              { text: 'Resend OTP', callback_data: `resend_otp_${phone}` },
+              { text: 'Another Number', callback_data: 'send_to_another_number' }
+            ],
+            [
+              { text: 'Main Menu', callback_data: 'boss_panel_home' },
+              { text: 'Close', callback_data: 'close_menu' }
+            ]
           ]
-        ])
+        }
       }
     );
+    await ctx.reply('👉 Enter OTP:', {
+      reply_markup: {
+        force_reply: true,
+        input_field_placeholder: 'Enter 6-digit OTP...'
+      }
+    });
   } else {
     await ctx.reply(
       `❌ ${escapeHtml(result.message || 'Failed to resend OTP')}`,
       {
         parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [
-            Markup.button.callback('📱 Try Another Number', 'send_to_another_number'),
-            Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: 'Try Another Number', callback_data: 'send_to_another_number' },
+              { text: 'Main Menu', callback_data: 'boss_panel_home' }
+            ]
           ]
-        ])
+        }
       }
     );
   }
@@ -977,22 +1002,22 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
 
   let keyboardButtons = [
     [
-      Markup.button.callback('📦 Previous Orders', `boss_prev_orders_${targetAcc}`),
-      Markup.button.callback('🗑️ Delete Account from Swiggy', `boss_swiggy_delete_start_${targetAcc}`)
+      Markup.button.callback('Previous Orders', `boss_prev_orders_${targetAcc}`),
+      Markup.button.callback('Delete Account from Swiggy', `boss_swiggy_delete_start_${targetAcc}`)
     ],
     [
-      Markup.button.callback('📱 Add Another Account', 'send_to_another_number'),
-      Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+      Markup.button.callback('Add Another Account', 'send_to_another_number'),
+      Markup.button.callback('Main Menu', 'boss_panel_home')
     ]
   ];
   if (!bothClaimed) {
     keyboardButtons.push([
-      Markup.button.callback('🔄 Retry Claim', `boss_retry_claim_${targetAcc}`),
-      Markup.button.callback('🛒 Use Anyway for Orders', `boss_use_acc_${targetAcc}`)
+      Markup.button.callback('Retry Claim', `boss_retry_claim_${targetAcc}`),
+      Markup.button.callback('Use Anyway for Orders', `boss_use_acc_${targetAcc}`)
     ]);
   } else {
     keyboardButtons.push([
-      Markup.button.callback('🛒 Order with this Account', `boss_use_acc_${targetAcc}`)
+      Markup.button.callback('Order with this Account', `boss_use_acc_${targetAcc}`)
     ]);
   }
 
@@ -1027,21 +1052,23 @@ bot.action(['boss_panel_home', 'boss_refresh'], async (ctx) => {
 bot.command(['menu', 'panel'], async (ctx) => {
   delete userWaitState[ctx.from.id];
   if (!isBoss(ctx.from.id)) return;
-  await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+  await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossReplyKeyboard() });
+  await ctx.reply('Boss Panel:', { parse_mode: 'HTML', ...getBossPanelKeyboard() });
 });
 
-bot.hears(['🏠 Main Menu', 'Menu', 'Main Menu', '🏠 Boss Panel'], async (ctx) => {
+bot.hears(['Main Menu', 'Menu', 'Boss Panel', '🏠 Main Menu', '🏠 Boss Panel'], async (ctx) => {
   delete userWaitState[ctx.from.id];
   if (!isBoss(ctx.from.id)) return;
-  await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+  await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossReplyKeyboard() });
+  await ctx.reply('Boss Panel:', { parse_mode: 'HTML', ...getBossPanelKeyboard() });
 });
 
-bot.hears(['❌ Close', 'Close', 'close'], async (ctx) => {
+bot.hears(['Close', 'close', '❌ Close'], async (ctx) => {
   delete userWaitState[ctx.from.id];
   if (isBoss(ctx.from.id)) {
-    await ctx.reply('❌ Closed.', getBossReplyKeyboard());
+    await ctx.reply('Closed.', getBossReplyKeyboard());
   } else {
-    await ctx.reply('❌ Closed.', getUserReplyKeyboard());
+    await ctx.reply('Closed.', getUserReplyKeyboard());
   }
 });
 
@@ -1466,13 +1493,13 @@ bot.action('boss_delete_picker', async (ctx) => {
 
   const buttons = [];
   for (const [k, a] of Object.entries(accounts)) {
-    buttons.push([Markup.button.callback(`🗑️ Delete ${a.name || k} (${a.phone || ''})`, `boss_swiggy_delete_start_${k}`)]);
+    buttons.push([Markup.button.callback(`Delete ${a.name || k} (${a.phone || ''})`, `boss_swiggy_delete_start_${k}`)]);
   }
-  buttons.push([Markup.button.callback('🔙 Cancel', 'boss_view_accounts')]);
+  buttons.push([Markup.button.callback('Cancel', 'boss_view_accounts')]);
 
   await ctx.reply(
-    `🗑️ <b>SELECT ACCOUNT TO DELETE:</b>\n\n` +
-    `Jis account ko bot se delete karna chahte hain, uspe tap karein:`,
+    `<b>Select Account to Delete:</b>\n\n` +
+    `Jis account ko delete karna chahte hain, uspe tap karein:`,
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard(buttons)
@@ -1525,8 +1552,8 @@ bot.action([
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback(`📱 Login ${accName}`, `boss_login_acc_otp_${key}`)],
-          [Markup.button.callback('🏠 Main Menu', 'boss_panel_home')]
+          [Markup.button.callback(`Login ${accName}`, `boss_login_acc_otp_${key}`)],
+          [Markup.button.callback('Main Menu', 'boss_panel_home')]
         ])
       }
     );
@@ -1554,22 +1581,32 @@ bot.action([
       };
 
       await ctx.reply(
-        `🗑️ <b>Delete OTP Sent</b>\n` +
-        `📱 <code>${phone}</code> (<b>${escapeHtml(accName)}</b>)\n\n` +
-        `👉 <i>Enter OTP:</i>`,
+        `<b>Delete OTP Sent</b>\n<code>${phone}</code> (${escapeHtml(accName)})`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('🔄 Resend Delete OTP', `boss_swiggy_delete_start_${key}`)
-            ],
-            [
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-              Markup.button.callback('❌ Close', 'close_menu')
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Copy Number', copy_text: { text: phone } }
+              ],
+              [
+                { text: 'Resend Delete OTP', callback_data: `boss_swiggy_delete_start_${key}` }
+              ],
+              [
+                { text: 'Main Menu', callback_data: 'boss_panel_home' },
+                { text: 'Close', callback_data: 'close_menu' }
+              ]
             ]
-          ])
+          }
         }
       );
+
+      await ctx.reply('👉 Enter Delete OTP:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter 6-digit Delete OTP...'
+        }
+      });
     } else {
       delete userWaitState[userId];
       const errText = otpResult.swiggyStatus || otpResult.message || 'Failed to trigger Delete OTP';
@@ -1579,16 +1616,18 @@ bot.action([
         `⚠️ <b>Swiggy Deletion OTP trigger nahi ho paya.</b>\n` +
         `Reason: <i>${escapeHtml(errText)}</i>\n\n` +
         (isAuthError
-          ? `👉 <i>Swiggy ke mutabiq is account ka session expire ho chuka hai. Swiggy Settings delete tabhi khulta hai jab session active ho. Kripya re-login karein:</i>`
-          : `<i>Swiggy account deletion ke liye authentic Swiggy OTP zaroori hai. Kripya retry karein:</i>`),
+          ? `👉 <i>Swiggy ke mutabiq is account ka session expire ho chuka hai. Kripya re-login karein:</i>`
+          : `<i>Kripya retry karein:</i>`),
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            isAuthError
-              ? [Markup.button.callback(`📱 Re-login to Delete ${accName}`, `boss_login_acc_otp_${key}`)]
-              : [Markup.button.callback('🔄 Retry Send Delete OTP', `boss_swiggy_delete_start_${key}`)],
-            [Markup.button.callback('🏠 Main Menu', 'boss_panel_home')]
-          ])
+          reply_markup: {
+            inline_keyboard: [
+              isAuthError
+                ? [{ text: `Login ${accName}`, callback_data: `boss_login_acc_otp_${key}` }]
+                : [{ text: 'Retry Send Delete OTP', callback_data: `boss_swiggy_delete_start_${key}` }],
+              [{ text: 'Main Menu', callback_data: 'boss_panel_home' }]
+            ]
+          }
         }
       );
     }
@@ -2159,25 +2198,25 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
   }
 
   const userButtons = [
-    [Markup.button.url('🌐 Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
-    [Markup.button.callback('💸 Verify Payment Status', `user_confirm_order_${orderId}`)]
+    [Markup.button.url('Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
+    [Markup.button.callback('Verify Payment Status', `user_confirm_order_${orderId}`)]
   ];
   if (order.cart && order.cart.startsWith('http')) {
-    userButtons.splice(1, 0, [Markup.button.url('🛒 Open Swiggy Cart / Items', order.cart)]);
+    userButtons.splice(1, 0, [Markup.button.url('Open Swiggy Cart / Items', order.cart)]);
   }
 
   const bossButtons = [
-    [Markup.button.url('🌐 Swiggy Payment Page', 'https://www.swiggy.com/payments')],
+    [Markup.button.url('Swiggy Payment Page', 'https://www.swiggy.com/payments')],
     [
-      Markup.button.callback('📷 Upload Real QR Screenshot', `boss_upload_custom_qr_${orderId}`),
-      Markup.button.callback('📸 Live Screen', `boss_live_pay_screen_${orderId}`)
+      Markup.button.callback('Upload Real QR Screenshot', `boss_upload_custom_qr_${orderId}`),
+      Markup.button.callback('Live Screen', `boss_live_pay_screen_${orderId}`)
     ],
     [
-      Markup.button.callback('💸 Verify Payment from Swiggy', `boss_confirm_paid_${orderId}`)
+      Markup.button.callback('Verify Payment from Swiggy', `boss_confirm_paid_${orderId}`)
     ]
   ];
   if (order.cart && order.cart.startsWith('http')) {
-    bossButtons.unshift([Markup.button.url('🛒 Swiggy Cart / Group Order', order.cart)]);
+    bossButtons.unshift([Markup.button.url('Swiggy Cart / Group Order', order.cart)]);
   }
 
   let qrDelivered = false;
@@ -2303,17 +2342,17 @@ bot.action(/^boss_get_qr_(.+)$/, async (ctx) => {
   const payable = order.finalPayable || order.subtotal || 0;
 
   const bossButtons = [
-    [Markup.button.url('🌐 Swiggy Payment Page', 'https://www.swiggy.com/payments')],
+    [Markup.button.url('Swiggy Payment Page', 'https://www.swiggy.com/payments')],
     [
-      Markup.button.callback('📷 Upload Real QR Screenshot', `boss_upload_custom_qr_${orderId}`),
-      Markup.button.callback('📸 Live Screen', `boss_live_pay_screen_${orderId}`)
+      Markup.button.callback('Upload Real QR Screenshot', `boss_upload_custom_qr_${orderId}`),
+      Markup.button.callback('Live Screen', `boss_live_pay_screen_${orderId}`)
     ],
     [
-      Markup.button.callback('💸 Verify Payment from Swiggy', `boss_confirm_paid_${orderId}`)
+      Markup.button.callback('Verify Payment from Swiggy', `boss_confirm_paid_${orderId}`)
     ]
   ];
   if (order.cart && order.cart.startsWith('http')) {
-    bossButtons.unshift([Markup.button.url('🛒 Swiggy Cart / Group Order', order.cart)]);
+    bossButtons.unshift([Markup.button.url('Swiggy Cart / Group Order', order.cart)]);
   }
 
   if (order.customQrFileId) {
@@ -2365,10 +2404,14 @@ bot.action(/^boss_upload_custom_qr_(.+)$/, async (ctx) => {
 
   userWaitState[ctx.from.id] = { action: 'waiting_custom_qr_photo', orderId };
   await ctx.reply(
-    `📷 <b>Send QR:</b>\n\n` +
-    `Swiggy payment screen ya authorized UPI QR chat me attach karke bhej dein (Photo ya File/Document).\nYeh turant customer ke screen par deliver ho jayegi!`,
+    `<b>Send QR / Photo:</b>\n\n` +
+    `Swiggy payment screen ya UPI QR attach karein (Photo ya Document):`,
     {
-      parse_mode: 'HTML'
+      parse_mode: 'HTML',
+      reply_markup: {
+        force_reply: true,
+        input_field_placeholder: '📎 Send photo or screenshot here...'
+      }
     }
   );
 });
@@ -2496,8 +2539,8 @@ bot.action(/^boss_prompt_cancel_(.+)$/, async (ctx) => {
 
   const buttons = [
     [
-      Markup.button.callback('🔴 Are you sure (Cancel)', `boss_confirm_cancel_${orderId}`),
-      Markup.button.callback('🟢 Keep Order', `boss_keep_order_${orderId}`)
+      Markup.button.callback('Are you sure (Cancel)', `boss_confirm_cancel_${orderId}`),
+      Markup.button.callback('Keep Order', `boss_keep_order_${orderId}`)
     ]
   ];
 
@@ -2724,20 +2767,20 @@ async function showFamilyAccounts(ctx) {
 
   const buttons = [
     [
-      Markup.button.callback('🔑 Login with JSON', 'boss_login_with_json'),
-      Markup.button.callback('📱 Login with Number', 'boss_login_with_number')
+      Markup.button.callback('Login with JSON', 'boss_login_with_json'),
+      Markup.button.callback('Login with Number', 'boss_login_with_number')
     ],
     [
-      Markup.button.callback('🔄 Refresh All Accounts', 'boss_refresh_all_accounts'),
-      Markup.button.callback('📤 Export Session JSON', 'boss_export_picker')
+      Markup.button.callback('Refresh All Accounts', 'boss_refresh_all_accounts'),
+      Markup.button.callback('Export Session JSON', 'boss_export_picker')
     ],
     [
-      Markup.button.callback('🚪 Logout Accounts', 'boss_logout_picker'),
-      Markup.button.callback('🗑️ Delete Account', 'boss_delete_picker')
+      Markup.button.callback('Logout Accounts', 'boss_logout_picker'),
+      Markup.button.callback('Delete Account', 'boss_delete_picker')
     ],
     [
-      Markup.button.callback('🔄 Switch Active Account', 'boss_switch_active_picker'),
-      Markup.button.callback('🏠 Boss Panel', 'boss_panel_home')
+      Markup.button.callback('Switch Active Account', 'boss_switch_active_picker'),
+      Markup.button.callback('Main Menu', 'boss_panel_home')
     ]
   ];
 
@@ -3410,13 +3453,17 @@ bot.hears([
 });
 
 bot.hears([
-  '🚀 Send Order to Beta', 'Send Order to Beta', 'send order to beta', 'SEND ORDER TO BETA',
-  '🚀 Send Order to Beta ✅', '🚀 Send to beta', 'Send to beta', 'send to beta', 'Send to Beta',
-  '🟢 Send to Boss', 'Send to Boss', 'send to boss', 'SEND TO BOSS',
-  '🟢 Send to Admin', 'Send to Admin', '🚀 Send to Admin',
-  '📦 Order Screen', 'Customer Screen',
+  'Order Screen', 'Customer Screen', '📦 Order Screen',
+  'Send Order to Beta', 'send order to beta', 'SEND ORDER TO BETA',
+  'Send to Beta', 'send to beta',
+  'Send to Boss', 'send to boss', 'SEND TO BOSS',
+  'Send to Admin', '🚀 Send to Beta',
   /send.*order.*beta/i, /send.*beta/i, /send.*boss/i, /send.*admin/i
 ], async (ctx) => {
+  if (isBoss(ctx.from.id)) {
+    await ctx.reply('Boss Menu:', getBossReplyKeyboard());
+    return ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+  }
   await handleSendToBoss(ctx);
 });
 
@@ -3424,75 +3471,85 @@ bot.command(['sendtobeta', 'send_to_beta', 'sendorder', 'send_order', 'order'], 
   await handleSendToBoss(ctx);
 });
 
-bot.hears(['🟠 cancel order', 'cancel order', 'Cancel Order', '🟠 Cancel Order'], async (ctx) => {
+bot.hears(['Cancel Order', 'cancel order', 'Cancel order', '🟠 cancel order', '🟠 Cancel Order'], async (ctx) => {
   await handleCancelOrderConfirm(ctx);
 });
 
-bot.hears(['⚪ previous order', 'previous order', 'Previous order'], async (ctx) => {
+bot.hears(['Previous Orders', 'previous orders', 'previous order', 'Previous order', '⚪ previous order'], async (ctx) => {
   await handlePreviousOrder(ctx);
 });
 
-bot.hears(['🎁 Claim Free Cash', 'Claim Free Cash', 'free cash', 'Free Cash', 'claim free cash'], async (ctx) => {
+bot.hears(['Claim Free Cash', 'claim free cash', 'Free Cash', 'free cash', '🎁 Claim Free Cash'], async (ctx) => {
   await showFreeCashMenu(ctx);
 });
 
-// BOSS ONLY BOTTOM BUTTONS (Color-coded, No Random Icons, Boss Only)
-bot.hears(['🟡 Pending Orders', 'Pending Orders'], async (ctx) => {
+// BOSS ONLY BOTTOM BUTTONS
+bot.hears(['Pending Orders', '🟡 Pending Orders'], async (ctx) => {
   if (isBoss(ctx.from.id)) await sendPendingOrdersToBoss(ctx.from.id);
 });
 
-bot.hears(['🟣 Connected Accounts', 'Connected Accounts', '👥 My Swiggy Accounts'], async (ctx) => {
+bot.hears(['Connected Accounts', '🟣 Connected Accounts', '👥 My Swiggy Accounts'], async (ctx) => {
   if (isBoss(ctx.from.id)) await handleMyAccounts(ctx);
 });
 
-bot.hears(['🔵 Saved Addresses', 'Saved Addresses', '📍 Saved Addresses'], async (ctx) => {
+bot.hears(['Saved Addresses', '🔵 Saved Addresses', '📍 Saved Addresses'], async (ctx) => {
   if (isBoss(ctx.from.id)) await handleSavedAddresses(ctx);
 });
 
-bot.hears(['🟢 Slot Status', 'Slot Status', '🎰 Slot Status'], async (ctx) => {
+bot.hears(['Slot Status', '🟢 Slot Status', '🎰 Slot Status'], async (ctx) => {
   if (isBoss(ctx.from.id)) await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
 });
 
-bot.hears(['Total slots', 'Total Slots', '📊 Total slots'], async (ctx) => {
+bot.hears(['Total Slots', 'Total slots', '📊 Total slots'], async (ctx) => {
   if (!isBoss(ctx.from.id)) return;
   userWaitState[ctx.from.id] = { action: 'waiting_boss_total' };
-  await ctx.reply(`📊 <b>Total slots</b>\n\nEnter number:`, {
+  await ctx.reply(`<b>Total Slots</b>\n\nEnter number:`, {
     parse_mode: 'HTML',
     reply_markup: { force_reply: true, input_field_placeholder: 'Enter number...' }
   });
 });
 
-bot.hears(['Total left', 'Total Left', '🟢 Total left'], async (ctx) => {
+bot.hears(['Total Left', 'Total left', '🟢 Total left'], async (ctx) => {
   if (!isBoss(ctx.from.id)) return;
   userWaitState[ctx.from.id] = { action: 'waiting_boss_left' };
-  await ctx.reply(`🟢 <b>Total left</b>\n\nEnter Number:`, {
+  await ctx.reply(`<b>Total Left</b>\n\nEnter number:`, {
     parse_mode: 'HTML',
-    reply_markup: { force_reply: true, input_field_placeholder: 'Enter Number...' }
+    reply_markup: { force_reply: true, input_field_placeholder: 'Enter number...' }
   });
 });
 
-bot.hears(['🟠 Set UPI ID', 'Set UPI ID'], async (ctx) => {
+bot.hears(['Set UPI ID', '🟠 Set UPI ID'], async (ctx) => {
   if (isBoss(ctx.from.id)) {
     userWaitState[ctx.from.id] = { action: 'waiting_set_upi' };
     const cur = getDb().config?.bossUpiId || '6296591407@ybl';
     await ctx.reply(
-      `💳 <b>Set Boss Payment UPI ID:</b>\n\nCurrent: <code>${cur}</code>\n\nChat me apna personal UPI ID type karein:`,
-      { parse_mode: 'HTML', reply_markup: { force_reply: true, input_field_placeholder: 'Enter UPI ID...' } }
+      `💳 <b>Set Boss Payment UPI ID:</b>\nCurrent: <code>${cur}</code>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('Main Menu', 'boss_panel_home'),
+            Markup.button.callback('Close', 'close_menu')
+          ]
+        ])
+      }
     );
+    await ctx.reply('👉 Enter UPI ID:', {
+      reply_markup: { force_reply: true, input_field_placeholder: 'Enter UPI ID (e.g. name@upi)...' }
+    });
   }
 });
 
-bot.hears(['⚪ Login Swiggy', 'Login Swiggy', '🔑 Login Swiggy Account'], async (ctx) => {
+bot.hears(['Login Swiggy', '⚪ Login Swiggy', '🔑 Login Swiggy Account'], async (ctx) => {
   if (isBoss(ctx.from.id)) await handlePromptLogin(ctx);
 });
 
-bot.hears(['🔑 Login with JSON', 'Login with JSON'], async (ctx) => {
+bot.hears(['Login with JSON', '🔑 Login with JSON'], async (ctx) => {
   if (!isBoss(ctx.from.id)) return;
   userWaitState[ctx.from.id] = { action: 'waiting_json_login' };
   await ctx.reply(
-    `🔑 <b>LOGIN WITH JSON:</b>\n\n` +
-    `Swiggy session / cookie JSON chat me paste karein ya <code>.json</code> file bhej dein:\n\n` +
-    `<i>💡 Swiggy se registered profile name automatically fetch hokar account save ho jayega!</i>`,
+    `<b>LOGIN WITH JSON:</b>\n\n` +
+    `Swiggy session / cookie JSON chat me paste karein ya <code>.json</code> file bhej dein:`,
     {
       parse_mode: 'HTML',
       reply_markup: { force_reply: true, input_field_placeholder: 'Paste session JSON here...' }
@@ -3500,27 +3557,15 @@ bot.hears(['🔑 Login with JSON', 'Login with JSON'], async (ctx) => {
   );
 });
 
-bot.hears(['📱 Login with Number', 'Login with Number'], async (ctx) => {
+bot.hears(['Login with Number', '📱 Login with Number'], async (ctx) => {
   if (!isBoss(ctx.from.id)) return;
-  userWaitState[ctx.from.id] = { action: 'waiting_phone_for_number_login' };
-  await ctx.reply(
-    `📱 <b>Enter Mobile Number:</b>`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [
-          Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-          Markup.button.callback('❌ Close', 'close_menu')
-        ]
-      ])
-    }
-  );
+  await promptBossLoginWithNumber(ctx);
 });
 
 bot.hears('🔢 Set Total Slots', async (ctx) => {
   if (!isBoss(ctx.from.id)) return;
   userWaitState[ctx.from.id] = { action: 'waiting_boss_total' };
-  await ctx.reply(`🔢 <b>Enter number for Total Slots:</b>`, {
+  await ctx.reply(`<b>Enter number for Total Slots:</b>`, {
     parse_mode: 'HTML',
     reply_markup: { force_reply: true, input_field_placeholder: 'Enter total number...' }
   });
@@ -3534,11 +3579,16 @@ bot.on('text', async (ctx) => {
 
   // Intercept any menu button, slash command, or cancel keyword to free user from wait state
   const isMenuOrCancel = rawText.startsWith('/') || [
+    'Order Screen', 'Pending Orders', 'Login with JSON', 'Login with Number',
+    'Connected Accounts', 'Slot Status', 'Total slots', 'Total Slots', 'Total left', 'Total Left',
+    'Claim Free Cash', 'Set UPI ID',
+    'Cancel', 'cancel', 'Close', 'close', 'back', 'Back',
+    'Main Menu', 'Menu',
+    // Legacy emoji versions:
     '📦 Order Screen', '🟡 Pending Orders', '🔑 Login with JSON', '📱 Login with Number',
     '🟣 Connected Accounts', '🟢 Slot Status', '📊 Total slots', '🟢 Total left',
     '🎁 Claim Free Cash', '🟠 Set UPI ID', '🔢 Set Total Slots',
-    '❌ Cancel', 'Cancel', 'cancel', 'Close', 'close', 'back', 'Back',
-    '🏠 Main Menu', '❌ Close'
+    '❌ Cancel', '🏠 Main Menu', '❌ Close'
   ].includes(rawText);
 
   if (state && isMenuOrCancel) {
@@ -3614,8 +3664,8 @@ bot.on('text', async (ctx) => {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [
-              Markup.button.callback('📱 Add Account', 'send_to_another_number'),
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+              Markup.button.callback('Add Account', 'send_to_another_number'),
+              Markup.button.callback('Main Menu', 'boss_panel_home')
             ]
           ])
         }
@@ -3623,22 +3673,31 @@ bot.on('text', async (ctx) => {
     } else {
       const swiggyText = result.message || 'Invalid or expired OTP';
       await ctx.reply(
-        `❌ <b>${escapeHtml(swiggyText)}</b>\n` +
-        `📱 <code>${phone}</code>\n\n` +
-        `👉 <i>Enter valid Delete OTP:</i>`,
+        `❌ <b>${escapeHtml(swiggyText)}</b>\n<code>${phone}</code>`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('🔄 Resend Delete OTP', `boss_swiggy_delete_start_${key}`)
-            ],
-            [
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-              Markup.button.callback('❌ Close', 'close_menu')
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Copy Number', copy_text: { text: phone } }
+              ],
+              [
+                { text: 'Resend Delete OTP', callback_data: `boss_swiggy_delete_start_${key}` }
+              ],
+              [
+                { text: 'Main Menu', callback_data: 'boss_panel_home' },
+                { text: 'Close', callback_data: 'close_menu' }
+              ]
             ]
-          ])
+          }
         }
       );
+      await ctx.reply('👉 Enter valid Delete OTP:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter 6-digit Delete OTP...'
+        }
+      });
     }
     return;
   }
@@ -3657,8 +3716,8 @@ bot.on('text', async (ctx) => {
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback(`📱 Phone Number + Instant OTP`, `boss_login_acc_otp_${cleanKey}${orderId ? '_' + orderId : ''}`)],
-          [Markup.button.callback(`📋 Paste Session JSON`, `boss_login_acc_json_${cleanKey}${orderId ? '_' + orderId : ''}`)]
+          [Markup.button.callback('Phone Number + Instant OTP', `boss_login_acc_otp_${cleanKey}${orderId ? '_' + orderId : ''}`)],
+          [Markup.button.callback('Paste Session JSON', `boss_login_acc_json_${cleanKey}${orderId ? '_' + orderId : ''}`)]
         ])
       }
     );
@@ -3677,32 +3736,45 @@ bot.on('text', async (ctx) => {
     if (result.success) {
       userWaitState[userId] = { action: 'waiting_swiggy_otp_bridge', targetAcc: cleanKey, phone };
       await ctx.reply(
-        `📲 <b>OTP Sent</b>\n📱 <code>${phone}</code>\n\n👉 <i>Enter OTP:</i>`,
+        `<b>OTP Sent</b>\n<code>${phone}</code>`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('🔄 Resend OTP', `resend_otp_${phone}`),
-              Markup.button.callback('📱 Another Number', 'send_to_another_number')
-            ],
-            [
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-              Markup.button.callback('❌ Close', 'close_menu')
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Copy Number', copy_text: { text: phone } }
+              ],
+              [
+                { text: 'Resend OTP', callback_data: `resend_otp_${phone}` },
+                { text: 'Another Number', callback_data: 'send_to_another_number' }
+              ],
+              [
+                { text: 'Main Menu', callback_data: 'boss_panel_home' },
+                { text: 'Close', callback_data: 'close_menu' }
+              ]
             ]
-          ])
+          }
         }
       );
+      await ctx.reply('👉 Enter OTP:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter 6-digit OTP...'
+        }
+      });
     } else {
       await ctx.reply(
-        `❌ ${escapeHtml(result.message || 'Failed to send OTP')}`,
+        `<b>${escapeHtml(result.message || 'Failed to send OTP')}</b>`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('📱 Try Another Number', 'send_to_another_number'),
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Try Another Number', callback_data: 'send_to_another_number' },
+                { text: 'Main Menu', callback_data: 'boss_panel_home' }
+              ]
             ]
-          ])
+          }
         }
       );
     }
@@ -3845,39 +3917,47 @@ bot.on('text', async (ctx) => {
         name: autoName
       };
 
-      const otpSentCard = 
-        `📲 <b>OTP Sent</b>\n` +
-        `📱 <code>${phoneToLogin}</code>\n\n` +
-        `👉 <i>Enter OTP:</i>`;
-
       await ctx.reply(
-        otpSentCard,
+        `<b>OTP Sent</b>\n<code>${phoneToLogin}</code>`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('🔄 Resend OTP', `resend_otp_${phoneToLogin}`),
-              Markup.button.callback('📱 Another Number', 'send_to_another_number')
-            ],
-            [
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-              Markup.button.callback('❌ Close', 'close_menu')
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Copy Number', copy_text: { text: phoneToLogin } }
+              ],
+              [
+                { text: 'Resend OTP', callback_data: `resend_otp_${phoneToLogin}` },
+                { text: 'Another Number', callback_data: 'send_to_another_number' }
+              ],
+              [
+                { text: 'Main Menu', callback_data: 'boss_panel_home' },
+                { text: 'Close', callback_data: 'close_menu' }
+              ]
             ]
-          ])
+          }
         }
       );
+      await ctx.reply('👉 Enter OTP:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter 6-digit OTP...'
+        }
+      });
     } else {
       const errText = result.swiggyStatus || result.message || 'Failed to send OTP';
       await ctx.reply(
-        `❌ ${escapeHtml(errText)}`,
+        `<b>${escapeHtml(errText)}</b>`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('📱 Try Another Number', 'send_to_another_number'),
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Try Another Number', callback_data: 'send_to_another_number' },
+                { text: 'Main Menu', callback_data: 'boss_panel_home' }
+              ]
             ]
-          ])
+          }
         }
       );
     }
@@ -3887,17 +3967,26 @@ bot.on('text', async (ctx) => {
   if (state && state.action === 'waiting_phone_for_number_login') {
     const cleanPhone = rawText.replace(/[^0-9]/g, '').slice(-10);
     if (cleanPhone.length !== 10 || !/^[6-9]\d{9}$/.test(cleanPhone)) {
-      return ctx.reply(
-        '⚠️ Kripya valid 10-digit Indian mobile number bhejein (Jaise: 9876543210):',
+      await ctx.reply(
+        'Enter valid 10-digit Indian mobile number:',
         {
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-              Markup.button.callback('❌ Close', 'close_menu')
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Main Menu', callback_data: 'boss_panel_home' },
+                { text: 'Close', callback_data: 'close_menu' }
+              ]
             ]
-          ])
+          }
         }
       );
+      await ctx.reply('👉 Enter 10-digit Mobile Number:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter 10-digit mobile number...'
+        }
+      });
+      return;
     }
 
     const db = getDb();
@@ -3951,7 +4040,14 @@ bot.on('text', async (ctx) => {
     const cleanPhone = rawText.replace(/[^0-9]/g, '').slice(-10);
 
     if (cleanPhone.length !== 10) {
-      return ctx.reply('⚠️ Please enter a valid 10-digit phone number (e.g. 9876543210):');
+      await ctx.reply('Enter valid 10-digit phone number:');
+      await ctx.reply('👉 Enter 10-digit Mobile Number:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter 10-digit mobile number...'
+        }
+      });
+      return;
     }
 
     const autoName = getNextAutoUserName();
@@ -3965,47 +4061,53 @@ bot.on('text', async (ctx) => {
         name: autoName
       };
 
-      const otpSentCard = 
-        `📲 <b>OTP Sent</b>\n` +
-        `📱 <code>${cleanPhone}</code>\n\n` +
-        `👉 <i>Enter OTP:</i>`;
-
       await ctx.reply(
-        otpSentCard,
+        `<b>OTP Sent</b>\n<code>${cleanPhone}</code>`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('🔄 Resend OTP', `resend_otp_${cleanPhone}`),
-              Markup.button.callback('📱 Another Number', 'send_to_another_number')
-            ],
-            [
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-              Markup.button.callback('❌ Close', 'close_menu')
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Copy Number', copy_text: { text: cleanPhone } }
+              ],
+              [
+                { text: 'Resend OTP', callback_data: `resend_otp_${cleanPhone}` },
+                { text: 'Another Number', callback_data: 'send_to_another_number' }
+              ],
+              [
+                { text: 'Main Menu', callback_data: 'boss_panel_home' },
+                { text: 'Close', callback_data: 'close_menu' }
+              ]
             ]
-          ])
+          }
         }
       );
+      await ctx.reply('👉 Enter OTP:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter 6-digit OTP...'
+        }
+      });
     } else {
       delete userWaitState[userId];
       const errText = result.swiggyStatus || result.message || 'Failed to send OTP';
       await ctx.reply(
-        `❌ ${escapeHtml(errText)}`,
+        `<b>${escapeHtml(errText)}</b>`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('📱 Try Another Number', 'send_to_another_number'),
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Try Another Number', callback_data: 'send_to_another_number' },
+                { text: 'Main Menu', callback_data: 'boss_panel_home' }
+              ]
             ]
-          ])
+          }
         }
       );
     }
     return;
   }
-
-
 
   // Step 2: User enters 6-digit OTP
   if (state && state.action === 'waiting_swiggy_otp_bridge') {
@@ -4019,48 +4121,47 @@ bot.on('text', async (ctx) => {
       const existingKey = existing ? existing[0] : null;
       const existingName = existing ? (existing[1]?.name || existing[0]) : null;
 
-      await ctx.reply(`🔄 <b>Switching to new number ${rawCleanDigits}...</b>`, { parse_mode: 'HTML' });
+      await ctx.reply(`Switching to new number ${rawCleanDigits}...`);
       await triggerPhoneNumberLogin(rawCleanDigits, existingKey, existingName);
       return;
     }
 
     const rawLower = rawText.trim().toLowerCase();
     if (['cancel', 'exit', 'na', 'skip', 'nahi', 'nahi aaya', 'doosra', 'close', 'another', 'change'].includes(rawLower)) {
-      delete userWaitState[userId];
-      userWaitState[userId] = { action: 'waiting_phone_for_number_login' };
-      return ctx.reply(
-        `📱 <b>Enter Mobile Number:</b>`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-              Markup.button.callback('❌ Close', 'close_menu')
-            ]
-          ])
-        }
-      );
+      return promptBossLoginWithNumber(ctx);
     }
 
     const enteredOtp = rawCleanDigits;
 
     if (enteredOtp.length < 4) {
-      return ctx.reply(
-        `⚠️ <b>Enter 6-digit OTP</b>\n📱 <code>${state.phone}</code>\n\n👉 <i>Enter valid OTP:</i>`,
+      await ctx.reply(
+        `<b>Enter 6-digit OTP</b>\n<code>${state.phone}</code>`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('🔄 Resend OTP', `resend_otp_${state.phone}`),
-              Markup.button.callback('📱 Another Number', 'send_to_another_number')
-            ],
-            [
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-              Markup.button.callback('❌ Close', 'close_menu')
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Copy Number', copy_text: { text: state.phone } }
+              ],
+              [
+                { text: 'Resend OTP', callback_data: `resend_otp_${state.phone}` },
+                { text: 'Another Number', callback_data: 'send_to_another_number' }
+              ],
+              [
+                { text: 'Main Menu', callback_data: 'boss_panel_home' },
+                { text: 'Close', callback_data: 'close_menu' }
+              ]
             ]
-          ])
+          }
         }
       );
+      await ctx.reply('👉 Enter OTP:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter 6-digit OTP...'
+        }
+      });
+      return;
     }
 
     const result = await verifySwiggyOtpViaBridge(userId, enteredOtp);
@@ -4086,23 +4187,32 @@ bot.on('text', async (ctx) => {
     } else {
       const swiggyText = result.swiggyStatus || result.message || 'Invalid or expired OTP';
       await ctx.reply(
-        `❌ <b>${escapeHtml(swiggyText)}</b>\n` +
-        `📱 <code>${state.phone}</code>\n\n` +
-        `👉 <i>Enter valid OTP:</i>`,
+        `<b>${escapeHtml(swiggyText)}</b>\n<code>${state.phone}</code>`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('🔄 Resend OTP', `resend_otp_${state.phone}`),
-              Markup.button.callback('📱 Another Number', 'send_to_another_number')
-            ],
-            [
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
-              Markup.button.callback('❌ Close', 'close_menu')
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: 'Copy Number', copy_text: { text: state.phone } }
+              ],
+              [
+                { text: 'Resend OTP', callback_data: `resend_otp_${state.phone}` },
+                { text: 'Another Number', callback_data: 'send_to_another_number' }
+              ],
+              [
+                { text: 'Main Menu', callback_data: 'boss_panel_home' },
+                { text: 'Close', callback_data: 'close_menu' }
+              ]
             ]
-          ])
+          }
         }
       );
+      await ctx.reply('👉 Enter OTP:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter 6-digit OTP...'
+        }
+      });
     }
     return;
   }
@@ -4444,7 +4554,7 @@ async function handleCartLinkFlow(ctx) {
   const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_cart' };
   await ctx.reply(
-    `🟣 <b>Send Swiggy Cart Link:</b>`,
+    `<b>Send Swiggy Cart Link:</b>`,
     {
       parse_mode: 'HTML',
       reply_markup: { force_reply: true, input_field_placeholder: 'Paste cart link...' }
@@ -4457,7 +4567,7 @@ async function handleAddressLinkFlow(ctx) {
   const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_address' };
   await ctx.reply(
-    `🔵 <b>Send Delivery Address / Location:</b>`,
+    `<b>Send Delivery Address / Location:</b>`,
     {
       parse_mode: 'HTML',
       reply_markup: { force_reply: true, input_field_placeholder: 'Paste address or location...' }
@@ -4481,13 +4591,13 @@ async function handleCancelOrderConfirm(ctx, orderId = null) {
     ? `⚠️ <b>Kya aap waqai Order #${activeOrder.id} cancel karna chahte hain?</b>\n\n` +
       `🏨 Restaurant: <b>${escapeHtml(activeOrder.restaurantName || 'Swiggy Order')}</b>\n` +
       `💰 Amount: <b>₹${activeOrder.finalPayable || 0}</b>\n\n` +
-      `<i>Niche 'Are you sure' par click karein:</i>`
+      `<i>Niche confirmation select karein:</i>`
     : `⚠️ <b>Kya aap waqai draft cancel karna chahte hain?</b>\n\nCart aur Address links clear ho jayenge.`;
 
   const buttons = [
     [
-      Markup.button.callback('🔴 Are you sure (Cancel)', `user_confirm_cancel_${targetId}`),
-      Markup.button.callback('🟢 Keep Order', `user_keep_order_${targetId}`)
+      Markup.button.callback('Are you sure (Cancel)', `user_confirm_cancel_${targetId}`),
+      Markup.button.callback('Keep Order', `user_keep_order_${targetId}`)
     ]
   ];
 
@@ -4508,17 +4618,17 @@ async function handlePreviousOrder(ctx) {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
   if (userOrders.length === 0) {
-    return ctx.reply('⚪ <b>Koi previous order nahi mila!</b>\nAap pehli baar order place karne ke liye cart aur address link attach karein.', {
+    return ctx.reply('<b>Koi previous order nahi mila!</b>\nAap pehli baar order place karne ke liye cart aur address link attach karein.', {
       parse_mode: 'HTML'
     });
   }
 
   const prev = userOrders[0];
   let statusBadge = '⏳ ' + prev.status;
-  if (prev.status === 'COMPLETED') statusBadge = '🟢 DELIVERED';
-  else if (prev.status === 'CANCELLED') statusBadge = '🔴 CANCELLED';
-  else if (prev.status === 'REJECTED') statusBadge = '❌ REJECTED';
-  else if (prev.status === 'ACCEPTED') statusBadge = '🛵 IN PROGRESS';
+  if (prev.status === 'COMPLETED') statusBadge = 'DELIVERED';
+  else if (prev.status === 'CANCELLED') statusBadge = 'CANCELLED';
+  else if (prev.status === 'REJECTED') statusBadge = 'REJECTED';
+  else if (prev.status === 'ACCEPTED') statusBadge = 'IN PROGRESS';
 
   const dateStr = new Date(prev.createdAt).toLocaleDateString('en-IN', {
     day: 'numeric',
@@ -4527,7 +4637,7 @@ async function handlePreviousOrder(ctx) {
     minute: '2-digit'
   });
 
-  const shortText = `⚪ <b>PREVIOUS ORDER SUMMARY (#${prev.id})</b>\n\n` +
+  const shortText = `<b>PREVIOUS ORDER SUMMARY (#${prev.id})</b>\n\n` +
     `🏨 <b>Restaurant:</b> ${escapeHtml(prev.restaurantName || 'Swiggy Order')}\n` +
     `📅 <b>Date:</b> ${dateStr}\n` +
     `📦 <b>Items:</b> ${prev.items && prev.items.length > 0 ? prev.items.map(i => `${escapeHtml(i.name)} (x${i.quantity})`).join(', ') : (prev.cart ? 'Swiggy Cart Items' : 'Voice/Photo Order')}\n` +
@@ -4537,12 +4647,12 @@ async function handlePreviousOrder(ctx) {
 
   const buttons = [];
   if (prev.trackingLink) {
-    buttons.push([Markup.button.url('🟢 Open Swiggy Live Tracking', prev.trackingLink)]);
+    buttons.push([Markup.button.url('Open Swiggy Live Tracking', prev.trackingLink)]);
   }
   if (prev.cart && prev.cart.startsWith('http')) {
-    buttons.push([Markup.button.url('🟣 View Swiggy Cart', prev.cart)]);
+    buttons.push([Markup.button.url('View Swiggy Cart', prev.cart)]);
   }
-  buttons.push([Markup.button.callback('🔙 Back to Main Screen', 'user_back_to_main')]);
+  buttons.push([Markup.button.callback('Back to Main Screen', 'user_back_to_main')]);
 
   if (ctx.callbackQuery) {
     try {
@@ -4566,8 +4676,8 @@ async function handleSendToBoss(ctx) {
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback(`🟠 Cancel Current Order #${activeOrder.id}`, `user_confirm_cancel_${activeOrder.id}`)],
-          [Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${activeOrder.id}`)]
+          [Markup.button.callback(`Cancel Current Order #${activeOrder.id}`, `user_confirm_cancel_${activeOrder.id}`)],
+          [Markup.button.callback('Refresh Status', `user_refresh_status_${activeOrder.id}`)]
         ])
       }
     );
@@ -4576,10 +4686,10 @@ async function handleSendToBoss(ctx) {
   // 2. Both cart and address must be present
   const draft = getDraft(userId);
   if (!draft.cart) {
-    return ctx.reply('⚠️ <b>Cart missing!</b> [ 🟣 Paste cart link ] dabayein.', { parse_mode: 'HTML' });
+    return ctx.reply('⚠️ <b>Cart missing!</b> Send Cart link.', { parse_mode: 'HTML' });
   }
   if (!draft.address) {
-    return ctx.reply('⚠️ <b>Address missing!</b> [ 🔵 Paste address Link ] dabayein.', { parse_mode: 'HTML' });
+    return ctx.reply('⚠️ <b>Address missing!</b> Send Address link.', { parse_mode: 'HTML' });
   }
 
   const db = getDb();
@@ -4709,7 +4819,7 @@ bot.action('boss_prompt_total_slots', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_boss_total' };
-  await ctx.reply(`📊 <b>Total slots</b>\n\nEnter number:`, {
+  await ctx.reply(`<b>Total Slots</b>\n\nEnter number:`, {
     parse_mode: 'HTML',
     reply_markup: { force_reply: true, input_field_placeholder: 'Enter number...' }
   });
@@ -4719,9 +4829,9 @@ bot.action('boss_prompt_slots_left', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_boss_left' };
-  await ctx.reply(`🟢 <b>Total left</b>\n\nEnter Number:`, {
+  await ctx.reply(`<b>Total Left</b>\n\nEnter number:`, {
     parse_mode: 'HTML',
-    reply_markup: { force_reply: true, input_field_placeholder: 'Enter Number...' }
+    reply_markup: { force_reply: true, input_field_placeholder: 'Enter number...' }
   });
 });
 
@@ -4937,15 +5047,15 @@ async function handleMyAccounts(ctx) {
 
     buttons.push([
       Markup.button.callback(
-        `${badge} ${acc.name || key} (${acc.phone || 'No phone'}) - ${statusText}`,
+        `${isActive ? '[Active] ' : ''}${acc.name || key} (${acc.phone || 'No phone'}) - ${statusText}`,
         `acc_view_detail_${key}`
       )
     ]);
   }
 
   buttons.push([
-    Markup.button.callback('➕ Add New Account', 'boss_add_new_account_menu'),
-    Markup.button.callback('🔄 Refresh Accounts', 'acc_refresh_list')
+    Markup.button.callback('Add New Account', 'boss_add_new_account_menu'),
+    Markup.button.callback('Refresh Accounts', 'acc_refresh_list')
   ]);
 
   if (ctx.callbackQuery) {
@@ -4990,19 +5100,19 @@ bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
 
   const buttons = [
     [
-      Markup.button.callback('⚡ Set as Active Order Hub', `acc_set_active_${key}`),
-      Markup.button.callback('📍 Saved Addresses', `acc_view_addrs_${key}`)
+      Markup.button.callback('Set as Active Order Hub', `acc_set_active_${key}`),
+      Markup.button.callback('Saved Addresses', `acc_view_addrs_${key}`)
     ],
     [
-      Markup.button.callback('📦 Previous Orders', `acc_view_orders_${key}`),
-      Markup.button.callback('🛒 View Cart', `acc_view_cart_${key}`)
+      Markup.button.callback('Previous Orders', `acc_view_orders_${key}`),
+      Markup.button.callback('View Cart', `acc_view_cart_${key}`)
     ],
     [
-      Markup.button.callback('📤 Export JSON', `boss_export_json_${key}`),
-      Markup.button.callback('🗑️ Delete Account from Swiggy', `boss_swiggy_delete_start_${key}`)
+      Markup.button.callback('Export JSON', `boss_export_json_${key}`),
+      Markup.button.callback('Delete Account from Swiggy', `boss_swiggy_delete_start_${key}`)
     ],
     [
-      Markup.button.callback('🔙 Back to Accounts', 'acc_refresh_list')
+      Markup.button.callback('Back to Accounts', 'acc_refresh_list')
     ]
   ];
 
@@ -5065,12 +5175,12 @@ async function handlePreviousOrders(ctx, targetKey = null) {
       `<i>Is account se Swiggy par abhi tak koi previous order nahi mila (0 orders).</i>`;
     return sendSafeHtml(ctx, emptyText, Markup.inlineKeyboard([
       [
-        Markup.button.callback('🗑️ Delete Account from Swiggy', `boss_swiggy_delete_start_${activeKey}`),
-        Markup.button.callback('🔄 Refresh Orders', `acc_view_orders_${activeKey}`)
+        Markup.button.callback('Delete Account from Swiggy', `boss_swiggy_delete_start_${activeKey}`),
+        Markup.button.callback('Refresh Orders', `acc_view_orders_${activeKey}`)
       ],
       [
-        Markup.button.callback('📱 Add Another Account', 'send_to_another_number'),
-        Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+        Markup.button.callback('Add Another Account', 'send_to_another_number'),
+        Markup.button.callback('Main Menu', 'boss_panel_home')
       ]
     ]));
   }
@@ -5094,18 +5204,18 @@ async function handlePreviousOrders(ctx, targetKey = null) {
 
     if (o.trackingUrl) {
       buttons.push([
-        Markup.button.url(`🛵 Track #${o.orderId} (${o.restaurantName || 'Order'})`, o.trackingUrl)
+        Markup.button.url(`Track #${o.orderId} (${o.restaurantName || 'Order'})`, o.trackingUrl)
       ]);
     }
   }
 
   buttons.push([
-    Markup.button.callback('🗑️ Delete Account from Swiggy', `boss_swiggy_delete_start_${activeKey}`),
-    Markup.button.callback('🔄 Refresh Orders', `acc_view_orders_${activeKey}`)
+    Markup.button.callback('Delete Account from Swiggy', `boss_swiggy_delete_start_${activeKey}`),
+    Markup.button.callback('Refresh Orders', `acc_view_orders_${activeKey}`)
   ]);
   buttons.push([
-    Markup.button.callback('📱 Add Another Account', 'send_to_another_number'),
-    Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+    Markup.button.callback('Add Another Account', 'send_to_another_number'),
+    Markup.button.callback('Main Menu', 'boss_panel_home')
   ]);
 
   await sendSafeHtml(ctx, text.trim(), Markup.inlineKeyboard(buttons));
