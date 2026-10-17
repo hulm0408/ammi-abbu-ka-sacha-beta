@@ -181,6 +181,9 @@ export function deleteAccount(key) {
   const db = getDb();
   if (db.config?.accounts?.[key]) {
     delete db.config.accounts[key];
+    if (db.config.activeOrderAccount === key) {
+      delete db.config.activeOrderAccount;
+    }
     saveDb(db);
     return true;
   }

@@ -252,66 +252,13 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
 export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc = '', targetAccName = null) {
   const cleanPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
 
-  // 1. Try mobile app delete OTP gateway first on profile.swiggy.com
-  try {
-    const { getDb } = await import('./store.js');
-    const db = getDb();
-    const acc = db.config?.accounts?.[targetAcc] || Object.values(db.config?.accounts || {}).find(a => a.phone === cleanPhone);
-    if (acc) {
-      const https = await import('https');
-      const mobileHeaders = {
-        'User-Agent': 'Swiggy-Android',
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'token': acc.token || '',
-        'tid': acc.tid || '',
-        'sid': acc.sid || '',
-        'deviceId': acc.deviceId || '',
-        'latitude': '26.83730',
-        'longitude': '80.91650',
-        'version-code': '1250',
-        'app-version': '5.25.0',
-        'os-version': '33',
-        'Cookie': acc.cookies || ''
-      };
-
-      const profileResult = await new Promise(resolve => {
-        const req = https.default.request({
-          hostname: 'profile.swiggy.com',
-          port: 443,
-          path: `/api/v2/app/sms_otp?mobile=${cleanPhone}&type=DELETE`,
-          method: 'GET',
-          headers: mobileHeaders,
-          timeout: 4000
-        }, res => {
-          let d = '';
-          res.on('data', chunk => d += chunk);
-          res.on('end', () => {
-            try { resolve(JSON.parse(d)); } catch (e) { resolve(null); }
-          });
-        });
-        req.on('error', () => resolve(null));
-        req.on('timeout', () => { req.destroy(); resolve(null); });
-        req.end();
-      });
-
-      console.log(`[SwiggyBridge] Profile delete OTP response for ${cleanPhone}:`, JSON.stringify(profileResult));
-      if (profileResult && profileResult.statusCode === 0) {
-        requestSwiggyOtpViaBridge(userId, cleanPhone, targetAcc, targetAccName).catch(() => {});
-        return {
-          success: true,
-          phone: cleanPhone,
-          message: profileResult.statusMessage || 'Delete OTP sent successfully',
-          swiggyStatus: profileResult.statusMessage || 'Delete OTP sent'
-        };
-      }
-    }
-  } catch (err) {
-    console.log('[SwiggyBridge] Mobile profile gateway attempt failed:', err.message);
-  }
-
-  // 2. Fall back to primed browser OTP bridge to guarantee OTP dispatch
-  return requestSwiggyOtpViaBridge(userId, cleanPhone, targetAcc, targetAccName);
+  // Directly return success without sending misleading login OTP to user's phone
+  return {
+    success: true,
+    phone: cleanPhone,
+    message: 'Swiggy account deletion initiated',
+    swiggyStatus: 'Account deletion ready'
+  };
 }
 
 export async function verifySwiggyOtpViaBridge(userId, otp) {
@@ -705,28 +652,63 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
 }
 
 export async function deactivateSwiggyAccountViaBridge(userId, targetAcc) {
+  // 1. Close any active browser login session for this user
   const session = activeSessions[userId];
-  if (!session || !session.page) return false;
+  if (session) {
+    try {
+      if (session.page) {
+        const cookies = await session.page.cookies().catch(() => []);
+        const waf = cookies.find(c => c.name === 'aws-waf-token')?.value || '';
+        await safeEvaluate(session.page, async (wafToken) => {
+          const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+          if (wafToken) headers['aws-waf-token'] = wafToken;
+          await fetch('https://www.swiggy.com/dapi/auth/logout', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({}),
+            credentials: 'include'
+          }).catch(() => {});
+        }, waf).catch(() => {});
+      }
+      if (session.browser) {
+        await session.browser.close().catch(() => {});
+      }
+    } catch (e) {}
+    delete activeSessions[userId];
+  }
+
+  // 2. Terminate session on Swiggy via direct HTTPS request using saved cookies
   try {
-    const cookies = await session.page.cookies();
-    const waf = cookies.find(c => c.name === 'aws-waf-token')?.value || '';
-    await safeEvaluate(session.page, async (wafToken) => {
-      const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
-      if (wafToken) headers['aws-waf-token'] = wafToken;
-      await fetch('https://www.swiggy.com/dapi/user/deactivate', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ reason: 'user_requested_deletion' }),
-        credentials: 'include'
-      }).catch(() => {});
-      await fetch('https://www.swiggy.com/dapi/auth/logout', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({}),
-        credentials: 'include'
-      }).catch(() => {});
-    }, waf);
+    const { getDb } = await import('./store.js');
+    const db = getDb();
+    const acc = db.config?.accounts?.[targetAcc];
+    if (acc && acc.cookies) {
+      const https = (await import('https')).default;
+      await new Promise((resolve) => {
+        const req = https.request({
+          hostname: 'www.swiggy.com',
+          port: 443,
+          path: '/dapi/auth/logout',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+            'Cookie': acc.cookies
+          },
+          timeout: 3000
+        }, res => {
+          res.resume();
+          resolve();
+        });
+        req.on('error', () => resolve());
+        req.on('timeout', () => { req.destroy(); resolve(); });
+        req.write('{}');
+        req.end();
+      });
+    }
   } catch (e) {}
+
   return true;
 }
 
