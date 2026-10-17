@@ -1333,12 +1333,6 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
     if (gst > 0) {
       lines.push(`GST & Other Charges: ₹${gst}`);
     }
-
-    lines.push(`━━━━━━━━━━━━━━`);
-    if (order.totalSavings > 0) {
-      lines.push(`Total Savings: ₹${order.totalSavings}`);
-    }
-    lines.push(`To Pay: ₹${order.finalPayable || sub || 0}`);
   } else {
     lines.push(`🛒 <b>Cart Status:</b> <i>Waiting for Swiggy items / cart verification...</i>`);
   }

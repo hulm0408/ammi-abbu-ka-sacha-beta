@@ -1537,18 +1537,28 @@ bot.action(/^boss_choose_acc_picker_(.+)$/, async (ctx) => {
 });
 
 // Account Chosen for Order -> Auto-parse cart & calculate bill
-bot.action(/^(?:boss_sel_acc|boss_choose_acc)_(.+)_(.+)$/, async (ctx) => {
+bot.action(/^(?:boss_sel_acc|boss_choose_acc)_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
 
-  let p1 = ctx.match[1];
-  let p2 = ctx.match[2];
-
+  const payload = ctx.match[1];
   const db = getDb();
-  let orderId = p1;
-  let accKey = p2;
-  if (!db.orders[orderId] && db.orders[p2]) {
-    orderId = p2;
-    accKey = p1;
+  let orderId = null;
+  let accKey = null;
+
+  for (const oid of Object.keys(db.orders || {})) {
+    if (payload.startsWith(oid + '_')) {
+      orderId = oid;
+      accKey = payload.slice(oid.length + 1);
+      break;
+    }
+  }
+
+  if (!orderId || !db.orders[orderId]) {
+    const idx = payload.indexOf('_');
+    if (idx !== -1) {
+      orderId = payload.slice(0, idx);
+      accKey = payload.slice(idx + 1);
+    }
   }
 
   const order = db.orders[orderId];
@@ -1727,11 +1737,29 @@ bot.action(/^boss_choose_acc_picker_(.+)$/, async (ctx) => {
 });
 
 // Selecting Account for Order -> Runs Swiggy Verification & Cart Inspection
-bot.action(/^boss_select_acc_([^_]+)_(.+)$/, async (ctx) => {
+bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const orderId = ctx.match[1];
-  const accKey = ctx.match[2];
+  const payload = ctx.match[1];
   const db = getDb();
+  let orderId = null;
+  let accKey = null;
+
+  for (const oid of Object.keys(db.orders || {})) {
+    if (payload.startsWith(oid + '_')) {
+      orderId = oid;
+      accKey = payload.slice(oid.length + 1);
+      break;
+    }
+  }
+
+  if (!orderId || !db.orders[orderId]) {
+    const idx = payload.indexOf('_');
+    if (idx !== -1) {
+      orderId = payload.slice(0, idx);
+      accKey = payload.slice(idx + 1);
+    }
+  }
+
   const order = db.orders[orderId];
   if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
 
@@ -1766,7 +1794,9 @@ bot.action(/^boss_select_acc_([^_]+)_(.+)$/, async (ctx) => {
         order.freeCashApplied = liveData.freeCashApplied;
         order.finalPayable = liveData.finalPayable;
         order.totalSavings = liveData.totalSavings;
-        order.addressDetails = liveData.addressDetails;
+        if (liveData.addressDetails) {
+          order.addressDetails = liveData.addressDetails;
+        }
         order.taxesAndCharges = liveData.taxesAndCharges || 0;
         order.swiggyVerified = true;
       }
