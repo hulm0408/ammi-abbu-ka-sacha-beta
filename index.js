@@ -376,9 +376,14 @@ function formatBossOrderCard(order) {
   if (order.type === 'VOICE') typeBadge = '🎙️ Voice Message from ' + role;
   else if (order.type === 'PHOTO') typeBadge = '📷 Photo / List from ' + role;
 
+  const userProfileUrl = `tg://user?id=${order.userId}`;
+  const senderLink = `<a href="${userProfileUrl}">${escapeHtml(order.userName || 'Customer')}</a>`;
+  const idLink = `<a href="${userProfileUrl}">${order.userId}</a>`;
+  const handleText = order.handle ? ` (<a href="https://t.me/${order.handle.replace(/^@/, '')}">@${escapeHtml(order.handle.replace(/^@/, ''))}</a>)` : '';
+
   let text = `🌸 <b>[ REQUEST FROM ${role.toUpperCase()} ] #${order.id}</b>\n\n` +
-    `👤 <b>Sender:</b> ${escapeHtml(order.userName)} (${role})\n` +
-    `🆔 <b>User ID:</b> <code>${order.userId}</code>\n` +
+    `👤 <b>Sender:</b> ${senderLink}${handleText} (${role})\n` +
+    `🆔 <b>User ID:</b> ${idLink}\n` +
     (order.swiggyOrderId ? `🆔 <b>Swiggy Order ID:</b> <code>${escapeHtml(order.swiggyOrderId)}</code>\n` : '') +
     (order.paymentStatus ? `💳 <b>Payment Status:</b> <b>${escapeHtml(order.paymentStatus)}</b>\n` : '') +
     `⏰ <b>Received:</b> ${new Date(order.createdAt).toLocaleTimeString()}\n` +
@@ -729,6 +734,12 @@ async function sendPendingOrdersToBoss(bossId) {
     await sendCardSafe(bossId, card);
   }
 }
+
+bot.action('boss_view_pending', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  await sendPendingOrdersToBoss(ctx.from.id);
+});
 
 // ================= COMMANDS =================
 
@@ -1418,9 +1429,11 @@ bot.action(/^boss_text_user_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_text_user', orderId, targetUserId: order.userId };
 
+  const userProfileUrl = `tg://user?id=${order.userId}`;
   await ctx.reply(
-    `💬 <b>Send message to ${escapeHtml(order.userName)} (Order #${orderId}):</b>\n\n` +
-    `<i>Chat me message likh kar bhejein:</i>`,
+    `💬 <b>Send message to <a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> (Order #${orderId}):</b>\n\n` +
+    `🆔 <b>User TG ID:</b> <a href="${userProfileUrl}">${order.userId}</a>\n\n` +
+    `<i>Chat me message likh kar bhejein ya upar TG ID par click karke direct profile kholein:</i>`,
     {
       parse_mode: 'HTML',
       reply_markup: { force_reply: true, input_field_placeholder: 'Type message for user...' }
@@ -2427,9 +2440,11 @@ bot.action(/^user_accept_amount_(.+)$/, async (ctx) => {
   // Alert Boss that QR generation is unlocked
   for (const bossId of db.config.bossIds) {
     try {
+      const userProfileUrl = `tg://user?id=${order.userId}`;
       await bot.telegram.sendMessage(
         bossId,
-        `🔔 <b>${escapeHtml(order.userName)} ne ₹${order.finalPayable} ka amount ACCEPT kar liya hai!</b>\n\n` +
+        `🔔 <b><a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> ne ₹${order.finalPayable} ka amount ACCEPT kar liya hai!</b>\n\n` +
+        `🆔 <b>User TG ID:</b> <a href="${userProfileUrl}">${order.userId}</a>\n\n` +
         `Aapke card me <b>[ ⚡ Generate Qr ]</b> button unlock ho gaya hai. Tap karke QR generate karein!`,
         { parse_mode: 'HTML' }
       );
@@ -2511,9 +2526,11 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
     }
 
     try {
+      const userProfileUrl = `tg://user?id=${order.userId}`;
       await ctx.replyWithPhoto(order.customQrFileId, {
         caption: `⚡ <b>GENUINE PAYMENT QR DELIVERED!</b>\n\n` +
           `📌 <b>Order #${orderId}</b> | Amount: <b>₹${payable}</b>\n` +
+          `👤 <b>Customer:</b> <a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> (TG ID: <a href="${userProfileUrl}">${order.userId}</a>)\n` +
           `🌐 <b>Swiggy Checkout:</b> <code>https://www.swiggy.com/payments</code>\n\n` +
           `<i>Genuine QR image successfully delivered to User and Boss.</i>`,
         parse_mode: 'HTML',
@@ -2545,12 +2562,14 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
         ...Markup.inlineKeyboard(userButtons)
       });
 
+      const userProfileUrl = `tg://user?id=${order.userId}`;
       await ctx.replyWithPhoto({ source: qrBuffer }, {
         caption: `⚡ <b>AUTHENTIC UPI PAYMENT QR DELIVERED!</b>\n\n` +
           `📌 <b>Order #${orderId}</b> | Amount: <b>₹${payable}</b>\n` +
+          `👤 <b>Customer:</b> <a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> (TG ID: <a href="${userProfileUrl}">${order.userId}</a>)\n` +
           `💳 <b>Receiving UPI ID:</b> <code>${upiId}</code>\n` +
           `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n\n` +
-          `<i>User (Ammi/Abbu) ke chat me scannable QR bhej diya gaya hai! Payment hote hi user confirm karega.</i>`,
+          `<i>User ke chat me scannable QR bhej diya gaya hai! Payment hote hi user confirm karega.</i>`,
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard(bossButtons)
       });
@@ -2771,8 +2790,9 @@ bot.action(/^boss_prompt_cancel_(.+)$/, async (ctx) => {
   }
 
   await ctx.answerCbQuery().catch(() => {});
+  const userProfileUrl = `tg://user?id=${order.userId}`;
   const text = `⚠️ <b>Kya aap waqai Order #${orderId} cancel karna chahte hain?</b>\n\n` +
-    `👤 <b>Customer:</b> ${escapeHtml(order.userName)} (ID: ${order.userId})\n` +
+    `👤 <b>Customer:</b> <a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> (TG ID: <a href="${userProfileUrl}">${order.userId}</a>)\n` +
     `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
     `💰 <b>Amount:</b> ₹${order.finalPayable || 0}\n\n` +
     `<i>Niche confirmation select karein:</i>`;
@@ -2831,8 +2851,9 @@ bot.action(/^(?:boss_confirm_cancel_|boss_cancel_order_)(.+)$/, async (ctx) => {
   await ctx.answerCbQuery('Order Cancelled 🔴').catch(() => {});
 
   // Show Compact Order Card after cancellation as specified
+  const userProfileUrl = `tg://user?id=${order.userId}`;
   const compactText = `🔴 <b>ORDER CANCELLED (#${order.id})</b>\n\n` +
-    `👤 <b>Customer:</b> ${escapeHtml(order.userName)} (<code>${order.userId}</code>)\n` +
+    `👤 <b>Customer:</b> <a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> (TG ID: <a href="${userProfileUrl}">${order.userId}</a>)\n` +
     `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
     `💰 <b>Amount:</b> ₹${order.finalPayable || 0}\n` +
     `📅 <b>Date:</b> ${new Date().toLocaleString('en-IN')}\n` +
@@ -2950,9 +2971,11 @@ async function handleConfirmOrderPaid(ctx, orderId, confirmedBy) {
     // Notify Boss that User confirmed payment
     for (const bossId of db.config.bossIds) {
       try {
+        const userProfileUrl = `tg://user?id=${order.userId}`;
         await bot.telegram.sendMessage(
           bossId,
-          `💸 <b>${escapeHtml(order.userName)} ne ₹${order.finalPayable || 0} ka payment confirm kar diya hai! (#${orderId})</b>\n\n` +
+          `💸 <b><a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> ne ₹${order.finalPayable || 0} ka payment confirm kar diya hai! (#${orderId})</b>\n\n` +
+          `🆔 <b>User TG ID:</b> <a href="${userProfileUrl}">${order.userId}</a>\n` +
           `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
           `👉 Kripya Swiggy me order place karke live tracking link share karein:`,
           {
@@ -3140,8 +3163,9 @@ bot.on('voice', async (ctx) => {
     try {
       const card = formatBossOrderCard(newOrder);
       await sendCardSafe(bossId, card);
+      const userProfileUrl = `tg://user?id=${newOrder.userId}`;
       await bot.telegram.sendVoice(bossId, ctx.message.voice.file_id, {
-        caption: `🎙️ <b>Listen to ${role}'s Voice Note (Request #${orderId})</b>`,
+        caption: `🎙️ <b>Listen to <a href="${userProfileUrl}">${role}</a>'s Voice Note (Request #${orderId})</b>\n🆔 <b>User TG ID:</b> <a href="${userProfileUrl}">${newOrder.userId}</a>`,
         parse_mode: 'HTML'
       });
     } catch (e) {
@@ -3232,8 +3256,9 @@ bot.on('photo', async (ctx) => {
     try {
       const card = formatBossOrderCard(newOrder);
       await sendCardSafe(bossId, card);
+      const userProfileUrl = `tg://user?id=${newOrder.userId}`;
       await bot.telegram.sendPhoto(bossId, photo.file_id, {
-        caption: `📷 <b>Photo / List sent by ${role} (Request #${orderId})</b>`,
+        caption: `📷 <b>Photo / List sent by <a href="${userProfileUrl}">${role}</a> (Request #${orderId})</b>\n🆔 <b>User TG ID:</b> <a href="${userProfileUrl}">${newOrder.userId}</a>`,
         parse_mode: 'HTML'
       });
     } catch (e) {
@@ -5238,7 +5263,12 @@ bot.action(/^user_confirm_cancel_(.+)$/, async (ctx) => {
 
   for (const bossId of db.config.bossIds) {
     try {
-      await bot.telegram.sendMessage(bossId, `🔴 <b>${escapeHtml(order.userName)} ne Order #${order.id} CANCEL kar diya hai!</b>`, { parse_mode: 'HTML' });
+      const userProfileUrl = `tg://user?id=${order.userId}`;
+      await bot.telegram.sendMessage(
+        bossId,
+        `🔴 <b><a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> ne Order #${order.id} CANCEL kar diya hai!</b>\n🆔 <b>User TG ID:</b> <a href="${userProfileUrl}">${order.userId}</a>`,
+        { parse_mode: 'HTML' }
+      );
     } catch (e) {}
   }
   await updateOrderCards(order).catch(() => {});
