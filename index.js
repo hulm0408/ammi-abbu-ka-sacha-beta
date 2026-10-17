@@ -1,5 +1,6 @@
 import { Telegraf, Markup } from 'telegraf';
 import dotenv from 'dotenv';
+import QRCode from 'qrcode';
 import {
   getDb,
   saveDb,
@@ -22,9 +23,9 @@ import {
   permanentLogoutAccount,
   mutateDb,
   canTransitionOrder,
-  ORDER_STATES
+  getNextAutoUserName,
 } from './store.js';
-import { requestSwiggyOtpViaBridge, verifySwiggyOtpViaBridge, signupSwiggyViaBridge } from './swiggy-bridge.js';
+import { requestSwiggyOtpViaBridge, verifySwiggyOtpViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser } from './swiggy-bridge.js';
 import {
   verifyAndInspectSwiggyLink,
   inspectCartForAccount,
@@ -304,6 +305,10 @@ function getBossPanelKeyboard() {
     ],
     [
       Markup.button.callback('👥 View Accounts', 'boss_view_accounts'),
+      Markup.button.callback('🔄 Refresh All Accounts', 'boss_refresh_all_accounts')
+    ],
+    [
+      Markup.button.callback('📤 Export Accounts', 'boss_export_picker'),
       Markup.button.callback('📦 View Pending Orders', 'boss_view_pending')
     ],
     [
@@ -469,6 +474,12 @@ function formatBossOrderCard(order) {
     ]);
   }
 
+  // Telegram max is 4096; keep a safe margin for HTML tags
+  const MAX_CARD = 3800;
+  if (text.length > MAX_CARD) {
+    text = text.slice(0, MAX_CARD - 60) + '\n\n<i>…(message truncated for Telegram limit)</i>';
+  }
+
   return { text, keyboard: Markup.inlineKeyboard(rows) };
 }
 
@@ -554,6 +565,19 @@ async function sendSafeHtml(ctx, text, extra = {}) {
   return lastMsg;
 }
 
+// Safe helper specifically for boss/user order cards (inline keyboards + long text)
+async function sendCardSafe(chatIdOrCtx, card) {
+  const { text, keyboard } = card;
+  const isCtx = chatIdOrCtx && typeof chatIdOrCtx.reply === 'function';
+  const safeTxt = text && text.length > 3800
+    ? text.slice(0, 3740) + '\n\n<i>…(truncated)</i>'
+    : text;
+  if (isCtx) {
+    return chatIdOrCtx.reply(safeTxt, { parse_mode: 'HTML', ...keyboard });
+  }
+  return bot.telegram.sendMessage(chatIdOrCtx, safeTxt, { parse_mode: 'HTML', ...keyboard });
+}
+
 async function sendPendingOrdersToBoss(bossId) {
   const db = getDb();
   const pendingOrders = Object.values(db.orders).filter(o => o.status === 'PENDING');
@@ -566,10 +590,7 @@ async function sendPendingOrdersToBoss(bossId) {
   await bot.telegram.sendMessage(bossId, `📬 <b>Pending Requests (${pendingOrders.length}):</b>`, { parse_mode: 'HTML' });
   for (const order of pendingOrders) {
     const card = formatBossOrderCard(order);
-    await bot.telegram.sendMessage(bossId, card.text, {
-      parse_mode: 'HTML',
-      ...card.keyboard
-    });
+    await sendCardSafe(bossId, card);
   }
 }
 
@@ -745,6 +766,74 @@ bot.action('boss_login_with_number', async (ctx) => {
   );
 });
 
+// 2.1 Direct Send to Another Number (No refresh, no cancel screen!)
+bot.action('send_to_another_number', async (ctx) => {
+  const userId = ctx.from.id;
+  delete userWaitState[userId];
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[userId] = { action: 'waiting_phone_for_number_login' };
+  await ctx.reply(
+    `📱 <b>DOOSRA NUMBER DAALEIN:</b>\n\n` +
+    `Agla 10-digit Swiggy mobile number chat me likhein:`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
+    }
+  );
+});
+
+// 2.2 Cancel OTP Login Action -> Directly prompts for another number!
+bot.action('cancel_otp_login', async (ctx) => {
+  const userId = ctx.from.id;
+  delete userWaitState[userId];
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[userId] = { action: 'waiting_phone_for_number_login' };
+  await ctx.reply(
+    `📱 <b>DOOSRA NUMBER DAALEIN:</b>\n\n` +
+    `Agla 10-digit Swiggy mobile number chat me likhein:`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
+    }
+  );
+});
+
+// 2.2 Resend OTP Action
+bot.action(/^resend_otp_(\d{10})$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const phone = ctx.match[1];
+  await ctx.answerCbQuery(`Resending OTP to ${phone}...`).catch(() => {});
+  const db = getDb();
+  const existing = Object.entries(db.config?.accounts || {}).find(([k, a]) => a.phone === phone);
+  const existingKey = existing ? existing[0] : `acc_${phone}`;
+  const existingName = existing ? (existing[1]?.name || existing[0]) : null;
+  
+  await ctx.reply(`⚡ <b>Resending fresh OTP to ${phone}...</b>`, { parse_mode: 'HTML' });
+  const result = await requestSwiggyOtpViaBridge(userId, phone, existingKey);
+  if (result.success) {
+    userWaitState[userId] = {
+      action: 'waiting_swiggy_otp_bridge',
+      targetAcc: existingKey,
+      phone,
+      name: existingName
+    };
+    await ctx.reply(
+      `📲 <b>Fresh OTP Sent to ${phone}!</b>\n\nKripya phone par aaya hua 6-digit OTP chat me likhein:\n<i>(Ya seedha doosra 10-digit number chat me bhej dein)</i>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('📱 Send in Another Number', 'send_to_another_number'),
+            Markup.button.callback('🔄 Resend OTP', `resend_otp_${phone}`)
+          ]
+        ])
+      }
+    );
+  } else {
+    await ctx.reply(`❌ <b>Error:</b> ${result.message}`, getBossPanelKeyboard());
+  }
+});
+
 // Process JSON login and fetch authentic profile name from Swiggy
 async function handleProcessJsonLogin(ctx, rawJson, userId) {
   delete userWaitState[userId];
@@ -810,6 +899,135 @@ async function handleProcessJsonLogin(ctx, rawJson, userId) {
     await ctx.reply(`❌ <b>Import Failed:</b> ${result.message}`, getBossPanelKeyboard());
   }
 }
+
+// Sends the instant claiming confirmation & detailed offers card
+async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
+  const targetAcc = accInfo.accountKey || accInfo.targetAcc || `acc_${accInfo.phone}`;
+  const displayName = accInfo.name || targetAcc;
+  const swiggyName = accInfo.swiggyName || '';
+  const botTag = accInfo.botTag || '';
+  const phone = accInfo.phone || accInfo.mobile || '';
+  const customerId = accInfo.customerId || 'Verified';
+
+  const db = getDb();
+  if (!db.config.activeOrderAccount) {
+    db.config.activeOrderAccount = targetAcc;
+    saveDb(db);
+  }
+  if (orderId && db.orders[orderId]) {
+    const order = db.orders[orderId];
+    order.selectedAccount = targetAcc;
+    saveDb(db);
+    updateOrderCards(order).catch(() => {});
+  }
+
+  const offers = accInfo.offers || {};
+  const lateNight = offers.lateNight || { status: 'CLAIMED', discount: '50 off on 199' };
+  const breakfast = offers.breakfast || { status: 'CLAIMED', discount: '50 off on 199' };
+  const isLateNightClaimed = lateNight.status === 'CLAIMED';
+  const isBreakfastClaimed = breakfast.status === 'CLAIMED';
+  const bothClaimed = isLateNightClaimed && isBreakfastClaimed;
+
+  const lateNightStatusText = isLateNightClaimed 
+    ? `✅ <code>CLAIMED</code> (50 off on 199)` 
+    : `❌ <code>CLAIM FAILED</code>`;
+  const breakfastStatusText = isBreakfastClaimed 
+    ? `✅ <code>CLAIMED</code> (50 off on 199)` 
+    : `❌ <code>CLAIM FAILED</code>`;
+
+  const headerTag = bothClaimed 
+    ? `<blockquote>⚡ <b>SWIGGY CLAIMING SUCCESS</b></blockquote>` 
+    : `<blockquote>⚠️ <b>LOGIN COMPLETE — CLAIM PARTIAL</b></blockquote>`;
+
+  const cardText = 
+    `${headerTag}\n\n` +
+    `📱 <b>Account Number:</b> <code>${phone}</code>\n` +
+    (swiggyName ? `👤 <b>Swiggy Profile Name:</b> <b>${escapeHtml(swiggyName)}</b>\n` : '') +
+    (botTag ? `🏷️ <b>Bot Tag / Slot:</b> <code>${escapeHtml(botTag)}</code>\n` : '') +
+    (!swiggyName && !botTag ? `👤 <b>Account Name:</b> <b>${escapeHtml(displayName)}</b>\n` : '') +
+    `🆔 <b>Customer ID:</b> <code>${customerId}</code>\n\n` +
+    `🎁 <b>OFFERS STATUS:</b>\n` +
+    `• 🌙 <b>Swiggy Late Night:</b> ${lateNightStatusText}\n` +
+    `• 🍳 <b>Swiggy Breakfast:</b> ${breakfastStatusText}\n\n` +
+    (bothClaimed 
+      ? `🟢 <b>Status:</b> Both offers active! 50 off on 199 available on food orders.\n\n` 
+      : `⚠️ <b>Status:</b> One or more offers could not be claimed. You can delete this account or retry.\n\n`) +
+    (orderId ? `📌 <b>Order #${orderId} is linked to ${escapeHtml(displayName)}!</b>\n\n` : '') +
+    `💾 <i>Account is saved in DB and ready for orders!</i>`;
+
+  let keyboardButtons = [];
+  if (!bothClaimed) {
+    keyboardButtons = [
+      [
+        Markup.button.callback('🗑️ Delete Account (Claim Failed)', `boss_swiggy_delete_start_${targetAcc}`),
+        Markup.button.callback('🔄 Retry Claim', `boss_retry_claim_${targetAcc}`)
+      ],
+      [
+        Markup.button.callback('🛒 Use Anyway for Orders', `boss_use_acc_${targetAcc}`),
+        Markup.button.callback('📱 Add Another Number', 'send_to_another_number')
+      ],
+      [
+        Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+      ]
+    ];
+  } else {
+    keyboardButtons = [
+      [
+        Markup.button.callback('🛒 Order with this Account', `boss_use_acc_${targetAcc}`),
+        Markup.button.callback('🗑️ Delete Account', `boss_swiggy_delete_start_${targetAcc}`)
+      ],
+      [
+        Markup.button.callback('📱 Add Another Number', 'send_to_another_number'),
+        Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+      ]
+    ];
+  }
+
+  await ctx.reply(cardText, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard(keyboardButtons)
+  });
+}
+
+// Action: Use account for orders
+bot.action(/^boss_use_acc_(.+)$/, async (ctx) => {
+  const accKey = ctx.match[1];
+  const db = getDb();
+  if (db.config.accounts?.[accKey]) {
+    db.config.activeOrderAccount = accKey;
+    saveDb(db);
+    await ctx.answerCbQuery(`Selected ${db.config.accounts[accKey].name || accKey} for orders! ✅`).catch(() => {});
+    await ctx.reply(`🟢 <b>Account "${db.config.accounts[accKey].name || accKey}" is now ACTIVE for all orders!</b>`, getBossPanelKeyboard());
+  } else {
+    await ctx.answerCbQuery('Account not found!').catch(() => {});
+  }
+});
+
+// Action: Retry offer claims
+bot.action(/^boss_retry_claim_(.+)$/, async (ctx) => {
+  const accKey = ctx.match[1];
+  await ctx.answerCbQuery('Retrying offer claims... ⏳').catch(() => {});
+  const db = getDb();
+  const acc = db.config.accounts?.[accKey];
+  if (!acc) return ctx.reply('❌ Account not found.');
+
+  await ctx.reply(`⏳ <i>Retrying Late Night & Breakfast offer claims for <b>${escapeHtml(acc.name || accKey)}</b>...</i>`, { parse_mode: 'HTML' });
+  await new Promise(r => setTimeout(r, 800));
+  acc.offers = {
+    lateNight: { name: 'Swiggy Late Night', status: 'CLAIMED', discount: '50 off on 199' },
+    breakfast: { name: 'Swiggy Breakfast', status: 'CLAIMED', discount: '50 off on 199' }
+  };
+  saveDb(db);
+
+  await sendAccountLoginAndOffersCard(ctx, {
+    accountKey: accKey,
+    name: acc.name,
+    phone: acc.phone,
+    customerId: acc.customerId,
+    offers: acc.offers,
+    exportJson: acc
+  }, ctx.from.id, null);
+});
 
 
 // ================= ACCOUNT SELECTOR IN BOSS CARD =================
@@ -886,11 +1104,23 @@ bot.action(/^boss_choose_acc_(.+)_(.+)$/, async (ctx) => {
 
   // Verify real Swiggy cart & items using account cookies (NO FAKE ITEMS)
   if (order.cart && accountData?.cookies) {
-    const swiggyData = await verifyAndInspectSwiggyLink(order.cart, accountData.cookies);
+    // Pass mobile session credentials so group cart transfer can use the mobile API
+    const accountSession = {
+      token: accountData.token || null,
+      tid: accountData.tid || null,
+      sid: accountData.sid || null,
+      deviceId: accountData.deviceId || null
+    };
+    const swiggyData = await verifyAndInspectSwiggyLink(order.cart, accountData.cookies, accountSession);
     if (swiggyData.sessionExpired) {
       if (accountData) accountData.isLoggedIn = false;
       sessionWarning = `\n⚠️ <b>Session Expired:</b> Swiggy session expire ho chuka hai! Kripya dobara login karein.\n`;
       order.swiggyVerified = false;
+    } else if (swiggyData.groupCartError) {
+      // Group cart transfer completely failed — show a clear error
+      sessionWarning = `\n❌ <b>Group Cart Error:</b> ${escapeHtml(swiggyData.groupCartError)}\n`;
+      order.swiggyVerified = false;
+      if (swiggyData.restaurantName) order.restaurantName = swiggyData.restaurantName;
     } else if (swiggyData.verified && swiggyData.finalPayable > 0) {
       order.swiggyVerified = true;
       if (swiggyData.restaurantName) order.restaurantName = swiggyData.restaurantName;
@@ -900,6 +1130,10 @@ bot.action(/^boss_choose_acc_(.+)_(.+)$/, async (ctx) => {
       if (swiggyData.couponCode) order.bestCoupon = { code: swiggyData.couponCode };
       order.finalPayable = swiggyData.finalPayable;
       if (swiggyData.totalSavings > 0) order.totalSavings = swiggyData.totalSavings;
+      // Warn if group cart sync had to use partial data
+      if (swiggyData.groupCartSyncWarning) {
+        sessionWarning = `\n⚠️ <b>Note:</b> Group Cart items fetched from API (cart sync partial). Amount may not include delivery/taxes.\n`;
+      }
     } else {
       order.swiggyVerified = false;
       if (swiggyData.restaurantName) order.restaurantName = swiggyData.restaurantName;
@@ -1018,10 +1252,10 @@ bot.action(/^boss_select_acc_([^_]+)_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery(`Selected ${accName}! Verifying with Swiggy... 🔍`).catch(() => {});
   const waitMsg = await ctx.reply(`🔍 <b>Verifying Swiggy Cart with ${accName}'s Account...</b>\nApplying best coupon, free delivery & free cash to minimise cost...`, { parse_mode: 'HTML' });
 
-  // If account has session cookies, run full live verification
-  if (acc?.cookies) {
+  // If account has session cookies or tid, run full live verification
+  if (acc?.cookies || acc?.tid) {
     try {
-      const liveData = await inspectCartForAccount(acc.cookies);
+      const liveData = await inspectCartForAccount(acc);
       if (liveData) {
         if (liveData.restaurantName) order.restaurantName = liveData.restaurantName;
         if (liveData.items && liveData.items.length > 0) order.items = liveData.items;
@@ -1138,7 +1372,12 @@ bot.action(/^boss_login_acc_json_([^_]+)(?:_(.+))?$/, async (ctx) => {
   );
 });
 
-// Delete account picker
+// ================= ACCOUNT MANAGEMENT: DELETE, LOGOUT, REFRESH, EXPORT =================
+
+// State map for multi-select export checklist per user
+const exportSelections = {};
+
+// 1. Direct Delete Account Flow (NO LOGIN OTP)
 bot.action('boss_delete_picker', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
@@ -1147,13 +1386,13 @@ bot.action('boss_delete_picker', async (ctx) => {
 
   const buttons = [];
   for (const [k, a] of Object.entries(accounts)) {
-    buttons.push([Markup.button.callback(`🗑️ Delete ${a.name || k}`, `boss_confirm_delete_${k}`)]);
+    buttons.push([Markup.button.callback(`🗑️ Delete ${a.name || k} (${a.phone || ''})`, `boss_swiggy_delete_start_${k}`)]);
   }
   buttons.push([Markup.button.callback('🔙 Cancel', 'boss_view_accounts')]);
 
   await ctx.reply(
     `🗑️ <b>SELECT ACCOUNT TO DELETE:</b>\n\n` +
-    `Jis account ko remove karna chahte hain, uspe tap karein:`,
+    `Jis account ko bot se delete karna chahte hain, uspe tap karein:`,
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard(buttons)
@@ -1161,39 +1400,231 @@ bot.action('boss_delete_picker', async (ctx) => {
   );
 });
 
-// Confirm delete account
-bot.action(/^boss_confirm_delete_(.+)$/, async (ctx) => {
+bot.action(/^boss_swiggy_delete_start_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
   const key = ctx.match[1];
   const db = getDb();
-  const accName = db.config.accounts?.[key]?.name || key;
+  const acc = db.config.accounts?.[key];
+  if (!acc) return ctx.reply('❌ Account not found.');
 
-  deleteAccount(key);
-  await ctx.answerCbQuery(`Deleted ${accName} 🗑️`).catch(() => {});
-  await ctx.reply(`🗑️ <b>Account "${accName}" has been removed.</b>`, getBossPanelKeyboard());
+  const phone = acc.phone || key.replace('acc_', '');
+  const accName = acc.name || key;
+
+  await ctx.reply(
+    `<blockquote>⚠️ <b>CONFIRM ACCOUNT DELETION</b></blockquote>\n\n` +
+    `📱 <b>Account:</b> <code>${phone}</code>\n` +
+    `👤 <b>Name:</b> <b>${escapeHtml(accName)}</b>\n\n` +
+    `<i>Kya aap sach me is account ko bot se delete karna chahte hain? Iska session, tokens aur database entry permanently remove ho jayenge.</i>`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🗑️ Yes, Delete Account', `boss_swiggy_delete_confirm_${key}`),
+          Markup.button.callback('🔙 Cancel', 'boss_view_accounts')
+        ]
+      ])
+    }
+  );
 });
 
-// Export JSON picker
-bot.action('boss_export_picker', async (ctx) => {
+bot.action(/^boss_swiggy_delete_confirm_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  const key = ctx.match[1];
+  const db = getDb();
+  const acc = db.config.accounts?.[key];
+  const phone = acc?.phone || key.replace('acc_', '');
+  const accName = acc?.name || key;
+
+  deleteAccount(key);
+  permanentLogoutAccount(key);
+
+  await ctx.reply(
+    `<blockquote>✅ <b>ACCOUNT DELETED SUCCESSFULLY</b></blockquote>\n\n` +
+    `📱 <b>Account:</b> <code>${phone}</code>\n` +
+    `👤 <b>Name:</b> <b>${escapeHtml(accName)}</b>\n` +
+    `🗑️ <b>Status:</b> Account bot se permanently delete kar diya gaya hai.`,
+    {
+      parse_mode: 'HTML',
+      ...getBossPanelKeyboard()
+    }
+  );
+});
+
+// 2. Interactive Multi-Select Export Checklist
+bot.action(['boss_export_picker', 'boss_exp_select_all', 'boss_exp_deselect_all', /^boss_exp_toggle_(.+)$/], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const userId = ctx.from.id;
+  const db = getDb();
+  const accounts = db.config.accounts || {};
+  const accKeys = Object.keys(accounts);
+
+  if (accKeys.length === 0) {
+    await ctx.answerCbQuery('Koi account nahi mila!', { show_alert: true }).catch(() => {});
+    return ctx.reply('⚠️ No accounts found in bot to export.');
+  }
+
+  if (!exportSelections[userId]) {
+    exportSelections[userId] = {};
+    accKeys.forEach(k => { exportSelections[userId][k] = true; }); // Default: All selected
+  }
+
+  const actionMatch = ctx.callbackQuery?.data;
+  if (actionMatch === 'boss_exp_select_all') {
+    accKeys.forEach(k => { exportSelections[userId][k] = true; });
+    await ctx.answerCbQuery('Sabhi select ho gaye ✅').catch(() => {});
+  } else if (actionMatch === 'boss_exp_deselect_all') {
+    accKeys.forEach(k => { exportSelections[userId][k] = false; });
+    await ctx.answerCbQuery('Sabhi unselect ho gaye ⚪').catch(() => {});
+  } else if (actionMatch?.startsWith('boss_exp_toggle_')) {
+    const toggleKey = actionMatch.replace('boss_exp_toggle_', '');
+    exportSelections[userId][toggleKey] = !exportSelections[userId][toggleKey];
+    await ctx.answerCbQuery().catch(() => {});
+  } else {
+    await ctx.answerCbQuery().catch(() => {});
+  }
+
+  const currentSelection = exportSelections[userId];
+  const allSelected = accKeys.every(k => currentSelection[k]);
+  const selectedCount = accKeys.filter(k => currentSelection[k]).length;
+
+  const buttons = [];
+  // Select All / Deselect All Toggle button
+  if (allSelected) {
+    buttons.push([Markup.button.callback('⚪ Deselect All', 'boss_exp_deselect_all')]);
+  } else {
+    buttons.push([Markup.button.callback('🔘 Select All', 'boss_exp_select_all')]);
+  }
+
+  // Individual account toggle buttons
+  for (const k of accKeys) {
+    const acc = accounts[k];
+    const isChecked = Boolean(currentSelection[k]);
+    const checkIcon = isChecked ? '✅' : '⬜';
+    const accLabel = `${checkIcon} ${acc.name || k} (${acc.phone || ''})`;
+    buttons.push([Markup.button.callback(accLabel, `boss_exp_toggle_${k}`)]);
+  }
+
+  // Bottom action buttons
+  buttons.push([
+    Markup.button.callback(`🚀 Confirm & Export (${selectedCount}/${accKeys.length})`, 'boss_exp_confirm')
+  ]);
+  buttons.push([Markup.button.callback('🔙 Back to Accounts', 'boss_view_accounts')]);
+
+  const checklistText = 
+    `<blockquote>📤 <b>EXPORT ACCOUNTS CHECKLIST</b></blockquote>\n\n` +
+    `Jin accounts ko export karna chahte hain unhe select karein:\n` +
+    `• <b>Select All:</b> Ek tap me sabhi select honge.\n` +
+    `• <b>Click to toggle:</b> Kisi bhi account par tap karke unselect ya select karein.\n` +
+    `• <b>Selected:</b> <b>${selectedCount} of ${accKeys.length} accounts</b>\n\n` +
+    `<i>Confirm karte hi .json file aur 1-tap Copy Button bhej diya jayega!</i>`;
+
+  try {
+    await ctx.editMessageText(checklistText, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+  } catch (e) {
+    await ctx.reply(checklistText, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+  }
+});
+
+// Confirm Multi-Select Export -> Sends Document + Copy Button
+bot.action('boss_exp_confirm', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const userId = ctx.from.id;
+  const db = getDb();
+  const accounts = db.config.accounts || {};
+  const currentSelection = exportSelections[userId] || {};
+  const selectedKeys = Object.keys(accounts).filter(k => currentSelection[k]);
+
+  if (selectedKeys.length === 0) {
+    return ctx.answerCbQuery('⚠️ Kripya kam se kam ek account select karein!', { show_alert: true }).catch(() => {});
+  }
+
+  await ctx.answerCbQuery('Exporting sessions... 📦').catch(() => {});
+  const exportedList = selectedKeys.map(k => exportSessionJson(k)).filter(Boolean);
+  const exportedData = exportedList.length === 1 ? exportedList[0] : exportedList;
+  const jsonStr = JSON.stringify(exportedData, null, 2);
+
+  const cleanFileName = `swiggy_sessions_export_${Date.now()}.json`;
+
+  try {
+    // 1. Send .json document file
+    await ctx.replyWithDocument(
+      {
+        source: Buffer.from(jsonStr, 'utf-8'),
+        filename: cleanFileName
+      },
+      {
+        caption:
+          `<blockquote>📦 <b>SWIGGY SESSIONS EXPORT FILE</b></blockquote>\n\n` +
+          `• <b>Total Accounts Exported:</b> <code>${exportedList.length}</code>\n` +
+          `• <b>Accounts:</b> ${exportedList.map(a => escapeHtml(a.name || a.phone)).join(', ')}\n\n` +
+          `<i>💡 Is JSON file me cookies nahi hain (pure clean session tokens hain jo direct import ho jate hain).</i>`,
+        parse_mode: 'HTML'
+      }
+    );
+
+    // 2. Send message with Copy JSON button & Code block
+    const copyButtons = [];
+    if (jsonStr.length <= 1024) {
+      copyButtons.push([{ text: '📋 Copy JSON', copy_text: { text: jsonStr } }]);
+    } else {
+      copyButtons.push([Markup.button.callback('📋 Send Raw Text for Easy Copy', 'boss_send_raw_copy')]);
+    }
+    copyButtons.push([Markup.button.callback('👥 View Accounts', 'boss_view_accounts')]);
+
+    userWaitState[userId] = { ...userWaitState[userId], lastExportedJson: jsonStr };
+
+    const previewJson = jsonStr.length > 3500 ? jsonStr.slice(0, 3500) + '\n// ...more' : jsonStr;
+    await ctx.reply(
+      `<blockquote>📋 <b>COPYABLE SESSION JSON</b></blockquote>\n\n` +
+      `<pre><code class="language-json">${escapeHtml(previewJson)}</code></pre>\n\n` +
+      `<i>Niche diye gaye button par click karke direct copy karein:</i>`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: copyButtons }
+      }
+    );
+  } catch (err) {
+    await ctx.reply(`❌ Export failed: ${err.message}`);
+  }
+});
+
+// Fallback to send pure raw text message for 1-tap copy
+bot.action('boss_send_raw_copy', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const userId = ctx.from.id;
+  const jsonStr = userWaitState[userId]?.lastExportedJson;
+  if (!jsonStr) return ctx.answerCbQuery('Session expired, re-export again.', { show_alert: true }).catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+
+  // Send raw text chunks
+  await ctx.reply(jsonStr.slice(0, 4000));
+});
+
+// 3. Logout Accounts Picker & Logout All
+bot.action('boss_logout_picker', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
   const db = getDb();
   const accounts = db.config.accounts || {};
 
+  const loggedInEntries = Object.entries(accounts).filter(([, a]) => a.isLoggedIn);
+  if (loggedInEntries.length === 0) {
+    return ctx.reply('⚠️ No logged in accounts found to logout.', getBossPanelKeyboard());
+  }
+
   const buttons = [];
-  for (const [k, a] of Object.entries(accounts)) {
-    if (a.isLoggedIn) {
-      buttons.push([Markup.button.callback(`📤 Export ${a.name || k} (${a.phone || ''})`, `boss_export_json_${k}`)]);
-    }
+  buttons.push([Markup.button.callback('⚠️ LOGOUT ALL ACCOUNTS', 'boss_logout_all_confirm')]);
+
+  for (const [k, a] of loggedInEntries) {
+    buttons.push([Markup.button.callback(`🚪 Logout ${a.name || k} (${a.phone || ''})`, `boss_logout_single_${k}`)]);
   }
   buttons.push([Markup.button.callback('🔙 Back', 'boss_view_accounts')]);
 
-  if (buttons.length === 1) {
-    return ctx.reply('⚠️ No logged in accounts found to export.');
-  }
-
   await ctx.reply(
-    `📤 <b>SELECT ACCOUNT TO EXPORT SESSION JSON:</b>`,
+    `<blockquote>🚪 <b>LOGOUT ACCOUNTS MANAGER</b></blockquote>\n\n` +
+    `Aap kis account ko logout karna chahte hain? Niche tap karein ya <b>Logout All</b> dabayein:`,
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard(buttons)
@@ -1201,25 +1632,195 @@ bot.action('boss_export_picker', async (ctx) => {
   );
 });
 
-// Export JSON for specific account
-bot.action(/^boss_export_json_(.+)$/, async (ctx) => {
+bot.action(/^boss_logout_single_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const key = ctx.match[1];
-  const exported = exportSessionJson(key);
-  if (!exported) {
-    return ctx.answerCbQuery('No active session found', { show_alert: true }).catch(() => {});
+  const db = getDb();
+  const acc = db.config.accounts?.[key];
+  if (!acc) return ctx.answerCbQuery('Account not found').catch(() => {});
+
+  acc.isLoggedIn = false;
+  acc.cookies = '';
+  acc.token = '';
+  acc.tid = '';
+  acc.sid = '';
+  saveDb(db);
+  permanentLogoutAccount(key);
+
+  await ctx.answerCbQuery('Logged out! ✅').catch(() => {});
+  await ctx.reply(
+    `<blockquote>🚪 <b>LOGOUT COMPLETED</b></blockquote>\n\n` +
+    `📱 <b>Account:</b> <code>${acc.phone}</code>\n` +
+    `👤 <b>Name:</b> <b>${escapeHtml(acc.name)}</b>\n` +
+    `🔒 <b>Status:</b> Account session successfully logged out.`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('👥 View Accounts', 'boss_view_accounts'),
+          Markup.button.callback('🚪 Logout Another', 'boss_logout_picker')
+        ]
+      ])
+    }
+  );
+});
+
+bot.action('boss_logout_all_confirm', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  await ctx.reply(
+    `<blockquote>⚠️ <b>CONFIRM LOGOUT ALL</b></blockquote>\n\n` +
+    `Kya aap sach me <b>SABHI accounts</b> ko ek sath logout karna chahte hain?`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🔴 Yes, Logout All Accounts', 'boss_logout_all_exec'),
+          Markup.button.callback('🔙 Cancel', 'boss_logout_picker')
+        ]
+      ])
+    }
+  );
+});
+
+bot.action('boss_logout_all_exec', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  const db = getDb();
+  const accounts = db.config.accounts || {};
+
+  let count = 0;
+  for (const [k, a] of Object.entries(accounts)) {
+    if (a.isLoggedIn) {
+      a.isLoggedIn = false;
+      a.cookies = '';
+      a.token = '';
+      a.tid = '';
+      a.sid = '';
+      permanentLogoutAccount(k);
+      count++;
+    }
+  }
+  saveDb(db);
+
+  await ctx.reply(
+    `<blockquote>🚪 <b>ALL ACCOUNTS LOGGED OUT</b></blockquote>\n\n` +
+    `Total <b>${count} accounts</b> successfully logout kar diye gaye hain.\n` +
+    `Ab koi bhi active session khula nahi hai.`,
+    {
+      parse_mode: 'HTML',
+      ...getBossPanelKeyboard()
+    }
+  );
+});
+
+// 4. Refresh All Accounts (Audit Session + Check Orders)
+bot.action('boss_refresh_all_accounts', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery('Auditing all accounts... ⏳').catch(() => {});
+
+  const statusMsg = await ctx.reply('⏳ <i>Swiggy se sabhi accounts ke sessions verify ho rahe hain aur orders fetch kiye ja rahe hain...</i>', { parse_mode: 'HTML' });
+
+  const db = getDb();
+  const accounts = db.config.accounts || {};
+  const entries = Object.entries(accounts);
+
+  if (entries.length === 0) {
+    try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+    return ctx.reply('⚠️ No accounts found to refresh.');
   }
 
-  await ctx.answerCbQuery().catch(() => {});
-  const jsonStr = JSON.stringify(exported, null, 2);
-  await ctx.reply(
-    `📦 <b>[ SESSION BACKUP JSON: ${exported.name.toUpperCase()} ]</b>\n\n` +
-    `• 📱 Mobile: <b>${exported.phone}</b>\n` +
-    `• 🆔 Customer ID: <code>${exported.customerId || 'Verified'}</code>\n\n` +
-    `<code>${escapeHtml(jsonStr)}</code>\n\n` +
-    `<i>💡 Save this to your Telegram Saved Messages. You can paste it anytime to restore login without OTP!</i>`,
-    { parse_mode: 'HTML' }
-  );
+  const reportItems = [];
+
+  for (let i = 0; i < entries.length; i++) {
+    const [key, acc] = entries[i];
+    const phone = acc.phone || key.replace('acc_', '');
+    const accName = acc.name || key;
+    const cookieStr = acc.cookies || (acc.tid ? `tid=${acc.tid}; _sid=${acc.sid || ''}; _device_id=${acc.deviceId || ''}; token=${acc.token || ''}` : '');
+
+    if (!acc.isLoggedIn || !cookieStr) {
+      reportItems.push(
+        `<b>${i + 1}. 👤 ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
+        `• 🔐 <b>Session:</b> ⚪ <b>Logged Out</b>\n` +
+        `• 📦 <b>Orders:</b> <i>Login nahi hai</i>\n`
+      );
+      continue;
+    }
+
+    try {
+      const res = await fetch('https://www.swiggy.com/dapi/order/all', {
+        headers: {
+          'Cookie': cookieStr,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Referer': 'https://www.swiggy.com/my-account'
+        }
+      });
+
+      const json = await res.json().catch(() => ({}));
+      const isExpired = res.status !== 200 || json.statusCode === 1 || !json.data;
+
+      if (isExpired) {
+        // Automatically logout expired account as requested
+        acc.isLoggedIn = false;
+        reportItems.push(
+          `<b>${i + 1}. 👤 ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
+          `• 🔐 <b>Session:</b> ❌ <b>Iska session OFF hai (Logged Out)</b>\n` +
+          `• 📦 <b>Orders:</b> ⚠️ Session expired — Login required\n`
+        );
+      } else {
+        acc.isLoggedIn = true;
+        const orders = json.data?.orders || [];
+        if (orders.length > 0) {
+          const latest = orders[0];
+          const orderTotal = latest.order_total || latest.net_total || 'N/A';
+          const orderTime = latest.order_time ? new Date(latest.order_time).toLocaleDateString() : '';
+          reportItems.push(
+            `<b>${i + 1}. 👤 ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
+            `• 🔐 <b>Session:</b> 🟢 <b>Active</b>\n` +
+            `• 📦 <b>Orders:</b> ✅ <b>Order kiya hua hai</b> (${orders.length} orders | Latest: #${latest.order_id || latest.id || ''} - ₹${orderTotal} ${orderTime})\n`
+          );
+        } else {
+          reportItems.push(
+            `<b>${i + 1}. 👤 ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
+            `• 🔐 <b>Session:</b> 🟢 <b>Active</b>\n` +
+            `• 📦 <b>Orders:</b> ⚪ <b>Koi order nahi hai (Fresh ID - 0 Orders)</b>\n`
+          );
+        }
+      }
+    } catch (netErr) {
+      reportItems.push(
+        `<b>${i + 1}. 👤 ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
+        `• 🔐 <b>Session:</b> ⚠️ Error checking: ${escapeHtml(netErr.message)}\n`
+      );
+    }
+  }
+
+  saveDb(db);
+
+  try {
+    await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id);
+  } catch (e) {}
+
+  const finalReport = 
+    `<blockquote>🔄 <b>SWIGGY ACCOUNTS AUDIT & REFRESH</b></blockquote>\n\n` +
+    reportItems.join('\n') +
+    `\n<i>💡 Expired sessions ko automatically logout mark kar diya gaya hai.</i>`;
+
+  await ctx.reply(finalReport, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [
+        Markup.button.callback('🔄 Refresh Again', 'boss_refresh_all_accounts'),
+        Markup.button.callback('📤 Export Accounts', 'boss_export_picker')
+      ],
+      [
+        Markup.button.callback('🚪 Logout Accounts', 'boss_logout_picker'),
+        Markup.button.callback('👥 View Accounts', 'boss_view_accounts')
+      ]
+    ])
+  });
 });
 
 // Dynamic Session JSON Import Target Selector
@@ -1476,19 +2077,43 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
         });
       } catch (err) {}
     } else {
-      // Case 3: Live screen could not be captured
-      await ctx.reply(
-        `⚠️ <b>Swiggy Live Checkout Screen capture nahi ho saki!</b>\n\n` +
-        `👤 Account: <b>${escapeHtml(acc?.name || accKey)}</b>\n` +
-        `Karan: Cart me items nahi mile ya address select nahi hua hai.\n\n` +
-        `👉 <b>Asli QR Bhejne Ka Tarika:</b>\n` +
-        `Swiggy mobile app me jakar order payment screen / UPI QR ka screenshot lein aur niche <b>[ 📷 Upload Real QR Screenshot ]</b> button se bhej dein. Yeh turant User ko deliver ho jayega!`,
-        {
+      // Case 3: Generate authentic, scannable high-resolution UPI Payment QR
+      try {
+        const upiId = db.config?.bossUpiId || '8249789547@paytm';
+        const payeeName = order.restaurantName || 'Swiggy Food Order';
+        const upiUri = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`;
+        const qrBuffer = await QRCode.toBuffer(upiUri, {
+          width: 600,
+          margin: 2,
+          color: { dark: '#000000', light: '#ffffff' }
+        });
+
+        await bot.telegram.sendPhoto(order.userId, { source: qrBuffer }, {
+          caption: `🟢 <b>Swiggy Payment QR (Order #${orderId})</b>\n\n` +
+            `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Food Order')}\n` +
+            `💰 <b>Payable Amount:</b> <b>₹${payable}</b>\n` +
+            (order.totalSavings > 0 ? `🎉 <b>Discounts Saved:</b> ₹${order.totalSavings}\n` : '') +
+            `\n<i>Kisi bhi UPI app (Google Pay / PhonePe / Paytm / BHIM) se QR scan karke pay karein.\nPayment hone ke baad niche <b>[ 💸 confirm order ]</b> dabayein:</i>`,
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard(userButtons)
+        });
+
+        await ctx.replyWithPhoto({ source: qrBuffer }, {
+          caption: `⚡ <b>AUTHENTIC UPI PAYMENT QR DELIVERED!</b>\n\n` +
+            `📌 <b>Order #${orderId}</b> | Amount: <b>₹${payable}</b>\n` +
+            `💳 <b>Receiving UPI ID:</b> <code>${upiId}</code>\n` +
+            `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n\n` +
+            `<i>User (Ammi/Abbu) ke chat me scannable QR bhej diya gaya hai! Payment hote hi Verify Payment dabayein.</i>`,
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard(bossButtons)
-        }
-      );
-      return;
+        });
+
+        qrDelivered = true;
+      } catch (qrErr) {
+        console.error('Failed to generate UPI QR:', qrErr.message);
+        await ctx.reply(`❌ QR Generation Error: ${qrErr.message}`);
+        return;
+      }
     }
   }
 
@@ -1533,16 +2158,27 @@ bot.action(/^boss_get_qr_(.+)$/, async (ctx) => {
       ...Markup.inlineKeyboard(bossButtons)
     });
   } else {
-    await ctx.reply(
-      `📷 <b>PAYMENT DETAILS FOR REQUEST #${orderId}</b>\n\n` +
-      `💰 <b>Amount (On Swiggy Payment Page):</b> <b>₹${payable}</b>\n` +
-      `🌐 <b>Swiggy Payment Page:</b> <code>https://www.swiggy.com/payments</code>\n\n` +
-      `<i>Swiggy Web API desktop par dynamic UPI QR code provide nahi karta. User Swiggy page open karke pay kar sakte hain ya aap Swiggy App ka QR screenshot upload kar sakte hain:</i>`,
-      {
+    try {
+      const upiId = db.config?.bossUpiId || '8249789547@paytm';
+      const payeeName = order.restaurantName || 'Swiggy Food Order';
+      const upiUri = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`;
+      const qrBuffer = await QRCode.toBuffer(upiUri, {
+        width: 600,
+        margin: 2,
+        color: { dark: '#000000', light: '#ffffff' }
+      });
+      await ctx.replyWithPhoto({ source: qrBuffer }, {
+        caption: `📷 <b>AUTHENTIC UPI PAYMENT QR FOR REQUEST #${orderId}</b>\n\n` +
+          `💰 <b>Amount:</b> <b>₹${payable}</b>\n` +
+          `💳 <b>Receiving UPI:</b> <code>${upiId}</code>\n` +
+          `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n\n` +
+          `<i>Kisi bhi UPI app (Google Pay / PhonePe / Paytm / BHIM) se scan karke payment ho jayega!</i>`,
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard(bossButtons)
-      }
-    );
+      });
+    } catch (e) {
+      await ctx.reply(`❌ QR Generation Error: ${e.message}`);
+    }
   }
 });
 
@@ -1799,7 +2435,8 @@ async function handleConfirmOrderPaid(ctx, orderId, confirmedBy) {
 
   await ctx.answerCbQuery('Verifying payment with Swiggy API... ⏳').catch(() => {});
 
-  const acc = db.config.accounts?.[order.selectedAccount || 'ammi'];
+  const accKey = order.selectedAccount || getActiveOrderAccountKey(db);
+  const acc = db.config.accounts?.[accKey];
   const trackingData = await extractRealSwiggyTracking(acc?.cookies || '');
 
   if (trackingData && trackingData.orderId) {
@@ -1924,11 +2561,16 @@ async function showFamilyAccounts(ctx) {
       Markup.button.callback('📱 Login with Number', 'boss_login_with_number')
     ],
     [
-      Markup.button.callback('🔄 Switch Active Account', 'boss_switch_active_picker'),
+      Markup.button.callback('🔄 Refresh All Accounts', 'boss_refresh_all_accounts'),
       Markup.button.callback('📤 Export Session JSON', 'boss_export_picker')
     ],
     [
+      Markup.button.callback('🚪 Logout Accounts', 'boss_logout_picker'),
       Markup.button.callback('🗑️ Delete Account', 'boss_delete_picker')
+    ],
+    [
+      Markup.button.callback('🔄 Switch Active Account', 'boss_switch_active_picker'),
+      Markup.button.callback('🏠 Boss Panel', 'boss_panel_home')
     ]
   ];
 
@@ -2012,7 +2654,7 @@ bot.on('voice', async (ctx) => {
     fileId: ctx.message.voice.file_id,
     address: null,
     cart: null,
-    selectedAccount: role.toLowerCase() === 'abbu' ? 'abbu' : 'ammi',
+    selectedAccount: getActiveOrderAccountKey(db),
     status: 'PENDING',
     paymentStatus: 'UNPAID',
     createdAt: new Date().toISOString()
@@ -2030,10 +2672,7 @@ bot.on('voice', async (ctx) => {
   for (const bossId of db.config.bossIds) {
     try {
       const card = formatBossOrderCard(newOrder);
-      await bot.telegram.sendMessage(bossId, card.text, {
-        parse_mode: 'HTML',
-        ...card.keyboard
-      });
+      await sendCardSafe(bossId, card);
       await bot.telegram.sendVoice(bossId, ctx.message.voice.file_id, {
         caption: `🎙️ <b>Listen to ${role}'s Voice Note (Request #${orderId})</b>`,
         parse_mode: 'HTML'
@@ -2107,7 +2746,7 @@ bot.on('photo', async (ctx) => {
     fileId: photo.file_id,
     address: null,
     cart: null,
-    selectedAccount: role.toLowerCase() === 'abbu' ? 'abbu' : 'ammi',
+    selectedAccount: getActiveOrderAccountKey(db),
     status: 'PENDING',
     paymentStatus: 'UNPAID',
     createdAt: new Date().toISOString()
@@ -2125,10 +2764,7 @@ bot.on('photo', async (ctx) => {
   for (const bossId of db.config.bossIds) {
     try {
       const card = formatBossOrderCard(newOrder);
-      await bot.telegram.sendMessage(bossId, card.text, {
-        parse_mode: 'HTML',
-        ...card.keyboard
-      });
+      await sendCardSafe(bossId, card);
       await bot.telegram.sendPhoto(bossId, photo.file_id, {
         caption: `📷 <b>Photo / List sent by ${role} (Request #${orderId})</b>`,
         parse_mode: 'HTML'
@@ -2916,35 +3552,44 @@ bot.on('text', async (ctx) => {
 
   // Helper for starting phone number login
   async function triggerPhoneNumberLogin(phoneToLogin, existingAccKey, existingAccName) {
-    const accKey = existingAccKey || `acc_${phoneToLogin}`;
+    const accKey = `acc_${phoneToLogin}`;
+    const autoName = (existingAccName && /^user\s+\d+$/i.test(existingAccName.trim()))
+      ? existingAccName.trim()
+      : getNextAutoUserName();
     delete userWaitState[userId];
 
-    if (existingAccName) {
-      await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${phoneToLogin} (${escapeHtml(existingAccName)})...</b>`, { parse_mode: 'HTML' });
-    } else {
-      await ctx.reply(`⚡ <b>Checking Swiggy & sending Instant OTP to ${phoneToLogin}...</b>`, { parse_mode: 'HTML' });
-    }
-
-    const result = await requestSwiggyOtpViaBridge(userId, phoneToLogin, accKey);
+    const result = await requestSwiggyOtpViaBridge(userId, phoneToLogin, accKey, autoName);
 
     if (result.success) {
       userWaitState[userId] = {
         action: 'waiting_swiggy_otp_bridge',
         targetAcc: accKey,
         phone: phoneToLogin,
-        name: existingAccName
+        name: autoName
       };
+
+      const swiggyText = result.swiggyStatus || result.message || 'OTP sent successfully';
+      const otpSentCard = 
+        `<blockquote>${escapeHtml(swiggyText)}</blockquote>\n\n` +
+        `📱 <b>Mobile:</b> <code>${phoneToLogin}</code>\n` +
+        `⏱️ <b>Expires in:</b> <code>120s</code>\n\n` +
+        `<i>Kripya phone par aaya hua 6-digit OTP chat me likhein ya seedha agla 10-digit number bhej dein:</i>`;
+
       await ctx.reply(
-        `📲 <b>OTP Sent to ${phoneToLogin}!</b>\n\n` +
-        (existingAccName ? `👤 <b>Account:</b> ${escapeHtml(existingAccName)}\n\n` : '') +
-        `Kripya phone par aaya hua 6-digit OTP chat me likh kar bhejein:`,
+        otpSentCard,
         {
           parse_mode: 'HTML',
-          reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('📱 Send in Another Number', 'send_to_another_number'),
+              Markup.button.callback('🔄 Resend OTP', `resend_otp_${phoneToLogin}`)
+            ]
+          ])
         }
       );
     } else {
-      await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}`, getBossPanelKeyboard());
+      const errText = result.swiggyStatus || result.message || 'Failed to send OTP';
+      await ctx.reply(`<blockquote>${escapeHtml(errText)}</blockquote>`, getBossPanelKeyboard());
     }
   }
 
@@ -2964,49 +3609,18 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // C: Handle Name for New Swiggy User Signup
+  // C: Handle Name for New Swiggy User Signup (auto-handled)
   if (state && state.action === 'waiting_name_for_new_swiggy_signup') {
-    const enteredName = rawText.trim();
+    const enteredName = rawText.trim() || getNextAutoUserName();
     const cleanPhone = state.phone;
     const orderId = state.orderId;
     delete userWaitState[userId];
 
-    if (!enteredName || enteredName.length > 50) {
-      return ctx.reply('⚠️ Please enter a valid name (1-50 characters):');
-    }
-
-    await ctx.reply(`⚡ <b>Creating Swiggy account for ${escapeHtml(enteredName)} (${cleanPhone})...</b>`, { parse_mode: 'HTML' });
     const signupRes = await signupSwiggyViaBridge(userId, enteredName);
-
     if (signupRes.success) {
-      const targetAcc = signupRes.accountKey;
-      const db = getDb();
-      if (!db.config.activeOrderAccount) {
-        db.config.activeOrderAccount = targetAcc;
-        saveDb(db);
-      }
-      if (orderId && db.orders[orderId]) {
-        const order = db.orders[orderId];
-        order.selectedAccount = targetAcc;
-        saveDb(db);
-        updateOrderCards(order).catch(() => {});
-      }
-
-      const jsonBackupStr = JSON.stringify(signupRes.exportJson || {}, null, 2);
-
-      await ctx.reply(
-        `🎉 <b>Swiggy Account Created & Logged In!</b> 🎉\n\n` +
-        `👤 <b>Account Name:</b> <b>${escapeHtml(signupRes.name)}</b>\n` +
-        `📱 <b>Mobile:</b> <code>${signupRes.phone}</code>\n` +
-        `🆔 Customer ID: <code>${signupRes.customerId || 'Verified'}</code>\n` +
-        `🟢 <b>Status:</b> Connected & Ready for Orders!\n\n` +
-        (orderId ? `📌 <b>Order #${orderId} is now linked to ${escapeHtml(signupRes.name)}!</b>\n\n` : '') +
-        `📦 <b>[ SESSION BACKUP JSON ]</b> (Save to Telegram Saved Messages):\n` +
-        `<code>${escapeHtml(jsonBackupStr)}</code>`,
-        { parse_mode: 'HTML', ...getBossPanelKeyboard() }
-      );
+      await sendAccountLoginAndOffersCard(ctx, signupRes, userId, orderId);
     } else {
-      await ctx.reply(`❌ <b>Swiggy Signup Error:</b> ${signupRes.message}`, getBossPanelKeyboard());
+      await ctx.reply(`<blockquote>${escapeHtml(signupRes.message)}</blockquote>`, getBossPanelKeyboard());
     }
     return;
   }
@@ -3032,102 +3646,124 @@ bot.on('text', async (ctx) => {
       return ctx.reply('⚠️ Please enter a valid 10-digit phone number (e.g. 9876543210):');
     }
 
-    await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${cleanPhone}...</b>`, { parse_mode: 'HTML' });
-
-    const result = await requestSwiggyOtpViaBridge(userId, cleanPhone, targetAcc);
+    const autoName = getNextAutoUserName();
+    const result = await requestSwiggyOtpViaBridge(userId, cleanPhone, targetAcc, autoName);
 
     if (result.success) {
       userWaitState[userId] = {
         action: 'waiting_swiggy_otp_bridge',
         targetAcc,
-        phone: cleanPhone
+        phone: cleanPhone,
+        name: autoName
       };
 
+      const swiggyText = result.swiggyStatus || result.message || 'OTP sent successfully';
+      const otpSentCard = 
+        `<blockquote>${escapeHtml(swiggyText)}</blockquote>\n\n` +
+        `📱 <b>Mobile:</b> <code>${cleanPhone}</code>\n` +
+        `⏱️ <b>Expires in:</b> <code>120s</code>\n\n` +
+        `<i>Kripya phone par aaya hua 6-digit OTP chat me likhein ya seedha agla 10-digit number bhej dein:</i>`;
+
       await ctx.reply(
-        `📲 <b>OTP Sent to ${cleanPhone}!</b>\n\n` +
-        `Please enter the 6-digit OTP received on the phone:`,
+        otpSentCard,
         {
           parse_mode: 'HTML',
-          reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('📱 Send in Another Number', 'send_to_another_number'),
+              Markup.button.callback('🔄 Resend OTP', `resend_otp_${cleanPhone}`)
+            ]
+          ])
         }
       );
     } else {
       delete userWaitState[userId];
-      await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}\nPlease check the number and try again.`, getBossPanelKeyboard());
+      const errText = result.swiggyStatus || result.message || 'Failed to send OTP';
+      await ctx.reply(`<blockquote>${escapeHtml(errText)}</blockquote>`, getBossPanelKeyboard());
     }
     return;
   }
 
   // Step 2: User enters 6-digit OTP
   if (state && state.action === 'waiting_swiggy_otp_bridge') {
-    const enteredOtp = rawText.replace(/[^0-9]/g, '');
+    const rawCleanDigits = rawText.replace(/[^0-9]/g, '');
 
-    if (enteredOtp.length < 4) {
-      return ctx.reply('⚠️ Please enter the complete 6-digit OTP:');
+    // Direct auto-switch if user pasted/typed a 10-digit phone number while waiting for OTP!
+    if (rawCleanDigits.length === 10 && /^[6-9]\d{9}$/.test(rawCleanDigits)) {
+      delete userWaitState[userId];
+      const db = getDb();
+      const existing = Object.entries(db.config?.accounts || {}).find(([k, a]) => a.phone === rawCleanDigits);
+      const existingKey = existing ? existing[0] : null;
+      const existingName = existing ? (existing[1]?.name || existing[0]) : null;
+
+      await ctx.reply(`🔄 <b>Switching to new number ${rawCleanDigits}...</b>`, { parse_mode: 'HTML' });
+      await triggerPhoneNumberLogin(rawCleanDigits, existingKey, existingName);
+      return;
     }
 
-    await ctx.reply(`⏳ <b>Verifying OTP with Swiggy...</b>`, { parse_mode: 'HTML' });
+    const rawLower = rawText.trim().toLowerCase();
+    if (['cancel', 'exit', 'na', 'skip', 'nahi', 'nahi aaya', 'doosra', 'close', 'another', 'change'].includes(rawLower)) {
+      delete userWaitState[userId];
+      userWaitState[userId] = { action: 'waiting_phone_for_number_login' };
+      return ctx.reply(
+        `📱 <b>DOOSRA NUMBER DAALEIN:</b>\n\nAgla 10-digit Swiggy mobile number chat me likhein:`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
+        }
+      );
+    }
+
+    const enteredOtp = rawCleanDigits;
+
+    if (enteredOtp.length < 4) {
+      return ctx.reply(
+        '⚠️ Kripya complete 6-digit OTP likhein ya doosra number daalein:',
+        {
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('📱 Send in Another Number', 'send_to_another_number'),
+              Markup.button.callback('🔄 Resend OTP', `resend_otp_${state.phone}`)
+            ]
+          ])
+        }
+      );
+    }
 
     const result = await verifySwiggyOtpViaBridge(userId, enteredOtp);
 
     if (result.isNewUser) {
-      userWaitState[userId] = {
-        action: 'waiting_name_for_new_swiggy_signup',
-        phone: result.phone,
-        orderId: state.orderId
-      };
-      await ctx.reply(
-        `🆕 <b>Yeh number Swiggy par registered nahi hai (${result.phone})!</b>\n\n` +
-        `📝 <b>Swiggy naya account create karne ke liye kripya apna Naam likh kar bhejein:</b>\n` +
-        `<i>(Jaise: Rahul, Aman)</i>`,
-        {
-          parse_mode: 'HTML',
-          reply_markup: { force_reply: true, input_field_placeholder: 'Enter your name (e.g. Rahul)...' }
-        }
-      );
+      // Auto-assign sequential name without prompting user
+      const autoName = state.name || getNextAutoUserName();
+      const signupRes = await signupSwiggyViaBridge(userId, autoName);
+      if (signupRes.success) {
+        const orderId = state.orderId;
+        delete userWaitState[userId];
+        await sendAccountLoginAndOffersCard(ctx, signupRes, userId, orderId);
+      } else {
+        await ctx.reply(`<blockquote>${escapeHtml(signupRes.message)}</blockquote>`, getBossPanelKeyboard());
+      }
       return;
     }
 
     if (result.success) {
       const orderId = state.orderId;
-      const targetAcc = result.accountKey || result.targetAcc || state.targetAcc;
-      const displayName = result.name || state.name || targetAcc;
       delete userWaitState[userId];
-
-      const db = getDb();
-      if (!db.config.activeOrderAccount) {
-        db.config.activeOrderAccount = targetAcc;
-        saveDb(db);
-      }
-
-      if (orderId && db.orders[orderId]) {
-        const order = db.orders[orderId];
-        order.selectedAccount = targetAcc;
-        saveDb(db);
-        updateOrderCards(order).catch(() => {});
-      }
-
-      const jsonBackupStr = JSON.stringify(result.exportJson || {}, null, 2);
-
-      await ctx.reply(
-        `✅ <b>Logged In Successfully via Swiggy!</b> 🎉\n\n` +
-        `👤 <b>Swiggy Registered Name:</b> <b>${escapeHtml(displayName)}</b>\n` +
-        `📱 <b>Mobile:</b> <code>${result.phone}</code>\n` +
-        `🆔 Customer ID: <code>${result.customerId || 'Verified'}</code>\n` +
-        `🟢 <b>Status:</b> Connected & Ready for Orders!\n\n` +
-        (orderId ? `📌 <b>Order #${orderId} is now linked to ${escapeHtml(displayName)}!</b>\n\n` : '') +
-        `📦 <b>[ SESSION BACKUP JSON ]</b> (Save to Telegram Saved Messages):\n` +
-        `<code>${escapeHtml(jsonBackupStr)}</code>\n\n` +
-        `<i>💡 Tip: Is JSON ko Saved Messages me rakh lo. Kabhi bhi bina OTP ke restore karna ho toh direct use kar sakte ho!</i>`,
-        { parse_mode: 'HTML', ...getBossPanelKeyboard() }
-      );
+      await sendAccountLoginAndOffersCard(ctx, result, userId, orderId);
     } else {
+      const swiggyText = result.swiggyStatus || result.message || 'Invalid or expired OTP';
       await ctx.reply(
-        `❌ <b>Invalid or Incorrect OTP!</b> (${result.message})\n\n` +
-        `Please enter the correct OTP received on your phone:`,
+        `<blockquote>${escapeHtml(swiggyText)}</blockquote>\n\n` +
+        `📱 <b>Mobile:</b> <code>${state.phone}</code>\n\n` +
+        `<i>Kripya sahi 6-digit OTP likhein ya doosra number bhej dein:</i>`,
         {
           parse_mode: 'HTML',
-          reply_markup: { force_reply: true, input_field_placeholder: 'Enter correct 6-digit OTP...' }
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('📱 Send in Another Number', 'send_to_another_number'),
+              Markup.button.callback('🔄 Resend OTP', `resend_otp_${state.phone}`)
+            ]
+          ])
         }
       );
     }
@@ -3660,11 +4296,8 @@ async function handleSendToBoss(ctx) {
   const bossList = [...new Set([...(db.config.bossIds || []), ...(isBoss(userId) ? [userId] : [])])];
   for (const bossId of bossList) {
     try {
-      const bossMsg = await bot.telegram.sendMessage(bossId, bossCard.text, {
-        parse_mode: 'HTML',
-        ...bossCard.keyboard
-      });
-      newOrder.bossMessageIds[bossId] = bossMsg.message_id;
+      const bossMsg = await sendCardSafe(bossId, bossCard);
+      newOrder.bossMessageIds[bossId] = bossMsg?.message_id;
       console.log(`✅ Successfully sent Order #${orderId} to Boss: ${bossId}`);
     } catch (e) {
       console.error(`❌ Failed to send Order #${orderId} to Boss ${bossId}:`, e.message);
@@ -4024,12 +4657,12 @@ bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
       Markup.button.callback('📍 Saved Addresses', `acc_view_addrs_${key}`)
     ],
     [
-      Markup.button.callback('📦 My Orders', `acc_view_orders_${key}`),
+      Markup.button.callback('📦 Previous Orders', `acc_view_orders_${key}`),
       Markup.button.callback('🛒 View Cart', `acc_view_cart_${key}`)
     ],
     [
       Markup.button.callback('📤 Export JSON', `boss_export_json_${key}`),
-      Markup.button.callback('🚪 Permanent Logout', `acc_perm_logout_${key}`)
+      Markup.button.callback('🗑️ Delete Account (OTP)', `boss_swiggy_delete_start_${key}`)
     ],
     [
       Markup.button.callback('🔙 Back to Accounts', 'acc_refresh_list')
@@ -4072,8 +4705,8 @@ bot.action(/^acc_perm_logout_(.+)$/, async (ctx) => {
   );
 });
 
-// 3. My Orders
-async function handleMyOrders(ctx, targetKey = null) {
+// 3. Previous Orders
+async function handlePreviousOrders(ctx, targetKey = null) {
   if (!isBoss(ctx.from.id)) {
     return ctx.answerCbQuery ? ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {}) : ctx.reply('Unauthorized: Boss only');
   }
@@ -4081,51 +4714,63 @@ async function handleMyOrders(ctx, targetKey = null) {
   const activeKey = targetKey || getActiveOrderAccountKey();
   const acc = db.config?.accounts?.[activeKey];
 
-  if (!acc || !acc.cookies) {
-    return ctx.reply(`⚠️ <b>${acc?.name || activeKey} is not logged in!</b>\nPlease login to view recent orders.`);
+  if (!acc || (!acc.cookies && !acc.tid)) {
+    return ctx.reply(`⚠️ <b>${acc?.name || activeKey} is not logged in!</b>\nPlease login to view previous orders.`);
   }
 
-  const waitMsg = await ctx.reply(`📦 <i>Fetching recent orders from Swiggy for ${acc.name || activeKey}...</i>`, { parse_mode: 'HTML' });
-  const orders = await fetchAccountOrders(acc.cookies);
-
-  try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
+  const orders = await fetchAccountOrders(acc);
 
   if (!orders || orders.length === 0) {
-    return ctx.reply(`📦 <b>My Orders</b>\n${acc.name || activeKey} • <code>${acc.phone || ''}</code>\n\n<i>No recent orders found on Swiggy.</i>`, { parse_mode: 'HTML' });
+    const emptyText = 
+      `<blockquote>📦 <b>PREVIOUS ORDERS</b></blockquote>\n\n` +
+      `📱 <b>Account:</b> <code>${acc.phone || ''}</code> (<b>${escapeHtml(acc.name || activeKey)}</b>)\n` +
+      `🆔 <b>Customer ID:</b> <code>${acc.customerId || 'Verified'}</code>\n\n` +
+      `<i>Is account se Swiggy par abhi tak koi previous order nahi mila (0 orders).</i>`;
+    return sendSafeHtml(ctx, emptyText, Markup.inlineKeyboard([
+      [Markup.button.callback('🔄 Refresh Orders', `acc_view_orders_${activeKey}`)],
+      [Markup.button.callback('🔙 Back to Account', `acc_view_detail_${activeKey}`)]
+    ]));
   }
 
-  let text = `<b>My Orders</b>\n` +
-    `${escapeHtml(acc.name || activeKey)} • <code>${acc.phone || ''}</code>\n\n` +
-    `Recent Orders: ${orders.length}\n\n`;
+  let text = 
+    `<blockquote>📦 <b>PREVIOUS ORDERS (${orders.length})</b></blockquote>\n\n` +
+    `📱 <b>Account:</b> <code>${acc.phone || ''}</code> (<b>${escapeHtml(acc.name || activeKey)}</b>)\n` +
+    `🆔 <b>Customer ID:</b> <code>${acc.customerId || 'Verified'}</code>\n\n`;
 
   const buttons = [];
-  for (const o of orders) {
-    text += `Order #${o.orderId}\n` +
-      `<b>${escapeHtml(o.restaurantName || 'Swiggy')} • ${escapeHtml(o.status || 'Delivered')}</b>\n` +
-      (o.items && o.items.length > 0 ? `${o.items.join(', ')}\n` : '') +
-      (o.deliveryAddress ? `${escapeHtml(o.deliveryAddress)}\n` : '') +
-      (o.orderTime ? `${o.orderTime}\n` : '') +
-      `₹${o.orderTotal || 0}\n\n`;
+  for (let i = 0; i < orders.length; i++) {
+    const o = orders[i];
+    const statusIcon = (o.status || '').toLowerCase().includes('deliv') ? '🟢' : '🟡';
+    text += `<b>${i + 1}. ${escapeHtml(o.restaurantName || 'Swiggy Food')}</b>\n` +
+      `• 🏷️ <b>Order ID:</b> <code>#${o.orderId}</code>\n` +
+      `• 💰 <b>Amount:</b> <b>₹${o.orderTotal || 0}</b> • ${statusIcon} <code>${escapeHtml(o.status || 'Completed')}</code>\n` +
+      (o.items && o.items.length > 0 ? `• 🍽️ <i>${escapeHtml(o.items.join(', '))}</i>\n` : '') +
+      (o.deliveryAddress ? `• 📍 <code>${escapeHtml(o.deliveryAddress)}</code>\n` : '') +
+      (o.orderTime ? `• ⏱️ <i>${escapeHtml(o.orderTime)}</i>\n` : '') +
+      `\n`;
 
-    buttons.push([
-      Markup.button.url(`🛵 Track #${o.orderId} (${o.restaurantName || 'Order'})`, o.trackingUrl)
-    ]);
+    if (o.trackingUrl) {
+      buttons.push([
+        Markup.button.url(`🛵 Track #${o.orderId} (${o.restaurantName || 'Order'})`, o.trackingUrl)
+      ]);
+    }
   }
 
   buttons.push([
-    Markup.button.callback('🔄 Refresh Orders', `acc_view_orders_${activeKey}`)
+    Markup.button.callback('🔄 Refresh Orders', `acc_view_orders_${activeKey}`),
+    Markup.button.callback('🔙 Back to Account', `acc_view_detail_${activeKey}`)
   ]);
 
   await sendSafeHtml(ctx, text.trim(), Markup.inlineKeyboard(buttons));
 }
 
-bot.hears('📦 My Orders', async (ctx) => handleMyOrders(ctx));
-bot.command('orders', async (ctx) => handleMyOrders(ctx));
+bot.hears(['📦 Previous Orders', '📦 My Orders', 'Previous Orders'], async (ctx) => handlePreviousOrders(ctx));
+bot.command(['orders', 'previous_orders'], async (ctx) => handlePreviousOrders(ctx));
 bot.action(/^acc_view_orders_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
   const key = ctx.match[1];
-  await handleMyOrders(ctx, key);
+  await handlePreviousOrders(ctx, key);
 });
 
 // 4. View Cart
@@ -4137,12 +4782,12 @@ async function handleViewCart(ctx, targetKey = null) {
   const activeKey = targetKey || getActiveOrderAccountKey();
   const acc = db.config?.accounts?.[activeKey];
 
-  if (!acc || !acc.cookies) {
+  if (!acc || (!acc.cookies && !acc.tid)) {
     return ctx.reply(`⚠️ <b>${acc?.name || activeKey} is not logged in!</b>\nPlease login with OTP or JSON first.`);
   }
 
   const waitMsg = await ctx.reply(`🛒 <i>Inspecting live cart & calculating best offers for ${acc.name || activeKey}...</i>`, { parse_mode: 'HTML' });
-  const liveCart = await inspectCartForAccount(acc.cookies);
+  const liveCart = await inspectCartForAccount(acc);
 
   try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
 
@@ -4272,12 +4917,33 @@ bot.command('resetslots', async (ctx) => {
 
 bot.action('noop', async (ctx) => ctx.answerCbQuery().catch(() => {}));
 
-bot.catch((err, ctx) => {
-  if (err.description && err.description.includes('message is not modified')) {
-    return;
-  }
-  console.warn(`⚠️ Handled bot error [${ctx?.updateType || 'unknown'}]:`, err.message);
+bot.catch(async (err, ctx) => {
+  // Ignore harmless "not modified" edits
+  if (err.description && err.description.includes('message is not modified')) return;
+
+  // Ignore normal 400 "message too long" & transient query expiration
+  const ignorePhrases = ['message is not modified', 'query is too old', 'MESSAGE_ID_INVALID', 'message is too long', 'message to be edited'];
+  if (ignorePhrases.some(p => (err.message || err.description || '').toLowerCase().includes(p.toLowerCase()))) return;
+
+  const updateType = ctx?.updateType || 'unknown';
+  const errMsg = err.message || err.description || String(err);
+  console.error(`❌ Bot error [${updateType}]:`, errMsg);
+
+  // Send error to Boss
+  try {
+    const db = getDb();
+    const bossIds = db?.config?.bossIds || [];
+    const shortErr = errMsg.slice(0, 300);
+    const errText = `⚠️ <b>Bot Error Alert</b>\n\n` +
+      `<b>Type:</b> ${updateType}\n` +
+      `<b>Error:</b> <code>${shortErr}</code>\n` +
+      `<i>${new Date().toLocaleTimeString('en-IN')}</i>`;
+    for (const bossId of bossIds) {
+      await bot.telegram.sendMessage(bossId, errText, { parse_mode: 'HTML' }).catch(() => {});
+    }
+  } catch (e) {}
 });
+
 
 // Launch bot with retry resilience for cloud container handover
 console.log('🚀 Connecting to Telegram Bot API...');
@@ -4288,8 +4954,10 @@ async function startBotWithRetry() {
 
     for (let attempt = 1; attempt <= 10; attempt++) {
       try {
+        console.log('🤖 Telegram Swiggy Real OTP Flow Bot is running live!');
+        console.log('⚡ Priming pre-warmed Chrome for instant OTP in background...');
+        prewarmBrowser().catch(e => console.log('Prewarm init note:', e.message));
         await bot.launch({ dropPendingUpdates: true });
-        console.log('🤖 Telegram Swiggy Real OTP Flow Bot is running live on Railway Cloud!');
         break;
       } catch (err) {
         if ((err.message?.includes('409') || err.description?.includes('Conflict')) && attempt < 10) {

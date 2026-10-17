@@ -166,6 +166,17 @@ export function createAccount(key, name, phone = '', address = '') {
   return db.config.accounts[cleanKey];
 }
 
+export function getNextAutoUserName() {
+  const db = getDb();
+  const accounts = db.config?.accounts || {};
+  const names = Object.values(accounts).map(a => (a.name || '').trim().toLowerCase());
+  let num = 1;
+  while (names.includes(`user ${num}`)) {
+    num++;
+  }
+  return `User ${num}`;
+}
+
 export function deleteAccount(key) {
   const db = getDb();
   if (db.config?.accounts?.[key]) {
@@ -255,7 +266,6 @@ export function exportSessionJson(key) {
     tid: acc.tid || '',
     sid: acc.sid || '',
     deviceId: acc.deviceId || '',
-    cookies: acc.cookies,
     savedAt: acc.savedAt || new Date().toISOString()
   };
 }
@@ -264,12 +274,12 @@ export function importSessionJson(rawJson, targetKey = null) {
   try {
     let data = typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson;
     if (!data || (!data.cookies && !data.tid)) {
-      return { success: false, message: 'Invalid session JSON: missing cookies or tid' };
+      return { success: false, message: 'Invalid session JSON: missing tid or session token' };
     }
 
     let cookieStr = data.cookies || '';
     if (!cookieStr && data.tid) {
-      cookieStr = `tid=${data.tid}; _sid=${data.sid || ''}; _device_id=${data.deviceId || ''}`;
+      cookieStr = `tid=${data.tid}; _sid=${data.sid || ''}; _device_id=${data.deviceId || ''}; token=${data.token || data.tid}; _is_logged_in=1`;
     }
 
     let token = data.token || '';

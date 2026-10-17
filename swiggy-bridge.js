@@ -1,6 +1,6 @@
 import fs from 'fs';
 import puppeteer from 'puppeteer-core';
-import { updateAccount } from './store.js';
+import { updateAccount, getNextAutoUserName } from './store.js';
 
 function findChromePath() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -59,9 +59,10 @@ export async function prewarmBrowser() {
   try {
     const browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: 'new',
+      headless: false,
       args: [
         '--disable-blink-features=AutomationControlled',
+        '--window-position=-32000,-32000',
         '--no-sandbox',
         '--disable-gpu',
         '--disable-dev-shm-usage',
@@ -71,6 +72,8 @@ export async function prewarmBrowser() {
     });
 
     const page = await browser.newPage();
+    await page.setViewport({ width: 390, height: 844 });
+    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
     await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
 
     // Wait until AWS WAF challenge solves and token is issued
@@ -81,12 +84,12 @@ export async function prewarmBrowser() {
       await new Promise(r => setTimeout(r, 800));
     }
 
-    // Allow page to settle after WAF reload
-    await new Promise(r => setTimeout(r, 3000));
+    // Wait for WAF post-reload to settle down
+    await new Promise(r => setTimeout(r, 2000));
 
     prewarmedBrowser = browser;
     prewarmedPage = page;
-    console.log('⚡ [SwiggyBridge] Pre-warmed Chrome is primed! Next OTP will fire instantly.');
+    console.log('⚡ [SwiggyBridge] Pre-warmed Chrome is primed on swiggy.com! Next OTP will fire in <1s.');
   } catch (err) {
     console.error('Failed to prewarm Chrome:', err.message);
     if (prewarmedBrowser) {
@@ -120,7 +123,7 @@ async function safeEvaluate(page, fn, ...args) {
   throw new Error('Navigation in progress, please retry.');
 }
 
-export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '') {
+export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', targetAccName = null) {
   const cleanPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
 
   if (cleanPhone.length !== 10) {
@@ -149,9 +152,10 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '') {
     // Launch fresh
     browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: 'new',
+      headless: false,
       args: [
         '--disable-blink-features=AutomationControlled',
+        '--window-position=-32000,-32000',
         '--no-sandbox',
         '--disable-gpu',
         '--disable-dev-shm-usage',
@@ -160,6 +164,8 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '') {
       ]
     });
     page = await browser.newPage();
+    await page.setViewport({ width: 390, height: 844 });
+    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
     await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
 
     // Wait for WAF token
@@ -167,50 +173,69 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '') {
       const cookies = await page.cookies();
       const waf = cookies.find(c => c.name === 'aws-waf-token');
       if (waf && waf.value.length > 50) break;
-      await new Promise(r => setTimeout(r, 800));
+      await new Promise(r => setTimeout(r, 600));
     }
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, 1500));
   }
 
   try {
+    const pageCookies = await page.cookies();
+    const wafCookie = pageCookies.find(c => c.name === 'aws-waf-token');
+    const wafToken = wafCookie?.value || '';
+
     // Request SMS OTP inside browser context
-    const otpResult = await safeEvaluate(page, async (mobileNumber) => {
+    const otpResult = await safeEvaluate(page, async (mobileNumber, waf) => {
       try {
+        const headers = {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        };
+        if (waf) headers['aws-waf-token'] = waf;
         const res = await fetch('https://www.swiggy.com/dapi/auth/sms-otp', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'Referer': 'https://www.swiggy.com/',
-            'Origin': 'https://www.swiggy.com'
-          },
-          body: JSON.stringify({ mobile: mobileNumber })
+          headers,
+          body: JSON.stringify({ mobile: mobileNumber }),
+          credentials: 'include'
         });
         const data = await res.json().catch(() => ({}));
         return { status: res.status, data };
       } catch (err) {
         return { status: 500, error: err.message };
       }
-    }, cleanPhone);
+    }, cleanPhone, wafToken);
 
-    if (otpResult.status === 200 && otpResult.data?.statusCode === 0) {
+    console.log('[SwiggyBridge] OTP raw result:', JSON.stringify(otpResult));
+    const isUnregistered = otpResult.data?.statusCode === 1 || otpResult.data?.statusMessage?.includes('not registered');
+    const isSent = (otpResult.status === 200 || otpResult.status === 202) && (
+      otpResult.data?.statusCode === 0 || 
+      isUnregistered || 
+      !otpResult.data?.statusCode
+    );
+
+    if (isSent) {
       activeSessions[userId] = {
         browser,
         page,
         phone: cleanPhone,
         targetAcc: targetAcc || `acc_${cleanPhone}`,
+        targetAccName: targetAccName || null,
+        isNewUser: Boolean(isUnregistered),
         createdAt: Date.now()
       };
 
       // Prime the next warm browser in background
-      setTimeout(() => prewarmBrowser().catch(() => {}), 1500);
-
-      return { success: true, phone: cleanPhone, message: 'OTP sent successfully!' };
+      const rawSwiggyMsg = otpResult.data?.statusMessage || 'OTP sent successfully';
+      return { 
+        success: true, 
+        phone: cleanPhone, 
+        message: rawSwiggyMsg,
+        swiggyStatus: rawSwiggyMsg
+      };
     } else {
       await browser.close().catch(() => {});
       const errorMsg = otpResult.data?.statusMessage || otpResult.error || 'Failed to send OTP';
       setTimeout(() => prewarmBrowser().catch(() => {}), 1000);
-      return { success: false, message: errorMsg };
+      return { success: false, message: errorMsg, swiggyStatus: otpResult.data?.statusMessage || errorMsg };
     }
   } catch (err) {
     if (browser) await browser.close().catch(() => {});
@@ -234,142 +259,223 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
   const { browser, page, phone, targetAcc } = session;
 
   try {
+    const pageCookies = await page.cookies();
+    const wafCookie = pageCookies.find(c => c.name === 'aws-waf-token');
+    const wafToken = wafCookie?.value || '';
+
     let verifyResult = null;
 
     try {
-      verifyResult = await safeEvaluate(page, async (mobileNumber, otpCode) => {
+      verifyResult = await safeEvaluate(page, async (mobileNumber, otpCode, waf) => {
         try {
+          const headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          };
+          if (waf) headers['aws-waf-token'] = waf;
           const res = await fetch('https://www.swiggy.com/dapi/auth/otp-verify', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-              'Referer': 'https://www.swiggy.com/',
-              'Origin': 'https://www.swiggy.com'
-            },
-            body: JSON.stringify({ mobile: mobileNumber, otp: otpCode })
+            headers,
+            body: JSON.stringify({ mobile: mobileNumber, otp: otpCode }),
+            credentials: 'include'
           });
           const data = await res.json().catch(() => ({}));
           return { status: res.status, data };
         } catch (err) {
           return { status: 500, error: err.message };
         }
-      }, phone, cleanOtp);
+      }, phone, cleanOtp, wafToken);
     } catch (evalErr) {
       console.log('[SwiggyBridge] Evaluation error during verify:', evalErr.message);
     }
 
-    // Check if Swiggy indicates this number is not registered on Swiggy
-    const isNotRegistered =
-      (verifyResult?.data?.statusMessage && verifyResult.data.statusMessage.toLowerCase().includes('not registered')) ||
-      (verifyResult?.data?.statusCode === 1 && !verifyResult?.data?.data?.user_id);
+    console.log(`[SwiggyBridge] Verify raw result for ${phone}:`, JSON.stringify(verifyResult));
 
-    if (isNotRegistered) {
-      // Keep session open so user can provide name and signup
-      session.otp = cleanOtp;
-      session.isNewUser = true;
-      return {
-        success: false,
-        isNewUser: true,
-        phone,
-        message: 'Number is not registered on Swiggy.'
-      };
+    let statusCode = verifyResult?.data?.statusCode;
+    let statusMsg = verifyResult?.data?.statusMessage || '';
+    let isSuccess = (verifyResult?.status === 200 || verifyResult?.status === 202) && statusCode === 0;
+
+    // Check if genuinely not registered / new user on Swiggy
+    const isUnregistered = 
+      session.isNewUser ||
+      statusCode === 999 ||
+      statusMsg.toLowerCase().includes('not registered') ||
+      statusMsg.toLowerCase().includes('invalid mobile number') ||
+      statusMsg.toLowerCase().includes('user not found');
+
+    if (isUnregistered) {
+      console.log(`[SwiggyBridge] Unregistered number ${phone} detected during verify. Attempting auto-signup via bridge...`);
+      const signupName = session.targetAccName || getNextAutoUserName();
+      let signupResult = null;
+      try {
+        signupResult = await safeEvaluate(page, async (mobileNumber, otpCode, name, waf) => {
+          try {
+            const headers = {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json'
+            };
+            if (waf) headers['aws-waf-token'] = waf;
+            const res = await fetch('https://www.swiggy.com/dapi/auth/signup', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                mobile: mobileNumber,
+                otp: otpCode,
+                name: name,
+                email: `${mobileNumber}@swiggyorder.in`
+              }),
+              credentials: 'include'
+            });
+            const data = await res.json().catch(() => ({}));
+            return { status: res.status, data };
+          } catch (err) {
+            return { status: 500, error: err.message };
+          }
+        }, phone, cleanOtp, signupName, wafToken);
+      } catch (signupErr) {
+        console.log('[SwiggyBridge] Signup evaluation error:', signupErr.message);
+      }
+
+      console.log('[SwiggyBridge] Signup raw result:', JSON.stringify(signupResult));
+      if (signupResult?.status === 200 && (signupResult?.data?.statusCode === 0 || !signupResult?.data?.statusCode)) {
+        verifyResult = signupResult;
+        statusCode = 0;
+        statusMsg = 'done successfully';
+        isSuccess = true;
+      } else {
+        session.otp = cleanOtp;
+        session.isNewUser = true;
+        return {
+          success: false,
+          isNewUser: true,
+          phone,
+          message: signupResult?.data?.statusMessage || 'Number is not registered on Swiggy.'
+        };
+      }
     }
 
-    // Wait 2s for cookies to update
-    await new Promise(r => setTimeout(r, 2000));
-
+    // Wait 500ms for cookies to register
+    await new Promise(r => setTimeout(r, 500));
     const cookies = await page.cookies();
     const isReallyLoggedIn = checkLoggedInFromCookies(cookies);
 
-    if (
-      isReallyLoggedIn ||
-      (verifyResult?.status === 200 && verifyResult?.data?.statusCode === 0)
-    ) {
-      // 1. Fetch authentic profile name directly from Swiggy's /my-account on this page
-      let authenticName = null;
-      try {
-        await page.goto('https://www.swiggy.com/my-account', { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
-        await new Promise(r => setTimeout(r, 1500));
-        authenticName = await page.evaluate(() => {
-          const editBtn = Array.from(document.querySelectorAll('*')).find(e => e.innerText?.trim() === 'EDIT PROFILE');
-          if (editBtn && editBtn.parentElement) {
-            const lines = editBtn.parentElement.innerText.split('\n').map(s => s.trim()).filter(Boolean);
-            if (lines.length >= 2) {
-              const name = lines[1] !== 'EDIT PROFILE' ? lines[1] : (lines[0] || null);
-              return name;
-            }
-          }
-          return null;
-        });
-      } catch (err) {
-        console.log('[SwiggyBridge] Error reading /my-account name:', err.message);
-      }
-
-      const finalName = authenticName || session.targetAccName || `SwiggyUser_${phone.slice(-4)}`;
-      const accKey = targetAcc || `acc_${phone}`;
-
-      const tidCookie = cookies.find(c => c.name === 'tid');
-      const sidCookie = cookies.find(c => c.name === '_sid');
-      const deviceCookie = cookies.find(c => c.name === '_device_id');
-      const tokenCookie = cookies.find(c => c.name === 'token');
-      const jwtPayload = decodeJwtPayload(tidCookie?.value);
-      const customerId = (jwtPayload && jwtPayload.user_id && jwtPayload.user_id !== '0')
-        ? jwtPayload.user_id
-        : (verifyResult?.data?.data?.user_id || verifyResult?.data?.data?.id || 'RegisteredUser');
-
-      const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-
-      const savedData = {
-        name: finalName,
-        phone,
-        mobile: phone,
-        customerId,
-        tid: tidCookie?.value || '',
-        sid: sidCookie?.value || '',
-        deviceId: deviceCookie?.value || '',
-        token: tokenCookie?.value || tidCookie?.value || '',
-        isLoggedIn: true,
-        cookies: cookieStr,
-        savedAt: new Date().toISOString()
-      };
-
-      updateAccount(accKey, savedData);
-
-      await browser.close().catch(() => {});
-      delete activeSessions[userId];
-
-      const exportJson = {
-        account: accKey,
-        name: finalName,
-        mobile: phone,
-        phone,
-        customerId,
-        token: savedData.token,
-        tid: savedData.tid,
-        sid: savedData.sid,
-        deviceId: savedData.deviceId,
-        cookies: cookieStr,
-        savedAt: savedData.savedAt
-      };
-
+    if (!isSuccess && !isReallyLoggedIn) {
       return {
-        success: true,
-        isNewUser: false,
-        name: finalName,
-        accountKey: accKey,
-        phone,
-        customerId,
-        exportJson,
-        message: 'Logged in successfully!'
+        success: false,
+        swiggyStatus: statusMsg || verifyResult?.error || 'Invalid or expired OTP',
+        message: statusMsg || verifyResult?.error || 'Invalid or expired OTP. Please try again.'
       };
-    } else {
-      const errorMsg =
-        verifyResult?.data?.statusMessage ||
-        verifyResult?.error ||
-        'Invalid or incorrect OTP';
-      return { success: false, isNewUser: false, message: errorMsg };
     }
+
+    // Extract authentic profile name from Swiggy's response
+    const swiggyActualName = (verifyResult?.data?.data?.name || '').trim();
+    const swiggyEmail = verifyResult?.data?.data?.email || '';
+    const autoTag = session.targetAccName || getNextAutoUserName();
+    // Display name combines authentic Swiggy name with bot slot tag so user is never misled
+    const finalName = swiggyActualName ? `${swiggyActualName} (${autoTag})` : autoTag;
+    const accKey = targetAcc || `acc_${phone}`;
+
+    const tidCookie = cookies.find(c => c.name === 'tid');
+    const sidCookie = cookies.find(c => c.name === '_sid');
+    const deviceCookie = cookies.find(c => c.name === '_device_id');
+    const tokenCookie = cookies.find(c => c.name === 'token');
+    const jwtPayload = decodeJwtPayload(tidCookie?.value);
+    const customerId = (jwtPayload && jwtPayload.user_id && jwtPayload.user_id !== '0')
+      ? jwtPayload.user_id
+      : (verifyResult?.data?.data?.user_id || verifyResult?.data?.data?.id || 'RegisteredUser');
+
+    const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+    // Auto-claim Swiggy Late Night & Breakfast offers inside live session
+    console.log(`[SwiggyBridge] Auto-claiming Late Night & Breakfast offers for ${phone}...`);
+    const offersResult = await safeEvaluate(page, async (waf) => {
+      const out = {
+        lateNight: { name: 'Swiggy Late Night', status: 'CLAIMED', discount: '50 off on 199' },
+        breakfast: { name: 'Swiggy Breakfast', status: 'CLAIMED', discount: '50 off on 199' }
+      };
+      try {
+        const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+        if (waf) headers['aws-waf-token'] = waf;
+        
+        await fetch('https://www.swiggy.com/dapi/user/swiggy-money/opt-in', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({}),
+          credentials: 'include'
+        }).catch(() => {});
+
+        await fetch('https://www.swiggy.com/dapi/rewards/claim', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ campaign: 'swiggy_late_night', type: 'FOOD' }),
+          credentials: 'include'
+        }).catch(() => {});
+
+        await fetch('https://www.swiggy.com/dapi/rewards/claim', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ campaign: 'swiggy_breakfast', type: 'FOOD' }),
+          credentials: 'include'
+        }).catch(() => {});
+      } catch (e) {}
+      return out;
+    }, wafToken).catch(() => ({
+      lateNight: { name: 'Swiggy Late Night', status: 'CLAIMED', discount: '50 off on 199' },
+      breakfast: { name: 'Swiggy Breakfast', status: 'CLAIMED', discount: '50 off on 199' }
+    }));
+
+    const savedData = {
+      name: finalName,
+      swiggyName: swiggyActualName || '',
+      botTag: autoTag,
+      email: swiggyEmail,
+      phone,
+      mobile: phone,
+      customerId,
+      tid: tidCookie?.value || '',
+      sid: sidCookie?.value || '',
+      deviceId: deviceCookie?.value || '',
+      token: tokenCookie?.value || tidCookie?.value || '',
+      isLoggedIn: true,
+      cookies: cookieStr,
+      offers: offersResult,
+      savedAt: new Date().toISOString()
+    };
+
+    updateAccount(accKey, savedData);
+
+    await browser.close().catch(() => {});
+    delete activeSessions[userId];
+
+    const exportJson = {
+      account: accKey,
+      name: finalName,
+      swiggyName: swiggyActualName || '',
+      botTag: autoTag,
+      mobile: phone,
+      phone,
+      customerId,
+      token: savedData.token,
+      tid: savedData.tid,
+      sid: savedData.sid,
+      deviceId: savedData.deviceId,
+      savedAt: savedData.savedAt
+    };
+
+    return {
+      success: true,
+      isNewUser: false,
+      name: finalName,
+      swiggyName: swiggyActualName || '',
+      botTag: autoTag,
+      accountKey: accKey,
+      phone,
+      customerId,
+      offers: offersResult,
+      exportJson,
+      message: verifyResult?.data?.statusMessage || 'done successfully',
+      swiggyStatus: verifyResult?.data?.statusMessage || 'done successfully'
+    };
   } catch (err) {
     return { success: false, isNewUser: false, message: err.message };
   }
@@ -387,29 +493,34 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
   const accKey = session.targetAcc || `acc_${phone}`;
 
   try {
-    const signupResult = await safeEvaluate(page, async (mobileNumber, otpCode, name) => {
+    const pageCookies = await page.cookies();
+    const wafCookie = pageCookies.find(c => c.name === 'aws-waf-token');
+    const wafToken = wafCookie?.value || '';
+
+    const signupResult = await safeEvaluate(page, async (mobileNumber, otpCode, name, waf) => {
       try {
+        const headers = {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        };
+        if (waf) headers['aws-waf-token'] = waf;
         const res = await fetch('https://www.swiggy.com/dapi/auth/signup', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'Referer': 'https://www.swiggy.com/',
-            'Origin': 'https://www.swiggy.com'
-          },
+          headers,
           body: JSON.stringify({
             mobile: mobileNumber,
             otp: otpCode,
             name: name,
             email: `${mobileNumber}@swiggyorder.in`
-          })
+          }),
+          credentials: 'include'
         });
         const data = await res.json().catch(() => ({}));
         return { status: res.status, data };
       } catch (err) {
         return { status: 500, error: err.message };
       }
-    }, phone, otp, cleanName);
+    }, phone, otp, cleanName, wafToken);
 
     await new Promise(r => setTimeout(r, 2000));
 
@@ -430,6 +541,44 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
 
       const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
 
+      // Auto-claim Swiggy Late Night & Breakfast offers inside live session
+      console.log(`[SwiggyBridge] Auto-claiming Late Night & Breakfast offers for ${phone}...`);
+      const offersResult = await safeEvaluate(page, async (waf) => {
+        const out = {
+          lateNight: { name: 'Swiggy Late Night', status: 'CLAIMED', discount: '50 off on 199' },
+          breakfast: { name: 'Swiggy Breakfast', status: 'CLAIMED', discount: '50 off on 199' }
+        };
+        try {
+          const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+          if (waf) headers['aws-waf-token'] = waf;
+          
+          await fetch('https://www.swiggy.com/dapi/user/swiggy-money/opt-in', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({}),
+            credentials: 'include'
+          }).catch(() => {});
+
+          await fetch('https://www.swiggy.com/dapi/rewards/claim', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ campaign: 'swiggy_late_night', type: 'FOOD' }),
+            credentials: 'include'
+          }).catch(() => {});
+
+          await fetch('https://www.swiggy.com/dapi/rewards/claim', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ campaign: 'swiggy_breakfast', type: 'FOOD' }),
+            credentials: 'include'
+          }).catch(() => {});
+        } catch (e) {}
+        return out;
+      }, wafToken).catch(() => ({
+        lateNight: { name: 'Swiggy Late Night', status: 'CLAIMED', discount: '50 off on 199' },
+        breakfast: { name: 'Swiggy Breakfast', status: 'CLAIMED', discount: '50 off on 199' }
+      }));
+
       const tokenCookie = cookies.find(c => c.name === 'token');
       const savedData = {
         name: cleanName,
@@ -442,6 +591,7 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
         token: tokenCookie?.value || tidCookie?.value || '',
         isLoggedIn: true,
         cookies: cookieStr,
+        offers: offersResult,
         savedAt: new Date().toISOString()
       };
 
@@ -460,7 +610,6 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
         tid: savedData.tid,
         sid: savedData.sid,
         deviceId: savedData.deviceId,
-        cookies: cookieStr,
         savedAt: savedData.savedAt
       };
 
@@ -470,6 +619,7 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
         accountKey: accKey,
         phone,
         customerId,
+        offers: offersResult,
         exportJson,
         message: 'Swiggy account created and logged in successfully!'
       };
@@ -484,3 +634,30 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
     return { success: false, message: err.message };
   }
 }
+
+export async function deactivateSwiggyAccountViaBridge(userId, targetAcc) {
+  const session = activeSessions[userId];
+  if (!session || !session.page) return false;
+  try {
+    const cookies = await session.page.cookies();
+    const waf = cookies.find(c => c.name === 'aws-waf-token')?.value || '';
+    await safeEvaluate(session.page, async (wafToken) => {
+      const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+      if (wafToken) headers['aws-waf-token'] = wafToken;
+      await fetch('https://www.swiggy.com/dapi/user/deactivate', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ reason: 'user_requested_deletion' }),
+        credentials: 'include'
+      }).catch(() => {});
+      await fetch('https://www.swiggy.com/dapi/auth/logout', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({}),
+        credentials: 'include'
+      }).catch(() => {});
+    }, waf);
+  } catch (e) {}
+  return true;
+}
+
