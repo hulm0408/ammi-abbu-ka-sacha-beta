@@ -103,12 +103,18 @@ export function canTransitionOrder(currentStatus, targetStatus) {
     return false;
   }
   if (currentStatus === 'PENDING') {
-    return ['ACCEPTED', 'REJECTED', 'CANCELLED'].includes(targetStatus);
+    return ['ACCEPTED', 'WAITING_CONFIRMATION', 'AMOUNT_CONFIRMED', 'COMPLETED', 'REJECTED', 'CANCELLED'].includes(targetStatus);
+  }
+  if (currentStatus === 'WAITING_CONFIRMATION') {
+    return ['AMOUNT_CONFIRMED', 'ACCEPTED', 'COMPLETED', 'REJECTED', 'CANCELLED'].includes(targetStatus);
+  }
+  if (currentStatus === 'AMOUNT_CONFIRMED') {
+    return ['ACCEPTED', 'COMPLETED', 'REJECTED', 'CANCELLED'].includes(targetStatus);
   }
   if (currentStatus === 'ACCEPTED') {
-    return ['COMPLETED', 'CANCELLED'].includes(targetStatus);
+    return ['COMPLETED', 'CANCELLED', 'REJECTED'].includes(targetStatus);
   }
-  return false;
+  return true;
 }
 
 export function isBoss(userId) {
