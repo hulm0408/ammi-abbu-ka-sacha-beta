@@ -572,8 +572,28 @@ async function triggerBackgroundCartFetch(orderId) {
     }
   } catch (e) {}
 
-  // 2. Select active account for verification
-  const accKey = order.selectedAccount || getActiveOrderAccountKey(db) || Object.keys(db.config?.accounts || {})[0];
+  // 2. Select active account for verification (prioritize host account if group cart)
+  let hostAccKey = null;
+  try {
+    const meta = await resolveSwiggyLink(order.cart);
+    if (meta.hostName) {
+      const hostEntry = Object.entries(db.config?.accounts || {}).find(([k, a]) => 
+        (a.swiggyName && a.swiggyName.trim().toLowerCase() === meta.hostName.trim().toLowerCase()) ||
+        (a.name && (
+          a.name.trim().toLowerCase() === meta.hostName.trim().toLowerCase() ||
+          a.name.trim().toLowerCase().startsWith(meta.hostName.trim().toLowerCase()) ||
+          a.name.trim().toLowerCase().includes(meta.hostName.trim().toLowerCase())
+        )) ||
+        (a.phone && a.phone.trim() === meta.hostName.trim())
+      );
+      if (hostEntry) {
+        hostAccKey = hostEntry[0];
+        console.log(`[AutoFetch] Auto-assigned matching host account ${hostAccKey} (${hostEntry[1]?.name}) for Group Order by ${meta.hostName}`);
+      }
+    }
+  } catch (e) {}
+
+  const accKey = order.selectedAccount || hostAccKey || getActiveOrderAccountKey(db) || Object.keys(db.config?.accounts || {})[0];
   const acc = db.config?.accounts?.[accKey];
   if (!acc) {
     console.log(`[AutoFetch] No account available for Order #${orderId}`);

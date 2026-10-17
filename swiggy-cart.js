@@ -744,7 +744,12 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '', accountSessi
         try {
           const db = getDb();
           const hostAcc = Object.values(db.config?.accounts || {}).find(a => 
-            (a.name && meta.hostName && a.name.trim().toLowerCase() === meta.hostName.trim().toLowerCase()) ||
+            (a.swiggyName && meta.hostName && a.swiggyName.trim().toLowerCase() === meta.hostName.trim().toLowerCase()) ||
+            (a.name && meta.hostName && (
+              a.name.trim().toLowerCase() === meta.hostName.trim().toLowerCase() ||
+              a.name.trim().toLowerCase().startsWith(meta.hostName.trim().toLowerCase()) ||
+              a.name.trim().toLowerCase().includes(meta.hostName.trim().toLowerCase())
+            )) ||
             (a.phone && meta.hostName && a.phone.trim() === meta.hostName.trim())
           );
 
