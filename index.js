@@ -25,7 +25,7 @@ import {
   canTransitionOrder,
   getNextAutoUserName,
 } from './store.js';
-import { requestSwiggyOtpViaBridge, verifySwiggyOtpViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser } from './swiggy-bridge.js';
+import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser } from './swiggy-bridge.js';
 import {
   verifyAndInspectSwiggyLink,
   inspectCartForAccount,
@@ -1424,42 +1424,7 @@ bot.action('boss_delete_picker', async (ctx) => {
   );
 });
 
-bot.action(/^boss_swiggy_delete_start_(.+)$/, async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  await ctx.answerCbQuery().catch(() => {});
-  const key = ctx.match[1];
-  const db = getDb();
-  const acc = db.config.accounts?.[key];
-  if (!acc) return ctx.reply('❌ Account not found.');
-
-  const phone = acc.phone || key.replace('acc_', '');
-  const accName = acc.name || key;
-
-  await ctx.reply(
-    `<blockquote>⚠️ <b>CONFIRM SWIGGY ACCOUNT DELETION</b></blockquote>\n\n` +
-    `📱 <b>Account Number:</b> <code>${phone}</code>\n` +
-    `👤 <b>Account Name:</b> <b>${escapeHtml(accName)}</b>\n\n` +
-    `<i>Kripya chunein ki aap is account ko kaise delete karna chahte hain:</i>\n\n` +
-    `1️⃣ <b>📲 Trigger Delete OTP to Phone:</b>\n` +
-    `Bot Swiggy se turant phone par OTP bhejega. 6-digit OTP enter karke account delete karein.\n\n` +
-    `2️⃣ <b>⚡ Instant Wipe Without OTP:</b>\n` +
-    `Bina OTP ke account ka session Swiggy server par revoke karke Bot DB se turant permanently wipe karein.`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [
-          Markup.button.callback('📲 Trigger Delete OTP to Phone', `boss_swiggy_delete_trigger_${key}`)
-        ],
-        [
-          Markup.button.callback('⚡ Instant Wipe Without OTP', `boss_swiggy_delete_instant_${key}`),
-          Markup.button.callback('🏠 Cancel', 'boss_panel_home')
-        ]
-      ])
-    }
-  );
-});
-
-bot.action(/^boss_swiggy_delete_trigger_(.+)$/, async (ctx) => {
+bot.action([/^boss_swiggy_delete_start_(.+)$/, /^boss_swiggy_delete_trigger_(.+)$/], async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const userId = ctx.from.id;
   const key = ctx.match[1];
@@ -1470,10 +1435,10 @@ bot.action(/^boss_swiggy_delete_trigger_(.+)$/, async (ctx) => {
   const phone = acc.phone || key.replace('acc_', '');
   const accName = acc.name || key;
 
-  await ctx.answerCbQuery('Triggering Delete OTP from Swiggy... ⏳').catch(() => {});
+  await ctx.answerCbQuery('Requesting Delete OTP from Swiggy... ⏳').catch(() => {});
   delete userWaitState[userId];
 
-  const otpResult = await requestSwiggyOtpViaBridge(userId, phone, key, accName);
+  const otpResult = await requestSwiggyDeleteOtpViaBridge(userId, phone, key, accName);
   if (otpResult.success) {
     userWaitState[userId] = {
       action: 'waiting_swiggy_delete_otp',
@@ -1482,20 +1447,20 @@ bot.action(/^boss_swiggy_delete_trigger_(.+)$/, async (ctx) => {
       accName
     };
 
-    const swiggyText = otpResult.swiggyStatus || otpResult.message || 'OTP sent successfully';
+    const swiggyText = otpResult.swiggyStatus || otpResult.message || 'Delete OTP sent successfully';
     await ctx.reply(
       `<blockquote>${escapeHtml(swiggyText)}</blockquote>\n\n` +
       `🗑️ <b>SWIGGY ACCOUNT DELETION — OTP SENT</b>\n\n` +
       `📱 <b>Account Number:</b> <code>${phone}</code>\n` +
       `👤 <b>Account Name:</b> <b>${escapeHtml(accName)}</b>\n` +
       `⏱️ <b>Expires in:</b> <code>120s</code>\n\n` +
-      `📩 <i>Swiggy ki taraf se 6-digit OTP aapke phone par bhej diya gaya hai!\n` +
-      `Kripya phone par aaya OTP chat me likhein taaki deletion confirm ho sake:</i>`,
+      `📩 <i>Swiggy ki taraf se 6-digit Delete OTP aapke phone par bhej diya gaya hai!\n` +
+      `Kripya phone par aaya OTP chat me likhein taaki account delete ho sake:</i>`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [
-            Markup.button.callback('🔄 Resend Delete OTP', `boss_swiggy_delete_trigger_${key}`),
+            Markup.button.callback('🔄 Resend Delete OTP', `boss_swiggy_delete_start_${key}`),
             Markup.button.callback('⚡ Instant Wipe Without OTP', `boss_swiggy_delete_instant_${key}`)
           ],
           [
@@ -1508,12 +1473,12 @@ bot.action(/^boss_swiggy_delete_trigger_(.+)$/, async (ctx) => {
     const errText = otpResult.swiggyStatus || otpResult.message || 'Failed to trigger OTP';
     await ctx.reply(
       `<blockquote>${escapeHtml(errText)}</blockquote>\n\n` +
-      `⚠️ <b>Delete OTP trigger fail ho gaya.</b> Aap retry kar sakte hain ya direct Instant Wipe chunein:`,
+      `⚠️ <b>Delete OTP trigger fail ho gaya.</b> Kripya Instant Wipe chunein ya retry karein:`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [
-            Markup.button.callback('🔄 Retry Send OTP', `boss_swiggy_delete_trigger_${key}`),
+            Markup.button.callback('🔄 Retry Send OTP', `boss_swiggy_delete_start_${key}`),
             Markup.button.callback('⚡ Instant Wipe Without OTP', `boss_swiggy_delete_instant_${key}`)
           ],
           [

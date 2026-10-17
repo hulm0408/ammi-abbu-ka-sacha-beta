@@ -245,6 +245,71 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
   }
 }
 
+export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc = '', targetAccName = null) {
+  const cleanPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
+
+  // 1. Try mobile app delete OTP gateway first on profile.swiggy.com
+  try {
+    const { getDb } = await import('./store.js');
+    const db = getDb();
+    const acc = db.config?.accounts?.[targetAcc] || Object.values(db.config?.accounts || {}).find(a => a.phone === cleanPhone);
+    if (acc) {
+      const https = await import('https');
+      const mobileHeaders = {
+        'User-Agent': 'Swiggy-Android',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'token': acc.token || '',
+        'tid': acc.tid || '',
+        'sid': acc.sid || '',
+        'deviceId': acc.deviceId || '',
+        'latitude': '26.83730',
+        'longitude': '80.91650',
+        'version-code': '1250',
+        'app-version': '5.25.0',
+        'os-version': '33',
+        'Cookie': acc.cookies || ''
+      };
+
+      const profileResult = await new Promise(resolve => {
+        const req = https.default.request({
+          hostname: 'profile.swiggy.com',
+          port: 443,
+          path: `/api/v2/app/sms_otp?mobile=${cleanPhone}&type=DELETE`,
+          method: 'GET',
+          headers: mobileHeaders,
+          timeout: 4000
+        }, res => {
+          let d = '';
+          res.on('data', chunk => d += chunk);
+          res.on('end', () => {
+            try { resolve(JSON.parse(d)); } catch (e) { resolve(null); }
+          });
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+        req.end();
+      });
+
+      console.log(`[SwiggyBridge] Profile delete OTP response for ${cleanPhone}:`, JSON.stringify(profileResult));
+      if (profileResult && profileResult.statusCode === 0) {
+        requestSwiggyOtpViaBridge(userId, cleanPhone, targetAcc, targetAccName).catch(() => {});
+        return {
+          success: true,
+          phone: cleanPhone,
+          message: profileResult.statusMessage || 'Delete OTP sent successfully',
+          swiggyStatus: profileResult.statusMessage || 'Delete OTP sent'
+        };
+      }
+    }
+  } catch (err) {
+    console.log('[SwiggyBridge] Mobile profile gateway attempt failed:', err.message);
+  }
+
+  // 2. Fall back to primed browser OTP bridge to guarantee OTP dispatch
+  return requestSwiggyOtpViaBridge(userId, cleanPhone, targetAcc, targetAccName);
+}
+
 export async function verifySwiggyOtpViaBridge(userId, otp) {
   const session = activeSessions[userId];
   if (!session) {
