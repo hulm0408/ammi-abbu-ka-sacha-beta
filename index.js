@@ -1450,15 +1450,16 @@ bot.action([
       accName
     };
 
-    const swiggyText = otpResult.swiggyStatus || otpResult.message || 'Delete OTP sent successfully';
+    const swiggyText = otpResult.swiggyStatus || otpResult.message || 'Archive OTP Sent';
     await ctx.reply(
       `<blockquote>${escapeHtml(swiggyText)}</blockquote>\n\n` +
-      `🗑️ <b>SWIGGY ACCOUNT DELETION — OTP SENT</b>\n\n` +
+      `🗑️ <b>SWIGGY SETTINGS ACCOUNT DELETION — OTP SENT</b>\n\n` +
       `📱 <b>Account Number:</b> <code>${phone}</code>\n` +
       `👤 <b>Account Name:</b> <b>${escapeHtml(accName)}</b>\n` +
       `⏱️ <b>Expires in:</b> <code>120s</code>\n\n` +
-      `📩 <i>Swiggy ki taraf se 6-digit Delete OTP aapke phone par bhej diya gaya hai!\n` +
-      `Kripya phone par aaya OTP chat me likhein taaki account delete ho sake:</i>`,
+      `📩 <b>Swiggy Settings -> Delete Account OTP bhej diya gaya hai!</b>\n` +
+      `Aapke mobile number par Swiggy ki taraf se Authentic Deletion OTP aaya hoga.\n\n` +
+      `👉 <i>Kripya 6-digit Delete OTP chat me likhein:</i>`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
@@ -1473,12 +1474,17 @@ bot.action([
     const errText = otpResult.swiggyStatus || otpResult.message || 'Failed to trigger Delete OTP';
     await ctx.reply(
       `<blockquote>${escapeHtml(errText)}</blockquote>\n\n` +
-      `⚠️ <b>Delete OTP trigger fail ho gaya.</b> Kripya retry karein:`,
+      `⚠️ <b>Delete OTP trigger nahi ho paya.</b>\n` +
+      `<i>${escapeHtml(errText)}</i>\n\n` +
+      `Agar session expire ho chuka hai, aap ise seedhe bot se delete kar sakte hain:`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [
-            Markup.button.callback('🔄 Retry Send OTP', `boss_swiggy_delete_start_${key}`),
+            Markup.button.callback('🗑️ Force Remove from Bot DB', `boss_swiggy_delete_confirm_${key}`),
+            Markup.button.callback('🔄 Retry Send OTP', `boss_swiggy_delete_start_${key}`)
+          ],
+          [
             Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
           ]
         ])
@@ -3783,7 +3789,7 @@ bot.on('text', async (ctx) => {
     const accName = state.accName;
 
     // Use dedicated verifyAndDeleteSwiggyAccountViaBridge (DOES NOT log in or auto-signup!)
-    const result = await verifyAndDeleteSwiggyAccountViaBridge(userId, enteredOtp, key).catch(() => ({ success: true }));
+    const result = await verifyAndDeleteSwiggyAccountViaBridge(userId, enteredOtp, key).catch(err => ({ success: false, message: err.message }));
 
     try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
 

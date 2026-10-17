@@ -250,8 +250,130 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
 }
 
 export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc = '', targetAccName = null) {
-  // Dispatches 6-digit OTP to user's phone via browser bridge
-  return requestSwiggyOtpViaBridge(userId, phone, targetAcc, targetAccName);
+  const cleanPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
+  console.log(`[SwiggyBridge] Initiating Authentic Delete OTP for ${cleanPhone} (${targetAcc})...`);
+
+  // Close previous session if exists
+  if (activeSessions[userId]) {
+    try {
+      if (activeSessions[userId].browser) {
+        await activeSessions[userId].browser.close().catch(() => {});
+      }
+    } catch (e) {}
+    delete activeSessions[userId];
+  }
+
+  const { getDb } = await import('./store.js');
+  const db = getDb();
+  let acc = db.config?.accounts?.[targetAcc];
+
+  // We need cookies to access the account's settings
+  let cookieString = acc?.cookies || '';
+  if (!cookieString && cleanPhone) {
+    // Check all accounts matching phone
+    for (const [k, a] of Object.entries(db.config?.accounts || {})) {
+      if ((a.phone === cleanPhone || k === `acc_${cleanPhone}`) && a.cookies) {
+        cookieString = a.cookies;
+        acc = a;
+        break;
+      }
+    }
+  }
+
+  if (!cookieString) {
+    return {
+      success: false,
+      message: 'Account session cookies not found. Please log in first.'
+    };
+  }
+
+  let browser;
+  let page;
+  try {
+    browser = await puppeteer.launch({
+      executablePath: CHROME_PATH,
+      headless: HEADLESS_MODE,
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-gpu',
+        '--disable-dev-shm-usage',
+        '--no-first-run',
+        '--no-default-browser-check'
+      ]
+    });
+
+    page = await browser.newPage();
+    await page.setViewport({ width: 420, height: 900, isMobile: true, hasTouch: true });
+    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
+
+    // Set account cookies
+    const cookiePairs = cookieString.split(';').map(s => s.trim()).filter(Boolean);
+    const parsed = cookiePairs.map(p => {
+      const [name, ...val] = p.split('=');
+      return { name, value: val.join('='), domain: '.swiggy.com', path: '/' };
+    });
+    await page.setCookie(...parsed);
+
+    // Go to settings page
+    await page.goto('https://www.swiggy.com/my-account/settings', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 1500));
+
+    // Execute authentic Swiggy Settings delete check trigger directly in page session
+    const deleteCheckResult = await page.evaluate(async () => {
+      try {
+        const res = await fetch('https://www.swiggy.com/mapi/auth/delete/userCheck', {
+          method: 'GET',
+          credentials: 'include'
+        });
+        return await res.json();
+      } catch (err) {
+        return { error: err.message };
+      }
+    });
+
+    console.log('[SwiggyBridge] /mapi/auth/delete/userCheck response:', JSON.stringify(deleteCheckResult));
+
+    // Swiggy returns { statusCode: 28, statusMessage: "Archive OTP Sent", tid: "...", csrfToken: "..." }
+    const isSent = deleteCheckResult && (deleteCheckResult.statusCode === 28 || deleteCheckResult.statusCode === 0);
+
+    if (!isSent) {
+      const errMsg = deleteCheckResult?.statusMessage || deleteCheckResult?.error || `Error code ${deleteCheckResult?.statusCode || 'unknown'}`;
+      await browser.close().catch(() => {});
+      return {
+        success: false,
+        message: errMsg,
+        swiggyStatus: errMsg
+      };
+    }
+
+    // Keep session active for OTP verification
+    activeSessions[userId] = {
+      browser,
+      page,
+      phone: cleanPhone,
+      targetAcc,
+      isDeleteFlow: true,
+      tid: deleteCheckResult.tid || '',
+      csrfToken: deleteCheckResult.csrfToken || '',
+      startedAt: Date.now()
+    };
+
+    return {
+      success: true,
+      phone: cleanPhone,
+      message: deleteCheckResult.statusMessage || 'Archive OTP Sent',
+      swiggyStatus: 'Swiggy Account Deletion OTP sent to ' + cleanPhone
+    };
+  } catch (err) {
+    console.error('[SwiggyBridge] Exception in requestSwiggyDeleteOtpViaBridge:', err);
+    if (browser) await browser.close().catch(() => {});
+    return {
+      success: false,
+      message: err.message
+    };
+  }
 }
 
 export async function verifyAndDeleteSwiggyAccountViaBridge(userId, otp, accountKey) {
@@ -267,104 +389,69 @@ export async function verifyAndDeleteSwiggyAccountViaBridge(userId, otp, account
   const acc = db.config?.accounts?.[accountKey];
   const phone = session?.phone || acc?.phone || accountKey.replace('acc_', '');
 
-  let verifyOk = false;
-  let statusMsg = '';
-
   if (session && session.page) {
-    const { page, browser } = session;
+    const { page, browser, csrfToken } = session;
     try {
-      const pageCookies = await page.cookies().catch(() => []);
-      const wafCookie = pageCookies.find(c => c.name === 'aws-waf-token');
-      const wafToken = wafCookie?.value || '';
-
-      const verifyResult = await safeEvaluate(page, async (mobileNumber, otpCode, waf) => {
+      console.log(`[SwiggyBridge] Verifying Delete OTP for ${phone}...`);
+      const verifyResult = await page.evaluate(async (code, token) => {
         try {
-          const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
-          if (waf) headers['aws-waf-token'] = waf;
-          const res = await fetch('https://www.swiggy.com/dapi/auth/otp-verify', {
+          const match = document.cookie.match(/_csrf=([^;]+)/);
+          const csrf = token || (match ? match[1] : '');
+          const res = await fetch('https://www.swiggy.com/mapi/auth/delete/user', {
             method: 'POST',
-            headers,
-            body: JSON.stringify({ mobile: mobileNumber, otp: otpCode }),
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ otp: code, _csrf: csrf }),
             credentials: 'include'
           });
-          const data = await res.json().catch(() => ({}));
-          return { status: res.status, data };
+          return await res.json().catch(() => ({}));
         } catch (err) {
-          return { status: 500, error: err.message };
+          return { error: err.message };
         }
-      }, phone, cleanOtp, wafToken);
+      }, cleanOtp, csrfToken);
 
-      console.log(`[SwiggyBridge] Delete OTP verify result for ${phone}:`, JSON.stringify(verifyResult));
-      const statusCode = verifyResult?.data?.statusCode;
-      statusMsg = verifyResult?.data?.statusMessage || '';
-      verifyOk = (verifyResult?.status === 200 || verifyResult?.status === 202) && (statusCode === 0 || !statusCode);
+      console.log(`[SwiggyBridge] Deletion verify result for ${phone}:`, JSON.stringify(verifyResult));
 
-      // Call deactivate and logout on Swiggy servers
-      await safeEvaluate(page, async (wafToken) => {
-        try {
-          const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
-          if (wafToken) headers['aws-waf-token'] = wafToken;
-          await fetch('https://www.swiggy.com/dapi/user/deactivate', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ reason: 'user_requested_deletion' }),
-            credentials: 'include'
-          }).catch(() => {});
-          await fetch('https://www.swiggy.com/dapi/auth/logout', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({}),
-            credentials: 'include'
-          }).catch(() => {});
-        } catch (e) {}
-      }, wafToken).catch(() => {});
-    } catch (e) {
-      console.log('[SwiggyBridge] Error in delete OTP evaluation:', e.message);
-    } finally {
-      if (browser) await browser.close().catch(() => {});
-      delete activeSessions[userId];
-    }
-  } else {
-    // If browser session wasn't active, verify with direct HTTP request
-    try {
-      const https = (await import('https')).default;
-      const result = await new Promise(resolve => {
-        const req = https.request({
-          hostname: 'www.swiggy.com',
-          port: 443,
-          path: '/dapi/auth/otp-verify',
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'
-          },
-          timeout: 4000
-        }, res => {
-          let d = '';
-          res.on('data', chunk => d += chunk);
-          res.on('end', () => {
-            try { resolve(JSON.parse(d)); } catch (e) { resolve(null); }
-          });
-        });
-        req.on('error', () => resolve(null));
-        req.on('timeout', () => { req.destroy(); resolve(null); });
-        req.write(JSON.stringify({ mobile: phone, otp: cleanOtp }));
-        req.end();
-      });
-      if (result && (result.statusCode === 0 || !result.statusCode)) {
-        verifyOk = true;
-      } else {
-        statusMsg = result?.statusMessage || 'Invalid OTP';
+      // Error Code 29: Invalid OTP
+      if (verifyResult && verifyResult.statusCode === 29) {
+        return {
+          success: false,
+          message: verifyResult.statusMessage || 'Invalid OTP. Please check and re-enter.'
+        };
       }
-    } catch (e) {}
+
+      // Check for Swiggy deletion blockers:
+      // 25: Pending cancellation charges
+      // 26: Ongoing order
+      // 34: Active Swiggy Money wallet
+      if (verifyResult && verifyResult.statusCode !== 0 && verifyResult.statusCode !== 200) {
+        let msg = verifyResult.statusMessage;
+        if (verifyResult.statusCode === 25) msg = 'You have pending cancellation charges. Please clear them first.';
+        if (verifyResult.statusCode === 26) msg = 'You have an ongoing order. Please try after delivery.';
+        if (verifyResult.statusCode === 34) msg = 'Cannot delete: active Swiggy Money wallet exists.';
+        return {
+          success: false,
+          message: msg || verifyResult.statusMessage || `Deletion blocked by Swiggy (Code ${verifyResult.statusCode})`
+        };
+      }
+
+      // Success! Account has been permanently deleted on Swiggy servers!
+      await browser.close().catch(() => {});
+      delete activeSessions[userId];
+
+      return {
+        success: true,
+        phone,
+        message: 'Account permanently deleted from Swiggy servers!'
+      };
+    } catch (err) {
+      console.error('[SwiggyBridge] Error in delete OTP verification:', err.message);
+      return { success: false, message: err.message };
+    }
   }
 
-  // If user entered OTP or account existed, treat deletion as confirmed
   return {
-    success: verifyOk || Boolean(acc),
-    phone,
-    message: verifyOk ? 'Account deleted successfully' : (statusMsg || 'OTP verification completed')
+    success: false,
+    message: 'Deletion session expired. Please tap Delete Account again to get a fresh OTP.'
   };
 }
 
