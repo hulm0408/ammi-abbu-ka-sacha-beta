@@ -21,6 +21,8 @@ function findChromePath() {
 }
 
 const CHROME_PATH = findChromePath();
+const IS_LINUX = process.platform === 'linux';
+const HEADLESS_MODE = IS_LINUX ? 'new' : false;
 
 // Active login sessions keyed by userId: { [userId]: { browser, page, phone, otp, targetAcc, isNewUser } }
 const activeSessions = {};
@@ -59,11 +61,12 @@ export async function prewarmBrowser() {
   try {
     const browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: false,
+      headless: HEADLESS_MODE,
       args: [
         '--disable-blink-features=AutomationControlled',
-        '--window-position=-32000,-32000',
+        ...(IS_LINUX ? [] : ['--window-position=-32000,-32000']),
         '--no-sandbox',
+        '--disable-setuid-sandbox',
         '--disable-gpu',
         '--disable-dev-shm-usage',
         '--no-first-run',
@@ -152,11 +155,12 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
     // Launch fresh
     browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: false,
+      headless: HEADLESS_MODE,
       args: [
         '--disable-blink-features=AutomationControlled',
-        '--window-position=-32000,-32000',
+        ...(IS_LINUX ? [] : ['--window-position=-32000,-32000']),
         '--no-sandbox',
+        '--disable-setuid-sandbox',
         '--disable-gpu',
         '--disable-dev-shm-usage',
         '--no-first-run',

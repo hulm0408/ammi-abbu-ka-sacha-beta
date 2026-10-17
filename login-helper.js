@@ -20,9 +20,9 @@ export async function loginWithBrowser(targetAccount = 'ammi', telegramNotifier 
 
   const browser = await puppeteer.launch({
     executablePath: CHROME_PATH,
-    headless: false,
+    headless: process.platform === 'linux' ? 'new' : false,
     defaultViewport: null,
-    args: ['--start-maximized', '--disable-blink-features=AutomationControlled']
+    args: ['--start-maximized', '--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-setuid-sandbox']
   });
 
   const pages = await browser.pages();
