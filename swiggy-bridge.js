@@ -73,7 +73,7 @@ export function checkLoggedInFromCookies(input) {
 
   if (!tidValue) return false;
   const payload = decodeJwtPayload(tidValue);
-  return Boolean(payload && payload.user_id && payload.user_id !== '0');
+  return Boolean(payload && payload.user_id && payload.user_id !== '0' && payload.user_id !== '-1');
 }
 
 // Pre-warm browser in background so when user asks for OTP, it fires instantly
@@ -233,10 +233,67 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
 
     console.log('[SwiggyBridge] OTP raw result:', JSON.stringify(otpResult));
     const isUnregistered = otpResult.data?.statusCode === 1 || otpResult.data?.statusMessage?.includes('not registered');
+
+    if (isUnregistered) {
+      console.log(`[SwiggyBridge] Number ${cleanPhone} is not registered on Swiggy. Triggering authentic signup OTP via /dapi/auth/signup...`);
+      const signupName = targetAccName || getNextAutoUserName();
+      const signupInitResult = await safeEvaluate(page, async (mobileNumber, name, waf) => {
+        try {
+          const headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          };
+          if (waf) headers['aws-waf-token'] = waf;
+          const res = await fetch('https://www.swiggy.com/dapi/auth/signup', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              mobile: mobileNumber,
+              name: name,
+              email: `${mobileNumber}@swiggyorder.in`
+            }),
+            credentials: 'include'
+          });
+          const data = await res.json().catch(() => ({}));
+          return { status: res.status, data };
+        } catch (err) {
+          return { status: 500, error: err.message };
+        }
+      }, cleanPhone, signupName, wafToken);
+
+      console.log('[SwiggyBridge] Signup dispatch raw result:', JSON.stringify(signupInitResult));
+      const signupSent = (signupInitResult.status === 200 || signupInitResult.status === 202) && (
+        signupInitResult.data?.statusCode === 0 || !signupInitResult.data?.statusCode
+      );
+
+      if (signupSent) {
+        activeSessions[userId] = {
+          browser,
+          page,
+          phone: cleanPhone,
+          targetAcc: targetAcc || `acc_${cleanPhone}`,
+          targetAccName: signupName,
+          isNewUser: true,
+          createdAt: Date.now()
+        };
+
+        return {
+          success: true,
+          phone: cleanPhone,
+          isNewUser: true,
+          message: 'OTP Sent',
+          swiggyStatus: 'OTP Sent'
+        };
+      } else {
+        await browser.close().catch(() => {});
+        const errorMsg = signupInitResult.data?.statusMessage || signupInitResult.error || 'Failed to send OTP';
+        setTimeout(() => prewarmBrowser().catch(() => {}), 1000);
+        return { success: false, message: errorMsg, swiggyStatus: errorMsg };
+      }
+    }
+
     const isSent = (otpResult.status === 200 || otpResult.status === 202) && (
-      otpResult.data?.statusCode === 0 || 
-      isUnregistered || 
-      !otpResult.data?.statusCode
+      otpResult.data?.statusCode === 0 || !otpResult.data?.statusCode
     );
 
     if (isSent) {
@@ -246,23 +303,22 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
         phone: cleanPhone,
         targetAcc: targetAcc || `acc_${cleanPhone}`,
         targetAccName: targetAccName || null,
-        isNewUser: Boolean(isUnregistered),
+        isNewUser: false,
         createdAt: Date.now()
       };
 
       // Prime the next warm browser in background
-      const rawSwiggyMsg = otpResult.data?.statusMessage || 'OTP sent successfully';
       return { 
         success: true, 
         phone: cleanPhone, 
-        message: rawSwiggyMsg,
-        swiggyStatus: rawSwiggyMsg
+        message: 'OTP Sent',
+        swiggyStatus: 'OTP Sent'
       };
     } else {
       await browser.close().catch(() => {});
       const errorMsg = otpResult.data?.statusMessage || otpResult.error || 'Failed to send OTP';
       setTimeout(() => prewarmBrowser().catch(() => {}), 1000);
-      return { success: false, message: errorMsg, swiggyStatus: otpResult.data?.statusMessage || errorMsg };
+      return { success: false, message: errorMsg, swiggyStatus: errorMsg };
     }
   } catch (err) {
     if (browser) await browser.close().catch(() => {});
@@ -535,6 +591,14 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
     let statusCode = verifyResult?.data?.statusCode;
     let statusMsg = verifyResult?.data?.statusMessage || '';
     let isSuccess = (verifyResult?.status === 200 || verifyResult?.status === 202) && statusCode === 0;
+
+    if (statusCode === 1 && (statusMsg.toLowerCase().includes('invalid') || statusMsg.toLowerCase().includes('incorrect'))) {
+      return {
+        success: false,
+        swiggyStatus: statusMsg || 'Invalid OTP',
+        message: statusMsg || 'Invalid OTP. Please check and re-enter.'
+      };
+    }
 
     // Check if genuinely not registered / new user on Swiggy
     const isUnregistered = 

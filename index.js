@@ -132,7 +132,8 @@ function getBossReplyKeyboard() {
     ['🔑 Login with JSON', '📱 Login with Number'],
     ['🟣 Connected Accounts', '🟢 Slot Status'],
     ['📊 Total slots', '🟢 Total left'],
-    ['🎁 Claim Free Cash', '🟠 Set UPI ID']
+    ['🎁 Claim Free Cash', '🟠 Set UPI ID'],
+    ['🏠 Main Menu', '❌ Close']
   ]).resize();
 }
 
@@ -756,49 +757,54 @@ bot.action('boss_login_with_number', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_phone_for_number_login' };
   await ctx.reply(
-    `📱 <b>LOGIN WITH NUMBER:</b>\n\n` +
-    `Swiggy account ka 10-digit mobile number chat me likhein:\n\n` +
-    `<i>• Naya number hoga toh pehle naam puchega fir OTP aayega.\n• Pehle se registered number hoga toh turant direct OTP bhejega!</i>`,
+    `📱 <b>Enter Mobile Number:</b>`,
     {
       parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+          Markup.button.callback('❌ Close', 'close_menu')
+        ]
+      ])
     }
   );
 });
 
-// 2.1 Direct Send to Another Number (No refresh, no cancel screen!)
+// 2.1 Direct Send to Another Number
 bot.action('send_to_another_number', async (ctx) => {
   const userId = ctx.from.id;
   delete userWaitState[userId];
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[userId] = { action: 'waiting_phone_for_number_login' };
   await ctx.reply(
-    `📱 <b>DOOSRA NUMBER DAALEIN:</b>\n\n` +
-    `Agla 10-digit Swiggy mobile number chat me likhein:`,
+    `📱 <b>Enter Mobile Number:</b>`,
     {
       parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+          Markup.button.callback('❌ Close', 'close_menu')
+        ]
+      ])
     }
   );
 });
 
-// 2.2 Cancel OTP Login Action -> Directly prompts for another number!
-bot.action('cancel_otp_login', async (ctx) => {
+// 2.2 Cancel OTP Login Action -> Closes prompt cleanly
+bot.action(['cancel_otp_login', 'close_menu', 'action_close', 'cancel_menu'], async (ctx) => {
   const userId = ctx.from.id;
   delete userWaitState[userId];
   await ctx.answerCbQuery().catch(() => {});
-  userWaitState[userId] = { action: 'waiting_phone_for_number_login' };
-  await ctx.reply(
-    `📱 <b>DOOSRA NUMBER DAALEIN:</b>\n\n` +
-    `Agla 10-digit Swiggy mobile number chat me likhein:`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
-    }
-  );
+  try {
+    await ctx.deleteMessage();
+  } catch (e) {
+    try {
+      await ctx.editMessageText('❌ Closed.');
+    } catch (e2) {}
+  }
 });
 
-// 2.2 Resend OTP Action
+// 2.3 Resend OTP Action
 bot.action(/^resend_otp_(\d{10})$/, async (ctx) => {
   const userId = ctx.from.id;
   const phone = ctx.match[1];
@@ -808,7 +814,6 @@ bot.action(/^resend_otp_(\d{10})$/, async (ctx) => {
   const existingKey = existing ? existing[0] : `acc_${phone}`;
   const existingName = existing ? (existing[1]?.name || existing[0]) : null;
   
-  await ctx.reply(`⚡ <b>Resending fresh OTP to ${phone}...</b>`, { parse_mode: 'HTML' });
   const result = await requestSwiggyOtpViaBridge(userId, phone, existingKey);
   if (result.success) {
     userWaitState[userId] = {
@@ -818,19 +823,34 @@ bot.action(/^resend_otp_(\d{10})$/, async (ctx) => {
       name: existingName
     };
     await ctx.reply(
-      `📲 <b>Fresh OTP Sent to ${phone}!</b>\n\nKripya phone par aaya hua 6-digit OTP chat me likhein:\n<i>(Ya seedha doosra 10-digit number chat me bhej dein)</i>`,
+      `📲 <b>OTP Sent</b>\n📱 <code>${phone}</code>\n\n👉 <i>Enter OTP:</i>`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [
-            Markup.button.callback('📱 Send in Another Number', 'send_to_another_number'),
-            Markup.button.callback('🔄 Resend OTP', `resend_otp_${phone}`)
+            Markup.button.callback('🔄 Resend OTP', `resend_otp_${phone}`),
+            Markup.button.callback('📱 Another Number', 'send_to_another_number')
+          ],
+          [
+            Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+            Markup.button.callback('❌ Close', 'close_menu')
           ]
         ])
       }
     );
   } else {
-    await ctx.reply(`❌ <b>Error:</b> ${result.message}`, getBossPanelKeyboard());
+    await ctx.reply(
+      `❌ ${escapeHtml(result.message || 'Failed to resend OTP')}`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('📱 Try Another Number', 'send_to_another_number'),
+            Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+          ]
+        ])
+      }
+    );
   }
 });
 
@@ -992,6 +1012,7 @@ bot.action(/^boss_prev_orders_(.+)$/, async (ctx) => {
 
 // Action: Boss Main Menu / Boss Panel Home & Refresh
 bot.action(['boss_panel_home', 'boss_refresh'], async (ctx) => {
+  delete userWaitState[ctx.from.id];
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
   const text = getBossPanelText();
@@ -1004,13 +1025,24 @@ bot.action(['boss_panel_home', 'boss_refresh'], async (ctx) => {
 });
 
 bot.command(['menu', 'panel'], async (ctx) => {
+  delete userWaitState[ctx.from.id];
   if (!isBoss(ctx.from.id)) return;
   await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
 });
 
-bot.hears(['🏠 Main Menu', 'Menu', 'Main Menu'], async (ctx) => {
+bot.hears(['🏠 Main Menu', 'Menu', 'Main Menu', '🏠 Boss Panel'], async (ctx) => {
+  delete userWaitState[ctx.from.id];
   if (!isBoss(ctx.from.id)) return;
   await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+});
+
+bot.hears(['❌ Close', 'Close', 'close'], async (ctx) => {
+  delete userWaitState[ctx.from.id];
+  if (isBoss(ctx.from.id)) {
+    await ctx.reply('❌ Closed.', getBossReplyKeyboard());
+  } else {
+    await ctx.reply('❌ Closed.', getUserReplyKeyboard());
+  }
 });
 
 // Action: Use account for orders
@@ -1521,23 +1553,19 @@ bot.action([
         startedAt: Date.now()
       };
 
-      const swiggyText = otpResult.swiggyStatus || otpResult.message || 'Archive OTP Sent';
       await ctx.reply(
-        `<blockquote>${escapeHtml(swiggyText)}</blockquote>\n\n` +
-        `🗑️ <b>SWIGGY SETTINGS ACCOUNT DELETION — OTP SENT</b>\n\n` +
-        `📱 <b>Account Number:</b> <code>${phone}</code>\n` +
-        `👤 <b>Account Name:</b> <b>${escapeHtml(accName)}</b>\n` +
-        `⏱️ <b>Expires in:</b> <code>120s</code>\n\n` +
-        `📩 <b>Swiggy Settings -> Delete Account OTP bhej diya gaya hai!</b>\n\n` +
-        `⚠️ <b>Zaroori Jankari (Note):</b>\n` +
-        `Swiggy SMS me telecom DLT regulations ki wajah se generic <i>"OTP to log in"</i> likha ho sakta hai, <b>lekin yeh Swiggy Settings Account Deletion ka authentic OTP hai</b> (Archive/Delete API se bheja gaya hai).\n\n` +
-        `👉 <i>Kripya mobile par aaya hua 6-digit OTP chat me likhein taaki account delete ho sake:</i>`,
+        `🗑️ <b>Delete OTP Sent</b>\n` +
+        `📱 <code>${phone}</code> (<b>${escapeHtml(accName)}</b>)\n\n` +
+        `👉 <i>Enter OTP:</i>`,
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [
-              Markup.button.callback('🔄 Resend Delete OTP', `boss_swiggy_delete_start_${key}`),
-              Markup.button.callback('🏠 Cancel', 'boss_panel_home')
+              Markup.button.callback('🔄 Resend Delete OTP', `boss_swiggy_delete_start_${key}`)
+            ],
+            [
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+              Markup.button.callback('❌ Close', 'close_menu')
             ]
           ])
         }
@@ -2003,8 +2031,6 @@ bot.action(/^boss_fast_otp_([^_]+)_(.+)$/, async (ctx) => {
   const db = getDb();
   const accName = db.config.accounts?.[targetAcc]?.name || targetAcc;
 
-  await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${phone} for ${accName}...</b>`, { parse_mode: 'HTML' });
-
   const result = await requestSwiggyOtpViaBridge(ctx.from.id, phone, targetAcc);
   if (result.success) {
     userWaitState[ctx.from.id] = {
@@ -2013,14 +2039,34 @@ bot.action(/^boss_fast_otp_([^_]+)_(.+)$/, async (ctx) => {
       phone
     };
     await ctx.reply(
-      `📲 <b>OTP Sent to ${phone}!</b>\n\nEnter the 6-digit OTP received on phone:`,
+      `📲 <b>OTP Sent</b>\n📱 <code>${phone}</code>\n\n👉 <i>Enter OTP:</i>`,
       {
         parse_mode: 'HTML',
-        reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('🔄 Resend OTP', `resend_otp_${phone}`),
+            Markup.button.callback('📱 Another Number', 'send_to_another_number')
+          ],
+          [
+            Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+            Markup.button.callback('❌ Close', 'close_menu')
+          ]
+        ])
       }
     );
   } else {
-    await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}\nPlease check number and try again.`, getBossPanelKeyboard());
+    await ctx.reply(
+      `❌ ${escapeHtml(result.message || 'Failed to send OTP')}`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('📱 Try Another Number', 'send_to_another_number'),
+            Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+          ]
+        ])
+      }
+    );
   }
 });
 
@@ -3458,12 +3504,15 @@ bot.hears(['📱 Login with Number', 'Login with Number'], async (ctx) => {
   if (!isBoss(ctx.from.id)) return;
   userWaitState[ctx.from.id] = { action: 'waiting_phone_for_number_login' };
   await ctx.reply(
-    `📱 <b>LOGIN WITH NUMBER:</b>\n\n` +
-    `Swiggy account ka 10-digit mobile number chat me likhein:\n\n` +
-    `<i>• Naya number hoga toh pehle naam puchega fir OTP aayega.\n• Pehle se registered number hoga toh turant direct OTP bhejega!</i>`,
+    `📱 <b>Enter Mobile Number:</b>`,
     {
       parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+          Markup.button.callback('❌ Close', 'close_menu')
+        ]
+      ])
     }
   );
 });
@@ -3488,12 +3537,13 @@ bot.on('text', async (ctx) => {
     '📦 Order Screen', '🟡 Pending Orders', '🔑 Login with JSON', '📱 Login with Number',
     '🟣 Connected Accounts', '🟢 Slot Status', '📊 Total slots', '🟢 Total left',
     '🎁 Claim Free Cash', '🟠 Set UPI ID', '🔢 Set Total Slots',
-    '❌ Cancel', 'Cancel', 'cancel', 'Close', 'close', 'back', 'Back'
+    '❌ Cancel', 'Cancel', 'cancel', 'Close', 'close', 'back', 'Back',
+    '🏠 Main Menu', '❌ Close'
   ].includes(rawText);
 
   if (state && isMenuOrCancel) {
     delete userWaitState[userId];
-    if (['❌ Cancel', 'Cancel', 'cancel', 'Close', 'close', 'back', 'Back'].includes(rawText)) {
+    if (['❌ Cancel', 'Cancel', 'cancel', 'Close', 'close', 'back', 'Back', '❌ Close'].includes(rawText)) {
       if (isBoss(userId)) {
         await ctx.reply('❌ Action cancelled.', getBossReplyKeyboard());
         await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
@@ -3523,7 +3573,18 @@ bot.on('text', async (ctx) => {
 
     const enteredOtp = rawCleanDigits;
     if (enteredOtp.length < 4) {
-      return ctx.reply('⚠️ Kripya valid 6-digit Swiggy Delete OTP chat me likhein (ya "cancel" likhein):');
+      return ctx.reply(
+        `⚠️ <b>Invalid OTP</b>\n\n👉 <i>Enter 6-digit Delete OTP:</i>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+              Markup.button.callback('❌ Close', 'close_menu')
+            ]
+          ])
+        }
+      );
     }
 
     const waitMsg = await ctx.reply('⏳ <i>Verifying Delete OTP with Swiggy and deleting account...</i>', { parse_mode: 'HTML' });
@@ -3547,18 +3608,13 @@ bot.on('text', async (ctx) => {
       permanentLogoutAccount(key);
 
       await ctx.reply(
-        `<blockquote>✅ <b>SWIGGY ACCOUNT DELETED SUCCESSFULLY</b></blockquote>\n\n` +
-        `📱 <b>Account Number:</b> <code>${phone}</code>\n` +
-        `👤 <b>Name:</b> <b>${escapeHtml(accName)}</b>\n` +
-        `🔐 <b>Delete OTP:</b> <code>${enteredOtp}</code> (✅ Verified by Swiggy)\n` +
-        `🌐 <b>Swiggy Status:</b> Account deactivated & session destroyed on Swiggy servers\n` +
-        `🗑️ <b>Bot DB:</b> Permanently removed from bot records.\n\n` +
-        `<i>Swiggy account deletion process complete ho gaya hai.</i>`,
+        `✅ <b>Account Deleted</b>\n` +
+        `📱 <code>${phone}</code> (${escapeHtml(accName)})`,
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [
-              Markup.button.callback('📱 Add Another Account', 'send_to_another_number'),
+              Markup.button.callback('📱 Add Account', 'send_to_another_number'),
               Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
             ]
           ])
@@ -3567,15 +3623,18 @@ bot.on('text', async (ctx) => {
     } else {
       const swiggyText = result.message || 'Invalid or expired OTP';
       await ctx.reply(
-        `<blockquote>${escapeHtml(swiggyText)}</blockquote>\n\n` +
-        `📱 <b>Account:</b> <code>${phone}</code>\n\n` +
-        `❌ <b>Delete OTP verify nahi ho paya.</b> Kripya sahi 6-digit OTP likhein:`,
+        `❌ <b>${escapeHtml(swiggyText)}</b>\n` +
+        `📱 <code>${phone}</code>\n\n` +
+        `👉 <i>Enter valid Delete OTP:</i>`,
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [
-              Markup.button.callback('🔄 Resend Delete OTP', `boss_swiggy_delete_start_${key}`),
-              Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+              Markup.button.callback('🔄 Resend Delete OTP', `boss_swiggy_delete_start_${key}`)
+            ],
+            [
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+              Markup.button.callback('❌ Close', 'close_menu')
             ]
           ])
         }
@@ -3614,19 +3673,38 @@ bot.on('text', async (ctx) => {
     delete userWaitState[userId];
 
     createAccount(cleanKey, accName, phone);
-    await ctx.reply(`⚡ <b>Sending Instant Swiggy OTP to ${phone} for ${accName}...</b>`, { parse_mode: 'HTML' });
     const result = await requestSwiggyOtpViaBridge(userId, phone, cleanKey);
     if (result.success) {
       userWaitState[userId] = { action: 'waiting_swiggy_otp_bridge', targetAcc: cleanKey, phone };
       await ctx.reply(
-        `📲 <b>OTP Sent to ${phone}!</b>\n\nEnter the 6-digit OTP received on phone:`,
+        `📲 <b>OTP Sent</b>\n📱 <code>${phone}</code>\n\n👉 <i>Enter OTP:</i>`,
         {
           parse_mode: 'HTML',
-          reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🔄 Resend OTP', `resend_otp_${phone}`),
+              Markup.button.callback('📱 Another Number', 'send_to_another_number')
+            ],
+            [
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+              Markup.button.callback('❌ Close', 'close_menu')
+            ]
+          ])
         }
       );
     } else {
-      await ctx.reply(`❌ <b>Swiggy Error:</b> ${result.message}`, getBossPanelKeyboard());
+      await ctx.reply(
+        `❌ ${escapeHtml(result.message || 'Failed to send OTP')}`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('📱 Try Another Number', 'send_to_another_number'),
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+            ]
+          ])
+        }
+      );
     }
     return;
   }
@@ -3767,12 +3845,10 @@ bot.on('text', async (ctx) => {
         name: autoName
       };
 
-      const swiggyText = result.swiggyStatus || result.message || 'OTP sent successfully';
       const otpSentCard = 
-        `<blockquote>${escapeHtml(swiggyText)}</blockquote>\n\n` +
-        `📱 <b>Mobile:</b> <code>${phoneToLogin}</code>\n` +
-        `⏱️ <b>Expires in:</b> <code>120s</code>\n\n` +
-        `<i>Kripya phone par aaya hua 6-digit OTP chat me likhein ya seedha agla 10-digit number bhej dein:</i>`;
+        `📲 <b>OTP Sent</b>\n` +
+        `📱 <code>${phoneToLogin}</code>\n\n` +
+        `👉 <i>Enter OTP:</i>`;
 
       await ctx.reply(
         otpSentCard,
@@ -3780,15 +3856,30 @@ bot.on('text', async (ctx) => {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [
-              Markup.button.callback('📱 Send in Another Number', 'send_to_another_number'),
-              Markup.button.callback('🔄 Resend OTP', `resend_otp_${phoneToLogin}`)
+              Markup.button.callback('🔄 Resend OTP', `resend_otp_${phoneToLogin}`),
+              Markup.button.callback('📱 Another Number', 'send_to_another_number')
+            ],
+            [
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+              Markup.button.callback('❌ Close', 'close_menu')
             ]
           ])
         }
       );
     } else {
       const errText = result.swiggyStatus || result.message || 'Failed to send OTP';
-      await ctx.reply(`<blockquote>${escapeHtml(errText)}</blockquote>`, getBossPanelKeyboard());
+      await ctx.reply(
+        `❌ ${escapeHtml(errText)}`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('📱 Try Another Number', 'send_to_another_number'),
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+            ]
+          ])
+        }
+      );
     }
   }
 
@@ -3796,7 +3887,17 @@ bot.on('text', async (ctx) => {
   if (state && state.action === 'waiting_phone_for_number_login') {
     const cleanPhone = rawText.replace(/[^0-9]/g, '').slice(-10);
     if (cleanPhone.length !== 10 || !/^[6-9]\d{9}$/.test(cleanPhone)) {
-      return ctx.reply('⚠️ Kripya valid 10-digit Indian mobile number bhejein (Jaise: 9876543210):');
+      return ctx.reply(
+        '⚠️ Kripya valid 10-digit Indian mobile number bhejein (Jaise: 9876543210):',
+        {
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+              Markup.button.callback('❌ Close', 'close_menu')
+            ]
+          ])
+        }
+      );
     }
 
     const db = getDb();
@@ -3864,12 +3965,10 @@ bot.on('text', async (ctx) => {
         name: autoName
       };
 
-      const swiggyText = result.swiggyStatus || result.message || 'OTP sent successfully';
       const otpSentCard = 
-        `<blockquote>${escapeHtml(swiggyText)}</blockquote>\n\n` +
-        `📱 <b>Mobile:</b> <code>${cleanPhone}</code>\n` +
-        `⏱️ <b>Expires in:</b> <code>120s</code>\n\n` +
-        `<i>Kripya phone par aaya hua 6-digit OTP chat me likhein ya seedha agla 10-digit number bhej dein:</i>`;
+        `📲 <b>OTP Sent</b>\n` +
+        `📱 <code>${cleanPhone}</code>\n\n` +
+        `👉 <i>Enter OTP:</i>`;
 
       await ctx.reply(
         otpSentCard,
@@ -3877,8 +3976,12 @@ bot.on('text', async (ctx) => {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [
-              Markup.button.callback('📱 Send in Another Number', 'send_to_another_number'),
-              Markup.button.callback('🔄 Resend OTP', `resend_otp_${cleanPhone}`)
+              Markup.button.callback('🔄 Resend OTP', `resend_otp_${cleanPhone}`),
+              Markup.button.callback('📱 Another Number', 'send_to_another_number')
+            ],
+            [
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+              Markup.button.callback('❌ Close', 'close_menu')
             ]
           ])
         }
@@ -3886,7 +3989,18 @@ bot.on('text', async (ctx) => {
     } else {
       delete userWaitState[userId];
       const errText = result.swiggyStatus || result.message || 'Failed to send OTP';
-      await ctx.reply(`<blockquote>${escapeHtml(errText)}</blockquote>`, getBossPanelKeyboard());
+      await ctx.reply(
+        `❌ ${escapeHtml(errText)}`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('📱 Try Another Number', 'send_to_another_number'),
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+            ]
+          ])
+        }
+      );
     }
     return;
   }
@@ -3915,10 +4029,15 @@ bot.on('text', async (ctx) => {
       delete userWaitState[userId];
       userWaitState[userId] = { action: 'waiting_phone_for_number_login' };
       return ctx.reply(
-        `📱 <b>DOOSRA NUMBER DAALEIN:</b>\n\nAgla 10-digit Swiggy mobile number chat me likhein:`,
+        `📱 <b>Enter Mobile Number:</b>`,
         {
           parse_mode: 'HTML',
-          reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+              Markup.button.callback('❌ Close', 'close_menu')
+            ]
+          ])
         }
       );
     }
@@ -3927,12 +4046,17 @@ bot.on('text', async (ctx) => {
 
     if (enteredOtp.length < 4) {
       return ctx.reply(
-        '⚠️ Kripya complete 6-digit OTP likhein ya doosra number daalein:',
+        `⚠️ <b>Enter 6-digit OTP</b>\n📱 <code>${state.phone}</code>\n\n👉 <i>Enter valid OTP:</i>`,
         {
+          parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [
-              Markup.button.callback('📱 Send in Another Number', 'send_to_another_number'),
-              Markup.button.callback('🔄 Resend OTP', `resend_otp_${state.phone}`)
+              Markup.button.callback('🔄 Resend OTP', `resend_otp_${state.phone}`),
+              Markup.button.callback('📱 Another Number', 'send_to_another_number')
+            ],
+            [
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+              Markup.button.callback('❌ Close', 'close_menu')
             ]
           ])
         }
@@ -3962,15 +4086,19 @@ bot.on('text', async (ctx) => {
     } else {
       const swiggyText = result.swiggyStatus || result.message || 'Invalid or expired OTP';
       await ctx.reply(
-        `<blockquote>${escapeHtml(swiggyText)}</blockquote>\n\n` +
-        `📱 <b>Mobile:</b> <code>${state.phone}</code>\n\n` +
-        `<i>Kripya sahi 6-digit OTP likhein ya doosra number bhej dein:</i>`,
+        `❌ <b>${escapeHtml(swiggyText)}</b>\n` +
+        `📱 <code>${state.phone}</code>\n\n` +
+        `👉 <i>Enter valid OTP:</i>`,
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [
-              Markup.button.callback('📱 Send in Another Number', 'send_to_another_number'),
-              Markup.button.callback('🔄 Resend OTP', `resend_otp_${state.phone}`)
+              Markup.button.callback('🔄 Resend OTP', `resend_otp_${state.phone}`),
+              Markup.button.callback('📱 Another Number', 'send_to_another_number')
+            ],
+            [
+              Markup.button.callback('🏠 Main Menu', 'boss_panel_home'),
+              Markup.button.callback('❌ Close', 'close_menu')
             ]
           ])
         }
