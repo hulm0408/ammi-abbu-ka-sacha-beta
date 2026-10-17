@@ -304,7 +304,7 @@ export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc =
   }
 
   // 1. Verify the selected account is genuinely authenticated before accessing Settings -> Delete Account
-  const isAuth = checkLoggedInFromCookies(cookieString) || Boolean(acc?.tid && decodeJwtPayload(acc.tid)?.user_id);
+  const isAuth = checkLoggedInFromCookies(cookieString) || checkLoggedInFromCookies(acc);
   if (!isAuth) {
     return {
       success: false,

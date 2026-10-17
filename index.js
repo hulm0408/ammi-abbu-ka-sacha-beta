@@ -1354,18 +1354,30 @@ bot.action(['boss_add_new_account_menu', /^boss_add_new_acc_for_order_(.+)$/], a
 });
 
 // Account Login OTP prompt
-bot.action(/^boss_login_acc_otp_([^_]+)(?:_(.+))?$/, async (ctx) => {
+bot.action(/^boss_login_acc_otp_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const targetAcc = ctx.match[1];
-  const orderId = ctx.match[2] || null;
+  const rawTarget = ctx.match[1];
   await ctx.answerCbQuery().catch(() => {});
 
-  userWaitState[ctx.from.id] = { action: 'waiting_phone_for_otp', targetAcc, orderId };
   const db = getDb();
+  let targetAcc = rawTarget;
+  let orderId = null;
+
+  if (!db.config.accounts?.[targetAcc]) {
+    for (const k of Object.keys(db.config.accounts || {})) {
+      if (rawTarget.startsWith(k + '_')) {
+        targetAcc = k;
+        orderId = rawTarget.slice(k.length + 1);
+        break;
+      }
+    }
+  }
+
+  userWaitState[ctx.from.id] = { action: 'waiting_phone_for_otp', targetAcc, orderId };
   const accName = db.config.accounts?.[targetAcc]?.name || targetAcc;
 
   await ctx.reply(
-    `📱 <b>Login to ${accName}:</b>\n\n` +
+    `📱 <b>Login to ${escapeHtml(accName)}:</b>\n\n` +
     `10-digit mobile number chat me bhejein (Jaise: <code>9876543210</code>):\n` +
     `<i>Swiggy se 1 second ke andar OTP aayega!</i>`,
     {
@@ -1376,18 +1388,30 @@ bot.action(/^boss_login_acc_otp_([^_]+)(?:_(.+))?$/, async (ctx) => {
 });
 
 // Account Login JSON prompt
-bot.action(/^boss_login_acc_json_([^_]+)(?:_(.+))?$/, async (ctx) => {
+bot.action(/^boss_login_acc_json_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const targetAcc = ctx.match[1];
-  const orderId = ctx.match[2] || null;
+  const rawTarget = ctx.match[1];
   await ctx.answerCbQuery().catch(() => {});
 
-  userWaitState[ctx.from.id] = { action: 'waiting_json_import', targetAcc, orderId };
   const db = getDb();
+  let targetAcc = rawTarget;
+  let orderId = null;
+
+  if (!db.config.accounts?.[targetAcc]) {
+    for (const k of Object.keys(db.config.accounts || {})) {
+      if (rawTarget.startsWith(k + '_')) {
+        targetAcc = k;
+        orderId = rawTarget.slice(k.length + 1);
+        break;
+      }
+    }
+  }
+
+  userWaitState[ctx.from.id] = { action: 'waiting_json_import', targetAcc, orderId };
   const accName = db.config.accounts?.[targetAcc]?.name || targetAcc;
 
   await ctx.reply(
-    `📋 <b>Paste Session JSON for ${accName}:</b>\n\n` +
+    `📋 <b>Paste Session JSON for ${escapeHtml(accName)}:</b>\n\n` +
     `Swiggy session JSON string chat me paste karein (Bina OTP ke turant login ho jayega):`,
     {
       parse_mode: 'HTML',
@@ -1456,16 +1480,16 @@ bot.action([
   const phone = acc.phone || key.replace('acc_', '');
   const accName = acc.name || key;
 
-  // 1. Verify that the selected account is genuinely authenticated before initiating deletion
+  // 1. Verify that the selected account has saved session credentials before initiating deletion
   const isAuth = checkLoggedInFromCookies(acc);
-  if (!isAuth && !acc.isLoggedIn) {
+  if (!isAuth && !acc.cookies && !acc.tid) {
     deleteInProgress.delete(userId);
     deleteInProgress.delete(key);
     return ctx.reply(
-      `⚠️ <b>Account "${escapeHtml(accName)}" is not logged in!</b>\n\n` +
-      `Swiggy account deletion requires an active, authenticated session.\n` +
-      `If initiated outside an authenticated account, Swiggy will prompt for login.\n\n` +
-      `👉 <i>Please log in to this account first to access <b>Settings → Delete Swiggy Account</b>:</i>`,
+      `⚠️ <b>Account "${escapeHtml(accName)}" me koi saved Swiggy session nahi mila!</b>\n\n` +
+      `Swiggy account deletion ke liye active, authenticated session zaroori hai.\n` +
+      `Swiggy Settings me Delete tabhi open hota hai jab account logged in ho.\n\n` +
+      `👉 <i>Kripya pehle is account me log in karein:</i>`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
@@ -1504,9 +1528,10 @@ bot.action([
         `📱 <b>Account Number:</b> <code>${phone}</code>\n` +
         `👤 <b>Account Name:</b> <b>${escapeHtml(accName)}</b>\n` +
         `⏱️ <b>Expires in:</b> <code>120s</code>\n\n` +
-        `📩 <b>Swiggy Settings -> Delete Account OTP bhej diya gaya hai!</b>\n` +
-        `Aapke mobile number par Swiggy ki taraf se Authentic Deletion OTP aaya hoga.\n\n` +
-        `👉 <i>Kripya 6-digit Delete OTP chat me likhein:</i>`,
+        `📩 <b>Swiggy Settings -> Delete Account OTP bhej diya gaya hai!</b>\n\n` +
+        `⚠️ <b>Zaroori Jankari (Note):</b>\n` +
+        `Swiggy SMS me telecom DLT regulations ki wajah se generic <i>"OTP to log in"</i> likha ho sakta hai, <b>lekin yeh Swiggy Settings Account Deletion ka authentic OTP hai</b> (Archive/Delete API se bheja gaya hai).\n\n` +
+        `👉 <i>Kripya mobile par aaya hua 6-digit OTP chat me likhein taaki account delete ho sake:</i>`,
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
@@ -1526,13 +1551,13 @@ bot.action([
         `⚠️ <b>Swiggy Deletion OTP trigger nahi ho paya.</b>\n` +
         `Reason: <i>${escapeHtml(errText)}</i>\n\n` +
         (isAuthError
-          ? `👉 <i>Kripya pehle is account me log in karein, fir <b>Settings → Delete Swiggy Account</b> open karein:</i>`
+          ? `👉 <i>Swiggy ke mutabiq is account ka session expire ho chuka hai. Swiggy Settings delete tabhi khulta hai jab session active ho. Kripya re-login karein:</i>`
           : `<i>Swiggy account deletion ke liye authentic Swiggy OTP zaroori hai. Kripya retry karein:</i>`),
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             isAuthError
-              ? [Markup.button.callback(`📱 Login ${accName}`, `boss_login_acc_otp_${key}`)]
+              ? [Markup.button.callback(`📱 Re-login to Delete ${accName}`, `boss_login_acc_otp_${key}`)]
               : [Markup.button.callback('🔄 Retry Send Delete OTP', `boss_swiggy_delete_start_${key}`)],
             [Markup.button.callback('🏠 Main Menu', 'boss_panel_home')]
           ])
@@ -3802,6 +3827,14 @@ bot.on('text', async (ctx) => {
   // D: Fast 10-Digit Mobile Number Detection (typed directly anywhere by Boss)
   const cleanPhoneInput = rawText.replace(/[^0-9]/g, '').slice(-10);
   if (isBoss(userId) && (!state || !state.action) && cleanPhoneInput.length === 10 && /^[6-9]\d{9}$/.test(cleanPhoneInput)) {
+    const lower = rawText.toLowerCase();
+    if (lower.includes('del') || lower.includes('hata') || lower.includes('rem') || lower.includes('khatam') || lower.includes('deact')) {
+      return ctx.reply(
+        'ℹ️ Swiggy account delete karne ke liye <b>👥 View Accounts → 🗑️ Delete Account</b> par jayein.',
+        { parse_mode: 'HTML' }
+      );
+    }
+
     const db = getDb();
     const existing = Object.entries(db.config?.accounts || {}).find(([k, a]) => a.phone === cleanPhoneInput);
     const existingKey = existing ? existing[0] : null;
