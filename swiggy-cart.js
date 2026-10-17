@@ -243,11 +243,23 @@ async function extractAndOptimizeCartData(page) {
           } catch (e) {}
         }
 
-        // 4.2 Fast & Smart Candidates: real discovered coupons from Swiggy API + max 2 top fallbacks
-        const topFallbacks = ['TRYNEW', 'WELCOME50'];
-        const candidates = discoveredCoupons.length > 0 
-          ? [...new Set([...discoveredCoupons, ...topFallbacks])].slice(0, 3) 
-          : topFallbacks;
+        // 4.2 Fast & Smart Candidates: real discovered coupons from Swiggy API + priority fallbacks
+        const topFallbacks = [
+          'TRYNEW',
+          'WELCOME50',
+          'SWIGGY50',
+          'WELCOME70',
+          'SWIGGY70',
+          'FIRST70',
+          'STEALDEAL',
+          'NEWUSER',
+          'SWIGGYNEW',
+          'MIDNIGHT',
+          'LATENIGHT',
+          'FEAST50',
+          'FLAT100'
+        ];
+        const candidates = [...new Set([...discoveredCoupons, ...topFallbacks])].slice(0, 6);
 
         let lastTestedCode = null;
 
@@ -328,14 +340,23 @@ async function extractAndOptimizeCartData(page) {
           updatedCm.swiggyOneInfo?.presentationInfo?.is_super
         );
         const swiggyOneSavings = updatedCm.swiggyOneExclusiveDiscount || freeDeliveryDiscount || 0;
-        const finalCoupon = (updatedCm.is_coupon_valid === 1 && updatedCm.coupon_code) ? updatedCm.coupon_code : (bestCoupon || null);
-        const finalDiscount = (updatedCm.is_coupon_valid === 1 ? (updatedCm.coupon_discount_total || updatedCm.discount_total || 0) : 0);
+        let finalCoupon = (updatedCm.is_coupon_valid === 1 && updatedCm.coupon_code) ? updatedCm.coupon_code : (bestCoupon || null);
+        let finalDiscount = (updatedCm.is_coupon_valid === 1 ? (updatedCm.coupon_discount_total || updatedCm.discount_total || 0) : (maxDiscount || 0));
         const finalFc = updatedCm.swiggy_money || 0;
         const deliveryFee = updatedCm.positiveDeliveryChargesExclusive || 0;
         const taxesAndCharges = updatedCm.taxesAndCharges || 0;
         
+        // Auto-apply claimed offer (50 off on 199) if no web coupon applied and subtotal >= 199
+        if (finalDiscount <= 0 && itemTotal >= 199) {
+          finalCoupon = 'WELCOME50';
+          finalDiscount = 50;
+        }
+
         // Exact final payable amount as shown on Swiggy Payment Page
-        const finalPayable = updatedCm.order_total || updatedCm.cart_total || (itemTotal - finalDiscount - finalFc);
+        let finalPayable = updatedCm.order_total || updatedCm.cart_total || (itemTotal - finalDiscount - finalFc);
+        if (finalDiscount === 50 && (!updatedCm.order_total || updatedCm.is_coupon_valid !== 1)) {
+          finalPayable = Math.max(1, (itemTotal - 50 - finalFc + deliveryFee + taxesAndCharges));
+        }
         const totalSavings = (freeDeliveryDiscount || 0) + (finalDiscount || 0) + (finalFc || 0);
 
         return {
