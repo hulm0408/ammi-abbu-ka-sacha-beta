@@ -119,21 +119,47 @@ function getUserReplyKeyboard(draft = {}) {
   const cartLabel = draft?.cart ? 'Cart: Added' : 'Paste Cart Link';
   const addrLabel = draft?.address ? 'Address: Added' : 'Paste Address Link';
   return Markup.keyboard([
-    [cartLabel, addrLabel],
-    ['Send to Beta'],
-    ['Cancel Order', 'Previous Orders']
+    [
+      { text: cartLabel, style: 'primary' },
+      { text: addrLabel, style: 'primary' }
+    ],
+    [
+      { text: 'Send to Beta', style: 'success' }
+    ],
+    [
+      { text: 'Cancel Order', style: 'danger' },
+      { text: 'Previous Orders', style: 'primary' }
+    ]
   ]).resize().persistent(false);
 }
 
 // Boss Bottom Menu - Pure Admin Controls (Never customer buttons)
 function getBossReplyKeyboard() {
   return Markup.keyboard([
-    ['Order Screen', 'Pending Orders'],
-    ['Login with JSON', 'Login with Number'],
-    ['Connected Accounts', 'Slot Status'],
-    ['Total Slots', 'Total Left'],
-    ['Claim Free Cash', 'Set UPI ID'],
-    ['Main Menu', 'Close']
+    [
+      { text: 'Order Screen', style: 'primary' },
+      { text: 'Pending Orders', style: 'primary' }
+    ],
+    [
+      { text: 'Login with JSON', style: 'primary' },
+      { text: 'Login with Number', style: 'primary' }
+    ],
+    [
+      { text: 'Connected Accounts', style: 'primary' },
+      { text: 'Slot Status', style: 'primary' }
+    ],
+    [
+      { text: 'Total Slots', style: 'primary' },
+      { text: 'Total Left', style: 'primary' }
+    ],
+    [
+      { text: 'Claim Free Cash', style: 'success' },
+      { text: 'Set UPI ID', style: 'primary' }
+    ],
+    [
+      { text: 'Main Menu', style: 'primary' },
+      { text: 'Close', style: 'danger' }
+    ]
   ]).resize().persistent(false);
 }
 
@@ -299,38 +325,43 @@ function getBossPanelText() {
 }
 
 function getBossPanelKeyboard() {
-  return Markup.inlineKeyboard([
-    [
-      Markup.button.callback('Login with JSON', 'boss_login_with_json'),
-      Markup.button.callback('Login with Number', 'boss_login_with_number')
-    ],
-    [
-      Markup.button.callback('View Accounts', 'boss_view_accounts'),
-      Markup.button.callback('Refresh All Accounts', 'boss_refresh_all_accounts')
-    ],
-    [
-      Markup.button.callback('Export Accounts', 'boss_export_picker'),
-      Markup.button.callback('Pending Orders', 'boss_view_pending')
-    ],
-    [
-      Markup.button.callback('Total Slots', 'boss_prompt_total_slots'),
-      Markup.button.callback('Total Left', 'boss_prompt_slots_left')
-    ],
-    [
-      Markup.button.callback('Claim Free Cash', 'boss_claim_freecash'),
-      Markup.button.callback('Set UPI ID', 'boss_prompt_set_upi')
-    ],
-    [
-      Markup.button.callback('Refresh Status', 'boss_refresh')
-    ]
-  ]);
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: 'Login with Number', callback_data: 'boss_login_with_number', style: 'primary' },
+          { text: 'Login with JSON', callback_data: 'boss_login_with_json', style: 'primary' }
+        ],
+        [
+          { text: 'View Accounts', callback_data: 'boss_view_accounts', style: 'primary' },
+          { text: 'Refresh All Accounts', callback_data: 'boss_refresh_all_accounts', style: 'primary' }
+        ],
+        [
+          { text: 'Export Accounts', callback_data: 'boss_export_picker', style: 'primary' },
+          { text: 'Pending Orders', callback_data: 'boss_view_pending', style: 'primary' }
+        ],
+        [
+          { text: 'Total Slots', callback_data: 'boss_prompt_total_slots', style: 'primary' },
+          { text: 'Total Left', callback_data: 'boss_prompt_slots_left', style: 'primary' }
+        ],
+        [
+          { text: 'Claim Free Cash', callback_data: 'boss_claim_freecash', style: 'success' },
+          { text: 'Set UPI ID', callback_data: 'boss_prompt_set_upi', style: 'primary' }
+        ],
+        [
+          { text: 'Refresh Status', callback_data: 'boss_refresh', style: 'primary' },
+          { text: 'Close', callback_data: 'close_menu', style: 'danger' }
+        ]
+      ]
+    }
+  };
 }
 
-function makeCopyButton(label, value, fallbackCallback) {
+function makeCopyButton(label, value, fallbackCallback, style = 'primary') {
   if (value && value.length > 0 && value.length <= 256) {
-    return { text: label, copy_text: { text: value } };
+    return { text: label, copy_text: { text: value }, style };
   }
-  return Markup.button.callback(label, fallbackCallback);
+  return { text: label, callback_data: fallbackCallback, style };
 }
 
 // Format Order / Care Card for Boss with FigJam Single Card State Machine
@@ -966,6 +997,10 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     updateOrderCards(order).catch(() => {});
   }
 
+  const exported = exportSessionJson(targetAcc) || accInfo.exportJson || db.config?.accounts?.[targetAcc];
+  const sessionJsonStr = exported ? JSON.stringify(exported, null, 2) : '';
+  const compactStr = exported ? JSON.stringify(exported) : '';
+
   const offers = accInfo.offers || {};
   const lateNight = offers.lateNight || { status: 'CLAIMED', discount: '50 off on 199' };
   const breakfast = offers.breakfast || { status: 'CLAIMED', discount: '50 off on 199' };
@@ -998,32 +1033,48 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
       ? `🟢 <b>Status:</b> Both offers active! 50 off on 199 available on food orders.\n\n` 
       : `⚠️ <b>Status:</b> One or more offers could not be claimed. You can delete this account or retry.\n\n`) +
     (orderId ? `📌 <b>Order #${orderId} is linked to ${escapeHtml(displayName)}!</b>\n\n` : '') +
+    (sessionJsonStr ? `📋 <b>Session Code (Read more):</b>\n<blockquote expandable><pre><code class="language-json">${escapeHtml(sessionJsonStr)}</code></pre></blockquote>\n\n` : '') +
     `💾 <i>Account is saved in DB and ready for orders!</i>`;
 
-  let keyboardButtons = [
-    [
-      Markup.button.callback('Previous Orders', `boss_prev_orders_${targetAcc}`),
-      Markup.button.callback('Delete Account from Swiggy', `boss_swiggy_delete_start_${targetAcc}`)
-    ],
-    [
-      Markup.button.callback('Add Another Account', 'send_to_another_number'),
-      Markup.button.callback('Main Menu', 'boss_panel_home')
-    ]
-  ];
-  if (!bothClaimed) {
+  let keyboardButtons = [];
+  const copyRow = [];
+  if (sessionJsonStr) {
+    copyRow.push(makeCopyButton('Copy Code', compactStr, `copy_code_${targetAcc}`, 'primary'));
+  }
+  if (phone) {
+    copyRow.push({ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' });
+  }
+  if (copyRow.length > 0) keyboardButtons.push(copyRow);
+
+  keyboardButtons.push([
+    { text: 'Export JSON File', callback_data: `boss_export_single_${targetAcc}`, style: 'primary' },
+    { text: 'Previous Orders', callback_data: `boss_prev_orders_${targetAcc}`, style: 'primary' }
+  ]);
+
+  if (bothClaimed) {
     keyboardButtons.push([
-      Markup.button.callback('Retry Claim', `boss_retry_claim_${targetAcc}`),
-      Markup.button.callback('Use Anyway for Orders', `boss_use_acc_${targetAcc}`)
+      { text: 'Order with this Account', callback_data: `boss_use_acc_${targetAcc}`, style: 'success' }
     ]);
   } else {
     keyboardButtons.push([
-      Markup.button.callback('Order with this Account', `boss_use_acc_${targetAcc}`)
+      { text: 'Retry Claim', callback_data: `boss_retry_claim_${targetAcc}`, style: 'primary' },
+      { text: 'Use Anyway for Orders', callback_data: `boss_use_acc_${targetAcc}`, style: 'primary' }
     ]);
   }
 
+  keyboardButtons.push([
+    { text: 'Add Another Account', callback_data: 'send_to_another_number', style: 'primary' },
+    { text: 'Delete Account from Swiggy', callback_data: `boss_swiggy_delete_start_${targetAcc}`, style: 'danger' }
+  ]);
+
+  keyboardButtons.push([
+    { text: 'Main Menu', callback_data: 'boss_panel_home', style: 'primary' },
+    { text: 'Close', callback_data: 'close_menu', style: 'danger' }
+  ]);
+
   await ctx.reply(cardText, {
     parse_mode: 'HTML',
-    ...Markup.inlineKeyboard(keyboardButtons)
+    reply_markup: { inline_keyboard: keyboardButtons }
   });
 }
 
@@ -1680,9 +1731,9 @@ bot.action(['boss_export_picker', 'boss_exp_select_all', 'boss_exp_deselect_all'
   const buttons = [];
   // Select All / Deselect All Toggle button
   if (allSelected) {
-    buttons.push([Markup.button.callback('⚪ Deselect All', 'boss_exp_deselect_all')]);
+    buttons.push([{ text: 'Deselect All', callback_data: 'boss_exp_deselect_all', style: 'primary' }]);
   } else {
-    buttons.push([Markup.button.callback('🔘 Select All', 'boss_exp_select_all')]);
+    buttons.push([{ text: 'Select All', callback_data: 'boss_exp_select_all', style: 'primary' }]);
   }
 
   // Individual account toggle buttons
@@ -1691,14 +1742,14 @@ bot.action(['boss_export_picker', 'boss_exp_select_all', 'boss_exp_deselect_all'
     const isChecked = Boolean(currentSelection[k]);
     const checkIcon = isChecked ? '✅' : '⬜';
     const accLabel = `${checkIcon} ${acc.name || k} (${acc.phone || ''})`;
-    buttons.push([Markup.button.callback(accLabel, `boss_exp_toggle_${k}`)]);
+    buttons.push([{ text: accLabel, callback_data: `boss_exp_toggle_${k}`, style: isChecked ? 'success' : 'primary' }]);
   }
 
   // Bottom action buttons
   buttons.push([
-    Markup.button.callback(`🚀 Confirm & Export (${selectedCount}/${accKeys.length})`, 'boss_exp_confirm')
+    { text: `Confirm & Export (${selectedCount}/${accKeys.length})`, callback_data: 'boss_exp_confirm', style: 'success' }
   ]);
-  buttons.push([Markup.button.callback('🔙 Back to Accounts', 'boss_view_accounts')]);
+  buttons.push([{ text: 'Back to Accounts', callback_data: 'boss_view_accounts', style: 'primary' }]);
 
   const checklistText = 
     `<blockquote>📤 <b>EXPORT ACCOUNTS CHECKLIST</b></blockquote>\n\n` +
@@ -1706,16 +1757,70 @@ bot.action(['boss_export_picker', 'boss_exp_select_all', 'boss_exp_deselect_all'
     `• <b>Select All:</b> Ek tap me sabhi select honge.\n` +
     `• <b>Click to toggle:</b> Kisi bhi account par tap karke unselect ya select karein.\n` +
     `• <b>Selected:</b> <b>${selectedCount} of ${accKeys.length} accounts</b>\n\n` +
-    `<i>Confirm karte hi .json file aur 1-tap Copy Button bhej diya jayega!</i>`;
+    `<i>Confirm karte hi sabhi accounts ki alag-alag .json files aur 1-tap Copy Buttons bhej diye jayenge!</i>`;
 
   try {
-    await ctx.editMessageText(checklistText, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+    await ctx.editMessageText(checklistText, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
   } catch (e) {
-    await ctx.reply(checklistText, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+    await ctx.reply(checklistText, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
   }
 });
 
-// Confirm Multi-Select Export -> Sends Document + Copy Button
+// Single Account Export Handler (from account details card or login card)
+bot.action([/^boss_export_single_(.+)$/, /^boss_export_json_(.+)$/], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const key = ctx.match[1];
+  const db = getDb();
+  const acc = db.config?.accounts?.[key];
+  if (!acc) return ctx.answerCbQuery('Account not found', { show_alert: true }).catch(() => {});
+
+  await ctx.answerCbQuery('Exporting session JSON... 📦').catch(() => {});
+
+  const exported = exportSessionJson(key) || acc;
+  const jsonStr = JSON.stringify(exported, null, 2);
+  const compactStr = JSON.stringify(exported);
+  const phone = acc.phone || acc.mobile || key;
+  const fileName = `swiggy_${phone}.json`;
+
+  try {
+    // 1. Send separate .json file
+    await ctx.replyWithDocument(
+      {
+        source: Buffer.from(jsonStr, 'utf-8'),
+        filename: fileName
+      },
+      {
+        caption: `📦 <b>Session File:</b> <code>${fileName}</code>\n👤 <b>Account:</b> ${escapeHtml(acc.name || key)}`,
+        parse_mode: 'HTML'
+      }
+    );
+
+    // 2. Send 1-2 line compact expandable code with Copy Code button
+    await ctx.reply(
+      `<b>Session Code:</b> <code>${phone}</code> (${escapeHtml(acc.name || key)})\n\n` +
+      `<blockquote expandable><pre><code class="language-json">${escapeHtml(jsonStr)}</code></pre></blockquote>`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              makeCopyButton('Copy Code', compactStr, `copy_code_${key}`, 'primary'),
+              { text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }
+            ],
+            [
+              { text: 'Back to Accounts', callback_data: 'acc_refresh_list', style: 'primary' },
+              { text: 'Main Menu', callback_data: 'boss_panel_home', style: 'primary' }
+            ]
+          ]
+        }
+      }
+    );
+  } catch (err) {
+    await ctx.reply(`❌ Export failed: ${err.message}`);
+  }
+});
+
+// Confirm Multi-Select Export -> Sends ALAG ALAG FILE for each selected account + 1-2 line expandable code with Copy Code button
 bot.action('boss_exp_confirm', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const userId = ctx.from.id;
@@ -1728,54 +1833,79 @@ bot.action('boss_exp_confirm', async (ctx) => {
     return ctx.answerCbQuery('⚠️ Kripya kam se kam ek account select karein!', { show_alert: true }).catch(() => {});
   }
 
-  await ctx.answerCbQuery('Exporting sessions... 📦').catch(() => {});
-  const exportedList = selectedKeys.map(k => exportSessionJson(k)).filter(Boolean);
-  const exportedData = exportedList.length === 1 ? exportedList[0] : exportedList;
-  const jsonStr = JSON.stringify(exportedData, null, 2);
-
-  const cleanFileName = `swiggy_sessions_export_${Date.now()}.json`;
+  await ctx.answerCbQuery(`Exporting ${selectedKeys.length} accounts as separate files... 📦`).catch(() => {});
 
   try {
-    // 1. Send .json document file
-    await ctx.replyWithDocument(
-      {
-        source: Buffer.from(jsonStr, 'utf-8'),
-        filename: cleanFileName
-      },
-      {
-        caption:
-          `<blockquote>📦 <b>SWIGGY SESSIONS EXPORT FILE</b></blockquote>\n\n` +
-          `• <b>Total Accounts Exported:</b> <code>${exportedList.length}</code>\n` +
-          `• <b>Accounts:</b> ${exportedList.map(a => escapeHtml(a.name || a.phone)).join(', ')}\n\n` +
-          `<i>💡 Is JSON file me cookies nahi hain (pure clean session tokens hain jo direct import ho jate hain).</i>`,
-        parse_mode: 'HTML'
-      }
-    );
+    for (const key of selectedKeys) {
+      const acc = accounts[key];
+      const exported = exportSessionJson(key) || acc;
+      const jsonStr = JSON.stringify(exported, null, 2);
+      const compactStr = JSON.stringify(exported);
+      const phone = acc.phone || acc.mobile || key;
+      const fileName = `swiggy_${phone}.json`;
 
-    // 2. Send message with Copy JSON button & Code block
-    const copyButtons = [];
-    if (jsonStr.length <= 1024) {
-      copyButtons.push([{ text: '📋 Copy JSON', copy_text: { text: jsonStr } }]);
-    } else {
-      copyButtons.push([Markup.button.callback('📋 Send Raw Text for Easy Copy', 'boss_send_raw_copy')]);
+      // 1. Send separate .json file for this account
+      await ctx.replyWithDocument(
+        {
+          source: Buffer.from(jsonStr, 'utf-8'),
+          filename: fileName
+        },
+        {
+          caption: `📦 <code>${fileName}</code> — ${escapeHtml(acc.name || key)}`,
+          parse_mode: 'HTML'
+        }
+      );
+
+      // 2. Send 1-2 line compact expandable code with Copy Code button
+      await ctx.reply(
+        `<b>${escapeHtml(acc.name || key)}</b> (<code>${phone}</code>):\n` +
+        `<blockquote expandable><pre><code class="language-json">${escapeHtml(jsonStr)}</code></pre></blockquote>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                makeCopyButton('Copy Code', compactStr, `copy_code_${key}`, 'primary'),
+                { text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }
+              ]
+            ]
+          }
+        }
+      );
     }
-    copyButtons.push([Markup.button.callback('👥 View Accounts', 'boss_view_accounts')]);
 
-    userWaitState[userId] = { ...userWaitState[userId], lastExportedJson: jsonStr };
-
-    const previewJson = jsonStr.length > 3500 ? jsonStr.slice(0, 3500) + '\n// ...more' : jsonStr;
+    // Completion summary
     await ctx.reply(
-      `<blockquote>📋 <b>COPYABLE SESSION JSON</b></blockquote>\n\n` +
-      `<pre><code class="language-json">${escapeHtml(previewJson)}</code></pre>\n\n` +
-      `<i>Niche diye gaye button par click karke direct copy karein:</i>`,
+      `✅ <b>Export Complete:</b> ${selectedKeys.length} accounts exported as separate files with 1-tap copy buttons.`,
       {
         parse_mode: 'HTML',
-        reply_markup: { inline_keyboard: copyButtons }
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: 'View Accounts', callback_data: 'boss_view_accounts', style: 'primary' },
+              { text: 'Main Menu', callback_data: 'boss_panel_home', style: 'primary' }
+            ]
+          ]
+        }
       }
     );
   } catch (err) {
-    await ctx.reply(`❌ Export failed: ${err.message}`);
+    await ctx.reply(`❌ Export error: ${err.message}`);
   }
+});
+
+// Action to send raw copyable session code
+bot.action(/^copy_code_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const key = ctx.match[1];
+  const db = getDb();
+  const acc = db.config?.accounts?.[key];
+  if (!acc) return ctx.answerCbQuery('Account not found', { show_alert: true }).catch(() => {});
+  const exported = exportSessionJson(key) || acc;
+  const jsonStr = JSON.stringify(exported, null, 2);
+
+  await ctx.answerCbQuery('Tap code below to copy!').catch(() => {});
+  await ctx.reply(`<pre><code class="language-json">${escapeHtml(jsonStr)}</code></pre>`, { parse_mode: 'HTML' });
 });
 
 // Fallback to send pure raw text message for 1-tap copy
@@ -5042,25 +5172,25 @@ async function handleMyAccounts(ctx) {
   for (const [key, acc] of Object.entries(accounts)) {
     const isActive = key === activeKey;
     const statusText = isActive ? 'Active' : (acc.isLoggedIn ? 'Saved' : 'Not Logged In');
-    const badge = isActive ? '🟢' : (acc.isLoggedIn ? '⚪' : '🔴');
     text += `${acc.name || key} <code>${acc.phone || ''}</code> ${statusText}\n`;
 
     buttons.push([
-      Markup.button.callback(
-        `${isActive ? '[Active] ' : ''}${acc.name || key} (${acc.phone || 'No phone'}) - ${statusText}`,
-        `acc_view_detail_${key}`
-      )
+      {
+        text: `${isActive ? '[Active] ' : ''}${acc.name || key} (${acc.phone || 'No phone'}) - ${statusText}`,
+        callback_data: `acc_view_detail_${key}`,
+        style: isActive ? 'success' : (acc.isLoggedIn ? 'primary' : 'danger')
+      }
     ]);
   }
 
   buttons.push([
-    Markup.button.callback('Add New Account', 'boss_add_new_account_menu'),
-    Markup.button.callback('Refresh Accounts', 'acc_refresh_list')
+    { text: 'Add New Account', callback_data: 'boss_add_new_account_menu', style: 'primary' },
+    { text: 'Refresh Accounts', callback_data: 'acc_refresh_list', style: 'primary' }
   ]);
 
   if (ctx.callbackQuery) {
     try {
-      await ctx.editMessageText(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
       return;
     } catch (e) {
       if (e.message && e.message.includes('Message is not modified')) {
@@ -5068,7 +5198,7 @@ async function handleMyAccounts(ctx) {
       }
     }
   }
-  await ctx.reply(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+  await ctx.reply(text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
 }
 
 bot.hears('👥 My Swiggy Accounts', async (ctx) => handleMyAccounts(ctx));
@@ -5091,33 +5221,40 @@ bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
   const activeKey = getActiveOrderAccountKey();
   const isActive = key === activeKey;
 
+  const exported = exportSessionJson(key) || acc;
+  const sessionJsonStr = exported ? JSON.stringify(exported, null, 2) : '';
+  const compactStr = exported ? JSON.stringify(exported) : '';
+  const phone = acc.phone || acc.mobile || '';
+
   const text = `<b>Swiggy Account</b>\n\n` +
     `<b>${escapeHtml(acc.name || key)}</b>\n` +
     `<code>${acc.phone || 'No phone set'}</code>\n` +
     `${acc.isLoggedIn ? 'Logged in' : 'Not logged in'}\n\n` +
     (isActive ? `🌟 <b>(Currently Active Order Hub)</b>\n\n` : '') +
+    (sessionJsonStr ? `📋 <b>Session Code (Read more):</b>\n<blockquote expandable><pre><code class="language-json">${escapeHtml(sessionJsonStr)}</code></pre></blockquote>\n\n` : '') +
     `Select an option:`;
 
   const buttons = [
     [
-      Markup.button.callback('Set as Active Order Hub', `acc_set_active_${key}`),
-      Markup.button.callback('Saved Addresses', `acc_view_addrs_${key}`)
+      { text: 'Set as Active Order Hub', callback_data: `acc_set_active_${key}`, style: 'success' },
+      { text: 'Saved Addresses', callback_data: `acc_view_addrs_${key}`, style: 'primary' }
     ],
     [
-      Markup.button.callback('Previous Orders', `acc_view_orders_${key}`),
-      Markup.button.callback('View Cart', `acc_view_cart_${key}`)
+      { text: 'Previous Orders', callback_data: `acc_view_orders_${key}`, style: 'primary' },
+      { text: 'View Cart', callback_data: `acc_view_cart_${key}`, style: 'primary' }
     ],
     [
-      Markup.button.callback('Export JSON', `boss_export_json_${key}`),
-      Markup.button.callback('Delete Account from Swiggy', `boss_swiggy_delete_start_${key}`)
+      { text: 'Export JSON', callback_data: `boss_export_json_${key}`, style: 'primary' },
+      makeCopyButton('Copy Code', compactStr, `copy_code_${key}`, 'primary')
     ],
     [
-      Markup.button.callback('Back to Accounts', 'acc_refresh_list')
+      { text: 'Delete Account from Swiggy', callback_data: `boss_swiggy_delete_start_${key}`, style: 'danger' },
+      { text: 'Back to Accounts', callback_data: 'acc_refresh_list', style: 'primary' }
     ]
   ];
 
   try {
-    await ctx.editMessageText(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
   } catch (e) {
     if (e.message && e.message.includes('Message is not modified')) return;
     await ctx.reply(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
