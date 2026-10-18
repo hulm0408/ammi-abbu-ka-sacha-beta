@@ -22,3 +22,4 @@ checkout_*.mjs
 !package.json
 !package-lock.json
 !data/db.json
+!accounts.json

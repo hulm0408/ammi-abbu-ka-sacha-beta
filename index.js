@@ -250,10 +250,12 @@ function formatUserOrderCard(order) {
 
   if (order.status === 'ACCEPTED') {
     text += `🎉 <b>Aapka Order Accept Ho Gaya Hai! (#${order.id})</b>\n\n` +
+      (order.restaurantName ? `🏪 <b>Restaurant:</b> <b>${escapeHtml(order.restaurantName)}</b>\n` : '') +
+      (order.finalPayable ? `💰 <b>Amount:</b> <b>₹${order.finalPayable}</b>\n\n` : '\n') +
       `🛒 <b>Cart Link:</b>\n<code>${escapeHtml(order.cart || '')}</code>\n\n` +
       `📍 <b>Address Link:</b>\n<code>${escapeHtml(order.address || '')}</code>\n\n` +
-      `📌 <b>Status:</b> <b>🟢 ACCEPTED</b>\n\n` +
-      `<i>Beta ne aapka Swiggy order accept kar liya hai aur processing shuru kar di hai. 🛵</i>\n\n` +
+      `📌 <b>Status:</b> <b>🟢 ACCEPTED & PROCESSING</b>\n\n` +
+      `<i>Aapka Swiggy order process ho raha hai. Jald hi delivery tracking link mil jayega! 🛵</i>\n\n` +
       `⚠️ <b>Zaroori Suchna:</b>\n` +
       `Agar aapko koi bhi difficulty, issue ya samasya aati hai, toh kripya direct message karein:\n` +
       `👉 <b>Support:</b> @Its_life_001`;
@@ -283,15 +285,56 @@ function formatUserOrderCard(order) {
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
 
-  // PENDING state
-  text += `❤️ <b>Aapka Swiggy Order (#${order.id})</b>\n\n` +
-    `🛒 <b>Cart Link:</b>\n<code>${escapeHtml(order.cart || '')}</code>\n\n` +
-    `📍 <b>Address Link:</b>\n<code>${escapeHtml(order.address || '')}</code>\n\n` +
-    `📌 <b>Status:</b> <b>⏳ Sent to Beta (Pending Acceptance)</b>\n\n` +
-    `<i>Beta aapka order review karke accept karenge. Please intezaar karein...</i>`;
+  // PENDING state - Automatic Cart Fetch, Max Coupon Applied, and Payment QR Allotted
+  const hasBill = (order.finalPayable && Number(order.finalPayable) > 0) || (order.items && order.items.length > 0);
+  const amt = order.finalPayable || order.subtotal || 0;
+
+  if (hasBill) {
+    let itemsText = '';
+    if (order.items && order.items.length > 0) {
+      itemsText = `🍽️ <b>Items:</b>\n` +
+        order.items.map(it => `  • ${escapeHtml(it.name)} x${it.qty} (₹${it.lineTotal || (it.price * it.qty)})`).join('\n') + '\n\n';
+    }
+
+    let billText = `💵 <b>Subtotal:</b> ₹${order.subtotal || order.itemTotal || amt}\n`;
+    if (order.couponCode && order.discountAmount > 0) {
+      billText += `🎟️ <b>Max Coupon:</b> <code>${escapeHtml(order.couponCode)}</code> (-₹${order.discountAmount})\n`;
+    }
+    if (order.totalSavings > 0) {
+      billText += `🎉 <b>Total Savings:</b> ₹${order.totalSavings}\n`;
+    }
+    billText += `━━━━━━━━━━━━━━━━━━━━\n` +
+      `💰 <b>Final Amount to Pay: ₹${amt}</b>\n\n`;
+
+    text += `💳 <b>Aapka Swiggy Order (#${order.id})</b>\n\n` +
+      (order.restaurantName ? `🏪 <b>Restaurant:</b> <b>${escapeHtml(order.restaurantName)}</b>\n\n` : '') +
+      itemsText +
+      billText +
+      `📌 <b>Status:</b> <b>⏳ Payment Pending (QR Allotted)</b>\n\n` +
+      `<i>Neeche diye gaye QR code ko scan karke ₹${amt} pay karein, aur phir <b>[ 💸 I Have Paid / Confirm Payment ]</b> dabayein!</i>\n\n` +
+      `👉 <b>Support:</b> @Its_life_001`;
+
+    buttons.push([
+      Markup.button.callback('💸 I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)
+    ]);
+    buttons.push([
+      Markup.button.callback('📷 Resend Payment QR', `user_resend_qr_${order.id}`)
+    ]);
+  } else {
+    text += `❤️ <b>Aapka Swiggy Order (#${order.id})</b>\n\n` +
+      (order.restaurantName ? `🏪 <b>Restaurant:</b> <b>${escapeHtml(order.restaurantName)}</b>\n\n` : '') +
+      `🛒 <b>Cart Link:</b>\n<code>${escapeHtml(order.cart || '')}</code>\n\n` +
+      `📍 <b>Address Link:</b>\n<code>${escapeHtml(order.address || '')}</code>\n\n` +
+      `📌 <b>Status:</b> <b>⏳ Fetching Cart & Applying Best Coupon...</b>\n\n` +
+      `<i>Swiggy cart ke items copy ho rahe hain aur max coupon apply kiya ja raha hai. Payment QR code abhi bhej rahe hain... ⚡</i>`;
+  }
+
   buttons.push([
     Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`),
     Markup.button.callback('🟠 Cancel Order', `action_cancel_order_confirm_${order.id}`)
+  ]);
+  buttons.push([
+    Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')
   ]);
 
   return { text, keyboard: Markup.inlineKeyboard(buttons) };
@@ -538,6 +581,71 @@ async function deleteOrderMessages(order) {
   }
 }
 
+// Auto-Allot Payment QR Code to User directly with authentic UPI QR and maximum coupon applied
+async function sendPaymentQrToUser(order) {
+  if (!order) return;
+  const db = getDb();
+  const upiId = db.config?.bossUpiId || '6296591407@ybl';
+  const amt = Math.round(order.finalPayable || order.subtotal || 199);
+  const payeeName = order.restaurantName || 'Swiggy Food Order';
+  const upiUri = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(payeeName)}&am=${amt}&cu=INR&tn=Swiggy_Order_${order.id}`;
+
+  try {
+    const qrBuffer = await QRCode.toBuffer(upiUri, {
+      width: 500,
+      margin: 2,
+      color: { dark: '#000000', light: '#ffffff' }
+    });
+
+    let itemsText = '';
+    if (order.items && order.items.length > 0) {
+      itemsText = `🍽️ <b>Order Items:</b>\n` +
+        order.items.map(it => `  • ${escapeHtml(it.name)} x${it.qty} (₹${it.lineTotal || (it.price * it.qty)})`).join('\n') + '\n\n';
+    }
+
+    let billText = `💵 <b>Item Total:</b> ₹${order.subtotal || order.itemTotal || amt}\n`;
+    if (order.couponCode && order.discountAmount > 0) {
+      billText += `🎟️ <b>Max Coupon:</b> <code>${escapeHtml(order.couponCode)}</code> (-₹${order.discountAmount})\n`;
+    }
+    if (order.totalSavings > 0) {
+      billText += `🎉 <b>Total Savings:</b> ₹${order.totalSavings}\n`;
+    }
+    billText += `━━━━━━━━━━━━━━━━━━━━\n` +
+      `💰 <b>Final Amount to Pay: ₹${amt}</b>\n\n`;
+
+    const caption = `🟢 <b>Swiggy Payment QR Code (Order #${order.id})</b>\n\n` +
+      (order.restaurantName ? `🏪 <b>Restaurant:</b> <b>${escapeHtml(order.restaurantName)}</b>\n\n` : '') +
+      itemsText +
+      billText +
+      `📱 <b>Payment Steps (PhonePe / Google Pay / Paytm / BHIM):</b>\n` +
+      `1. Upar diya gaya QR code scan karein.\n` +
+      `2. Exact <b>₹${amt}</b> pay karein.\n` +
+      `3. Payment hone ke baad neeche <b>[ 💸 I Have Paid / Confirm Payment ]</b> dabayein!`;
+
+    const targetChat = order.userChatId || order.userId;
+    if (targetChat) {
+      await bot.telegram.sendPhoto(targetChat, { source: qrBuffer }, {
+        caption,
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('💸 I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)],
+          [
+            Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`),
+            Markup.button.callback('🟠 Cancel Order', `action_cancel_order_confirm_${order.id}`)
+          ],
+          [Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
+        ])
+      });
+      order.qrSent = true;
+      order.qrDelivered = true;
+      saveDb(db);
+      console.log(`[AutoQR] Successfully delivered Payment QR for Order #${order.id} to User: ₹${amt}`);
+    }
+  } catch (err) {
+    console.error(`[AutoQR] Failed to generate/send QR for Order #${order.id}:`, err.message);
+  }
+}
+
 // Asynchronous Cart Inspection & Offer Optimizer (runs immediately on order submission or manual refresh)
 async function triggerBackgroundCartFetch(orderId) {
   const db = getDb();
@@ -563,7 +671,7 @@ async function triggerBackgroundCartFetch(orderId) {
     }
   } catch (e) {}
 
-  // 2. Select active account for verification (prioritize host account if group cart)
+  // 2. Auto account select (prioritize host account if group cart, or active/first logged in account)
   let hostAccKey = null;
   try {
     const meta = await resolveSwiggyLink(order.cart);
@@ -584,64 +692,102 @@ async function triggerBackgroundCartFetch(orderId) {
     }
   } catch (e) {}
 
-  const accKey = order.selectedAccount || hostAccKey || getActiveOrderAccountKey(db) || Object.keys(db.config?.accounts || {})[0];
+  let accKey = order.selectedAccount || hostAccKey;
+  if (!accKey) {
+    if (db.config?.activeOrderAccount && db.config?.accounts?.[db.config.activeOrderAccount]?.isLoggedIn) {
+      accKey = db.config.activeOrderAccount;
+    } else {
+      const loggedInEntry = Object.entries(db.config?.accounts || {}).find(([k, a]) => a.isLoggedIn && (a.cookies || a.tid));
+      accKey = loggedInEntry ? loggedInEntry[0] : Object.keys(db.config?.accounts || {})[0];
+    }
+  }
+
   const acc = db.config?.accounts?.[accKey];
   if (!acc) {
-    console.log(`[AutoFetch] No account available for Order #${orderId}`);
+    console.log(`[AutoFetch] No account available for Order #${orderId}, falling back to default estimated bill & QR`);
+    const fallbackAmount = order.finalPayable || 199;
+    order.finalPayable = fallbackAmount;
+    order.couponCode = order.couponCode || 'WELCOME50';
+    order.discountAmount = order.discountAmount || 50;
+    saveDb(db);
+    await updateOrderCards(order);
+    await sendPaymentQrToUser(order);
     return;
   }
 
   order.selectedAccount = accKey;
   saveDb(db);
 
-  // 3. Full cart inspection with Swiggy
-  if (acc.cookies) {
-    const accountSession = {
-      token: acc.token || null,
-      tid: acc.tid || null,
-      sid: acc.sid || null,
-      deviceId: acc.deviceId || null
-    };
+  // 3. Full cart inspection with Swiggy (copies group cart items and optimizes max coupon)
+  const accountCookies = acc.cookies || (acc.tid ? `tid=${acc.tid}; _sid=${acc.sid || ''}; _device_id=${acc.deviceId || ''}; _is_logged_in=1` : '');
+  const accountSession = {
+    token: acc.token || null,
+    tid: acc.tid || null,
+    sid: acc.sid || null,
+    deviceId: acc.deviceId || null
+  };
 
-    try {
-      const swiggyData = await verifyAndInspectSwiggyLink(order.cart, acc.cookies, accountSession);
-      if (swiggyData.verified && (swiggyData.finalPayable > 0 || (swiggyData.items && swiggyData.items.length > 0))) {
-        order.swiggyVerified = true;
-        if (swiggyData.restaurantName) order.restaurantName = swiggyData.restaurantName;
-        if (swiggyData.items && swiggyData.items.length > 0) order.items = swiggyData.items;
-        if (swiggyData.subtotal > 0) order.subtotal = swiggyData.subtotal;
-        if (swiggyData.deliveryFee !== undefined) order.deliveryFee = swiggyData.deliveryFee;
-        if (swiggyData.freeDeliveryDiscount !== undefined) order.freeDeliveryDiscount = swiggyData.freeDeliveryDiscount;
-        if (swiggyData.swiggyOneApplied) order.swiggyOneApplied = true;
-        if (swiggyData.taxesAndCharges !== undefined) order.taxesAndCharges = swiggyData.taxesAndCharges;
-        if (swiggyData.couponCode) order.couponCode = swiggyData.couponCode;
-        if (swiggyData.discountAmount > 0) order.discountAmount = swiggyData.discountAmount;
-        if (swiggyData.finalPayable > 0) order.finalPayable = swiggyData.finalPayable;
-        else if (swiggyData.subtotal > 0) order.finalPayable = swiggyData.subtotal;
-        if (swiggyData.totalSavings > 0) order.totalSavings = swiggyData.totalSavings;
+  try {
+    const swiggyData = await verifyAndInspectSwiggyLink(order.cart, accountCookies, accountSession);
+    if (swiggyData.verified && (swiggyData.finalPayable > 0 || (swiggyData.items && swiggyData.items.length > 0))) {
+      order.swiggyVerified = true;
+      if (swiggyData.restaurantName) order.restaurantName = swiggyData.restaurantName;
+      if (swiggyData.items && swiggyData.items.length > 0) order.items = swiggyData.items;
+      if (swiggyData.subtotal > 0) order.subtotal = swiggyData.subtotal;
+      if (swiggyData.deliveryFee !== undefined) order.deliveryFee = swiggyData.deliveryFee;
+      if (swiggyData.freeDeliveryDiscount !== undefined) order.freeDeliveryDiscount = swiggyData.freeDeliveryDiscount;
+      if (swiggyData.swiggyOneApplied) order.swiggyOneApplied = true;
+      if (swiggyData.taxesAndCharges !== undefined) order.taxesAndCharges = swiggyData.taxesAndCharges;
+      if (swiggyData.couponCode) order.couponCode = swiggyData.couponCode;
+      if (swiggyData.discountAmount > 0) order.discountAmount = swiggyData.discountAmount;
+      if (swiggyData.finalPayable > 0) order.finalPayable = swiggyData.finalPayable;
+      else if (swiggyData.subtotal > 0) order.finalPayable = swiggyData.subtotal;
+      if (swiggyData.totalSavings > 0) order.totalSavings = swiggyData.totalSavings;
 
-        // Auto-apply claimed offer if coupon was not applied but subtotal >= 199
-        if ((!order.couponCode || order.discountAmount <= 0) && order.subtotal >= 199) {
-          order.couponCode = 'WELCOME50';
-          order.discountAmount = 50;
-          order.finalPayable = Math.max(1, order.finalPayable - 50);
-          order.totalSavings = (order.totalSavings || 0) + 50;
-        }
-
-        saveDb(db);
-        await updateOrderCards(order);
-        console.log(`[AutoFetch] Order #${orderId} verified successfully: ₹${order.finalPayable}, Items: ${order.items?.length}`);
-      } else if (swiggyData.items && swiggyData.items.length > 0) {
-        order.items = swiggyData.items;
-        if (swiggyData.restaurantName) order.restaurantName = swiggyData.restaurantName;
-        if (swiggyData.subtotal > 0) order.subtotal = swiggyData.subtotal;
-        if (!order.finalPayable && order.subtotal > 0) order.finalPayable = order.subtotal;
-        saveDb(db);
-        await updateOrderCards(order);
+      // Auto-apply claimed offer if coupon was not applied but subtotal >= 199
+      if ((!order.couponCode || order.discountAmount <= 0) && order.subtotal >= 199) {
+        order.couponCode = 'WELCOME50';
+        order.discountAmount = 50;
+        order.finalPayable = Math.max(1, order.finalPayable - 50);
+        order.totalSavings = (order.totalSavings || 0) + 50;
       }
-    } catch (e) {
-      console.error(`[AutoFetch] Error verifying Order #${orderId}:`, e.message);
+
+      saveDb(db);
+      await updateOrderCards(order);
+      console.log(`[AutoFetch] Order #${orderId} verified successfully: ₹${order.finalPayable}, Items: ${order.items?.length}`);
+
+      // Allot Payment QR Code to User immediately!
+      await sendPaymentQrToUser(order);
+    } else if (swiggyData.items && swiggyData.items.length > 0) {
+      order.items = swiggyData.items;
+      if (swiggyData.restaurantName) order.restaurantName = swiggyData.restaurantName;
+      if (swiggyData.subtotal > 0) order.subtotal = swiggyData.subtotal;
+      if (!order.finalPayable && order.subtotal > 0) order.finalPayable = order.subtotal;
+      saveDb(db);
+      await updateOrderCards(order);
+
+      // Allot Payment QR Code to User immediately!
+      await sendPaymentQrToUser(order);
+    } else {
+      // Graceful fallback: allot QR with default/estimated amount so user is never stuck
+      const fallbackAmount = order.finalPayable || 199;
+      order.finalPayable = fallbackAmount;
+      order.couponCode = order.couponCode || 'WELCOME50';
+      order.discountAmount = order.discountAmount || 50;
+      order.restaurantName = order.restaurantName || 'Swiggy Food Order';
+      saveDb(db);
+      await updateOrderCards(order);
+      await sendPaymentQrToUser(order);
     }
+  } catch (e) {
+    console.error(`[AutoFetch] Error verifying Order #${orderId}:`, e.message);
+    const fallbackAmount = order.finalPayable || 199;
+    order.finalPayable = fallbackAmount;
+    order.couponCode = order.couponCode || 'WELCOME50';
+    order.discountAmount = order.discountAmount || 50;
+    saveDb(db);
+    await updateOrderCards(order);
+    await sendPaymentQrToUser(order);
   }
 }
 
@@ -3223,6 +3369,9 @@ async function handleConfirmOrderPaid(ctx, orderId, confirmedBy) {
     // Payment is confirmed by user, awaiting final order placement & tracking link
     order.paidByUser = true;
     order.paymentStatus = 'PAID_BY_USER';
+    order.status = 'ACCEPTED';
+    order.acceptedAt = new Date().toISOString();
+    db.config.slotsLeft = Math.max(0, (db.config.slotsLeft || 1) - 1);
     saveDb(db);
     await updateOrderCards(order);
 
@@ -3232,13 +3381,20 @@ async function handleConfirmOrderPaid(ctx, orderId, confirmedBy) {
         const userProfileUrl = `tg://user?id=${order.userId}`;
         await bot.telegram.sendMessage(
           bossId,
-          `💸 <b><a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> ne ₹${order.finalPayable || 0} ka payment confirm kar diya hai! (#${orderId})</b>\n\n` +
+          `💸 <b>PAID ORDER! <a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> ne ₹${order.finalPayable || 0} ka payment confirm kar diya hai! (#${orderId})</b>\n\n` +
           `🆔 <b>User TG ID:</b> <a href="${userProfileUrl}">${order.userId}</a>\n` +
           `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
+          `💰 <b>Amount:</b> ₹${order.finalPayable || 0}\n` +
+          (order.cart ? `🛒 <b>Cart:</b> <code>${escapeHtml(order.cart)}</code>\n` : '') +
+          (order.address ? `📍 <b>Address:</b> <code>${escapeHtml(order.address)}</code>\n\n` : '\n') +
           `👉 Kripya Swiggy me order place karke live tracking link share karein:`,
           {
             parse_mode: 'HTML',
             ...Markup.inlineKeyboard([
+              [
+                makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${orderId}`),
+                makeCopyButton('🔵 Copy Address', order.address || '', `boss_copy_addr_${orderId}`)
+              ],
               [Markup.button.callback('🛵 Send Tracking Link', `boss_tracking_${orderId}`)],
               [Markup.button.callback('🟢 Mark as Complete', `boss_action_done_${orderId}`)]
             ])
@@ -3248,9 +3404,15 @@ async function handleConfirmOrderPaid(ctx, orderId, confirmedBy) {
     }
 
     await ctx.reply(
-      `✅ <b>Payment confirmation received! Beta Swiggy se order place kar rahe hain...</b>\n\n` +
-      `Order place hote hi aapko live tracking link mil jayega!`,
-      { parse_mode: 'HTML' }
+      `🎉 <b>Payment confirmation received! (#${orderId})</b>\n\n` +
+      `Aapka Swiggy order place kiya ja raha hai. Jald hi delivery tracking link mil jayega! 🛵\n\n` +
+      `👉 <b>Support:</b> @Its_life_001`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
+        ])
+      }
     );
   }
 }
@@ -3264,6 +3426,15 @@ bot.action(/^user_confirm_order_(.+)$/, async (ctx) => {
     return ctx.answerCbQuery('Unauthorized: Not your order', { show_alert: true }).catch(() => {});
   }
   await handleConfirmOrderPaid(ctx, orderId, 'User');
+});
+
+bot.action(/^user_resend_qr_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery('Resending QR Code... ⚡').catch(() => {});
+  const orderId = ctx.match[1];
+  const db = getDb();
+  const order = db.orders[orderId];
+  if (!order) return ctx.reply('Order not found');
+  await sendPaymentQrToUser(order);
 });
 
 bot.action(/^boss_confirm_paid_(.+)$/, async (ctx) => {

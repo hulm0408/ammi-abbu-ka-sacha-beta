@@ -31,6 +31,47 @@ function ensureDb() {
   }
 }
 
+let accountsSeeded = false;
+function seedAccountsFromJson(data) {
+  if (accountsSeeded) return;
+  try {
+    const accFile = path.join(__dirname, 'accounts.json');
+    if (fs.existsSync(accFile)) {
+      const raw = fs.readFileSync(accFile, 'utf-8');
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        if (!data.config.accounts) data.config.accounts = {};
+        for (const item of list) {
+          if (item && (item.tid || item.cookies)) {
+            const phone = item.phone || item.mobile || '';
+            const cleanPhone = phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : '';
+            const key = cleanPhone ? `acc_${cleanPhone}` : (item.account || 'acc_' + Date.now());
+            if (!data.config.accounts[key] || !data.config.accounts[key].cookies) {
+              const cookieStr = item.cookies || `tid=${item.tid}; _sid=${item.sid || ''}; _device_id=${item.deviceId || ''}; token=${item.token || item.tid}; _is_logged_in=1`;
+              data.config.accounts[key] = {
+                id: key,
+                name: item.name || (cleanPhone ? `User (${cleanPhone})` : 'Swiggy User'),
+                phone: cleanPhone || '',
+                mobile: cleanPhone || '',
+                token: item.token || item.tid || '',
+                tid: item.tid || '',
+                sid: item.sid || '',
+                deviceId: item.deviceId || '',
+                cookies: cookieStr,
+                isLoggedIn: true,
+                savedAt: item.savedAt || new Date().toISOString()
+              };
+            }
+          }
+        }
+      }
+    }
+    accountsSeeded = true;
+  } catch (e) {
+    console.warn('seedAccountsFromJson note:', e.message);
+  }
+}
+
 export function getDb() {
   ensureDb();
   try {
@@ -45,6 +86,7 @@ export function getDb() {
     if (!data.config.accounts) {
       data.config.accounts = defaultData.config.accounts;
     }
+    seedAccountsFromJson(data);
     delete data.config.depositAmount;
     return data;
   } catch (err) {
