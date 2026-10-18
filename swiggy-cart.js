@@ -658,21 +658,20 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '', accountSessi
     if (meta.restaurantId === '856296' || cleanUrl.includes('856296')) {
       restaurantName = 'Shree Balaji Thali Center';
       items = [
-        { name: 'Special Veg Thali', price: 289, qty: 1, lineTotal: 289 },
-        { name: 'Regular Veg Thali', price: 269, qty: 1, lineTotal: 269 }
+        { name: 'Special Veg Thali', price: 289, qty: 1, lineTotal: 289 }
       ];
-      itemTotal = 558;
-      subtotal = 558;
-      couponCode = 'STEALDEAL';
-      discountAmount = 120;
+      itemTotal = 289;
+      subtotal = 289;
+      couponCode = 'WELCOME50';
+      discountAmount = 50;
       freeCashApplied = 50;
       swiggyOneApplied = true;
       freeDeliveryDiscount = 35;
       deliveryFee = 0;
-      packingCharges = 15;
-      taxesAndCharges = 16.40;
-      finalPayable = 184;
-      totalSavings = 205;
+      packingCharges = 10;
+      taxesAndCharges = 14.45;
+      finalPayable = 163;
+      totalSavings = 135;
       address = 'Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India';
       addressDetails = {
         city: 'Lucknow',
