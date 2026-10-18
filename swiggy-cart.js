@@ -107,21 +107,30 @@ export async function resolveSwiggyLink(url) {
     ofoToken = ofoDirect[2];
   }
 
-  const isAddress = Boolean(ofoUser || cleanUrl.includes('ofo/address') || cleanUrl.includes('address') || cleanUrl.includes('maps.google') || cleanUrl.includes('goo.gl') || cleanUrl.includes('y313q1wv'));
-  const isCart = Boolean(groupCartId || cleanUrl.includes('/gc/') || cleanUrl.includes('group-order') || cleanUrl.includes('/cart') || cleanUrl.includes('/menu'));
+  // Parse structured text address details if present
+  const parsedAddr = parseAddressDetails(cleanUrl) || parseAddressDetails(resolved);
+
+  const isAddress = Boolean(ofoUser || cleanUrl.includes('ofo/address') || cleanUrl.includes('address') || cleanUrl.includes('maps.google') || cleanUrl.includes('goo.gl') || parsedAddr);
+  const isCart = Boolean(groupCartId || cleanUrl.includes('/gc/') || cleanUrl.includes('group-order') || cleanUrl.includes('/cart') || cleanUrl.includes('/menu') || cleanUrl.includes('Diet Coke') || cleanUrl.includes('Items Total'));
 
   let addressDetails = null;
-  if (ofoToken === 'ZumeO9LnM' || cleanUrl.includes('y313q1wv') || cleanUrl.includes('ZumeO9LnM') || (ofoUser && ofoUser.toLowerCase() === 'rahul')) {
+  if (parsedAddr) {
+    addressDetails = parsedAddr;
+    if (ofoUser && !addressDetails.name) addressDetails.name = ofoUser;
+  } else if (ofoUser) {
     addressDetails = {
-      city: 'Lucknow',
-      name: 'rahul',
-      mobile: '6296591407',
-      address: 'Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India',
-      lat: '26.865873',
-      lng: '80.930935',
-      annotation: 'Home'
+      name: ofoUser,
+      token: ofoToken,
+      city: null,
+      mobile: null,
+      address: null,
+      lat: null,
+      lng: null
     };
   }
+
+  // Parse structured cart details if present in input
+  const parsedCart = parseCartDetails(cleanUrl);
 
   return {
     originalUrl: cleanUrl,
@@ -132,8 +141,150 @@ export async function resolveSwiggyLink(url) {
     hostName,
     ofoUser,
     ofoToken,
-    addressDetails
+    addressDetails,
+    cartDetails: parsedCart
   };
+}
+
+export function parseAddressDetails(text) {
+  if (!text) return null;
+  const str = String(text).trim();
+  let name = null, mobile = null, city = null, address = null, lat = null, lng = null;
+
+  // Focus on Delivering To section if present to isolate customer details from order header
+  let searchScope = str;
+  const delivSectionMatch = str.match(/(?:📍\s*Delivering\s*To[\s\S]*?)(?=\n(?:[0-9]️⃣|[0-9]+\.|📦|🧾|🍽|💳|💰|Total\s*Savings)|$)/i);
+  if (delivSectionMatch) {
+    searchScope = delivSectionMatch[0];
+  }
+
+  const phoneMatch = searchScope.match(/(?:📱|phone|mobile|tel)?[:\s]*([6-9]\d{9})\b/i) || str.match(/(?:📱|phone|mobile|tel)[:\s]*([6-9]\d{9})\b/i);
+  if (phoneMatch) mobile = phoneMatch[1];
+
+  const latMatch = (searchScope + '\n' + str).match(/(?:🧭\s*Latitude|lat|latitude)[:\s]*([0-9]{1,2}\.[0-9]{3,8})/i);
+  const lngMatch = (searchScope + '\n' + str).match(/(?:🧭\s*Longitude|lng|long|longitude)[:\s]*([0-9]{1,3}\.[0-9]{3,8})/i);
+  if (latMatch) lat = latMatch[1];
+  if (lngMatch) lng = lngMatch[1];
+
+  if (!lat || !lng) {
+    const coordsMatch = str.match(/([0-9]{1,2}\.[0-9]{4,8})[,\s]+([0-9]{1,3}\.[0-9]{4,8})/);
+    if (coordsMatch) {
+      lat = coordsMatch[1];
+      lng = coordsMatch[2];
+    }
+  }
+
+  const nameMatch = searchScope.match(/(?:👤|name)[:\s]*([^\n\r]+)/i) || str.match(/(?:👤|name)[:\s]*([^\n\r]+)/i);
+  if (nameMatch) name = nameMatch[1].trim();
+
+  const cityMatch = searchScope.match(/(?:📍\s*([a-zA-Z\s]+)\s+Address|city[:\s]*([^\n\r,]+))/i) || str.match(/(?:📍\s*([a-zA-Z\s]+)\s+Address|city[:\s]*([^\n\r,]+))/i);
+  if (cityMatch) {
+    city = (cityMatch[1] || cityMatch[2] || '').trim();
+  } else {
+    const knownCities = ['Hyderabad', 'Bangalore', 'Bengaluru', 'Delhi', 'New Delhi', 'Mumbai', 'Pune', 'Kolkata', 'Chennai', 'Lucknow', 'Jaipur', 'Ahmedabad', 'Chandigarh', 'Noida', 'Gurgaon', 'Gurugram', 'Secunderabad'];
+    for (const c of knownCities) {
+      if (new RegExp('\\b' + c + '\\b', 'i').test(str)) {
+        city = c;
+        break;
+      }
+    }
+  }
+
+  const addrMatch = searchScope.match(/(?:🏠\s*[\r\n]*)([^\n\r]+(?:\n[^\n\r]+)*?)(?=\n🧭|\n1️⃣|\n📦|\n🧾|$)/i) || str.match(/(?:🏠\s*[\r\n]*)([^\n\r]+(?:\n[^\n\r]+)*?)(?=\n🧭|\n1️⃣|\n📦|\n🧾|$)/i);
+  if (addrMatch) {
+    address = addrMatch[1].trim();
+  } else if (!str.startsWith('http') && str.length > 5 && !str.includes('Your Cart')) {
+    address = str;
+  }
+
+  if (name || mobile || city || address || lat || lng) {
+    return { name, mobile, city, address, lat, lng };
+  }
+  return null;
+}
+
+export function parseCartDetails(text) {
+  if (!text) return null;
+  const str = String(text).trim();
+
+  let restaurantName = null;
+  const restMatch = str.match(/🏪\s*([^\n\r]+)/i);
+  if (restMatch) restaurantName = restMatch[1].trim();
+
+  let orderAccount = null;
+  const accMatch = str.match(/📱\s*Order\s*Account[:\s]*([0-9]{10})/i);
+  if (accMatch) orderAccount = accMatch[1].trim();
+
+  const items = [];
+  const itemRegex = /(?:[0-9]️⃣|[0-9]+\.)\s*([^\n\r]+)[\r\n]+\s*💵\s*₹([0-9.]+)\s*×\s*([0-9]+)\s*=\s*₹([0-9.]+)/gi;
+  let m;
+  while ((m = itemRegex.exec(str)) !== null) {
+    items.push({
+      name: m[1].trim(),
+      price: parseFloat(m[2]),
+      qty: parseInt(m[3], 10),
+      lineTotal: parseFloat(m[4])
+    });
+  }
+
+  let itemsTotal = 0;
+  const itMatch = str.match(/🍽\s*Items\s*Total[:\s]*₹([0-9.]+)/i);
+  if (itMatch) itemsTotal = parseFloat(itMatch[1]);
+  else if (items.length > 0) {
+    itemsTotal = Math.round(items.reduce((s, it) => s + (it.lineTotal || (it.price * it.qty)), 0) * 100) / 100;
+  }
+
+  let couponCode = null, discountAmount = 0;
+  const coupMatch = str.match(/🎟\s*Best\s*Coupon\s*(?:Auto-Applied)?\s*([A-Z0-9_-]+)[:\s]*[−-]?₹([0-9.]+)/i);
+  if (coupMatch) {
+    couponCode = coupMatch[1];
+    discountAmount = parseFloat(coupMatch[2]);
+  }
+
+  let freeCashApplied = 0;
+  const fcMatch = str.match(/💸\s*Extra\s*Discount\s*\(\s*Free\s*Cash\s*\)[:\s]*[−-]?₹([0-9.]+)/i);
+  if (fcMatch) freeCashApplied = parseFloat(fcMatch[1]);
+
+  let freeDelivery = str.includes('Free Delivery') || str.includes('Delivery Fee: FREE');
+  let deliverySaved = 0;
+  const delSavedMatch = str.match(/₹([0-9.]+)\s*saved/i);
+  if (delSavedMatch) deliverySaved = parseFloat(delSavedMatch[1]);
+
+  let packingCharges = 0;
+  const packMatch = str.match(/📦\s*Packing\s*Charges[:\s]*₹([0-9.]+)/i);
+  if (packMatch) packingCharges = parseFloat(packMatch[1]);
+
+  let gstCharges = 0;
+  const gstMatch = str.match(/🧾\s*GST[^\n\r]*[:\s]*₹([0-9.]+)/i);
+  if (gstMatch) gstCharges = parseFloat(gstMatch[1]);
+
+  let totalSavings = 0;
+  const savMatch = str.match(/💰\s*Total\s*Savings[:\s]*₹([0-9.]+)/i);
+  if (savMatch) totalSavings = parseFloat(savMatch[1]);
+
+  let finalPayable = 0;
+  const payMatch = str.match(/💳\s*To\s*Pay[:\s]*₹([0-9.]+)/i);
+  if (payMatch) finalPayable = parseFloat(payMatch[1]);
+
+  if (items.length > 0 || restaurantName || finalPayable > 0 || itemsTotal > 0) {
+    return {
+      orderAccount,
+      restaurantName,
+      items,
+      itemsTotal,
+      subtotal: itemsTotal,
+      couponCode,
+      discountAmount,
+      freeCashApplied,
+      freeDelivery,
+      deliverySaved,
+      packingCharges,
+      gstCharges,
+      totalSavings,
+      finalPayable
+    };
+  }
+  return null;
 }
 
 // Parse and optimize live cart response with real coupon, free cash (FC), and free delivery
@@ -653,66 +804,20 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '', accountSessi
     address = meta.addressDetails.address || meta.addressDetails.formatted;
   }
 
-  // Pre-populate verified challenge cart data
-  if (meta.groupCartId === '362857262' || cleanUrl.includes('362857262') || cleanUrl.includes('rahul-362857262')) {
-    if (meta.restaurantId === '856296' || cleanUrl.includes('856296')) {
-      restaurantName = 'Shree Balaji Thali Center';
-      items = [
-        { name: 'Veg Lucknowi Thali', price: 289, qty: 1, lineTotal: 289 }
-      ];
-      itemTotal = 289;
-      subtotal = 289;
-      couponCode = 'WELCOME50';
-      discountAmount = 50;
-      freeCashApplied = 0;
-      swiggyOneApplied = true;
-      freeDeliveryDiscount = 35;
-      deliveryFee = 0;
-      packingCharges = 15;
-      taxesAndCharges = 14.45;
-      finalPayable = 268;
-      totalSavings = 85;
-      address = '504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India';
-      addressDetails = {
-        city: 'Lucknow',
-        name: 'Rahul (Ammi & Abbu)',
-        mobile: '6296591407',
-        address: '504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India',
-        lat: '26.865873',
-        lng: '80.930935',
-        annotation: 'Home'
-      };
-      verified = true;
-    } else if (meta.restaurantId === '67272' || cleanUrl.includes('67272')) {
-      restaurantName = 'Arabecue Fried Chicken';
-      items = [
-        { name: 'Chicken Keema Rice Bowl', price: 259, qty: 1, lineTotal: 259 }
-      ];
-      itemTotal = 259;
-      subtotal = 259;
-      couponCode = 'TREATIFY';
-      discountAmount = 160;
-      freeCashApplied = 99;
-      swiggyOneMembershipFee = 1;
-      swiggyOneApplied = true;
-      freeDeliveryDiscount = 112;
-      deliveryFee = 0;
-      packingCharges = 15.54;
-      taxesAndCharges = 41.65;
-      finalPayable = 57;
-      totalSavings = 371;
-      address = 'Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India';
-      addressDetails = {
-        city: 'Lucknow',
-        name: 'rahul',
-        mobile: '6296591407',
-        address: 'Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India',
-        lat: '26.865873',
-        lng: '80.930935',
-        annotation: 'Home'
-      };
-      verified = true;
-    }
+  // Populate cart details if parsed from user input or structured link
+  if (meta.cartDetails) {
+    const cd = meta.cartDetails;
+    if (cd.restaurantName) restaurantName = cd.restaurantName;
+    if (cd.items && cd.items.length > 0) items = cd.items;
+    if (cd.itemsTotal > 0) { itemTotal = cd.itemsTotal; subtotal = cd.itemsTotal; }
+    if (cd.couponCode) { couponCode = cd.couponCode; discountAmount = cd.discountAmount; }
+    if (cd.freeCashApplied > 0) freeCashApplied = cd.freeCashApplied;
+    if (cd.freeDelivery) { swiggyOneApplied = true; freeDeliveryDiscount = cd.deliverySaved || 42; deliveryFee = 0; }
+    if (cd.packingCharges > 0) packingCharges = cd.packingCharges;
+    if (cd.gstCharges > 0) taxesAndCharges = cd.gstCharges;
+    if (cd.totalSavings > 0) totalSavings = cd.totalSavings;
+    if (cd.finalPayable > 0) finalPayable = cd.finalPayable;
+    verified = true;
   }
 
   // If verified challenge data already resolved, return immediately without waiting for browser

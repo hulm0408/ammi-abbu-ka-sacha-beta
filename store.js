@@ -42,12 +42,12 @@ function seedAccountsFromJson(data) {
       if (Array.isArray(list)) {
         if (!data.config.accounts) data.config.accounts = {};
         for (const item of list) {
-          if (item && (item.tid || item.cookies)) {
+          if (item && (item.tid || item.cookies || item.phone)) {
             const phone = item.phone || item.mobile || '';
             const cleanPhone = phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : '';
             const key = cleanPhone ? `acc_${cleanPhone}` : (item.account || 'acc_' + Date.now());
             if (!data.config.accounts[key] || !data.config.accounts[key].cookies) {
-              const cookieStr = item.cookies || `tid=${item.tid}; _sid=${item.sid || ''}; _device_id=${item.deviceId || ''}; token=${item.token || item.tid}; _is_logged_in=1`;
+              const cookieStr = item.cookies || (item.tid ? `tid=${item.tid}; _sid=${item.sid || ''}; _device_id=${item.deviceId || ''}; token=${item.token || item.tid}; _is_logged_in=1` : '');
               data.config.accounts[key] = {
                 id: key,
                 name: item.name || (cleanPhone ? `User (${cleanPhone})` : 'Swiggy User'),
@@ -58,7 +58,7 @@ function seedAccountsFromJson(data) {
                 sid: item.sid || '',
                 deviceId: item.deviceId || '',
                 cookies: cookieStr,
-                isLoggedIn: true,
+                isLoggedIn: Boolean(item.isLoggedIn !== false),
                 savedAt: item.savedAt || new Date().toISOString()
               };
             }
