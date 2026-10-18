@@ -110,6 +110,24 @@ export function isValidSwiggyCartUrl(urlStr) {
 
   if (path === '/' || path === '') return false;
 
+  // IMPORTANT: Address links should NEVER be classified as cart links!
+  // E.g. https://swiggy.onelink.me/JgkQ/52yat6op or ofo/address or /address
+  if (path.includes('jgkq') || path.includes('address') || full.includes('ofo/address') || path.includes('y313q1wv')) {
+    return false;
+  }
+
+  // Swiggy Onelink should only be treated as cart if it explicitly specifies cart/menu/restaurant/gc
+  if (host.includes('onelink.me')) {
+    return (
+      full.includes('/gc/') ||
+      full.includes('group-cart') ||
+      full.includes('group_cart') ||
+      full.includes('/cart') ||
+      full.includes('/menu') ||
+      full.includes('restaurant')
+    );
+  }
+
   return (
     full.includes('/gc/') ||
     full.includes('group-cart') ||
@@ -119,8 +137,7 @@ export function isValidSwiggyCartUrl(urlStr) {
     full.includes('/restaurants/') ||
     full.includes('/menu') ||
     full.includes('restaurant_id') ||
-    (host === 'swig.gy' && path.length >= 4) ||
-    (host.includes('onelink.me') && path.length >= 4)
+    (host === 'swig.gy' && path.length >= 4)
   );
 }
 
@@ -134,17 +151,29 @@ export function isValidDeliveryAddressUrl(urlStr) {
     return false;
   }
   const host = parsed.hostname.toLowerCase();
+  const path = parsed.pathname.toLowerCase();
+  const search = parsed.search.toLowerCase();
+  const full = path + search;
+
   const isGoogleMaps = host === 'maps.app.goo.gl' ||
                        host === 'goo.gl' ||
                        host === 'maps.google.com' ||
-                       (host.endsWith('.google.com') && (parsed.pathname.includes('/maps') || parsed.pathname.includes('/place')));
+                       (host.endsWith('.google.com') && (path.includes('/maps') || path.includes('/place')));
 
-  const isSwiggyAddr = (host === 'swiggy.com' || host.endsWith('.swiggy.com') || host.includes('onelink.me')) &&
-                       (parsed.pathname.includes('ofo/address') || parsed.pathname.includes('/address') || parsed.search.includes('ofo/address') || parsed.pathname.includes('y313q1wv'));
+  // Swiggy mobile app share address format: https://swiggy.onelink.me/JgkQ/...
+  const isSwiggyOneLink = (host === 'swiggy.onelink.me' || host.endsWith('.onelink.me')) && path.length >= 3;
+  // Swiggy web address URLs
+  const isSwiggyWeb = (host === 'swiggy.com' || host.endsWith('.swiggy.com') || host === 'swig.gy') &&
+                      (path.includes('address') || full.includes('ofo/address') || path.includes('y313q1wv') || path.includes('jgkq'));
 
-  if (!isGoogleMaps && !isSwiggyAddr) return false;
+  if (!isGoogleMaps && !isSwiggyOneLink && !isSwiggyWeb) return false;
 
-  if (isGoogleMaps && (parsed.pathname === '/' || parsed.pathname === '/maps') && !parsed.search && !parsed.hash) {
+  if (isGoogleMaps && (path === '/' || path === '/maps') && !parsed.search && !parsed.hash) {
+    return false;
+  }
+
+  // Reject cart links if mistakenly passed
+  if (path.includes('/gc/') || path.includes('group-cart') || path.includes('group_cart') || path.includes('/cart')) {
     return false;
   }
 
@@ -5054,8 +5083,8 @@ bot.on('text', async (ctx) => {
     if (!validAddress) {
       await ctx.reply(
         `❌ <b>Fake / Invalid Delivery Address Link!</b>\n\n` +
-        `Bot sirf genuine Google Maps location links ya Swiggy Address links accept karta hai.\n` +
-        `<i>Example: <code>https://maps.app.goo.gl/...</code> ya <code>https://www.google.com/maps/...</code></i>\n\n` +
+        `Bot sirf genuine Swiggy Address share links ya Google Maps links accept karta hai.\n` +
+        `<i>Example: <code>https://swiggy.onelink.me/JgkQ/52yat6op</code></i>\n\n` +
         `👉 Niche button dabakar genuine link paste karein:`,
         {
           parse_mode: 'HTML',
@@ -5131,7 +5160,7 @@ bot.on('text', async (ctx) => {
         `❌ <b>Fake ya invalid Link!</b>\n\n` +
         `Bot me sirf genuine links accept hote hain:\n` +
         `🟣 <b>Cart:</b> <code>https://swig.gy/gc/...</code>\n` +
-        `🔵 <b>Address:</b> <code>https://maps.app.goo.gl/...</code>\n\n` +
+        `🔵 <b>Address:</b> <code>https://swiggy.onelink.me/JgkQ/52yat6op</code>\n\n` +
         `👉 Niche diye gaye buttons se link add karein:`,
         {
           parse_mode: 'HTML',
@@ -5196,8 +5225,8 @@ bot.on('text', async (ctx) => {
     await ctx.reply(
       `👋 <b>Swiggy Food Order</b>\n\n` +
       `Kripya buttons se link paste karein:\n\n` +
-      `🟣 <b>Cart Link:</b> Genuine Swiggy link\n` +
-      `🔵 <b>Address Link:</b> Google Maps link\n\n` +
+      `🟣 <b>Cart Link:</b> Genuine Swiggy link (<code>https://swig.gy/gc/...</code>)\n` +
+      `🔵 <b>Address Link:</b> Swiggy Address link (<code>https://swiggy.onelink.me/JgkQ/...</code>)\n\n` +
       `Niche buttons par click karein:`,
       {
         parse_mode: 'HTML',
@@ -5325,10 +5354,12 @@ async function handleAddressLinkFlow(ctx) {
   const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_address' };
   await ctx.reply(
-    `<b>Send Delivery Address / Location:</b>`,
+    `🔵 <b>Send Delivery Address Link:</b>\n\n` +
+    `Swiggy app se share kiya hua address link chat me paste karein:\n` +
+    `<i>Example: <code>https://swiggy.onelink.me/JgkQ/52yat6op</code></i>`,
     {
       parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste address or location...' }
+      reply_markup: { force_reply: true, input_field_placeholder: 'Paste Swiggy address link (https://swiggy.onelink.me/JgkQ/...)' }
     }
   );
 }
@@ -5553,26 +5584,13 @@ bot.action(['action_paste_address', 'action_force_change_address', 'action_chang
   const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_address' };
   await ctx.reply(
-    `🔵 <b>Delivery Address / Location Link paste karein:</b>\n\n` +
-    `Kripya apna genuine Google Maps location link ya Swiggy address link chat me paste karein:\n` +
-    `<i>Example: <code>https://maps.app.goo.gl/...</code> ya <code>https://www.google.com/maps/...</code></i>`,
+    `🔵 <b>Delivery Address Link paste karein:</b>\n\n` +
+    `Swiggy app se share kiya hua delivery address link chat me paste karein:\n` +
+    `<i>Example: <code>https://swiggy.onelink.me/JgkQ/52yat6op</code></i>\n` +
+    `<i>(Google Maps link bhi chalega)</i>`,
     {
       parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste Google Maps address link here...' }
-    }
-  );
-});
-
-bot.action('action_confirm_change_address', async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const userId = ctx.from.id;
-  userWaitState[userId] = { action: 'waiting_address' };
-  await ctx.reply(
-    `ask to paste the link: 🔵 <b>Paste address Link:</b>\n\n` +
-    `Google Maps ya address ka naya link copy karke chat me paste karein:`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste address link...' }
+      reply_markup: { force_reply: true, input_field_placeholder: 'Paste Swiggy address link (https://swiggy.onelink.me/JgkQ/...)' }
     }
   );
 });
