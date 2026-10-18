@@ -1,3 +1,4 @@
+import http from 'http';
 import { Telegraf, Markup } from 'telegraf';
 import dotenv from 'dotenv';
 import QRCode from 'qrcode';
@@ -4492,13 +4493,30 @@ bot.on('text', async (ctx) => {
 
   // Helper for starting phone number login
   async function triggerPhoneNumberLogin(phoneToLogin, existingAccKey, existingAccName) {
-    const accKey = `acc_${phoneToLogin}`;
-    const autoName = (existingAccName && /^user\s+\d+$/i.test(existingAccName.trim()))
+    const accKey = existingAccKey || `acc_${phoneToLogin}`;
+    const cleanName = (existingAccName && existingAccName.trim().length >= 2 && !/^user\s*\d*$/i.test(existingAccName.trim()))
       ? existingAccName.trim()
-      : getNextAutoUserName();
+      : null;
+    const autoName = cleanName || getNextAutoUserName();
     delete userWaitState[userId];
 
-    const result = await requestSwiggyOtpViaBridge(userId, phoneToLogin, accKey, autoName);
+    const result = await requestSwiggyOtpViaBridge(userId, phoneToLogin, accKey, cleanName);
+
+    if (result.needsName) {
+      userWaitState[userId] = {
+        action: 'waiting_name_for_new_number_signup',
+        phone: phoneToLogin,
+        targetAcc: accKey
+      };
+
+      await ctx.reply('👉 Enter Name:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter Name...'
+        }
+      });
+      return;
+    }
 
     if (result.success) {
       userWaitState[userId] = {
@@ -4602,6 +4620,24 @@ bot.on('text', async (ctx) => {
     } else {
       await ctx.reply(`<blockquote>${escapeHtml(signupRes.message)}</blockquote>`, getBossPanelKeyboard());
     }
+    return;
+  }
+
+  // Handle Name for New Swiggy Number Signup
+  if (state && state.action === 'waiting_name_for_new_number_signup') {
+    const enteredName = rawText.trim();
+    if (!enteredName || enteredName.length < 2 || /^\d+$/.test(enteredName)) {
+      await ctx.reply('👉 Enter Name:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter Name...'
+        }
+      });
+      return;
+    }
+    const phone = state.phone;
+    delete userWaitState[userId];
+    await triggerPhoneNumberLogin(phone, `acc_${phone}`, enteredName);
     return;
   }
 
@@ -6086,6 +6122,18 @@ bot.catch(async (err, ctx) => {
   } catch (e) {}
 });
 
+
+// Lightweight health check server for cloud platforms (Railway, Render, etc.)
+if (process.env.PORT) {
+  const healthPort = process.env.PORT;
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', bot: 'online', timestamp: new Date().toISOString() }));
+  });
+  server.listen(healthPort, () => {
+    console.log(`🌐 Cloud health server listening on port ${healthPort}`);
+  });
+}
 
 // Launch bot with retry resilience for cloud container handover
 console.log('🚀 Connecting to Telegram Bot API...');

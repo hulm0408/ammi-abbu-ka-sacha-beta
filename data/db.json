@@ -1,7 +1,7 @@
 {
   "config": {
     "totalSlots": 100,
-    "slotsLeft": 99,
+    "slotsLeft": 100,
     "bossId": 6484999726,
     "bossIds": [
       6484999726
@@ -128,16 +128,72 @@
         "phone": "6296591407",
         "mobile": "6296591407",
         "customerId": "285591864",
-        "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIxZTJiYjU3OS1mMDgwLTQwM2UtYjMyZC05NjMyODZhN2Q2NTgiLCJ1c2VyX2lkIjoiMjg1NTkxODY0Iiwic2Vzc2lvbl9kYXRhIjoiZW8wb3JMNE12dHVHVzJXOEYzUFNHOEx1aFR1ck9xK2Z6bEx4Z3dtWEJhVGlaeTR6SzRHaUZNT1UzcGIveDdWVUFQZWRZMWRwamI3TWpmOUNuaGZhdjJzSGQzVThYWjVLZ0RYaXNtMU5uTGFaZ1dMYVArMU9Fckh0aGRYSDlNN2t4Z3JGaFkxVU12anRlcE96MDllUndTcm5lUTZzOEZlUVpla3hVaUJSbDVYQlBGOVl2ZXp3R29CeGRGN3hlYkc3eVZLSkNPeVhLRWJpR1lRcE9DTFBVd2ZPWjBCYWJQN3FmUWpaTXdFa2ZRWjhZTjJJcCtnZ0JXdFZQOFljM3cxNVlvNGZWYTlZejZiSHl3PT0iLCJzaWQiOiJ1OHk5Y2ZmMTk4NC0yNjkzLTRkOGUtOGNhZC05NmNiZmFlNDAiLCJpYXQiOjE3OTIzMDE1MTIsImV4cCI6MTc5MjMwMzkxMn0.6Ci6mpa9U1M4mjShA_Wfdx1Qj1ZqTCD6uC6fEdzR7Oc",
-        "sid": "u8y9cff1984-2693-4d8e-8cad-96cbfae40",
-        "deviceId": "eaf46991-e72e-68f1-f601-7a4f2862acb9",
-        "token": "234c0b5c-2073-41fb-881a-75dd3540b90d0afe59ae-9b9c-4dc8-be20-2e1abbfd834d",
-        "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIxZTJiYjU3OS1mMDgwLTQwM2UtYjMyZC05NjMyODZhN2Q2NTgiLCJ1c2VyX2lkIjoiMjg1NTkxODY0Iiwic2Vzc2lvbl9kYXRhIjoiZW8wb3JMNE12dHVHVzJXOEYzUFNHOEx1aFR1ck9xK2Z6bEx4Z3dtWEJhVGlaeTR6SzRHaUZNT1UzcGIveDdWVUFQZWRZMWRwamI3TWpmOUNuaGZhdjJzSGQzVThYWjVLZ0RYaXNtMU5uTGFaZ1dMYVArMU9Fckh0aGRYSDlNN2t4Z3JGaFkxVU12anRlcE96MDllUndTcm5lUTZzOEZlUVpla3hVaUJSbDVYQlBGOVl2ZXp3R29CeGRGN3hlYkc3eVZLSkNPeVhLRWJpR1lRcE9DTFBVd2ZPWjBCYWJQN3FmUWpaTXdFa2ZRWjhZTjJJcCtnZ0JXdFZQOFljM3cxNVlvNGZWYTlZejZiSHl3PT0iLCJzaWQiOiJ1OHk5Y2ZmMTk4NC0yNjkzLTRkOGUtOGNhZC05NmNiZmFlNDAiLCJpYXQiOjE3OTIzMDE1MTIsImV4cCI6MTc5MjMwMzkxMn0.6Ci6mpa9U1M4mjShA_Wfdx1Qj1ZqTCD6uC6fEdzR7Oc; _session_tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIxZTJiYjU3OS1mMDgwLTQwM2UtYjMyZC05NjMyODZhN2Q2NTgiLCJ1c2VyX2lkIjoiMjg1NTkxODY0Iiwic2Vzc2lvbl9kYXRhIjoiZW8wb3JMNE12dHVHVzJXOEYzUFNHOEx1aFR1ck9xK2Z6bEx4Z3dtWEJhVGlaeTR6SzRHaUZNT1UzcGIveDdWVUFQZWRZMWRwamI3TWpmOUNuaGZhdjJzSGQzVThYWjVLZ0RYaXNtMU5uTGFaZ1dMYVArMU9Fckh0aGRYSDlNN2t4Z3JGaFkxVU12anRlcE96MDllUndTcm5lUTZzOEZlUVpla3hVaUJSbDVYQlBGOVl2ZXp3R29CeGRGN3hlYkc3eVZLSkNPeVhLRWJpR1lRcE9DTFBVd2ZPWjBCYWJQN3FmUWpaTXdFa2ZRWjhZTjJJcCtnZ0JXdFZQOFljM3cxNVlvNGZWYTlZejZiSHl3PT0iLCJzaWQiOiJ1OHk5Y2ZmMTk4NC0yNjkzLTRkOGUtOGNhZC05NmNiZmFlNDAiLCJpYXQiOjE3OTIzMDE1MTIsImV4cCI6MTc5MjMwMzkxMn0.6Ci6mpa9U1M4mjShA_Wfdx1Qj1ZqTCD6uC6fEdzR7Oc; _sid=u8y9cff1984-2693-4d8e-8cad-96cbfae40; _device_id=eaf46991-e72e-68f1-f601-7a4f2862acb9; token=234c0b5c-2073-41fb-881a-75dd3540b90d0afe59ae-9b9c-4dc8-be20-2e1abbfd834d; _is_logged_in=1; userLocation=%7B%22lat%22%3A%2226.8658609%22%2C%22lng%22%3A%2280.9307755%22%2C%22address%22%3A%22504%2C%2054-106%2C%20Mukarimnagar%2C%20Hasanganj%2C%20Lucknow%2C%20Uttar%20Pradesh%20226007%22%2C%22area%22%3A%22Hasanganj%22%2C%22id%22%3A%22db8hdcs1d96imbcmodc0%22%7D",
+        "tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f4f3b6a379b5eb1db0db9c9ca31367ac68e6168a348dca2b6437b9954e0661a64edb42498150ab982c544965eb50ad1a58db735256c617798f65122f457037ad3d68998e47d2b6dc5650f076b72c7f14813bf78bc151ad5be27ff40fd52f73d5a0b74fed768c9bdc9b359ba7e637e7281fdb48b09a52485426c7f2da0fd1a866f2ec2d47c51ae6e747e28d0ac358a9509c7c2d1449917cce9856dfc8b1983d324087ef5b0aa953416a4ec631087e6aa62e413c56a138b00940daffd20e2b1b33f8f295cb2f2d8cd513502fd5ebb0d70d9efded49b4f8e6958a7ef27c663bc902358a2f6788642f29e2e8017952f19f1ca21da58521131bc124301520e587b6a48eff7520386f41366906115344f58bcccb1b03d71b7e10547321678efee2e5a19d8fda112e4b7527978ca440f9ebed20b56a7e0f8cc059ae433209d3064897cec22d9d11bfd11b57e2931588de464215b4871a19009782052525f55ff937434e91914d1a12e51c18a0a5ac2d95cc199047a748765473c48858ca2a1994632d8345655390017426487ab084412d02dc0e959542133eb3b9ebe8fbaef13f176f0dfbcfb9e9908ab74227e12678e07fbc0bcef535f1caea36ed36b39863709faf097b08031003400c068e053e88cdd1eb8078990a018fe00ef6aa5dfc199aa1561511259d0e327f6ab6b1500d21d684248b396146ea24f6580bd599fa919124367c23c659ddc72b652e427cd40e881d2d09782c05d23d37b86baddf57fee9621a84d02e959486c06e2adf3d5f798997909de37d1be99901a78875facdb1861a18858ab01995105a2a04c795fb83ad6c386d778ef1c1c0daa8ed5168129bca79a79ec7888ffae56032a0e76a4b1a6b5403624b15037f806db5720c8546bab423163c80f8de9491a16fd4059ac9701533e3eb9ee5d1eeb2e5cac0d04f965274f4bb55d633a5ead641f32b4c2e0dd73586fb1f873a497aa622cb67ef142a8af6deae0eb",
+        "sid": "u913f8eb0f9-9786-47a3-8139-733931f05",
+        "deviceId": "55a09fe4-deca-be8f-372c-72c12430a5bf",
+        "token": "454de992-e59d-4e89-95af-13aa85e69a13b268859f-359c-4050-909d-0ea568089cfa",
+        "cookies": "x-channel=; _ga_YE38MFJRBZ=GS2.1.s1792310542$o2$g1$t1792311564$j50$l0$h0; _device_id=55a09fe4-deca-be8f-372c-72c12430a5bf; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f4f3b6a379b5eb1db0db9c9ca31367ac68e6168a348dca2b6437b9954e0661a64edb42498150ab982c544965eb50ad1a58db735256c617798f65122f457037ad3d68998e47d2b6dc5650f076b72c7f14813bf78bc151ad5be27ff40fd52f73d5a0b74fed768c9bdc9b359ba7e637e7281fdb48b09a52485426c7f2da0fd1a866f2ec2d47c51ae6e747e28d0ac358a9509c7c2d1449917cce9856dfc8b1983d324087ef5b0aa953416a4ec631087e6aa62e413c56a138b00940daffd20e2b1b33f8f295cb2f2d8cd513502fd5ebb0d70d9efded49b4f8e6958a7ef27c663bc902358a2f6788642f29e2e8017952f19f1ca21da58521131bc124301520e587b6a48eff7520386f41366906115344f58bcccb1b03d71b7e10547321678efee2e5a19d8fda112e4b7527978ca440f9ebed20b56a7e0f8cc059ae433209d3064897cec22d9d11bfd11b57e2931588de464215b4871a19009782052525f55ff937434e91914d1a12e51c18a0a5ac2d95cc199047a748765473c48858ca2a1994632d8345655390017426487ab084412d02dc0e959542133eb3b9ebe8fbaef13f176f0dfbcfb9e9908ab74227e12678e07fbc0bcef535f1caea36ed36b39863709faf097b08031003400c068e053e88cdd1eb8078990a018fe00ef6aa5dfc199aa1561511259d0e327f6ab6b1500d21d684248b396146ea24f6580bd599fa919124367c23c659ddc72b652e427cd40e881d2d09782c05d23d37b86baddf57fee9621a84d02e959486c06e2adf3d5f798997909de37d1be99901a78875facdb1861a18858ab01995105a2a04c795fb83ad6c386d778ef1c1c0daa8ed5168129bca79a79ec7888ffae56032a0e76a4b1a6b5403624b15037f806db5720c8546bab423163c80f8de9491a16fd4059ac9701533e3eb9ee5d1eeb2e5cac0d04f965274f4bb55d633a5ead641f32b4c2e0dd73586fb1f873a497aa622cb67ef142a8af6deae0eb; _gcl_au=1.1.1035247711.1792285624; _ga_34JYJ0BCRN=GS2.1.s1792310544$o2$g1$t1792311564$j50$l0$h0; tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJiYjA2NGYwOS0xYTMzLTQyNjQtYWQ2MS00NjI1ZjcxOTBkMDQiLCJ1c2VyX2lkIjoiMjg1NTkxODY0Iiwic2Vzc2lvbl9kYXRhIjoiVkNXMkFrSFd5ZlFDSjdqTm5PbnVjODNUR08vN3MwRUxpWC94d0JkVXJwQkY3M0tjRitMSEZmQ0JMbXVxL245MGRZZnFva1lpRXh3RUNRR0toNGhUTjE1UC9jMmxXK0xrS2k1R29wV01QWWxlZStsOWxvU2JwbnVoSS9rVE9yU0VmdDRsUng1cnJLRWlGdXJuYzg0WmhEMnZkS1ZjSVFza3AzSnpKYnRRMU9uU3B6L0pWNmk2RFhGUkQ4OVREcHdCRGF2a2hsR3YwTTcvK0tKTDVYeWU3bS90MFV0TGIvb3NndFp3Mm1tZ2s2WmxOTVE2VzMyYlRVUkhrREw4dW5tVVZ4TGx1Q2xWR3U2OXVnPT0iLCJzaWQiOiJ1OTEzZjhlYjBmOS05Nzg2LTQ3YTMtODEzOS03MzM5MzFmMDUiLCJpYXQiOjE3OTIzMTE1NjksImV4cCI6MTc5MjMxMzk2OX0.ChB2OKhbVdw6oBEZu_X7tvhS9Ty58fBsed4kRBX08qQ; token=454de992-e59d-4e89-95af-13aa85e69a13b268859f-359c-4050-909d-0ea568089cfa; x-xid=; AMP_TOKEN=%24NOT_FOUND; _is_logged_in=1; userLocation={%22lat%22:%2226.83730%22%2C%22lng%22:%2280.91650%22%2C%22address%22:%22%22%2C%22area%22:%22%22%2C%22showUserDefaultAddressHint%22:false}; __SW=mXEygKEOX1n-Vqtr-kJSBl5sDAeMbjLR; aws-waf-token=4c2a2d9b-5d8c-47f3-a217-1c44b248fb78:HgoAo49MRMZ1HAAA:wfrhnMeSJlu4hXJmPhIoq+z290IcsEzwxKnk4XmbGRnZ4HmLrTBB163LUQUaovIWdL2DTRGr6n+Q+pIf/g6jVaciFQ8Tx2V83dvQyGSH16DLg0bhR9MEpz+m8ezBtB7Plq4pZVnHftOC7QaR5T6saeT9aX16fWo0ItFbFBTxjthuTTc7ir2sHxZV3KTUh6nFlesc+P0EhpFNTFkG3VQQQtNyCK456CMkrZgLhvMf4RbAwmCJpbSm4GVkV7MxxFyfj9mmOsHHEKY6sW/Jusy/PW3d0e5V1whKpqta/W8+G2xTEjORVOcERCW+OcZLMagtPvyzOljebMzyaHuYi1oHJBU6rY4fxy/3i9OAV+oPUP4=; fontsLoaded=1; application_name=; category=; _sid=u913f8eb0f9-9786-47a3-8139-733931f05; _gid=GA1.2.954864517.1792309211; _swuid=55a09fe4-deca-be8f-372c-72c12430a5bf; _ga_X3K3CELKLV=GS2.1.s1792309208$o1$g1$t1792309773$j57$l0$h0; _ga=GA1.1.1485372475.1792285625; x-theme=",
         "isLoggedIn": true,
-        "savedAt": "2026-10-18T05:36:37.821Z"
+        "savedAt": "2026-10-18T08:19:34.910Z"
+      },
+      "acc_9510581244": {
+        "name": "Jsj (User 1)",
+        "swiggyName": "Jsj",
+        "botTag": "User 1",
+        "email": "",
+        "phone": "9510581244",
+        "mobile": "9510581244",
+        "customerId": "286027589",
+        "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI2Y2JmOWQ2OC03NTc4LTRhZWItOWM0MS03MDdjZjM3NGI2YWIiLCJ1c2VyX2lkIjoiMjg2MDI3NTg5Iiwic2Vzc2lvbl9kYXRhIjoickVYOW1QOUgvYVBIL1hmMkg5MTZLNmNCaytxTlVWMC9wVnFYREkvVW9yV0VpcXJkUXF6N3RwY1lOOHFmYzZSQTJKUjRkV04vTHhBclAyaCtBUWVWZG1iZ1ovSFduOGVmNXF5eStPdWp6VTZnT2J5YU5kZk16L09VNTZXVGpjRVhSUjMwckU2L2R3OXczcEprVXlhNnRzMjBBdzI2V1B5b1FSOGYxWmwrTk8zZkx6aVJ4VzNNekhNdjlmTVdOSklkTVBqZWIyZkF5WmpWZWozRWNMVFYyY1ViT2JPYWcyZmxjbndPbGo0dGR1Y2JuWWZ3WGNNRTlhdU9xTC9UTUpOODMxOVl2Zz09Iiwic2lkIjoidTkzYzIzMDlhNzgtMjU3Ny00ZTU0LTk2NmEtYTQ1NGE4MjBkIiwiaWF0IjoxNzkyMzE3MzQ2LCJleHAiOjE3OTIzMTk3NDZ9._sfhJ-nTguMszGtTpasaZr3_6fvLMo-hOXsIlXdWuOY",
+        "sid": "u93c2309a78-2577-4e54-966a-a454a820d",
+        "deviceId": "9f8b7176-02d7-6017-e031-44370afb2c62",
+        "token": "6d70291c-397f-4550-ba44-06a3bc2cb755ee2e605a-36db-4b38-a6f1-953ec09d3de7",
+        "isLoggedIn": true,
+        "cookies": "_swuid=9f8b7176-02d7-6017-e031-44370afb2c62; application_name=; __SW=llK9qdFGeW2aBsQQubZBANUjvdepmeSc; category=; _device_id=9f8b7176-02d7-6017-e031-44370afb2c62; x-channel=; _ga_X3K3CELKLV=GS2.1.s1792316555$o1$g0$t1792316555$j60$l0$h0; _gcl_au=1.1.1941970989.1792316556; userLocation={%22lat%22:%2226.83730%22%2C%22lng%22:%2280.91650%22%2C%22address%22:%22%22%2C%22area%22:%22%22%2C%22id%22:%22%22%2C%22annotation%22:%22%22%2C%22deliveryLocation%22:%22%22%2C%22showUserDefaultAddressHint%22:false%2C%22isAutomatedLocation%22:false%2C%22mainText%22:%22%22}; _sid=u93c2309a78-2577-4e54-966a-a454a820d; _ga=GA1.2.1881923832.1792316556; _gid=GA1.2.1910622911.1792316559; token=6d70291c-397f-4550-ba44-06a3bc2cb755ee2e605a-36db-4b38-a6f1-953ec09d3de7; aws-waf-token=4c2a2d9b-5d8c-47f3-a217-1c44b248fb78:HgoAutpqGXSQIAAA:b8oYi0DEVCHWAXLqFEfhRNvP/xddULpfTFpNGUlyC3d8HR4PGfCLrAt1gHaSMSxwMpeDB0SolcRhxfpZcrV1Q1TeehSXLQ+JOMKitRIpBoftlalClcN3LVCgr8KyiCli0B7mKM9nLVCEkmtJ7d3llwSjMRHbrfgiU/8sbfMd0Jcf5/zo0qrIl4HfM3A2oKKKDu/gPkv5PGyIjAFHdum1uUduwjn+4KsY6uFJnwBsU83P1YtU955GHYJbTJfpV6l+JUi4WUr8BRk2iPnstVd7cUxYjIEzb19ZpVoIUdQiRko/bdLpY/X8Ik45mmB0VsWepMOF2geFqQi3t5cqX7Za; _is_logged_in=1; x-xid=; tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI2Y2JmOWQ2OC03NTc4LTRhZWItOWM0MS03MDdjZjM3NGI2YWIiLCJ1c2VyX2lkIjoiMjg2MDI3NTg5Iiwic2Vzc2lvbl9kYXRhIjoickVYOW1QOUgvYVBIL1hmMkg5MTZLNmNCaytxTlVWMC9wVnFYREkvVW9yV0VpcXJkUXF6N3RwY1lOOHFmYzZSQTJKUjRkV04vTHhBclAyaCtBUWVWZG1iZ1ovSFduOGVmNXF5eStPdWp6VTZnT2J5YU5kZk16L09VNTZXVGpjRVhSUjMwckU2L2R3OXczcEprVXlhNnRzMjBBdzI2V1B5b1FSOGYxWmwrTk8zZkx6aVJ4VzNNekhNdjlmTVdOSklkTVBqZWIyZkF5WmpWZWozRWNMVFYyY1ViT2JPYWcyZmxjbndPbGo0dGR1Y2JuWWZ3WGNNRTlhdU9xTC9UTUpOODMxOVl2Zz09Iiwic2lkIjoidTkzYzIzMDlhNzgtMjU3Ny00ZTU0LTk2NmEtYTQ1NGE4MjBkIiwiaWF0IjoxNzkyMzE3MzQ2LCJleHAiOjE3OTIzMTk3NDZ9._sfhJ-nTguMszGtTpasaZr3_6fvLMo-hOXsIlXdWuOY; x-theme=; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f971bbe6119414beb3558b9e241cbb35753c9f33627b96e14a294d474b8288857b0d9c5ae78bb3d10abc5baf6ed38a7e19fd18ae89bded7bf9db7b1d0fc430d0ab3ec9fc5692a8bc64ae24f09d1d5b8bf58665cf07f3a27daa55e17c954b48f127befc362e887eee2a753f0a25a6764c1e30b55dc14d9516effa7bd7d9c37c0c3e76166e7d043f60c53270c38b317bf27ed218cd4360c3c09f54a6d8fe79af41b12691d2e28d28ec9ec9bd4fd54f9bdb152f004e0958b24ac14c4468231653fd9a35d103e103dc1d8b78cc688ff6339a23de72c18becc8e17e970e28caa4e64bc15a50c5e196a824fd105cb48ff22b141d1f7adde85110624e9a7fe67337de101ca45160174e3e7677bf71b5388d4ab6cee9352f8bd0a3896ca2e698c1c86d15717971bef925bf0c92c31cd00cc77c505240624b5122b2aa7c53ae0684f0a7ed1a8d7e5d42f26be382bc0d1b47971d4b99c910a26e2c0d06d2b2eb4cc48d755f0eb0f7f331ff5cc37ba6f068764122f6001b9383ff075512232b168361610a174f688c765427161d0df50f96a732d0c4c1be9185f2d9eb98bf50fa4da36de1f5a2728222530f561ed98f3fe518fd0331c5f28781bf09e9ffb5b23257be352cfb8c76bd351b76760a6dfd30092b38535c1e68736c4fe2e24cde21b2a1eefd763302c15d4785cd7122e4ff1bcf19785ec16dc95d17edd72cc9f9dcb0c87440075b9b251b9c0b1c710e558a4b6de8c9efd6bb5af061449eded95bf3bfda100ed5ade93544a91dafebb9f8582d2adc86d7bb38d9faa7ebaf88784e8b3308aacdeb1b4f55121ca80a296fcdc38a822f43f5a2fb28c48944c03558ec349e50cbf309f6bf837858a3fb6519889cbfcc0354ecd7bef4da84da1866a00f1f4503b600e2767d0fac0fbd8620ade7c1344d3560fa089b55da91870db565a8bb52a0bca91db196bac8f87a88878f4fb9523e0b0e0d22a41300bf0f94a63dc77a720b48003c54f; AMP_TOKEN=%24NOT_FOUND",
+        "offers": {
+          "lateNight": {
+            "name": "Swiggy Late Night",
+            "status": "CLAIMED",
+            "discount": "50 off on 199"
+          },
+          "breakfast": {
+            "name": "Swiggy Breakfast",
+            "status": "CLAIMED",
+            "discount": "50 off on 199"
+          }
+        },
+        "savedAt": "2026-10-18T09:55:48.047Z"
+      },
+      "acc_9366154525": {
+        "name": "Sed tiri (User 1)",
+        "swiggyName": "Sed tiri",
+        "botTag": "User 1",
+        "email": "",
+        "phone": "9366154525",
+        "mobile": "9366154525",
+        "customerId": "286022802",
+        "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJhZTIxZjc5Yi0wZmY3LTQ4YTEtYjQ2ZS00NDVhN2M2NDE1MTQiLCJ1c2VyX2lkIjoiMjg2MDIyODAyIiwic2Vzc2lvbl9kYXRhIjoiUExHN2VKRndvOVhYSnk1UDA3Y293enkxNlppakxDNWsrTVBZRmtlV2RwQnNLMWtyUGZkMXJMMzFjTTlqUkhvbHd4d0FzRk51RmREdzFPOXpIQVc0WjdRV2FBMm1VOXBhQzBhWVQ5K05HNmhCWVpUZ04yc1BxYVdpbjdzTmNNT0wxOUk2RFVvcjJSNUhqSXU1Zkp2TmM0Z1R5NUVqMWNOQ2xPVXNINXo0Nmk5WDkxeDg2Yk1ZbWJkcnlJeGdQWlovV2ZlZFdSSm1TdXh2YTlEOHRxby9RaE9EYjZmVis2Y3JDclcrcjFRK0t3eFg5SDlZYjlUWkljR3dZOHF0TitMOEdPZzFGaVBnWTZWUiIsInNpZCI6InU5M2ZiZGE1ZjFjLWI3ZDUtNGFkZC1iNmUzLTQwODM2OGMwMyIsImlhdCI6MTc5MjMxODAyNCwiZXhwIjoxNzkyMzIwNDI0fQ.QN-zced5F3MdwKg3DBfOnWqNyeJ08Z182E10ZweDW_o",
+        "sid": "u93fbda5f1c-b7d5-4add-b6e3-408368c03",
+        "deviceId": "f4881c66-915a-c26a-f2f6-224d20cb1bf3",
+        "token": "6fe55878-c54d-4ed1-a557-1d0fdc020940f265c4a4-8241-4071-8562-cb72312658c1",
+        "isLoggedIn": true,
+        "cookies": "_swuid=f4881c66-915a-c26a-f2f6-224d20cb1bf3; x-channel=; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fd1f547018f3fdf19e650ccbded45f4555535bd49508d1f557eaa7cba721e6a23f9b1d765a2a7731d9d115744d94be181873d29944f071d63a3f7dbc76f568bd2bafff4d37f02e7677b1d7a939bda99d13e9b3d9fe936f4253c312ec722ea43ce9a72021bed464913934342ea547a69017e47f4cb0d43424a0c699f2df03c6f7398974b8f264af4f556a6aada57db42db96bfe1c395c482b62595b03c743ea97b082694cd6b0b3e67da5f05e46f82d69df0b53cfe5c3a73b116adb6913c2b9299205b582f8529ed2a6bf71486bfab897a2daf08033d97c4c33220a89fcf54fc98c9f7bf2248a7214ebd60c56e73b36f219d69fe432f16b92408bad26ebf24ec70622e08ed5efa8a44fb94fd3926033099ec9258aac8b6f446d80c93346d924b0ac6f39821962de8e433d340cd2e9d7f0c46b8c8865d5938e164473546f9e059ccda721e8b6d2f75d83c8520f94c8a185f4072c3ec083474540b42f11e934832dcc2693f7fccd906fba36b4e948cf3d82e4051bbd60503d91202fbde1ad43f4cc711bf97c164ffd7ee3362cdb71d786e0920a2f2ca11f3fde839ceacb424f56505bc71d57aa52a2488e7e0bb898f93ce67f987294fc85dda0923830e394b72c1c2977f11dc5cd48dbd4e08ee27f35bc5051477c4daa48c30b22c4d08d4913a3490819d5095d5465ad384d87fdc811d98aa096086dae854e010c637d05ed70056637eaaf8b06b17c5b9eea2d6f6059244debfbb7725369bc417006c4d8b6838a3eeca26b239ba012b47f0fa1096d67d735044627b4f6f6b50f11d6e577d31666747004f7cce993916be4f1f17ea00b69736c96a8252cee68a9307b700584e4a89060265e32f7d5a32139f465f9a1f94212385f27bb0d54f0412d957ebdf104ecdcc7c0cddac49bf4c9a01fbb8ef5e6bba5f0bbd461aa1ad11111226e5af1a93380048be3ceed065156bce3d43bb40505ebfbe28c9a0ac9647c1343fd249c8476b3c; tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJhZTIxZjc5Yi0wZmY3LTQ4YTEtYjQ2ZS00NDVhN2M2NDE1MTQiLCJ1c2VyX2lkIjoiMjg2MDIyODAyIiwic2Vzc2lvbl9kYXRhIjoiUExHN2VKRndvOVhYSnk1UDA3Y293enkxNlppakxDNWsrTVBZRmtlV2RwQnNLMWtyUGZkMXJMMzFjTTlqUkhvbHd4d0FzRk51RmREdzFPOXpIQVc0WjdRV2FBMm1VOXBhQzBhWVQ5K05HNmhCWVpUZ04yc1BxYVdpbjdzTmNNT0wxOUk2RFVvcjJSNUhqSXU1Zkp2TmM0Z1R5NUVqMWNOQ2xPVXNINXo0Nmk5WDkxeDg2Yk1ZbWJkcnlJeGdQWlovV2ZlZFdSSm1TdXh2YTlEOHRxby9RaE9EYjZmVis2Y3JDclcrcjFRK0t3eFg5SDlZYjlUWkljR3dZOHF0TitMOEdPZzFGaVBnWTZWUiIsInNpZCI6InU5M2ZiZGE1ZjFjLWI3ZDUtNGFkZC1iNmUzLTQwODM2OGMwMyIsImlhdCI6MTc5MjMxODAyNCwiZXhwIjoxNzkyMzIwNDI0fQ.QN-zced5F3MdwKg3DBfOnWqNyeJ08Z182E10ZweDW_o; x-xid=; x-theme=; userLocation={%22lat%22:%2226.83730%22%2C%22lng%22:%2280.91650%22%2C%22address%22:%22%22%2C%22area%22:%22%22%2C%22id%22:%22%22%2C%22annotation%22:%22%22%2C%22deliveryLocation%22:%22%22%2C%22showUserDefaultAddressHint%22:false%2C%22isAutomatedLocation%22:false%2C%22mainText%22:%22%22}; AMP_TOKEN=%24NOT_FOUND; _gid=GA1.2.1241569207.1792317627; _is_logged_in=1; application_name=; __SW=TfhVYr1evx0HgH2qwRVwTZHgCXR8Lbth; category=; aws-waf-token=4c2a2d9b-5d8c-47f3-a217-1c44b248fb78:HgoAf0BqPYbVIAAA:iV8PXLldRjJ1EnEwuqxbuBaUwWytwR/JojYvjai8cVcGvyGU89tELYEIALRKHgYi7umleFIBM4zLfO6iDeT0hz5Bkqp8KhfU1EF1gJwDvDQ4gnabo8NM940G6OSdWtGY+hHHDrP1GEry1D03qqFQ3+UA20ZKPTMcIySAzU0Gc6T4TFtpbP2SMypw78TcaRULOqrBvFvH5u4j5mr137t1XJa4hduMYIjHasirw4ynh+TcJ//EIFJOv7/mKVzKxzV0cKlT1RT1gWsoBRHXe4To0c4vNuxPnbB4wEexmTyMjkmkJAHPdCPjw8oaiaI0cjWe57cFWBcm78uEVX4jq6Zj; _device_id=f4881c66-915a-c26a-f2f6-224d20cb1bf3; _sid=u93fbda5f1c-b7d5-4add-b6e3-408368c03; _ga_X3K3CELKLV=GS2.1.s1792317625$o1$g0$t1792317625$j60$l0$h0; _gcl_au=1.1.568726711.1792317626; _ga=GA1.2.1533056716.1792317626; token=6fe55878-c54d-4ed1-a557-1d0fdc020940f265c4a4-8241-4071-8562-cb72312658c1",
+        "offers": {
+          "lateNight": {
+            "name": "Swiggy Late Night",
+            "status": "CLAIMED",
+            "discount": "50 off on 199"
+          },
+          "breakfast": {
+            "name": "Swiggy Breakfast",
+            "status": "CLAIMED",
+            "discount": "50 off on 199"
+          }
+        },
+        "savedAt": "2026-10-18T10:07:04.919Z"
       }
     },
-    "activeOrderAccount": "acc_6204650749"
+    "activeOrderAccount": "acc_9510581244"
   },
   "orders": {
     "10058": {
@@ -694,6 +750,22 @@
       "trackingLink": "https://www.swiggy.com/orders/track/35674",
       "cancelledAt": "2026-10-15T02:28:50.429Z"
     },
+    "36927": {
+      "id": "36927",
+      "userId": 5910693027,
+      "userName": ".",
+      "handle": null,
+      "type": "PHOTO",
+      "fileId": "AgACAgUAAxkBAAIR7mrUk7DMWDUy02mzY_FvT4DQWrdeAAKxFGsbo-GpVpaM3k_BkDlNAQADAgADeQADPQQ",
+      "address": null,
+      "cart": null,
+      "selectedAccount": "acc_9157928345",
+      "status": "REJECTED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-18T09:38:56.933Z",
+      "rejectedAt": "2026-10-18T09:39:30.257Z",
+      "cancelledAt": "2026-10-18T09:39:30.257Z"
+    },
     "38247": {
       "id": "38247",
       "userId": 6938858013,
@@ -741,6 +813,22 @@
       "bossMessageIds": {
         "6484999726": 785
       }
+    },
+    "39953": {
+      "id": "39953",
+      "userId": 5910693027,
+      "userName": ".",
+      "handle": null,
+      "type": "PHOTO",
+      "fileId": "AgACAgUAAxkBAAIR7mrUk7DMWDUy02mzY_FvT4DQWrdeAAKxFGsbo-GpVpaM3k_BkDlNAQADAgADeQADPQQ",
+      "address": "https://swiggy.onelink.me/JgkQ/lmv4c6kf",
+      "cart": null,
+      "selectedAccount": "acc_9157928345",
+      "status": "REJECTED",
+      "paymentStatus": "UNPAID",
+      "createdAt": "2026-10-18T09:42:19.956Z",
+      "rejectedAt": "2026-10-18T09:55:12.213Z",
+      "cancelledAt": "2026-10-18T09:55:12.213Z"
     },
     "40394": {
       "id": "40394",
@@ -1177,14 +1265,16 @@
       "items": [],
       "subtotal": 0,
       "finalPayable": null,
-      "status": "PENDING",
+      "status": "REJECTED",
       "paymentStatus": "UNPAID",
       "createdAt": "2026-10-16T20:23:13.041Z",
       "userChatId": 6499622690,
       "userMessageId": 1966,
       "bossMessageIds": {
         "6484999726": 1967
-      }
+      },
+      "rejectedAt": "2026-10-18T09:55:02.989Z",
+      "cancelledAt": "2026-10-18T09:55:02.989Z"
     },
     "97030": {
       "id": "97030",
@@ -1349,7 +1439,7 @@
       ],
       "subtotal": 266,
       "finalPayable": 314,
-      "status": "ACCEPTED",
+      "status": "CANCELLED",
       "paymentStatus": "UNPAID",
       "createdAt": "2026-10-16T19:18:27.411Z",
       "userChatId": 6938858013,
@@ -1358,7 +1448,31 @@
         "6484999726": 1926
       },
       "totalSavings": 14,
-      "acceptedAt": "2026-10-17T00:01:25.819Z"
+      "acceptedAt": "2026-10-17T00:01:25.819Z",
+      "cancelledAt": "2026-10-18T10:18:44.800Z"
+    },
+    "ORD-6166": {
+      "id": "ORD-6166",
+      "userId": 6938858013,
+      "userName": "Trust Pulser",
+      "handle": "@Trustpulser",
+      "userChatId": 6938858013,
+      "cart": "https://swig.gy/gc/60379/Her-502858420",
+      "address": "https://swiggy.onelink.me/JgkQ/to4k9pgg",
+      "addressDetails": null,
+      "restaurantName": "Her's Group Order",
+      "restaurantId": "60379",
+      "groupCartId": "502858420",
+      "status": "WAITING_CONFIRMATION",
+      "selectedAccount": "acc_6361521217",
+      "createdAt": "2026-10-18T10:19:24.446Z",
+      "bossMessageIds": {
+        "6484999726": 4739
+      },
+      "userMessageId": 4740,
+      "amountAccepted": false,
+      "waitingConfirmation": true,
+      "sentForConfirmationAt": "2026-10-18T10:20:39.421Z"
     }
   },
   "drafts": {
@@ -1393,8 +1507,8 @@
       "currentOrderId": null
     },
     "6938858013": {
-      "address": "https://swiggy.onelink.me/JgkQ/jl26yy4n",
-      "cart": "https://swig.gy/gc/67272/Umbashiya-642855918",
+      "address": null,
+      "cart": null,
       "submitted": false,
       "currentOrderId": null
     },
@@ -1423,6 +1537,24 @@
       "currentOrderId": null
     },
     "5808811829": {
+      "address": null,
+      "cart": null,
+      "submitted": false,
+      "currentOrderId": null
+    },
+    "8243324853": {
+      "address": null,
+      "cart": null,
+      "submitted": false,
+      "currentOrderId": null
+    },
+    "5910693027": {
+      "address": null,
+      "cart": null,
+      "submitted": false,
+      "currentOrderId": null
+    },
+    "6508494123": {
       "address": null,
       "cart": null,
       "submitted": false,
