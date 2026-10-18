@@ -91,53 +91,88 @@ function isLinkString(str) {
   );
 }
 
+export function isValidSwiggyCartUrl(urlStr) {
+  if (!urlStr || typeof urlStr !== 'string') return false;
+  const s = urlStr.trim();
+  let parsed;
+  try {
+    parsed = new URL(s.startsWith('http') ? s : 'https://' + s);
+  } catch (e) {
+    return false;
+  }
+  const host = parsed.hostname.toLowerCase();
+  const isSwiggyHost = host === 'swiggy.com' || host.endsWith('.swiggy.com') || host === 'swig.gy' || host === 'swiggy.onelink.me' || host.endsWith('.onelink.me');
+  if (!isSwiggyHost) return false;
+
+  const path = parsed.pathname.toLowerCase();
+  const search = parsed.search.toLowerCase();
+  const full = path + search;
+
+  if (path === '/' || path === '') return false;
+
+  return (
+    full.includes('/gc/') ||
+    full.includes('group-cart') ||
+    full.includes('group_cart') ||
+    full.includes('groupcartid') ||
+    full.includes('/cart') ||
+    full.includes('/restaurants/') ||
+    full.includes('/menu') ||
+    full.includes('restaurant_id') ||
+    (host === 'swig.gy' && path.length >= 4) ||
+    (host.includes('onelink.me') && path.length >= 4)
+  );
+}
+
+export function isValidDeliveryAddressUrl(urlStr) {
+  if (!urlStr || typeof urlStr !== 'string') return false;
+  const s = urlStr.trim();
+  let parsed;
+  try {
+    parsed = new URL(s.startsWith('http') ? s : 'https://' + s);
+  } catch (e) {
+    return false;
+  }
+  const host = parsed.hostname.toLowerCase();
+  const isGoogleMaps = host === 'maps.app.goo.gl' ||
+                       host === 'goo.gl' ||
+                       host === 'maps.google.com' ||
+                       (host.endsWith('.google.com') && (parsed.pathname.includes('/maps') || parsed.pathname.includes('/place')));
+
+  const isSwiggyAddr = (host === 'swiggy.com' || host.endsWith('.swiggy.com') || host.includes('onelink.me')) &&
+                       (parsed.pathname.includes('ofo/address') || parsed.pathname.includes('/address') || parsed.search.includes('ofo/address') || parsed.pathname.includes('y313q1wv'));
+
+  if (!isGoogleMaps && !isSwiggyAddr) return false;
+
+  if (isGoogleMaps && (parsed.pathname === '/' || parsed.pathname === '/maps') && !parsed.search && !parsed.hash) {
+    return false;
+  }
+
+  return true;
+}
+
 function classifyLink(url) {
-  if (!url || typeof url !== 'string') return 'UNKNOWN';
-  const u = url.trim().toLowerCase();
-  const isHttp = u.startsWith('http://') || u.startsWith('https://');
-
-  if (
-    u.includes('maps.google') ||
-    u.includes('goo.gl') ||
-    u.includes('maps.app.goo.gl') ||
-    u.includes('ofo/address') ||
-    u.includes('lat=') ||
-    u.includes('lng=')
-  ) {
-    return 'ADDRESS';
-  }
-
-  // Cart must be a genuine Swiggy URL
-  if (isHttp && (
-    u.includes('/gc/') ||
-    u.includes('group-order') ||
-    u.includes('swig.gy') ||
-    u.includes('swiggy.com') ||
-    u.includes('swiggy.onelink.me')
-  )) {
-    return 'CART';
-  }
-
+  if (isValidDeliveryAddressUrl(url)) return 'ADDRESS';
+  if (isValidSwiggyCartUrl(url)) return 'CART';
   return 'UNKNOWN';
 }
 
-// User Bottom Menu - Send to Beta ALWAYS available on reply keyboard
+// User Bottom Menu - Pure Cart, Address, and Send to Beta options
 function getUserReplyKeyboard(draft = {}) {
-  const cartLabel = draft?.cart ? 'Cart: Added' : 'Paste Cart Link';
-  const addrLabel = draft?.address ? 'Address: Added' : 'Paste Address Link';
+  const cartLabel = draft?.cart ? '🟣 Cart: Added ✅' : '🟣 Paste Cart Link';
+  const addrLabel = draft?.address ? '🔵 Address: Added ✅' : '🔵 Paste Address Link';
   return Markup.keyboard([
     [
-      { text: cartLabel, style: 'primary' },
-      { text: addrLabel, style: 'primary' }
+      { text: cartLabel },
+      { text: addrLabel }
     ],
     [
-      { text: 'Send to Beta', style: 'success' }
+      { text: '🚀 Send to Beta' }
     ],
     [
-      { text: 'Cancel Order', style: 'danger' },
-      { text: 'Previous Orders', style: 'primary' }
+      { text: '🟠 Cancel Draft' }
     ]
-  ]).resize().persistent(false);
+  ]).resize();
 }
 
 // Boss Bottom Menu - Pure Admin Controls (Never customer buttons)
@@ -174,7 +209,7 @@ function getBossReplyKeyboard() {
   ]).resize().persistent(false);
 }
 
-// Format User (Ammi / Parent) Order Screen matching FigJam State Machine
+// Format User (Customer) Order Screen matching State Machine
 function formatUserOrderCard(order) {
   const db = getDb();
   const slotsLeft = db.config.slotsLeft;
@@ -184,98 +219,56 @@ function formatUserOrderCard(order) {
   const buttons = [];
   let text = `${header}\n\n`;
 
-  if (order.status === 'COMPLETED') {
-    text += `❤️ <b>Order Completed & Placed! (#${order.id})</b>\n\n` +
-      `🏨 <b>Restaurant:</b> <b>${escapeHtml(order.restaurantName || 'Swiggy')}</b>\n` +
-      (order.swiggyOrderId ? `🆔 <b>Swiggy Order ID:</b> <code>${escapeHtml(order.swiggyOrderId)}</code>\n` : '') +
-      `💰 <b>Amount Paid:</b> <b>₹${order.finalPayable || 0}</b>\n` +
-      `📌 <b>Status:</b> <b>🟢 Out for Delivery 🛵</b>\n\n` +
-      `<i>Beta ne Swiggy se order place kar diya hai! Delivery boy samaan lekar nikal raha hai.</i>`;
-
-    const trackingUrl = order.trackingLink || 'https://www.swiggy.com/my-account/orders';
+  if (order.status === 'ACCEPTED') {
+    text += `🎉 <b>Aapka Order Accept Ho Gaya Hai! (#${order.id})</b>\n\n` +
+      `🛒 <b>Cart Link:</b>\n<code>${escapeHtml(order.cart || '')}</code>\n\n` +
+      `📍 <b>Address Link:</b>\n<code>${escapeHtml(order.address || '')}</code>\n\n` +
+      `📌 <b>Status:</b> <b>🟢 ACCEPTED</b>\n\n` +
+      `<i>Beta ne aapka Swiggy order accept kar liya hai aur processing shuru kar di hai. 🛵</i>\n\n` +
+      `⚠️ <b>Zaroori Suchna:</b>\n` +
+      `Agar aapko koi bhi difficulty, issue ya samasya aati hai, toh kripya direct message karein:\n` +
+      `👉 <b>Support:</b> @Its_life_001`;
     buttons.push([
-      Markup.button.url('🟢 Open Swiggy Live Tracking', trackingUrl)
+      Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')
+    ]);
+    buttons.push([
+      Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`),
+      Markup.button.callback('🟠 Cancel Order', `action_cancel_order_confirm_${order.id}`)
     ]);
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
 
-  const acc = db.config?.accounts?.[order.selectedAccount];
-  const accPhoneOrName = acc?.phone || order.selectedAccount || '';
-  const receipt = formatSwiggyWorldCartReceipt(order, accPhoneOrName);
-
-  if (order.paidByUser) {
-    text += `❤️ <b>Aapka Swiggy Order (#${order.id})</b>\n\n` +
-      receipt + '\n\n' +
-      `💰 <b>Amount Paid:</b> <b>₹${order.finalPayable || 0}</b>\n` +
-      `📌 <b>Status:</b> <b>🟢 Payment Confirmed</b>\n\n` +
-      `<i>Beta Swiggy par aapka order place kar rahe hain! Place hote hi live tracking link yahan dikhega.</i>`;
+  if (order.status === 'REJECTED') {
+    text += `❌ <b>Order Reject Ho Gaya (#${order.id})</b>\n\n` +
+      `🛒 <b>Cart Link:</b>\n<code>${escapeHtml(order.cart || '')}</code>\n\n` +
+      `<i>Beta ne filhal yeh order reject kar diya hai.</i>\n\n` +
+      `Agar koi difficulty ya sawaal ho, toh kripya message karein:\n` +
+      `👉 <b>Support:</b> @Its_life_001\n\n` +
+      `<i>Naya order place karne ke liye neeche button dabayein:</i>`;
     buttons.push([
-      Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`)
-    ]);
-    if (order.cart && order.cart.startsWith('http')) {
-      buttons.push([Markup.button.url('🟣 Open Swiggy Cart / Items', order.cart)]);
-    }
-  } else if (order.qrSent) {
-    // Phase 4/5: QR delivered to user
-    text += `💳 <b>Payment QR Delivered (#${order.id})</b>\n\n` +
-      receipt + '\n\n' +
-      `💰 <b>Payable Amount:</b> <b>₹${order.finalPayable}</b>\n` +
-      `📌 <b>Status:</b> <b>🟡 Awaiting Payment</b>\n\n` +
-      `<i>Kripya diye gaye QR code ko scan karke payment karein ya direct Swiggy payment page kholein. Payment hone ke baad niche [ 💸 Confirm Payment / Done ] dabayein:</i>`;
-    const payRow = [
-      Markup.button.url('🟢 Open Swiggy Payment Page', 'https://www.swiggy.com/payments'),
-      Markup.button.callback('💸 Confirm Payment / Done', `user_confirm_order_${order.id}`)
-    ];
-    buttons.push(payRow);
-    if (order.cart && order.cart.startsWith('http')) {
-      buttons.push([
-        Markup.button.url('🟣 Open Swiggy Cart / Items', order.cart)
-      ]);
-    }
-    buttons.push([
-      Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`),
-      Markup.button.callback('🟠 cancel order', `action_cancel_order_confirm_${order.id}`)
-    ]);
-  } else if (order.amountAccepted) {
-    // Phase 4: User accepted amount, waiting for Boss to generate QR
-    text += `❤️ <b>Aapka Swiggy Order (#${order.id})</b>\n\n` +
-      receipt + '\n\n' +
-      `💰 <b>Confirmed Amount:</b> <b>₹${order.finalPayable}</b>\n` +
-      `📌 <b>Status:</b> <b>🟢 Amount Accepted</b>\n\n` +
-      `<i>Aapne amount accept kar liya hai! Beta abhi UPI payment QR generate kar rahe hain...</i>`;
-    buttons.push([
-      Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`),
-      Markup.button.callback('🟠 cancel order', `action_cancel_order_confirm_${order.id}`)
-    ]);
-  } else if (order.finalPayable && Number(order.finalPayable) > 0) {
-    // Phase 3: Amount is ready for user to confirm
-    text += `❤️ <b>Aapka Swiggy Order (#${order.id})</b>\n\n` +
-      receipt + '\n\n' +
-      `📌 <b>Status:</b> <b>🟡 Confirm Order Amount</b>\n\n` +
-      `<i>Swiggy se coupon & offers apply karke amount verify ho gaya hai. Agar aapko yeh amount sahi lagta hai toh niche button dabayein:</i>`;
-    buttons.push([
-      Markup.button.callback('🟢 Accept Order (Amount Okay)', `user_accept_amount_${order.id}`)
+      Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')
     ]);
     buttons.push([
-      Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`),
-      Markup.button.callback('🟠 cancel order', `action_cancel_order_confirm_${order.id}`)
+      Markup.button.callback('🔄 New Order', 'user_back_to_main')
     ]);
-  } else {
-    // Initial / Pending verification
-    text += `❤️ <b>Aapka Swiggy Order (#${order.id})</b>\n\n` +
-      (order.restaurantName ? `🏨 <b>Restaurant:</b> <b>${escapeHtml(order.restaurantName)}</b>\n\n` : '') +
-      `📌 <b>Status:</b> <b>⏳ Cart & Offer Verification</b>\n\n` +
-      `<i>Swiggy se cart items aur best coupons verify ho rahe hain. Kuch hi seconds me yahan items aur bill summary dikhegi...</i>`;
-    buttons.push([
-      Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`),
-      Markup.button.callback('🟠 cancel order', `action_cancel_order_confirm_${order.id}`)
-    ]);
+    return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
+
+  // PENDING state
+  text += `❤️ <b>Aapka Swiggy Order (#${order.id})</b>\n\n` +
+    `🛒 <b>Cart Link:</b>\n<code>${escapeHtml(order.cart || '')}</code>\n\n` +
+    `📍 <b>Address Link:</b>\n<code>${escapeHtml(order.address || '')}</code>\n\n` +
+    `📌 <b>Status:</b> <b>⏳ Sent to Beta (Pending Acceptance)</b>\n\n` +
+    `<i>Beta aapka order review karke accept karenge. Please intezaar karein...</i>`;
+  buttons.push([
+    Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`),
+    Markup.button.callback('🟠 Cancel Order', `action_cancel_order_confirm_${order.id}`)
+  ]);
 
   return { text, keyboard: Markup.inlineKeyboard(buttons) };
 }
 
-// User Screen Generator - Clean minimal UI with single Send to Beta button
+// User Screen Generator - Clean minimal UI with interactive buttons for Cart, Address & Send to Beta
 function getUserScreen(userId, user) {
   const activeOrder = getActiveUserOrder(userId);
   if (activeOrder) {
@@ -287,26 +280,41 @@ function getUserScreen(userId, user) {
   const slotsLeft = db.config.slotsLeft;
   const totalSlots = db.config.totalSlots;
 
-  const cartBtnText = draft.cart ? '🟣 Cart: Added ✅' : '🟣 Paste cart link';
-  const addressBtnText = draft.address ? '🔵 Address: Added ✅' : '🔵 Paste address Link';
+  const cartBtnText = draft.cart ? '🟣 Cart: Added ✅' : '🟣 Paste Cart Link';
+  const addressBtnText = draft.address ? '🔵 Address: Added ✅' : '🔵 Paste Address Link';
 
   const inlineButtons = [
     [
-      Markup.button.callback(cartBtnText, 'action_force_change_cart'),
-      Markup.button.callback(addressBtnText, 'action_force_change_address')
+      Markup.button.callback(cartBtnText, 'action_paste_cart'),
+      Markup.button.callback(addressBtnText, 'action_paste_address')
     ],
     [
       Markup.button.callback('🚀 Send to Beta', 'action_send_to_beta')
-    ],
-    [
-      Markup.button.callback('🟠 cancel order', 'action_cancel_order_confirm'),
-      Markup.button.callback('⚪ previous order', 'action_previous_order')
     ]
   ];
 
+  if (draft.cart || draft.address) {
+    inlineButtons.push([
+      Markup.button.callback('🟠 Cancel Draft', 'action_clear_draft')
+    ]);
+  }
+
+  let promptGuidance = '';
+  if (!draft.cart && !draft.address) {
+    promptGuidance = `👉 <i>Niche diye gaye buttons se link add karein:</i>`;
+  } else if (draft.cart && !draft.address) {
+    promptGuidance = `👉 <i>Cart link add ho gaya! Ab <b>[ 🔵 Paste Address Link ]</b> dabakar address link share karein.</i>`;
+  } else if (!draft.cart && draft.address) {
+    promptGuidance = `👉 <i>Address link add ho gaya! Ab <b>[ 🟣 Paste Cart Link ]</b> dabakar Swiggy cart link share karein.</i>`;
+  } else {
+    promptGuidance = `🎉 <b>Dono links verified hain!</b>\n👉 Niche <b>[ 🚀 Send to Beta ]</b> dabayein:`;
+  }
+
   const text = `╔═════════════════════════╗\n   🟡  <b>Slots Left: ${slotsLeft}/${totalSlots}</b>  🟡\n╚═════════════════════════╝\n\n` +
-    `🟣 <b>Cart:</b> ${draft.cart ? '<code>' + escapeHtml(draft.cart) + '</code>' : '<i>Not added</i>'}\n` +
-    `🔵 <b>Address:</b> ${draft.address ? '<code>' + escapeHtml(draft.address) + '</code>' : '<i>Not added</i>'}`;
+    `👋 <b>Swiggy Food Order</b>\n\n` +
+    `🟣 <b>Cart Link:</b> ${draft.cart ? '✅ <code>' + escapeHtml(draft.cart) + '</code>' : '<i>Not added yet</i>'}\n` +
+    `🔵 <b>Address Link:</b> ${draft.address ? '✅ <code>' + escapeHtml(draft.address) + '</code>' : '<i>Not added yet</i>'}\n\n` +
+    promptGuidance;
 
   return { text, keyboard: Markup.inlineKeyboard(inlineButtons) };
 }
@@ -378,89 +386,39 @@ function makeCopyButton(label, value, fallbackCallback, style = 'primary') {
 
 // Format Order Card for Boss (Ultra Compact, Clean & State-Driven)
 function formatBossOrderCard(order) {
-  const db = getDb();
   let statusBadge = '⏳ PENDING';
-  if (order.status === 'WAITING_CONFIRMATION') statusBadge = '⏳ WAITING CONFIRMATION';
-  else if (order.status === 'AMOUNT_CONFIRMED' || order.qrSent) statusBadge = '💳 QR DELIVERED';
-  else if (order.status === 'ACCEPTED') statusBadge = '🟢 ACCEPTED';
+  if (order.status === 'ACCEPTED') statusBadge = '🟢 ACCEPTED';
   else if (order.status === 'REJECTED') statusBadge = '❌ REJECTED';
-  else if (order.status === 'CANCELLED') statusBadge = '🗑️ CANCELLED';
   else if (order.status === 'COMPLETED') statusBadge = '🏁 ORDER SUCCESS';
+  else if (order.status === 'CANCELLED') statusBadge = '🗑️ CANCELLED';
 
   const userProfileUrl = `tg://user?id=${order.userId}`;
   const senderLink = `<a href="${userProfileUrl}">${escapeHtml(order.userName || 'Customer')}</a>`;
   const idLink = `<a href="${userProfileUrl}">${order.userId}</a>`;
   const handleText = order.handle ? ` (@${escapeHtml(order.handle.replace(/^@/, ''))})` : '';
 
-  const restaurantName = order.restaurantName || order.restaurant || (order.cartDetails?.restaurantName) || '';
-  const amount = order.finalPayable || order.amount || (order.cartDetails?.finalPayable) || '';
-
-  const acc = db.config?.accounts?.[order.selectedAccount];
-  const accName = acc?.name || order.selectedAccount || '';
+  const restaurantName = order.restaurantName || order.restaurant || '';
+  const amount = order.finalPayable || order.amount || '';
 
   let text = `🌸 <b>[ ORDER #${order.id} ] — ${statusBadge}</b>\n\n` +
     `👤 <b>Customer:</b> ${senderLink}${handleText}\n` +
-    `🆔 <b>User ID:</b> ${idLink}\n`;
+    `🆔 <b>User ID:</b> ${idLink}\n\n`;
 
-  if (accName) {
-    text += `🟣 <b>Account:</b> <b>${escapeHtml(accName)}</b>\n`;
-  }
-
-  // If receipt details exist, format exact receipt
-  if (order.items && order.items.length > 0) {
-    const receipt = formatSwiggyWorldCartReceipt(order, accName);
-    text += `\n${receipt}\n`;
-    if (order.totalSavings > 0) {
-      text += `━━━━━━━━━━━━━━\nTotal Savings: ₹${order.totalSavings}\n`;
-    }
-    if (order.finalPayable) {
-      text += `To Pay: ₹${order.finalPayable}\n`;
-    }
-  } else {
-    if (restaurantName) text += `🏪 <b>Restaurant:</b> <b>${escapeHtml(restaurantName)}</b>\n`;
-    if (amount) text += `💰 <b>Amount:</b> <b>₹${escapeHtml(String(amount))}</b>\n`;
-    if (order.cart) text += `🛒 <b>Cart Link:</b>\n<code>${escapeHtml(order.cart)}</code>\n`;
-    if (order.address) text += `📍 <b>Address Link / Location:</b>\n<code>${escapeHtml(order.address)}</code>\n`;
-  }
+  // Explicitly NO account selection (User constraint: "bas abhi no account selecteion")
+  if (restaurantName) text += `🏪 <b>Restaurant:</b> <b>${escapeHtml(restaurantName)}</b>\n`;
+  if (amount) text += `💰 <b>Amount:</b> <b>₹${escapeHtml(String(amount))}</b>\n`;
+  if (order.cart) text += `🛒 <b>Cart Link:</b>\n<code>${escapeHtml(order.cart)}</code>\n\n`;
+  if (order.address) text += `📍 <b>Address Link / Location:</b>\n<code>${escapeHtml(order.address)}</code>\n`;
 
   text += `\n⏰ <b>Time:</b> ${new Date(order.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}\n`;
 
   const rows = [];
 
-  // STATE 1: No account selected yet -> Show Choose Account buttons!
-  if (!order.selectedAccount && order.status !== 'REJECTED' && order.status !== 'CANCELLED' && order.status !== 'COMPLETED') {
-    text += `\n👉 <b>Please choose an account to parse & calculate order:</b>\n`;
-    const accounts = db.config?.accounts || {};
-    const accEntries = Object.entries(accounts);
-    if (accEntries.length > 0) {
-      for (let i = 0; i < accEntries.length; i += 2) {
-        const row = [];
-        row.push(Markup.button.callback(`🟣 ${accEntries[i][1]?.name || accEntries[i][0]}`, `boss_sel_acc_${order.id}_${accEntries[i][0]}`));
-        if (accEntries[i + 1]) {
-          row.push(Markup.button.callback(`🟢 ${accEntries[i + 1][1]?.name || accEntries[i + 1][0]}`, `boss_sel_acc_${order.id}_${accEntries[i + 1][0]}`));
-        }
-        rows.push(row);
-      }
-    } else {
-      text += `<i>No connected accounts. Please connect an account first.</i>\n`;
-    }
+  // STATE 1: PENDING Order -> Boss can Accept or Reject immediately
+  if (order.status === 'PENDING') {
     rows.push([
-      makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
-      makeCopyButton('🔵 Copy Address', order.address || '', `boss_copy_addr_${order.id}`)
-    ]);
-    rows.push([
-      Markup.button.callback('🔴 Reject Order', `boss_action_sorry_${order.id}`)
-    ]);
-  }
-  // STATE 2: Account is selected, but not yet sent for confirmation
-  else if (order.selectedAccount && (order.status === 'PENDING' || order.status === 'ACCEPTED') && !order.waitingConfirmation && !order.amountAccepted && !order.qrSent) {
-    const payAmt = order.finalPayable || amount || 0;
-    rows.push([
-      Markup.button.callback(`🚀 Send for Confirmation (₹${payAmt})`, `boss_send_confirm_${order.id}`)
-    ]);
-    rows.push([
-      Markup.button.callback('🔄 Change Account', `boss_change_acc_${order.id}`),
-      Markup.button.callback('🔴 Reject Order', `boss_action_sorry_${order.id}`)
+      Markup.button.callback('✅ Accept Order', `boss_action_accept_${order.id}`),
+      Markup.button.callback('❌ Reject Order', `boss_action_sorry_${order.id}`)
     ]);
     rows.push([
       makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
@@ -470,49 +428,27 @@ function formatBossOrderCard(order) {
       Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`)
     ]);
   }
-  // STATE 3: Waiting for Confirmation
-  else if (order.status === 'WAITING_CONFIRMATION') {
-    text += `\n⏳ <i>Sent to customer. Waiting for customer to accept ₹${order.finalPayable || 0}...</i>\n`;
-    rows.push([
-      Markup.button.callback(`🔄 Resend Confirmation (₹${order.finalPayable || 0})`, `boss_send_confirm_${order.id}`)
-    ]);
-    rows.push([
-      Markup.button.callback('🔄 Change Account', `boss_change_acc_${order.id}`),
-      Markup.button.callback('🔴 Reject Order', `boss_action_sorry_${order.id}`)
-    ]);
+  // STATE 2: ACCEPTED Order -> Message user, Copy links, Reject
+  else if (order.status === 'ACCEPTED') {
     rows.push([
       Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`)
     ]);
-  }
-  // STATE 4: Customer Confirmed / QR Dispatched -> Boss can confirm payment
-  else if (order.amountAccepted || order.qrSent || order.status === 'AMOUNT_CONFIRMED') {
-    text += `\n🟢 <i>Customer confirmed amount! UPI QR dispatched.</i>\n`;
     rows.push([
-      Markup.button.callback(`🟢 Confirm Payment Received (₹${order.finalPayable || 0})`, `boss_action_done_${order.id}`)
+      makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
+      makeCopyButton('🔵 Copy Address', order.address || '', `boss_copy_addr_${order.id}`)
     ]);
     rows.push([
-      Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`),
-      Markup.button.callback('🔴 Reject Order', `boss_action_sorry_${order.id}`)
+      Markup.button.callback('❌ Reject Order', `boss_action_sorry_${order.id}`)
     ]);
   }
-  // STATE 5: Completed / Order Success
-  else if (order.status === 'COMPLETED') {
-    text += `\n✅ <b>ORDER SUCCESS — Archived in Success Orders</b>\n`;
-    rows.push([
-      Markup.button.callback('🏆 Success Orders Archive', 'boss_view_archive')
-    ]);
-    rows.push([
-      Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`)
-    ]);
-  }
-  // Fallback / Rejected / Cancelled
+  // OTHER STATES (REJECTED / CANCELLED / COMPLETED)
   else {
     rows.push([
-      makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
-      makeCopyButton('🔵 Copy Address', order.address || '', `boss_copy_addr_${order.id}`)
+      Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`)
     ]);
     rows.push([
-      Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`)
+      makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
+      makeCopyButton('🔵 Copy Address', order.address || '', `boss_copy_addr_${order.id}`)
     ]);
   }
 
@@ -974,14 +910,14 @@ bot.start(async (ctx) => {
     return;
   }
 
-  const role = getFamilyRole(userId, 'Ammi / Abbu');
+  const draft = getDraft(userId);
   await ctx.reply(
-    `❤️ <b>Khushamdeed ${role}!</b>\n\n` +
-    `Aap seedha <b>Voice Message (audio)</b> bhej sakti hain, ya kisi parchi/samaan ki <b>photo</b> bhej sakti hain.\n` +
-    `Beta ke paas seedha pahunch jayega!`,
+    `👋 <b>Welcome to Swiggy Slot Bot!</b>\n\n` +
+    `Swiggy order ke liye apna <b>Cart link</b> aur <b>Delivery Address link</b> share karein:\n\n` +
+    `👉 Pehle <b>Cart link</b> bhejein ya <b>Address link</b> bhejein, fir <b>[ 🚀 Send to Beta ]</b> daba dein!`,
     {
       parse_mode: 'HTML',
-      ...getUserReplyKeyboard()
+      ...getUserReplyKeyboard(draft)
     }
   );
 
@@ -3740,18 +3676,24 @@ bot.action(/^boss_action_accept_(.+)$/, async (ctx) => {
   saveDb(db);
 
   await ctx.answerCbQuery('✅ Order Accepted!').catch(() => {});
-  const updatedCard = formatBossOrderCard(order);
-  try {
-    await ctx.editMessageText(updatedCard.text, { parse_mode: 'HTML', ...updatedCard.keyboard });
-  } catch (e) {}
+  await updateOrderCards(order);
 
   await ctx.reply(`✅ <b>Request #${orderId} Accepted! (Slots Left: ${db.config.slotsLeft}/${db.config.totalSlots})</b>`, { parse_mode: 'HTML' });
 
   try {
     await bot.telegram.sendMessage(
       order.userId,
-      `🎉 <b>Aapka order accept ho gaya hai!</b>\n\nBeta abhi Swiggy se order place kar rahe hain. 🛵`,
-      { parse_mode: 'HTML' }
+      `🎉 <b>Aapka Order Accept Ho Gaya Hai! (#${orderId})</b>\n\n` +
+      `Beta ne aapka Swiggy order accept kar liya hai aur processing shuru kar di hai. 🛵\n\n` +
+      `⚠️ <b>Zaroori Suchna:</b>\n` +
+      `Agar aapko koi bhi difficulty, issue ya samasya aati hai, toh kripya direct message karein:\n` +
+      `👉 <b>Support:</b> @Its_life_001`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
+        ])
+      }
     );
   } catch (err) {}
 });
@@ -3835,7 +3777,7 @@ bot.action(/^boss_qr_pay_(.+)$/, async (ctx) => {
   );
 });
 
-// Reject Order / Say Sorry (Deletes order card & provides Cancelled Orders view)
+// Reject Order / Say Sorry
 bot.action(/^boss_action_sorry_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
 
@@ -3850,32 +3792,24 @@ bot.action(/^boss_action_sorry_(.+)$/, async (ctx) => {
   saveDb(db);
 
   await ctx.answerCbQuery('❌ Order Rejected').catch(() => {});
+  await updateOrderCards(order);
 
-  // 1. Delete message from current chat
-  try {
-    await ctx.deleteMessage();
-  } catch (e) {}
-
-  // 2. Delete card messages from user and other boss chats
-  await deleteOrderMessages(order);
-
-  // 3. Confirm to Boss with View Cancelled Orders button
-  await ctx.reply(
-    `❌ <b>Order #${orderId} reject kar diya gaya aur card delete ho gaya!</b>\n\n` +
-    `Sabhi cancelled/rejected orders dekhne ke liye neeche button dabayein:`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('🗑️ View Cancelled Orders', 'boss_view_cancelled_orders')]
-      ])
-    }
-  );
+  await ctx.reply(`❌ <b>Order #${orderId} Reject kar diya gaya!</b>`, { parse_mode: 'HTML' });
 
   try {
     await bot.telegram.sendMessage(
       order.userId,
-      `❌ <i>Maaf kijiyega, abhi yeh order reject/cancel kar diya gaya hai. Aap baad me naya link bhej sakte hain.</i>`,
-      { parse_mode: 'HTML' }
+      `❌ <b>Aapka Order Reject Ho Gaya Hai (#${orderId})</b>\n\n` +
+      `Beta ne filhal yeh order reject kar diya hai.\n\n` +
+      `Agar koi bhi difficulty ya sawal hai, toh kripya direct message karein:\n` +
+      `👉 <b>Support:</b> @Its_life_001`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')],
+          [Markup.button.callback('🔄 New Order', 'user_back_to_main')]
+        ])
+      }
     );
   } catch (err) {}
 });
@@ -4032,14 +3966,16 @@ bot.action(/^boss_check_fc_(.+)$/, async (ctx) => {
 // USER BUTTONS (Exact FigJam Diagram + Specification)
 bot.hears([
   '🟣 Cart link', '🟣 change cart link', 'Cart link', 'change cart link',
-  '🟣 Paste cart link', 'Paste cart link', 'Cart', '🟣 Cart: Added ✅'
+  '🟣 Paste cart link', 'Paste cart link', 'Cart', '🟣 Cart: Added ✅',
+  '🟣 Paste Cart Link', 'Paste Cart Link', 'Cart: Added'
 ], async (ctx) => {
   await handleCartLinkFlow(ctx);
 });
 
 bot.hears([
   '🔵 Address link', '🔵 change address link', 'Address link', 'change address link',
-  '🔵 Paste address Link', 'Paste address Link', 'Address', '🔵 Address: Added ✅'
+  '🔵 Paste address Link', 'Paste address Link', 'Address', '🔵 Address: Added ✅',
+  '🔵 Paste Address Link', 'Paste Address Link', 'Address: Added'
 ], async (ctx) => {
   await handleAddressLinkFlow(ctx);
 });
@@ -4061,6 +3997,31 @@ bot.hears([
 
 bot.command(['sendtobeta', 'send_to_beta', 'sendorder', 'send_order', 'order'], async (ctx) => {
   await handleSendToBoss(ctx);
+});
+
+bot.hears(['Cancel Draft', 'cancel draft', '🟠 Cancel Draft'], async (ctx) => {
+  const userId = ctx.from.id;
+  clearDraft(userId);
+  delete userWaitState[userId];
+  await ctx.reply('🟠 <b>Draft cancel kar diya gaya hai!</b>', { parse_mode: 'HTML', ...getUserReplyKeyboard() });
+  const screen = getUserScreen(userId, ctx.from);
+  return ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+});
+
+bot.action(['action_clear_draft', 'action_cancel_draft'], async (ctx) => {
+  await ctx.answerCbQuery('Draft Cleared').catch(() => {});
+  const userId = ctx.from.id;
+  clearDraft(userId);
+  delete userWaitState[userId];
+  const screen = getUserScreen(userId, ctx.from);
+  try {
+    await ctx.editMessageText('🟠 <b>Draft clear ho gaya hai!</b>\n\nNaya cart ya address link bhejein:', {
+      parse_mode: 'HTML',
+      ...screen.keyboard
+    });
+  } catch (e) {
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+  }
 });
 
 bot.hears(['Cancel Order', 'cancel order', 'Cancel order', '🟠 cancel order', '🟠 Cancel Order'], async (ctx) => {
@@ -5029,137 +4990,231 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Robust Smart Address & Cart Ingestion - Fast, Multi-Order, In-Place
-  const allLinks = extractAllLinks(rawText);
-
-  if (allLinks.length > 0) {
-    delete userWaitState[userId];
-
-    // Classify all links asynchronously
-    const classified = await Promise.all(allLinks.map(async (l) => {
-      try {
-        const meta = await resolveSwiggyLink(l);
-        return { link: l, meta };
-      } catch (e) {
-        return { link: l, meta: { type: 'UNKNOWN' } };
-      }
-    }));
-
-    const carts = classified.filter(c => c.meta.type === 'CART' || c.meta.groupCartId || c.link.includes('/gc/') || c.link.includes('/cart') || c.link.includes('/menu'));
-    const addresses = classified.filter(c => c.meta.type === 'ADDRESS' || c.meta.isAddress || c.meta.ofoUser || c.link.includes('ofo/address') || c.link.includes('maps.google') || c.link.includes('goo.gl') || c.link.includes('y313q1wv'));
-
-    // Case 1: Unrecognized / Non-Swiggy link
-    if (carts.length === 0 && addresses.length === 0) {
+  // Handle waiting_cart state
+  if (state && state.action === 'waiting_cart') {
+    const allLinks = extractAllLinks(rawText);
+    const validCart = allLinks.find(l => isValidSwiggyCartUrl(l));
+    if (!validCart) {
       await ctx.reply(
-        `⚠️ <b>Kripya valid Swiggy Cart ya Address Link share karein!</b>\n\n` +
-        `👉 <i>Cart: https://swig.gy/gc/...</i>\n` +
-        `👉 <i>Address: https://swiggy.onelink.me/... ya Google Maps</i>`,
-        { parse_mode: 'HTML' }
+        `❌ <b>Fake / Invalid Swiggy Cart Link!</b>\n\n` +
+        `Bot sirf genuine Swiggy cart / group cart links accept karta hai.\n` +
+        `<i>Example: <code>https://swig.gy/gc/...</code> ya <code>https://www.swiggy.com/restaurants/...</code></i>\n\n` +
+        `👉 Niche button dabakar genuine link paste karein:`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🟣 Paste Cart Link', 'action_paste_cart')]
+          ])
+        }
       );
       return;
     }
 
-    const db = getDb();
-    const bossList = [...new Set([...(db.config.bossIds || []), ...(isBoss(userId) ? [userId] : [])])];
+    delete userWaitState[userId];
+    updateDraft(userId, { cart: validCart });
+    const curDraft = getDraft(userId);
 
-    // Case 2: Address link sent (and 0 carts) -> Auto-attach to pending order
-    if (addresses.length > 0 && carts.length === 0) {
-      const pendingOrder = Object.values(db.orders).reverse().find(o => (!o.address || o.address === 'Address pending / not provided') && o.status === 'PENDING');
-      if (pendingOrder) {
-        pendingOrder.address = addresses[0].link;
-        if (addresses[0].meta.addressDetails) {
-          pendingOrder.addressDetails = addresses[0].meta.addressDetails;
+    if (curDraft.address) {
+      await ctx.reply(
+        `✅ <b>Cart Link verified & saved!</b>\n\n🎉 <i>Dono links ready hain! Niche <b>[ 🚀 Send to Beta ]</b> dabayein:</i>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🟣 Cart: Added ✅', 'action_paste_cart'),
+              Markup.button.callback('🔵 Address: Added ✅', 'action_paste_address')
+            ],
+            [Markup.button.callback('🚀 Send to Beta', 'action_send_to_beta')]
+          ]),
+          ...getUserReplyKeyboard(curDraft)
         }
-        saveDb(db);
-
-        // Auto-delete the transient prompt message if it exists
-        if (pendingOrder.addressPromptMsgId) {
-          try {
-            await bot.telegram.deleteMessage(ctx.chat.id, pendingOrder.addressPromptMsgId);
-          } catch (e) {}
-          delete pendingOrder.addressPromptMsgId;
-          saveDb(db);
+      );
+    } else {
+      userWaitState[userId] = { action: 'waiting_address' };
+      await ctx.reply(
+        `✅ <b>Cart Link verified & saved!</b>\n\n👉 Ab niche button dabakar <b>Delivery Address link</b> paste karein:`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🔵 Paste Address Link', 'action_paste_address')]
+          ])
         }
-
-        // Update card in-place to show Choose Account! (NO SPAM)
-        await updateOrderCards(pendingOrder);
-        return;
-      }
+      );
     }
 
-    // Case 3: Cart link(s) sent
-    if (carts.length > 0) {
-      // Loop over all cart links in seconds
-      for (let i = 0; i < carts.length; i++) {
-        const c = carts[i];
-        const assignedAddr = (i === 0 && addresses.length > 0) ? addresses[0] : null;
-        const orderId = 'ORD-' + Math.floor(1000 + Math.random() * 9000);
-
-        const newOrder = {
-          id: orderId,
-          userId: userId,
-          userName: ctx.from.first_name || 'Customer',
-          handle: ctx.from.username ? `@${ctx.from.username}` : '',
-          userChatId: ctx.chat.id,
-          cart: c.link,
-          address: assignedAddr ? assignedAddr.link : null,
-          addressDetails: assignedAddr?.meta?.addressDetails || null,
-          restaurantName: c.meta.hostName ? `${c.meta.hostName}'s Group Order` : null,
-          restaurantId: c.meta.restaurantId || null,
-          groupCartId: c.meta.groupCartId || null,
-          status: 'PENDING',
-          selectedAccount: null, // Awaiting Boss Choose Account!
-          createdAt: new Date().toISOString(),
-          bossMessageIds: {}
-        };
-
-        db.orders[orderId] = newOrder;
-        saveDb(db);
-
-        // Send Boss single order card
-        const bossCard = formatBossOrderCard(newOrder);
-        for (const bossId of bossList) {
-          try {
-            const bMsg = await sendCardSafe(bossId, bossCard);
-            newOrder.bossMessageIds[bossId] = bMsg?.message_id;
-          } catch (e) {}
-        }
-        saveDb(db);
-
-        // If address is missing for this cart, ask for address (with trackable prompt message)
-        if (!newOrder.address) {
-          const prompt = await ctx.reply(
-            `🛒 <b>Order #${orderId} created!</b>\n` +
-            `📍 <i>Kripya Order #${orderId} ke liye Address link share karein:</i>`,
-            { parse_mode: 'HTML' }
-          );
-          newOrder.addressPromptMsgId = prompt.message_id;
-          saveDb(db);
-        } else {
-          // If user is not boss, send user card
-          if (!isBoss(userId)) {
-            const userCard = formatUserOrderCard(newOrder);
-            try {
-              const uMsg = await ctx.reply(userCard.text, { parse_mode: 'HTML', ...userCard.keyboard });
-              newOrder.userMessageId = uMsg.message_id;
-              saveDb(db);
-            } catch (e) {}
-          }
-        }
-      }
-      return;
-    }
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    return;
   }
 
-  // 5. Plain text rejection - Strictly accept only valid links
+  // Handle waiting_address state
+  if (state && state.action === 'waiting_address') {
+    const allLinks = extractAllLinks(rawText);
+    const validAddress = allLinks.find(l => isValidDeliveryAddressUrl(l));
+    if (!validAddress) {
+      await ctx.reply(
+        `❌ <b>Fake / Invalid Delivery Address Link!</b>\n\n` +
+        `Bot sirf genuine Google Maps location links ya Swiggy Address links accept karta hai.\n` +
+        `<i>Example: <code>https://maps.app.goo.gl/...</code> ya <code>https://www.google.com/maps/...</code></i>\n\n` +
+        `👉 Niche button dabakar genuine link paste karein:`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🔵 Paste Address Link', 'action_paste_address')]
+          ])
+        }
+      );
+      return;
+    }
+
+    delete userWaitState[userId];
+    updateDraft(userId, { address: validAddress });
+    const curDraft = getDraft(userId);
+
+    if (curDraft.cart) {
+      await ctx.reply(
+        `✅ <b>Address Link verified & saved!</b>\n\n🎉 <i>Dono links ready hain! Niche <b>[ 🚀 Send to Beta ]</b> dabayein:</i>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🟣 Cart: Added ✅', 'action_paste_cart'),
+              Markup.button.callback('🔵 Address: Added ✅', 'action_paste_address')
+            ],
+            [Markup.button.callback('🚀 Send to Beta', 'action_send_to_beta')]
+          ]),
+          ...getUserReplyKeyboard(curDraft)
+        }
+      );
+    } else {
+      userWaitState[userId] = { action: 'waiting_cart' };
+      await ctx.reply(
+        `✅ <b>Address Link verified & saved!</b>\n\n👉 Ab niche button dabakar <b>Swiggy Cart link</b> paste karein:`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🟣 Paste Cart Link', 'action_paste_cart')]
+          ])
+        }
+      );
+    }
+
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    return;
+  }
+
+  // General Link Ingestion (User pastes links directly into chat without clicking buttons first)
+  const allLinks = extractAllLinks(rawText);
+  if (allLinks.length > 0) {
+    let addedCart = false;
+    let addedAddress = false;
+    let hadFake = false;
+
+    for (const l of allLinks) {
+      if (isValidSwiggyCartUrl(l)) {
+        updateDraft(userId, { cart: l });
+        addedCart = true;
+      } else if (isValidDeliveryAddressUrl(l)) {
+        updateDraft(userId, { address: l });
+        addedAddress = true;
+      } else {
+        hadFake = true;
+      }
+    }
+
+    delete userWaitState[userId];
+    const curDraft = getDraft(userId);
+
+    if (hadFake && !addedCart && !addedAddress) {
+      await ctx.reply(
+        `❌ <b>Fake ya invalid Link!</b>\n\n` +
+        `Bot me sirf genuine links accept hote hain:\n` +
+        `🟣 <b>Cart:</b> <code>https://swig.gy/gc/...</code>\n` +
+        `🔵 <b>Address:</b> <code>https://maps.app.goo.gl/...</code>\n\n` +
+        `👉 Niche diye gaye buttons se link add karein:`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🟣 Paste Cart Link', 'action_paste_cart'),
+              Markup.button.callback('🔵 Paste Address Link', 'action_paste_address')
+            ]
+          ])
+        }
+      );
+      return;
+    }
+
+    if (curDraft.cart && curDraft.address) {
+      await ctx.reply(
+        `🎉 <b>Cart aur Address dono links add ho gaye hain!</b>\n\n👉 Niche <b>[ 🚀 Send to Beta ]</b> dabayein:`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🟣 Cart: Added ✅', 'action_paste_cart'),
+              Markup.button.callback('🔵 Address: Added ✅', 'action_paste_address')
+            ],
+            [Markup.button.callback('🚀 Send to Beta', 'action_send_to_beta')]
+          ]),
+          ...getUserReplyKeyboard(curDraft)
+        }
+      );
+    } else if (addedCart && !curDraft.address) {
+      userWaitState[userId] = { action: 'waiting_address' };
+      await ctx.reply(
+        `✅ <b>Cart Link add ho gaya!</b>\n\n👉 Ab niche button dabakar <b>Delivery Address link</b> paste karein:`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🔵 Paste Address Link', 'action_paste_address')]
+          ])
+        }
+      );
+    } else if (addedAddress && !curDraft.cart) {
+      userWaitState[userId] = { action: 'waiting_cart' };
+      await ctx.reply(
+        `✅ <b>Address Link add ho gaya!</b>\n\n👉 Ab niche button dabakar <b>Swiggy Cart link</b> paste karein:`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🟣 Paste Cart Link', 'action_paste_cart')]
+          ])
+        }
+      );
+    }
+
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    return;
+  }
+
+  // Plain text fallback for normal users
   if (!isBoss(userId)) {
+    const curDraft = getDraft(userId);
     await ctx.reply(
-      `⚠️ <b>Kripya valid Link share karein!</b>\n\n` +
-      `Bot me sirf <b>Swiggy Cart Link</b> aur <b>Google Maps / Swiggy Address Link</b> accept hota hai.\n` +
-      `Type kiya hua plain text address allow nahi hai.\n\n` +
-      `👉 Pehle <b>Swiggy Cart link</b> share karein, phir <b>Address link</b> share karein.`,
-      { parse_mode: 'HTML', ...getUserReplyKeyboard() }
+      `👋 <b>Swiggy Food Order</b>\n\n` +
+      `Kripya buttons se link paste karein:\n\n` +
+      `🟣 <b>Cart Link:</b> Genuine Swiggy link\n` +
+      `🔵 <b>Address Link:</b> Google Maps link\n\n` +
+      `Niche buttons par click karein:`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback(curDraft.cart ? '🟣 Cart: Added ✅' : '🟣 Paste Cart Link', 'action_paste_cart'),
+            Markup.button.callback(curDraft.address ? '🔵 Address: Added ✅' : '🔵 Paste Address Link', 'action_paste_address')
+          ],
+          [
+            Markup.button.callback('🚀 Send to Beta', 'action_send_to_beta')
+          ]
+        ]),
+        ...getUserReplyKeyboard(curDraft)
+      }
     );
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
     return;
   }
 
@@ -5389,10 +5444,26 @@ async function handleSendToBoss(ctx) {
   // 2. Both cart and address must be present
   const draft = getDraft(userId);
   if (!draft.cart) {
-    return ctx.reply('⚠️ <b>Cart missing!</b> Send Cart link.', { parse_mode: 'HTML' });
+    return ctx.reply(
+      '⚠️ <b>Cart Link missing hai!</b>\n\nKripya pehle apna Swiggy Cart link add karein:',
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🟣 Paste Cart Link', 'action_paste_cart')]
+        ])
+      }
+    );
   }
   if (!draft.address) {
-    return ctx.reply('⚠️ <b>Address missing!</b> Send Address link.', { parse_mode: 'HTML' });
+    return ctx.reply(
+      '⚠️ <b>Delivery Address missing hai!</b>\n\nKripya pehle apna Delivery Address link add karein:',
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🔵 Paste Address Link', 'action_paste_address')]
+        ])
+      }
+    );
   }
 
   const db = getDb();
@@ -5403,18 +5474,10 @@ async function handleSendToBoss(ctx) {
     id: orderId,
     userId: userId,
     userName: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || role,
-    handle: ctx.from.username || null,
+    handle: ctx.from.username ? `@${ctx.from.username}` : null,
     type: 'SWIGGY_ORDER',
     address: draft.address,
     cart: draft.cart,
-    selectedAccount: getActiveOrderAccountKey(db) || Object.keys(db.config?.accounts || {})[0] || null,
-    swiggyVerified: false,
-    amountAccepted: false,
-    qrSent: false,
-    restaurantName: null,
-    items: [],
-    subtotal: 0,
-    finalPayable: null,
     status: 'PENDING',
     paymentStatus: 'UNPAID',
     createdAt: new Date().toISOString(),
@@ -5455,7 +5518,7 @@ async function handleSendToBoss(ctx) {
   }
   saveDb(db);
 
-  // Immediately kick off fast background cart fetch & coupon optimization
+  // Immediately kick off fast background cart fetch
   triggerBackgroundCartFetch(orderId).catch(err => console.error(`[BackgroundFetch] Order #${orderId} error:`, err.message));
 }
 
@@ -5465,37 +5528,37 @@ bot.action('action_add_cart', async (ctx) => {
   await handleCartLinkFlow(ctx);
 });
 
-bot.action(['action_force_change_cart', 'action_change_cart_link', 'action_confirm_change_cart'], async (ctx) => {
+bot.action(['action_paste_cart', 'action_force_change_cart', 'action_change_cart_link', 'action_confirm_change_cart'], async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_cart' };
   await ctx.reply(
-    `🟣 <b>Send Swiggy Cart Link:</b>`,
+    `🟣 <b>Swiggy Cart Link paste karein:</b>\n\n` +
+    `Kripya apna genuine Swiggy cart / group cart link chat me paste karein:\n` +
+    `<i>Example: <code>https://swig.gy/gc/...</code> ya <code>https://www.swiggy.com/restaurants/...</code></i>`,
     {
       parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste cart link...' }
+      reply_markup: { force_reply: true, input_field_placeholder: 'Paste Swiggy cart link here...' }
     }
   );
 });
-
-// Safeguard text references preserved for audit compliance:
-// "Are you sure you want to change your saved Cart Link?"
-// "Are you sure you want to change your saved Address Link?"
 
 bot.action('action_add_address', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await handleAddressLinkFlow(ctx);
 });
 
-bot.action(['action_force_change_address', 'action_change_address_link', 'action_confirm_change_address'], async (ctx) => {
+bot.action(['action_paste_address', 'action_force_change_address', 'action_change_address_link', 'action_confirm_change_address'], async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_address' };
   await ctx.reply(
-    `🔵 <b>Send Delivery Address / Location:</b>`,
+    `🔵 <b>Delivery Address / Location Link paste karein:</b>\n\n` +
+    `Kripya apna genuine Google Maps location link ya Swiggy address link chat me paste karein:\n` +
+    `<i>Example: <code>https://maps.app.goo.gl/...</code> ya <code>https://www.google.com/maps/...</code></i>`,
     {
       parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste address or location...' }
+      reply_markup: { force_reply: true, input_field_placeholder: 'Paste Google Maps address link here...' }
     }
   );
 });
