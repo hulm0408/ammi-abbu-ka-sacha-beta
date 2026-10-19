@@ -47,11 +47,12 @@ export function generateUpiQrUrl(amount, orderId, upiId = null) {
   };
 }
 
-// Fast fetch restaurant and real dishes directly from Swiggy's mobile API (bypasses AWS WAF in ~1.5s)
+// Fast fetch verified restaurant info directly from Swiggy's mobile API (bypasses AWS WAF in ~1.5s)
+// NEVER assumes or guesses cart dishes from restaurant catalog
 export async function fetchFastRestaurantInfo(restaurantId, lat = '17.442991', lng = '78.362384') {
   if (!restaurantId) return null;
   try {
-    const res = await fetch(`https://www.swiggy.com/mapi/menu/pl?page-type=REGULAR_MENU&complete-menu=true&lat=${lat}&lng=${lng}&restaurantId=${restaurantId}`, {
+    const res = await fetch(`https://www.swiggy.com/mapi/menu/pl?page-type=REGULAR_MENU&complete-menu=false&lat=${lat}&lng=${lng}&restaurantId=${restaurantId}`, {
       headers: {
         'User-Agent': 'Swiggy/5.0.0 (Android 13; Pixel 7)',
         'Accept': 'application/json'
@@ -63,7 +64,6 @@ export async function fetchFastRestaurantInfo(restaurantId, lat = '17.442991', l
 
     let restName = null;
     let city = null;
-    let items = [];
 
     const cards = json?.data?.cards || [];
     for (const c of cards) {
@@ -71,38 +71,15 @@ export async function fetchFastRestaurantInfo(restaurantId, lat = '17.442991', l
       if (info?.name && !restName) {
         restName = info.name;
         city = info.city;
+        break;
       }
     }
 
-    // Extract real dishes from menu
-    for (const c of cards) {
-      const groupedCards = c?.groupedCard?.cardGroupMap?.REGULAR?.cards || [];
-      for (const gc of groupedCards) {
-        const itemCards = gc?.card?.card?.itemCards || [];
-        for (const ic of itemCards) {
-          const it = ic?.card?.info;
-          if (it?.name && (it?.price || it?.defaultPrice)) {
-            const rawPrice = (it.price || it.defaultPrice) / 100;
-            items.push({
-              name: it.name,
-              price: Math.round(rawPrice * 100) / 100,
-              qty: 1,
-              lineTotal: Math.round(rawPrice * 100) / 100
-            });
-            if (items.length >= 3) break;
-          }
-        }
-        if (items.length >= 3) break;
-      }
-      if (items.length >= 3) break;
-    }
+    if (!restName) return null;
 
     return {
-      restName: restName || 'EatFit',
-      city: city || 'Hyderabad',
-      items: items.length > 0 ? items : [
-        { name: 'Diet Coke', price: 71.43, qty: 3, lineTotal: 214.29 }
-      ]
+      restName,
+      city: city || 'Local Area'
     };
   } catch (e) {
     return null;
@@ -208,7 +185,7 @@ export async function resolveSwiggyLink(url) {
 
     addressDetails = {
       name: 'Customer',
-      mobile: '9515433069',
+      mobile: null,
       city: geoCity,
       address: geoAddress || `Delivering to ${geoCity}`,
       lat: mapCoords.lat,
@@ -218,64 +195,37 @@ export async function resolveSwiggyLink(url) {
     addressDetails = {
       name: ofoUser,
       token: ofoToken,
-      city: 'Hyderabad',
-      mobile: '9515433069',
-      address: `${ofoUser}\nHyderabad, Telangana 500032`,
-      lat: '17.442991',
-      lng: '78.362384'
+      city: 'Local Area',
+      mobile: null,
+      address: `Delivering to ${ofoUser}`,
+      lat: null,
+      lng: null
     };
   }
 
   // Parse structured cart details if present in input
   const parsedCart = parseCartDetails(cleanUrl);
 
-  // Fast fetch restaurant and menu dishes if restaurantId is found
-  let finalCartDetails = parsedCart;
+  // Fast fetch genuine restaurant info if restaurantId is found
   let fastMenu = null;
   if (restaurantId) {
     fastMenu = await fetchFastRestaurantInfo(restaurantId, addressDetails?.lat || '17.442991', addressDetails?.lng || '78.362384');
   }
 
-  if (!finalCartDetails && fastMenu) {
-    const items = fastMenu.items;
-    const itemsTotal = Math.round(items.reduce((s, it) => s + (it.lineTotal || (it.price * it.qty)), 0) * 100) / 100;
-    const discountAmount = itemsTotal > 150 ? 140 : 50;
-    const freeCash = 50;
-    const delSaved = 42;
-    const packing = 29;
-    const gst = Math.round((itemsTotal * 0.05 + 40) * 100) / 100;
-    const totalSavings = discountAmount + freeCash + delSaved;
-    const finalPayable = Math.max(1, Math.round(itemsTotal - discountAmount - freeCash + packing + gst));
-
-    finalCartDetails = {
-      orderAccount: '7016132396',
-      restaurantName: fastMenu.restName || 'EatFit',
-      items,
-      itemsTotal,
-      subtotal: itemsTotal,
-      couponCode: 'DELULU4FOOD',
-      discountAmount,
-      freeCashApplied: freeCash,
-      freeDelivery: true,
-      deliverySaved: delSaved,
-      packingCharges: packing,
-      gstCharges: gst,
-      totalSavings,
-      finalPayable
-    };
-  }
+  const realRestaurantName = parsedCart?.restaurantName || fastMenu?.restName || (hostName ? `${hostName}'s Group Order` : null);
 
   return {
     originalUrl: cleanUrl,
     resolvedUrl: resolved,
     type: isCart ? 'CART' : (isAddress ? 'ADDRESS' : 'SWIGGY_GENERAL'),
     restaurantId,
+    restaurantName: realRestaurantName,
     groupCartId,
     hostName,
     ofoUser,
     ofoToken,
     addressDetails,
-    cartDetails: finalCartDetails
+    cartDetails: parsedCart
   };
 }
 

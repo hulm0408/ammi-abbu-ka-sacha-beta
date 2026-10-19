@@ -241,85 +241,80 @@ function getBossReplyKeyboard() {
 }
 
 // Render the exact itemized receipt and bill summary matching the user's template
+// Render the genuine itemized receipt if items present, or genuine Swiggy group cart status
 function formatUserOrderCardText(order) {
   const db = getDb();
   const selectedAcc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
   const accPhone = order.orderAccount || selectedAcc?.phone || selectedAcc?.mobile || '7016132396';
-  const restName = order.restaurantName || order.restaurant || 'EatFit';
+  const restName = order.restaurantName || order.restaurant || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : 'Swiggy Food Order');
 
   // Address section
   let ad = order.addressDetails || parseAddressDetails(order.address);
-  const city = ad?.city || 'Hyderabad';
-  const name = ad?.name || 'Madhu';
-  const phone = ad?.mobile || '9515433069';
-  const home = ad?.address || `${name}\n${city}, Telangana 500032`;
-  const lat = ad?.lat || '17.442991';
-  const lng = ad?.lng || '78.362384';
+  let addrSection = '📍 Delivering To\n';
+  if (ad && (ad.name || ad.mobile || ad.address || ad.city || ad.lat)) {
+    if (ad.city) addrSection += `📍 ${escapeHtml(ad.city)} Address\n`;
+    if (ad.name) addrSection += `👤 ${escapeHtml(ad.name)}\n`;
+    if (ad.mobile) addrSection += `📱 ${escapeHtml(ad.mobile)}\n`;
+    if (ad.address) addrSection += `🏠 ${escapeHtml(ad.address)}\n`;
+    if (ad.lat) addrSection += `🧭 Latitude: ${escapeHtml(ad.lat)}\n`;
+    if (ad.lng) addrSection += `🧭 Longitude: ${escapeHtml(ad.lng)}\n`;
+  } else if (order.address) {
+    addrSection += `🔗 Address Link: ${escapeHtml(order.address)}\n`;
+  } else {
+    addrSection += `<i>Address pending / not provided</i>\n`;
+  }
 
-  const addrSection = `📍 Delivering To\n` +
-    `📍 ${escapeHtml(city)} Address\n` +
-    `👤 ${escapeHtml(name)}\n` +
-    `📱 ${escapeHtml(phone)}\n` +
-    `🏠 ${escapeHtml(home)}\n` +
-    `🧭 Latitude: ${escapeHtml(lat)}\n` +
-    `🧭 Longitude: ${escapeHtml(lng)}\n`;
-
-  // Items section
+  // Items section - NO FAKE / ASSUMED DISHES
   let itemsSection = '';
-  const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
-  const items = (order.items && order.items.length > 0) ? order.items : [
-    { name: 'Diet Coke', price: 71.43, qty: 3, lineTotal: 214.29 }
-  ];
+  if (order.items && Array.isArray(order.items) && order.items.length > 0) {
+    const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+    itemsSection = order.items.map((it, idx) => {
+      const emoji = numEmojis[idx] || `${idx + 1}️⃣`;
+      const price = it.price ? it.price : Math.round(((it.lineTotal || 0) / (it.qty || 1)) * 100) / 100;
+      const lineTotal = it.lineTotal || Math.round((price * it.qty) * 100) / 100;
+      return `${emoji} ${escapeHtml(it.name)}\n💵 ₹${price} × ${it.qty} = ₹${lineTotal}`;
+    }).join('\n\n') + '\n\n';
 
-  itemsSection = items.map((it, idx) => {
-    const emoji = numEmojis[idx] || `${idx + 1}️⃣`;
-    const price = it.price ? it.price : Math.round(((it.lineTotal || 0) / (it.qty || 1)) * 100) / 100;
-    const lineTotal = it.lineTotal || Math.round((price * it.qty) * 100) / 100;
-    return `${emoji} ${escapeHtml(it.name)}\n💵 ₹${price} × ${it.qty} = ₹${lineTotal}`;
-  }).join('\n\n') + '\n\n';
-
-  const totalQty = items.reduce((s, it) => s + (it.qty || 1), 0);
-  const subtotal = order.subtotal || order.itemTotal || Math.round(items.reduce((s, it) => s + (it.lineTotal || (it.price * it.qty)), 0) * 100) / 100;
-  itemsSection += `📦 ${totalQty} Items • Subtotal: ₹${subtotal}\n\n`;
+    const totalQty = order.items.reduce((s, it) => s + (it.qty || 1), 0);
+    const subtotal = order.subtotal || Math.round(order.items.reduce((s, it) => s + (it.lineTotal || (it.price * it.qty)), 0) * 100) / 100;
+    itemsSection += `📦 ${totalQty} Items • Subtotal: ₹${subtotal}\n\n`;
+  } else {
+    itemsSection = `🛒 <b>Swiggy Cart:</b> Active Group Order\n` +
+      `🔗 <b>Link:</b> <code>${escapeHtml(order.cart || '')}</code>\n` +
+      `ℹ️ <i>Items synced directly in Swiggy Group Cart (no assumed dishes)</i>\n\n`;
+  }
 
   // Bill Summary section
-  let billSection = `🧾 Bill Summary\n` +
-    `🍽 Items Total: ₹${subtotal}\n`;
-
-  const couponCode = order.couponCode || 'DELULU4FOOD';
-  const discountAmount = order.discountAmount || 140;
-  billSection += `🎟 Best Coupon Auto-Applied ${escapeHtml(couponCode)}: −₹${discountAmount}\n`;
-
-  const freeCash = order.freeCashApplied !== undefined ? order.freeCashApplied : 50;
-  if (freeCash > 0) {
-    billSection += `💸 Extra Discount ( Free Cash ): −₹${freeCash}\n`;
+  let billSection = '';
+  if (order.finalPayable || order.subtotal) {
+    billSection = `🧾 Bill Summary\n`;
+    if (order.subtotal) billSection += `🍽 Items Total: ₹${order.subtotal}\n`;
+    if (order.couponCode) {
+      billSection += `🎟 Best Coupon Applied ${escapeHtml(order.couponCode)}: −₹${order.discountAmount || 0}\n`;
+    }
+    if (order.freeCashApplied > 0) {
+      billSection += `💸 Extra Discount ( Free Cash ): −₹${order.freeCashApplied}\n`;
+    }
+    if (order.swiggyOneApplied) {
+      const savedDel = order.freeDeliveryDiscount || order.deliverySaved || 42;
+      billSection += `✨ Free Delivery (Swiggy One)\n🚚 Delivery Fee: FREE (₹${savedDel} saved)\n`;
+    } else if (order.deliveryFee > 0) {
+      billSection += `🚚 Delivery Fee: ₹${order.deliveryFee}\n`;
+    }
+    if (order.packingCharges > 0) billSection += `📦 Packing Charges: ₹${order.packingCharges}\n`;
+    if (order.taxesAndCharges > 0) billSection += `🧾 GST & Other Charges: ₹${order.taxesAndCharges}\n`;
+    billSection += `━━━━━━━━━━━━━━\n`;
+    if (order.totalSavings > 0) billSection += `💰 Total Savings: ₹${order.totalSavings}\n`;
+    if (order.finalPayable) billSection += `💳 To Pay: ₹${order.finalPayable}`;
+  } else {
+    billSection = `🧾 Bill Summary\n` +
+      `⏳ <i>Beta is opening cart on Swiggy to apply max coupon & discounts</i>\n` +
+      `💳 <b>To Pay:</b> <i>Calculating on Swiggy Payment Page...</i>`;
   }
 
-  const freeDel = order.swiggyOneApplied !== false;
-  const savedDel = order.freeDeliveryDiscount || order.deliverySaved || 42;
-  if (freeDel) {
-    billSection += `✨ Free Delivery upto 7km\n` +
-      `🚚 Delivery Fee: FREE (₹${savedDel} saved)\n`;
-  } else if (order.deliveryFee > 0) {
-    billSection += `🚚 Delivery Fee: ₹${order.deliveryFee}\n`;
+  if (order.swiggyPaymentUrl) {
+    billSection += `\n\n🔗 <b>Official Swiggy Payment Link:</b>\n<a href="${escapeHtml(order.swiggyPaymentUrl)}">${escapeHtml(order.swiggyPaymentUrl)}</a>`;
   }
-
-  const packing = order.packingCharges !== undefined ? order.packingCharges : 29;
-  if (packing > 0) {
-    billSection += `📦 Packing Charges: ₹${packing}\n`;
-  }
-
-  const gst = order.taxesAndCharges !== undefined ? order.taxesAndCharges : 52.14;
-  if (gst > 0) {
-    billSection += `🧾 GST & Other Charges: ₹${gst}\n`;
-  }
-
-  billSection += `━━━━━━━━━━━━━━\n`;
-  const totalSavings = order.totalSavings || (discountAmount + freeCash + savedDel);
-  billSection += `💰 Total Savings: ₹${totalSavings}\n`;
-
-  const toPay = order.finalPayable || 76;
-  billSection += `💳 To Pay: ₹${toPay}`;
 
   return `📱 Order Account: ${escapeHtml(accPhone)}\n` +
     `🛒 Your Cart\n` +
@@ -347,6 +342,9 @@ function formatUserOrderCard(order) {
       `⚠️ <b>Zaroori Suchna:</b>\n` +
       `Agar aapko koi bhi difficulty, issue ya samasya aati hai, toh kripya direct message karein:\n` +
       `👉 <b>Support:</b> @Its_life_001`;
+    if (order.swiggyPaymentUrl) {
+      buttons.push([Markup.button.url('💳 Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)]);
+    }
     buttons.push([
       Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')
     ]);
@@ -374,18 +372,32 @@ function formatUserOrderCard(order) {
   }
 
   // PENDING state
-  const amt = order.finalPayable || 76;
-  text += formatUserOrderCardText(order) + '\n\n' +
-    `📌 <b>Status:</b> <b>⏳ Payment Pending (QR Allotted)</b>\n\n` +
-    `<i>Neeche diye gaye QR code ko scan karke exact ₹${amt} pay karein, aur phir <b>[ 💸 I Have Paid / Confirm Payment ]</b> dabayein!</i>\n\n` +
-    `👉 <b>Support:</b> @Its_life_001`;
+  if (order.swiggyPaymentUrl || order.customQrFileId) {
+    const amt = order.finalPayable ? `exact ₹${order.finalPayable}` : 'amount shown on Swiggy';
+    text += formatUserOrderCardText(order) + '\n\n' +
+      `📌 <b>Status:</b> <b>💳 Official Swiggy Payment Ready</b>\n\n` +
+      `<i>Neeche diye gaye official Swiggy payment button ya QR se ${amt} pay karein, aur phir <b>[ 💸 I Have Paid / Confirm Payment ]</b> dabayein!</i>\n\n` +
+      `👉 <b>Support:</b> @Its_life_001`;
 
-  buttons.push([
-    Markup.button.callback('💸 I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)
-  ]);
-  buttons.push([
-    Markup.button.callback('📷 Resend Payment QR', `user_resend_qr_${order.id}`)
-  ]);
+    if (order.swiggyPaymentUrl) {
+      buttons.push([Markup.button.url('💳 Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)]);
+    }
+    buttons.push([
+      Markup.button.callback('💸 I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)
+    ]);
+    if (order.customQrFileId) {
+      buttons.push([
+        Markup.button.callback('📷 Resend Swiggy Payment QR', `user_resend_qr_${order.id}`)
+      ]);
+    }
+  } else {
+    text += formatUserOrderCardText(order) + '\n\n' +
+      `📌 <b>Status:</b> <b>⏳ Sent to Beta (Processing on Swiggy)</b>\n\n` +
+      `<i>Beta aapka Swiggy cart open karke maximum coupon & discounts apply kar raha hai.</i>\n` +
+      `<i>Jaise hi Swiggy payment page se genuine payment link/QR aayega, aapko yahan turant mil jayega! 🛵</i>\n\n` +
+      `👉 <b>Support:</b> @Its_life_001`;
+  }
+
   buttons.push([
     Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`),
     Markup.button.callback('🟠 Cancel Order', `action_cancel_order_confirm_${order.id}`)
@@ -541,11 +553,24 @@ function formatBossOrderCard(order) {
 
   const rows = [];
 
-  // STATE 1: PENDING Order -> Boss can Accept or Reject immediately
+  // STATE 1: PENDING Order -> Boss can Accept/Reject, open links, and send genuine payment link/QR
   if (order.status === 'PENDING') {
     rows.push([
       Markup.button.callback('✅ Accept Order', `boss_action_accept_${order.id}`),
       Markup.button.callback('❌ Reject Order', `boss_action_sorry_${order.id}`)
+    ]);
+    const linkRow = [];
+    if (order.cart && order.cart.startsWith('http')) {
+      linkRow.push(Markup.button.url('🛒 Open Cart in Swiggy', order.cart));
+    }
+    if (order.address && order.address.startsWith('http')) {
+      linkRow.push(Markup.button.url('📍 Open Address', order.address));
+    }
+    if (linkRow.length > 0) rows.push(linkRow);
+
+    rows.push([
+      Markup.button.callback('💳 Send Swiggy Payment Link', `boss_prompt_send_link_${order.id}`),
+      Markup.button.callback('📸 Send Swiggy Payment QR', `boss_prompt_send_qr_${order.id}`)
     ]);
     rows.push([
       makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
@@ -555,16 +580,31 @@ function formatBossOrderCard(order) {
       Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`)
     ]);
   }
-  // STATE 2: ACCEPTED Order -> Message user, Copy links, Reject
+  // STATE 2: ACCEPTED Order -> Send payment link, Send QR, Message user, Tracking, Complete
   else if (order.status === 'ACCEPTED') {
     rows.push([
-      Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`)
+      Markup.button.callback('💳 Send Swiggy Payment Link', `boss_prompt_send_link_${order.id}`),
+      Markup.button.callback('📸 Send Swiggy Payment QR', `boss_prompt_send_qr_${order.id}`)
     ]);
+    const linkRow = [];
+    if (order.cart && order.cart.startsWith('http')) {
+      linkRow.push(Markup.button.url('🛒 Open Cart in Swiggy', order.cart));
+    }
+    if (order.address && order.address.startsWith('http')) {
+      linkRow.push(Markup.button.url('📍 Open Address', order.address));
+    }
+    if (linkRow.length > 0) rows.push(linkRow);
+
     rows.push([
       makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
       makeCopyButton('🔵 Copy Address', order.address || '', `boss_copy_addr_${order.id}`)
     ]);
     rows.push([
+      Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`),
+      Markup.button.callback('🛵 Send Tracking', `boss_tracking_${order.id}`)
+    ]);
+    rows.push([
+      Markup.button.callback('🟢 Mark Done', `boss_action_done_${order.id}`),
       Markup.button.callback('❌ Reject Order', `boss_action_sorry_${order.id}`)
     ]);
   }
@@ -636,51 +676,80 @@ async function deleteOrderMessages(order) {
   }
 }
 
-// Auto-Allot Payment QR Code to User directly with authentic UPI QR and maximum coupon applied
+// Send authentic Swiggy payment details to User (NEVER synthetic fake upi://pay)
 async function sendPaymentQrToUser(order) {
   if (!order) return;
-  const db = getDb();
-  const upiId = db.config?.bossUpiId || 'swiggy.bundl@icici';
-  const amt = Math.round(order.finalPayable || 76);
-  const payeeName = order.restaurantName || 'EatFit';
-  const upiUri = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(payeeName)}&am=${amt}&cu=INR&tn=Swiggy_Order_${order.id}`;
+  const targetChat = order.userChatId || order.userId;
+  if (!targetChat) return;
 
-  try {
-    const qrBuffer = await QRCode.toBuffer(upiUri, {
-      width: 500,
-      margin: 2,
-      color: { dark: '#000000', light: '#ffffff' }
-    });
-
-    const caption = `🟢 <b>Swiggy Payment QR Code (Order #${order.id})</b>\n\n` +
-      formatUserOrderCardText(order) + '\n\n' +
-      `📱 <b>Payment Steps (PhonePe / Google Pay / Paytm / BHIM):</b>\n` +
-      `1. Upar diya gaya QR code scan karein.\n` +
-      `2. Exact <b>₹${amt}</b> pay karein.\n` +
-      `3. Payment hone ke baad neeche <b>[ 💸 I Have Paid / Confirm Payment ]</b> dabayein!`;
-
-    const targetChat = order.userChatId || order.userId;
-    if (targetChat) {
-      await bot.telegram.sendPhoto(targetChat, { source: qrBuffer }, {
-        caption,
+  // 1. If genuine custom QR photo from Swiggy was uploaded by Boss
+  if (order.customQrFileId) {
+    try {
+      const payable = order.finalPayable ? `₹${order.finalPayable}` : 'As shown on Swiggy';
+      await bot.telegram.sendPhoto(targetChat, order.customQrFileId, {
+        caption: `🟢 <b>Official Swiggy Payment QR (Order #${order.id})</b>\n\n` +
+          `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
+          `💰 <b>Payable on Swiggy:</b> <b>${payable}</b>\n\n` +
+          `<i>Scan this genuine Swiggy QR code in PhonePe / Google Pay / Paytm / BHIM to pay directly to Swiggy:</i>`,
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [Markup.button.callback('💸 I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)],
-          [
-            Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`),
-            Markup.button.callback('🟠 Cancel Order', `action_cancel_order_confirm_${order.id}`)
-          ],
           [Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
         ])
       });
       order.qrSent = true;
       order.qrDelivered = true;
-      saveDb(db);
-      console.log(`[AutoQR] Successfully delivered Payment QR for Order #${order.id} to User: ₹${amt}`);
+      saveDb(getDb());
+      return;
+    } catch (e) {
+      console.error(`Failed to send custom QR photo: ${e.message}`);
     }
-  } catch (err) {
-    console.error(`[AutoQR] Failed to generate/send QR for Order #${order.id}:`, err.message);
   }
+
+  // 2. If genuine Swiggy payment URL was generated by Swiggy / Boss
+  if (order.swiggyPaymentUrl) {
+    try {
+      await bot.telegram.sendMessage(
+        targetChat,
+        `💳 <b>Official Swiggy Payment Link (Order #${order.id})</b>\n\n` +
+        `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
+        (order.finalPayable ? `💰 <b>Amount:</b> ₹${order.finalPayable}\n\n` : '\n') +
+        `🔗 <b>Click to Pay Directly on Swiggy:</b>\n<a href="${escapeHtml(order.swiggyPaymentUrl)}">${escapeHtml(order.swiggyPaymentUrl)}</a>\n\n` +
+        `<i>✨ Yeh authentic link Swiggy payment page se generated hai. Payment complete karke [ 💸 I Have Paid ] dabayein!</i>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.url('💳 Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)],
+            [Markup.button.callback('💸 I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)],
+            [Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
+          ])
+        }
+      );
+      order.qrSent = true;
+      saveDb(getDb());
+      return;
+    } catch (e) {
+      console.error(`Failed to send payment URL: ${e.message}`);
+    }
+  }
+
+  // 3. If payment link/QR not yet ready from Swiggy, inform customer with real status (NO FAKE UPI QR!)
+  try {
+    await bot.telegram.sendMessage(
+      targetChat,
+      `⏳ <b>Swiggy Payment Link / QR Processing (Order #${order.id})</b>\n\n` +
+      `Beta aapka cart Swiggy par open karke maximum discount & coupons verify kar raha hai.\n` +
+      `Swiggy payment page se authentic link/QR aate hi yahan turant bhej diya jayega.\n\n` +
+      `👉 <b>Immediate Help:</b> @Its_life_001`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('⚪ Refresh Status', `user_refresh_status_${order.id}`)],
+          [Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
+        ])
+      }
+    );
+  } catch (e) {}
 }
 
 // Asynchronous Cart Inspection & Offer Optimizer (runs immediately on order submission or manual refresh)
@@ -772,15 +841,12 @@ async function triggerBackgroundCartFetch(orderId) {
   if (!order.orderAccount) order.orderAccount = '7016132396';
 
   // 4. Resolve Swiggy link metadata if not already filled
-  if (order.cart && (!order.items || order.items.length === 0)) {
+  if (order.cart) {
     try {
       const cartMeta = await resolveSwiggyLink(order.cart);
-      if (cartMeta?.restaurantId && !order.restaurantName) {
-        order.restaurantId = cartMeta.restaurantId;
-        if (cartMeta.hostName) {
-          order.restaurantName = `${cartMeta.hostName}'s Group Order`;
-        }
-      }
+      if (cartMeta?.restaurantId) order.restaurantId = cartMeta.restaurantId;
+      if (cartMeta?.restaurantName) order.restaurantName = cartMeta.restaurantName;
+      if (cartMeta?.hostName) order.hostName = cartMeta.hostName;
       if (cartMeta?.cartDetails) {
         const cd = cartMeta.cartDetails;
         if (cd.restaurantName) order.restaurantName = cd.restaurantName;
@@ -798,40 +864,13 @@ async function triggerBackgroundCartFetch(orderId) {
     } catch (e) {}
   }
 
-  // 5. Populate defaults matching real sample if still empty (NEVER dummy thali)
-  if (!order.restaurantName) order.restaurantName = 'EatFit';
-  if (!order.items || order.items.length === 0) {
-    order.items = [
-      { name: 'Diet Coke', price: 71.43, qty: 3, lineTotal: 214.29 }
-    ];
-    order.subtotal = 214.29;
-    order.couponCode = 'DELULU4FOOD';
-    order.discountAmount = 140;
-    order.freeCashApplied = 50;
-    order.swiggyOneApplied = true;
-    order.freeDeliveryDiscount = 42;
-    order.packingCharges = 29;
-    order.taxesAndCharges = 52.14;
-    order.totalSavings = 232;
-    order.finalPayable = 76;
-    order.swiggyVerified = true;
-  }
-
-  if (!order.addressDetails || !order.addressDetails.city || !order.addressDetails.mobile) {
-    const existingName = order.addressDetails?.name || 'Madhu';
-    order.addressDetails = {
-      city: order.addressDetails?.city || 'Hyderabad',
-      name: existingName,
-      mobile: order.addressDetails?.mobile || '9515433069',
-      address: order.addressDetails?.address || `${existingName}\nHyderabad, Telangana 500032`,
-      lat: order.addressDetails?.lat || '17.442991',
-      lng: order.addressDetails?.lng || '78.362384'
-    };
+  // 5. Clean fallback restaurant name only if still blank (NO fake items or fake addresses)
+  if (!order.restaurantName) {
+    order.restaurantName = order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : (order.hostName ? `${order.hostName}'s Group Order` : 'Swiggy Food Order');
   }
 
   saveDb(db);
   await updateOrderCards(order);
-  await sendPaymentQrToUser(order);
 }
 
 function escapeHtml(str) {
@@ -3093,28 +3132,25 @@ bot.action(/^boss_get_qr_(.+)$/, async (ctx) => {
 });
 
 // Boss Upload Custom Swiggy QR Prompt
-bot.action(/^boss_upload_custom_qr_(.+)$/, async (ctx) => {
+bot.action([/^boss_upload_custom_qr_(.+)$/, /^boss_prompt_send_qr_(.+)$/, /^boss_send_payment_qr_(.+)$/], async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
   const order = db.orders[orderId];
   if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
 
-  if (!order.finalPayable || Number(order.finalPayable) <= 0) {
-    return ctx.answerCbQuery('⚠️ Pehle Amount set karein (Amount must be > 0)!', { show_alert: true }).catch(() => {});
-  }
-
   await ctx.answerCbQuery().catch(() => {});
 
   userWaitState[ctx.from.id] = { action: 'waiting_custom_qr_photo', orderId };
   await ctx.reply(
-    `<b>Send QR / Photo:</b>\n\n` +
-    `Swiggy payment screen ya UPI QR attach karein (Photo ya Document):`,
+    `📸 <b>Send Genuine Swiggy Payment QR (Order #${orderId}):</b>\n\n` +
+    `Swiggy checkout/payment screen se genuine payment QR ka screenshot image ke roop me chat me send karein:\n\n` +
+    `👉 Yeh photo seedha customer ko deliver ho jayegi aur customer scan karke Swiggy ko pay kar sakega!`,
     {
       parse_mode: 'HTML',
       reply_markup: {
         force_reply: true,
-        input_field_placeholder: '📎 Send photo or screenshot here...'
+        input_field_placeholder: '📎 Send QR screenshot here...'
       }
     }
   );
@@ -4016,6 +4052,31 @@ bot.action(/^boss_qr_pay_(.+)$/, async (ctx) => {
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard(bossButtons)
+    }
+  );
+});
+
+// Boss Prompt Send Swiggy Payment Link
+bot.action([/^boss_prompt_send_link_(.+)$/, /^boss_send_payment_link_(.+)$/], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const orderId = ctx.match[1];
+  const db = getDb();
+  const order = db.orders[orderId];
+  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[ctx.from.id] = { action: 'waiting_swiggy_link', orderId };
+  await ctx.reply(
+    `🔗 <b>Send Official Swiggy Payment Link (Order #${orderId}):</b>\n\n` +
+    `Swiggy checkout page se generated genuine payment link chat me paste karein.\n` +
+    `<i>Optional: Amount ke sath bhi likh sakte hain, jaise <code>₹120 https://payments.swiggy.com/...</code> ya seedha URL paste karein.</i>\n\n` +
+    `👉 Yeh authentic link seedha customer ko official payment button ke sath deliver ho jayega!`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        force_reply: true,
+        input_field_placeholder: 'Paste Swiggy payment link here...'
+      }
     }
   );
 });
@@ -5065,6 +5126,60 @@ bot.on('text', async (ctx) => {
       await ctx.reply(`✅ <b>Message delivered to user!</b>`);
     } catch (err) {
       await ctx.reply(`❌ Failed to send message: ${err.message}`);
+    }
+    return;
+  }
+
+  // Boss sending official Swiggy payment link to user
+  if (state && (state.action === 'waiting_swiggy_link' || state.action === 'waiting_payment_link')) {
+    const orderId = state.orderId;
+    delete userWaitState[userId];
+    const db = getDb();
+    const order = db.orders[orderId];
+    if (!order) {
+      await ctx.reply('❌ Order could not be found.');
+      return;
+    }
+
+    let link = rawText.trim();
+    const urlMatch = link.match(/(https?:\/\/[^\s]+)/i);
+    const amtMatch = link.match(/(?:₹|rs\.?|inr)?\s*([0-9]{2,5})\b/i);
+
+    if (urlMatch) {
+      link = urlMatch[1];
+      if (amtMatch && !link.includes(amtMatch[1])) {
+        order.finalPayable = parseInt(amtMatch[1], 10);
+      }
+    }
+
+    order.swiggyPaymentUrl = link;
+    order.paymentStatus = 'PAYMENT_LINK_SENT';
+    saveDb(db);
+    await updateOrderCards(order);
+
+    const targetUserId = order.userChatId || order.userId;
+    if (targetUserId) {
+      try {
+        const amtText = order.finalPayable ? `\n💰 <b>Payable on Swiggy:</b> ₹${order.finalPayable}` : '';
+        await bot.telegram.sendMessage(
+          targetUserId,
+          `💳 <b>Official Swiggy Payment Link Ready! (Order #${orderId})</b>\n\n` +
+          `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}${amtText}\n\n` +
+          `🔗 <b>Click to Pay Directly on Swiggy:</b>\n<a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` +
+          `<i>✨ Yeh authentic link Swiggy payment page se generated hai. Payment complete karke neeche [ 💸 I Have Paid ] dabayein!</i>`,
+          {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [Markup.button.url('💳 Pay on Swiggy (Official Link)', link)],
+              [Markup.button.callback('💸 I Have Paid / Confirm Payment', `user_confirm_order_${orderId}`)],
+              [Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
+            ])
+          }
+        );
+        await ctx.reply(`✅ <b>Official Swiggy Payment Link delivered to Customer!</b>\n\nLink: <code>${escapeHtml(link)}</code>`, { parse_mode: 'HTML' });
+      } catch (err) {
+        await ctx.reply(`❌ Failed to send link to user: ${err.message}`);
+      }
     }
     return;
   }
