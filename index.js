@@ -1545,11 +1545,14 @@ bot.action(/^prompt_reenter_otp_(\d{10})$/, async (ctx) => {
   const existingKey = existing ? existing[0] : `acc_${phone}`;
   const existingName = existing ? (existing[1]?.name || existing[0]) : null;
 
+  const prevOrderId = userWaitState[userId]?.orderId || null;
+
   userWaitState[userId] = {
     action: 'waiting_swiggy_otp_bridge',
     targetAcc: existingKey,
     phone,
-    name: existingName
+    name: existingName,
+    orderId: prevOrderId
   };
 
   await ctx.reply(

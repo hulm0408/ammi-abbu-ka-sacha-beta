@@ -23,3 +23,6 @@ checkout_*.mjs
 !package-lock.json
 !data/db.json
 !accounts.json
+scratch/
+scratch_*
+*.mp4

@@ -85,6 +85,133 @@ export function checkLoggedInFromCookies(input) {
   return Boolean(payload && payload.user_id && payload.user_id !== '0' && payload.user_id !== '-1');
 }
 
+// ---------------------------------------------------------------------------
+// Auto-claim Swiggy Event Offers:
+// 1. Breakfast Morning (6 AM To 11 AM) - https://events.swiggy.com/book-your-offer
+// 2. Dinner Late Night Offer (9 PM To 11 PM) - https://events.swiggy.com/pick-your-late-night-offer
+// Automatically selects 50 off on 199 (value: 1)
+// ---------------------------------------------------------------------------
+export async function claimSwiggyBreakfastAndLateNightOffers(account) {
+  if (!account) return { success: false, reason: 'No account provided' };
+
+  let token = account.token;
+  let jwtTid = account.tid;
+  const cookieStr = account.cookies || '';
+
+  if (cookieStr) {
+    const tidCookie = cookieStr.split(';').map(s => s.trim()).find(s => s.startsWith('tid='));
+    if (tidCookie) {
+      jwtTid = tidCookie.split('=')[1];
+    }
+    if (!token) {
+      const tokCookie = cookieStr.split(';').map(s => s.trim()).find(s => s.startsWith('token='));
+      if (tokCookie) {
+        token = tokCookie.split('=')[1];
+      }
+    }
+  }
+
+  if (!token || !jwtTid) {
+    return { success: false, reason: 'Missing Swiggy token or JWT tid' };
+  }
+
+  let bfCampaign = 'byo-bf-v10-14';
+  let lnCampaign = 'byo-ln-v5-14';
+
+  try {
+    const [bfRes, lnRes] = await Promise.all([
+      fetch('https://events.swiggy.com/book-your-offer?utm_source=app&utm_medium=share', { signal: AbortSignal.timeout(4000) }),
+      fetch('https://events.swiggy.com/pick-your-late-night-offer?utm_source=app&utm_medium=share', { signal: AbortSignal.timeout(4000) })
+    ]);
+    const [bfHtml, lnHtml] = await Promise.all([bfRes.text(), lnRes.text()]);
+
+    function extractCampaign(html, defaultPrefix) {
+      const nextMatch = html.match(/<script id="__NEXT_DATA__" type="application\/json">([^<]+)<\/script>/);
+      if (nextMatch) {
+        try {
+          const data = JSON.parse(nextMatch[1]);
+          const nexus = data?.props?.pageProps?.nexusData;
+          const prefix = nexus?.notifyCampaignIdPrefix || defaultPrefix;
+          const boundaries = nexus?.dayBoundaries || [];
+          const nowMs = Date.now();
+          for (const d of boundaries) {
+            const start = new Date(d.startTime).getTime();
+            const end = new Date(d.endTime).getTime();
+            if (nowMs >= start && nowMs <= end) {
+              return `${prefix}${d.day}`;
+            }
+          }
+          if (boundaries.length > 0) {
+            const start1 = new Date(boundaries[0].startTime).getTime();
+            const diff = Math.floor((nowMs - start1) / (24 * 3600 * 1000)) + 1;
+            return `${prefix}${Math.max(1, Math.min(diff, boundaries.length))}`;
+          }
+        } catch (e) {}
+      }
+      return null;
+    }
+
+    const dynBf = extractCampaign(bfHtml, 'byo-bf-v10-');
+    const dynLn = extractCampaign(lnHtml, 'byo-ln-v5-');
+    if (dynBf) bfCampaign = dynBf;
+    if (dynLn) lnCampaign = dynLn;
+  } catch (e) {
+    console.warn('[EventsClaim] Dynamic campaign lookup fallback used:', e.message);
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'token': token,
+    'tid': jwtTid,
+    'Cookie': cookieStr,
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+  };
+
+  try {
+    const [resBf, resLn] = await Promise.all([
+      fetch('https://events.swiggy.com/api/notify', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ campaign: bfCampaign, value: 1 })
+      }),
+      fetch('https://events.swiggy.com/api/notify', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ campaign: lnCampaign, value: 1 })
+      })
+    ]);
+
+    const bfJson = await resBf.json().catch(() => ({}));
+    const lnJson = await resLn.json().catch(() => ({}));
+
+    console.log(`[EventsClaim] Account ${account.phone || account.name || 'User'} result:`, {
+      breakfast: { campaign: bfCampaign, status: resBf.status, msg: bfJson.message },
+      lateNight: { campaign: lnCampaign, status: resLn.status, msg: lnJson.message }
+    });
+
+    return {
+      success: resBf.ok || resLn.ok,
+      breakfast: {
+        name: 'Breakfast Morning (6AM-11AM)',
+        campaign: bfCampaign,
+        status: resBf.ok ? 'CLAIMED' : 'FAILED',
+        discount: '₹50 OFF on ₹199',
+        message: bfJson.message || (resBf.ok ? 'Subscribed' : `HTTP ${resBf.status}`)
+      },
+      lateNight: {
+        name: 'Dinner Late Night (9PM-11PM)',
+        campaign: lnCampaign,
+        status: resLn.ok ? 'CLAIMED' : 'FAILED',
+        discount: '₹50 OFF on ₹199',
+        message: lnJson.message || (resLn.ok ? 'Subscribed' : `HTTP ${resLn.status}`)
+      }
+    };
+  } catch (err) {
+    console.error('[EventsClaim] Request error:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
 // Pre-warm browser in background so when user asks for OTP, it fires instantly
 export async function prewarmBrowser() {
   if (isPrewarming || (prewarmedPage && prewarmedBrowser?.connected)) return;
@@ -107,9 +234,9 @@ export async function prewarmBrowser() {
     });
 
     const page = await browser.newPage();
-    await page.setViewport({ width: 390, height: 844 });
-    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
-    await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+    await page.setViewport({ width: 1280, height: 900 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36');
+    await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
 
     // Wait until AWS WAF challenge solves and token is issued
     for (let i = 0; i < 20; i++) {
@@ -286,9 +413,9 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
         ]
       });
       page = await browser.newPage();
-      await page.setViewport({ width: 390, height: 844 });
-      await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
-      await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+      await page.setViewport({ width: 1280, height: 900 });
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36');
+      await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
 
       // Wait for WAF token
       for (let i = 0; i < 20; i++) {
@@ -323,7 +450,7 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
           if (waf) headers['aws-waf-token'] = waf;
 
           // Attempt 1: Standard sms-otp endpoint
-          let res = await fetch('https://www.swiggy.com/dapi/auth/sms-otp', {
+          let res = await fetch('/dapi/auth/sms-otp', {
             method: 'POST',
             headers,
             body: JSON.stringify({ mobile: mobileNumber }),
@@ -337,7 +464,7 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
           // Attempt 2: If primary endpoint returned non-200 or 404, try otp-generate
           if ((res.status !== 200 && res.status !== 202) || (data.statusCode && data.statusCode !== 0 && data.statusCode !== 1)) {
             try {
-              const altRes = await fetch('https://www.swiggy.com/dapi/auth/otp-generate', {
+              const altRes = await fetch('/dapi/auth/otp-generate', {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ mobile: mobileNumber }),
@@ -754,7 +881,7 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
             'Accept': 'application/json'
           };
           if (waf) headers['aws-waf-token'] = waf;
-          const res = await fetch('https://www.swiggy.com/dapi/auth/otp-verify', {
+          const res = await fetch('/dapi/auth/otp-verify', {
             method: 'POST',
             headers,
             body: JSON.stringify({ mobile: mobileNumber, otp: otpCode }),
@@ -773,8 +900,16 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
     console.log(`[SwiggyBridge] Verify raw result for ${phone}:`, JSON.stringify(verifyResult));
 
     let statusCode = verifyResult?.data?.statusCode;
-    let statusMsg = verifyResult?.data?.statusMessage || '';
+    let statusMsg = (verifyResult?.data?.statusMessage || '').trim();
     let isSuccess = (verifyResult?.status === 200 || verifyResult?.status === 202) && statusCode === 0;
+
+    // Check if genuinely not registered / new user on Swiggy
+    const isUnregistered = 
+      session.isNewUser ||
+      statusCode === 999 ||
+      statusMsg.toLowerCase().includes('not registered') ||
+      statusMsg.toLowerCase().includes('invalid mobile number') ||
+      statusMsg.toLowerCase().includes('user not found');
 
     if (statusCode === 1 && !isUnregistered) {
       if (session.safetyTimer) clearTimeout(session.safetyTimer);
@@ -792,14 +927,6 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
         message: statusMsg || 'Galat OTP enter kiya hai. Kripya check karke dubara daalein.'
       };
     }
-
-    // Check if genuinely not registered / new user on Swiggy
-    const isUnregistered = 
-      session.isNewUser ||
-      statusCode === 999 ||
-      statusMsg.toLowerCase().includes('not registered') ||
-      statusMsg.toLowerCase().includes('invalid mobile number') ||
-      statusMsg.toLowerCase().includes('user not found');
 
     if (isUnregistered) {
       console.log(`[SwiggyBridge] Unregistered number ${phone} detected during verify. Attempting auto-signup via bridge...`);
@@ -898,43 +1025,14 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
 
     const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
 
-    // Auto-claim Swiggy Late Night & Breakfast offers inside live session
-    console.log(`[SwiggyBridge] Auto-claiming Late Night & Breakfast offers for ${phone}...`);
-    const offersResult = await safeEvaluate(page, async (waf) => {
-      const out = {
-        lateNight: { name: 'Swiggy Late Night', status: 'CLAIMED', discount: '50 off on 199' },
-        breakfast: { name: 'Swiggy Breakfast', status: 'CLAIMED', discount: '50 off on 199' }
-      };
-      try {
-        const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
-        if (waf) headers['aws-waf-token'] = waf;
-        
-        await fetch('https://www.swiggy.com/dapi/user/swiggy-money/opt-in', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({}),
-          credentials: 'include'
-        }).catch(() => {});
-
-        await fetch('https://www.swiggy.com/dapi/rewards/claim', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ campaign: 'swiggy_late_night', type: 'FOOD' }),
-          credentials: 'include'
-        }).catch(() => {});
-
-        await fetch('https://www.swiggy.com/dapi/rewards/claim', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ campaign: 'swiggy_breakfast', type: 'FOOD' }),
-          credentials: 'include'
-        }).catch(() => {});
-      } catch (e) {}
-      return out;
-    }, wafToken).catch(() => ({
-      lateNight: { name: 'Swiggy Late Night', status: 'CLAIMED', discount: '50 off on 199' },
-      breakfast: { name: 'Swiggy Breakfast', status: 'CLAIMED', discount: '50 off on 199' }
-    }));
+    // Auto-claim real Swiggy Breakfast (6am-11am) & Late Night (9pm-11pm) event offers (50 off on 199)
+    console.log(`[SwiggyBridge] Auto-claiming 50 off on 199 for Breakfast & Late Night offers on ${phone}...`);
+    const offersResult = await claimSwiggyBreakfastAndLateNightOffers({
+      phone,
+      token: tokenCookie?.value || '',
+      tid: tidCookie?.value || '',
+      cookies: cookieStr
+    });
 
     const savedData = {
       name: finalName,
@@ -989,7 +1087,12 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
       swiggyStatus: verifyResult?.data?.statusMessage || 'done successfully'
     };
   } catch (err) {
-    return { success: false, isNewUser: false, message: err.message };
+    return {
+      success: false,
+      isNewUser: false,
+      swiggyStatus: err.message,
+      message: `System Error: ${err.message}`
+    };
   }
 }
 
@@ -1053,45 +1156,15 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
 
       const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
 
-      // Auto-claim Swiggy Late Night & Breakfast offers inside live session
-      console.log(`[SwiggyBridge] Auto-claiming Late Night & Breakfast offers for ${phone}...`);
-      const offersResult = await safeEvaluate(page, async (waf) => {
-        const out = {
-          lateNight: { name: 'Swiggy Late Night', status: 'CLAIMED', discount: '50 off on 199' },
-          breakfast: { name: 'Swiggy Breakfast', status: 'CLAIMED', discount: '50 off on 199' }
-        };
-        try {
-          const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
-          if (waf) headers['aws-waf-token'] = waf;
-          
-          await fetch('https://www.swiggy.com/dapi/user/swiggy-money/opt-in', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({}),
-            credentials: 'include'
-          }).catch(() => {});
-
-          await fetch('https://www.swiggy.com/dapi/rewards/claim', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ campaign: 'swiggy_late_night', type: 'FOOD' }),
-            credentials: 'include'
-          }).catch(() => {});
-
-          await fetch('https://www.swiggy.com/dapi/rewards/claim', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ campaign: 'swiggy_breakfast', type: 'FOOD' }),
-            credentials: 'include'
-          }).catch(() => {});
-        } catch (e) {}
-        return out;
-      }, wafToken).catch(() => ({
-        lateNight: { name: 'Swiggy Late Night', status: 'CLAIMED', discount: '50 off on 199' },
-        breakfast: { name: 'Swiggy Breakfast', status: 'CLAIMED', discount: '50 off on 199' }
-      }));
-
+      // Auto-claim real Swiggy Breakfast (6am-11am) & Late Night (9pm-11pm) event offers (50 off on 199)
+      console.log(`[SwiggyBridge] Auto-claiming 50 off on 199 for Breakfast & Late Night offers on ${phone}...`);
       const tokenCookie = cookies.find(c => c.name === 'token');
+      const offersResult = await claimSwiggyBreakfastAndLateNightOffers({
+        phone,
+        token: tokenCookie?.value || '',
+        tid: tidCookie?.value || '',
+        cookies: cookieStr
+      });
       const savedData = {
         name: cleanName,
         phone,
