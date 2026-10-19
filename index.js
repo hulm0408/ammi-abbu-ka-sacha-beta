@@ -5428,7 +5428,7 @@ bot.on('text', async (ctx) => {
     const autoName = cleanName || getNextAutoUserName();
     delete userWaitState[userId];
 
-    const result = await requestSwiggyOtpViaBridge(userId, phoneToLogin, accKey, cleanName);
+    const result = await requestSwiggyOtpViaBridge(userId, phoneToLogin, accKey, autoName);
 
     if (result.needsName) {
       userWaitState[userId] = {

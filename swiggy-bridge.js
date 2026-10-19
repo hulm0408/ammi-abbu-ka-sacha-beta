@@ -22,7 +22,7 @@ function findChromePath() {
 
 const CHROME_PATH = findChromePath();
 const IS_LINUX = process.platform === 'linux';
-const HEADLESS_MODE = IS_LINUX ? true : false;
+const HEADLESS_MODE = (IS_LINUX || process.env.RAILWAY_ENVIRONMENT || process.env.HEADLESS === 'true') ? 'new' : false;
 
 // Active login sessions keyed by userId: { [userId]: { browser, page, phone, otp, targetAcc, isNewUser } }
 const activeSessions = {};
@@ -254,29 +254,47 @@ export async function prewarmBrowser() {
         '--disable-gpu',
         '--disable-dev-shm-usage',
         '--no-first-run',
-        '--no-default-browser-check'
+        '--no-default-browser-check',
+        '--window-size=1280,900',
+        '--lang=en-US,en'
       ]
     });
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 900 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36');
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'hi'] });
+    });
     await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
 
     // Wait until AWS WAF challenge solves and token is issued
-    for (let i = 0; i < 20; i++) {
+    let wafFound = false;
+    for (let i = 0; i < 25; i++) {
       const cookies = await page.cookies();
       const waf = cookies.find(c => c.name === 'aws-waf-token');
-      if (waf && waf.value.length > 50) break;
+      if (waf && waf.value.length > 50) {
+        wafFound = true;
+        break;
+      }
       await new Promise(r => setTimeout(r, 800));
     }
 
+    if (!wafFound) {
+      console.warn('⚠️ [SwiggyBridge] Prewarm: AWS WAF token not acquired within 20s. Discarding session.');
+      await browser.close().catch(() => {});
+      return;
+    }
+
     // Wait for WAF post-reload to settle down
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 1500));
 
     prewarmedBrowser = browser;
     prewarmedPage = page;
-    console.log('⚡ [SwiggyBridge] Pre-warmed Chrome is primed on swiggy.com! Next OTP will fire in <1s.');
+    console.log('⚡ [SwiggyBridge] Pre-warmed Chrome is primed with valid AWS WAF token on swiggy.com! Next OTP will fire in <1s.');
   } catch (err) {
     console.error('Failed to prewarm Chrome:', err.message);
     if (prewarmedBrowser) {
@@ -434,16 +452,24 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
           '--disable-gpu',
           '--disable-dev-shm-usage',
           '--no-first-run',
-          '--no-default-browser-check'
+          '--no-default-browser-check',
+          '--window-size=1280,900',
+          '--lang=en-US,en'
         ]
       });
       page = await browser.newPage();
       await page.setViewport({ width: 1280, height: 900 });
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36');
+      await page.evaluateOnNewDocument(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'hi'] });
+      });
       await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
 
       // Wait for WAF token
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < 25; i++) {
         const cookies = await page.cookies();
         const waf = cookies.find(c => c.name === 'aws-waf-token');
         if (waf && waf.value.length > 50) break;
@@ -510,6 +536,8 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       }, cleanPhone, wafToken);
     }
 
+    console.log('[SwiggyBridge] OTP dispatch raw result for ' + cleanPhone + ':', JSON.stringify(otpResult));
+
     const isUnregistered = otpResult.data?.statusCode === 1 && (
       otpResult.data?.statusMessage?.toLowerCase().includes('not registered') ||
       otpResult.data?.statusMessage?.toLowerCase().includes('new user') ||
@@ -517,36 +545,8 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
     );
 
     if (isUnregistered) {
-      // Check if a real human name was provided by the user
-      const hasRealName = targetAccName && !/^user\s*\d*$/i.test(targetAccName.trim()) && targetAccName.trim().length >= 3;
-      if (!hasRealName) {
-        console.log(`[SwiggyBridge] Number ${cleanPhone} is not registered on Swiggy. Keeping browser warm and requesting user's name.`);
-        const safetyTimer = setTimeout(() => {
-          if (activeSessions[userId]?.needsName) {
-            console.log(`[SwiggyBridge] Session for ${cleanPhone} timed out waiting for name. Closing browser.`);
-            activeSessions[userId].browser?.close().catch(() => {});
-            delete activeSessions[userId];
-          }
-        }, 120000);
-
-        activeSessions[userId] = {
-          browser,
-          page,
-          phone: cleanPhone,
-          targetAcc: targetAcc || `acc_${cleanPhone}`,
-          needsName: true,
-          safetyTimer
-        };
-
-        return {
-          success: false,
-          needsName: true,
-          phone: cleanPhone,
-          message: 'New number on Swiggy. Please provide a name to create account.'
-        };
-      }
-
-      const signupName = sanitizeSwiggyName(targetAccName);
+      const hasRealName = targetAccName && !/^user\s*\d*$/i.test(targetAccName.trim()) && targetAccName.trim().length >= 2;
+      const signupName = sanitizeSwiggyName(hasRealName ? targetAccName : getNextAutoUserName());
       console.log(`[SwiggyBridge] Number ${cleanPhone} is not registered on Swiggy. Triggering authentic signup OTP with name "${signupName}" via /dapi/auth/signup...`);
       const signupInitResult = await safeEvaluate(page, async (mobileNumber, name, waf) => {
         try {
