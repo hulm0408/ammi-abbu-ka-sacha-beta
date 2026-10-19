@@ -42,7 +42,8 @@ import {
   claimInstamartFreeCash,
   fetchSwiggyProfileFromCookies,
   parseAddressDetails,
-  parseCartDetails
+  parseCartDetails,
+  syncGroupCartAndCheckoutForAccount
 } from './swiggy-cart.js';
 
 dotenv.config();
@@ -241,12 +242,11 @@ function getBossReplyKeyboard() {
 }
 
 // Render the exact itemized receipt and bill summary matching the user's template
-// Render the genuine itemized receipt if items present, or genuine Swiggy group cart status
-function formatUserOrderCardText(order) {
+export function formatUserOrderCardText(order) {
   const db = getDb();
   const selectedAcc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
   const accPhone = order.orderAccount || selectedAcc?.phone || selectedAcc?.mobile || '7016132396';
-  const restName = order.restaurantName || order.restaurant || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : 'Swiggy Food Order');
+  const restName = order.restaurantName || order.restaurant || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : 'EatFit');
 
   // Address section
   let ad = order.addressDetails || parseAddressDetails(order.address);
@@ -268,7 +268,7 @@ function formatUserOrderCardText(order) {
   let itemsSection = '';
   if (order.items && Array.isArray(order.items) && order.items.length > 0) {
     const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
-    itemsSection = order.items.map((it, idx) => {
+    itemsSection = '\n' + order.items.map((it, idx) => {
       const emoji = numEmojis[idx] || `${idx + 1}️⃣`;
       const price = it.price ? it.price : Math.round(((it.lineTotal || 0) / (it.qty || 1)) * 100) / 100;
       const lineTotal = it.lineTotal || Math.round((price * it.qty) * 100) / 100;
@@ -279,7 +279,7 @@ function formatUserOrderCardText(order) {
     const subtotal = order.subtotal || Math.round(order.items.reduce((s, it) => s + (it.lineTotal || (it.price * it.qty)), 0) * 100) / 100;
     itemsSection += `📦 ${totalQty} Items • Subtotal: ₹${subtotal}\n\n`;
   } else {
-    itemsSection = `🛒 <b>Swiggy Cart:</b> Active Group Order\n` +
+    itemsSection = `\n🛒 <b>Swiggy Cart:</b> Active Group Order\n` +
       `🔗 <b>Link:</b> <code>${escapeHtml(order.cart || '')}</code>\n` +
       `ℹ️ <i>Items synced directly in Swiggy Group Cart (no assumed dishes)</i>\n\n`;
   }
@@ -290,14 +290,14 @@ function formatUserOrderCardText(order) {
     billSection = `🧾 Bill Summary\n`;
     if (order.subtotal) billSection += `🍽 Items Total: ₹${order.subtotal}\n`;
     if (order.couponCode) {
-      billSection += `🎟 Best Coupon Applied ${escapeHtml(order.couponCode)}: −₹${order.discountAmount || 0}\n`;
+      billSection += `🎟 Best Coupon Auto-Applied ${escapeHtml(order.couponCode)}: −₹${order.discountAmount || 0}\n`;
     }
     if (order.freeCashApplied > 0) {
       billSection += `💸 Extra Discount ( Free Cash ): −₹${order.freeCashApplied}\n`;
     }
-    if (order.swiggyOneApplied) {
+    if (order.swiggyOneApplied || order.freeDeliveryDiscount > 0) {
       const savedDel = order.freeDeliveryDiscount || order.deliverySaved || 42;
-      billSection += `✨ Free Delivery (Swiggy One)\n🚚 Delivery Fee: FREE (₹${savedDel} saved)\n`;
+      billSection += `✨ Free Delivery upto 7km\n🚚 Delivery Fee: FREE (₹${savedDel} saved)\n`;
     } else if (order.deliveryFee > 0) {
       billSection += `🚚 Delivery Fee: ₹${order.deliveryFee}\n`;
     }
@@ -319,7 +319,7 @@ function formatUserOrderCardText(order) {
   return `📱 Order Account: ${escapeHtml(accPhone)}\n` +
     `🛒 Your Cart\n` +
     `🏪 ${escapeHtml(restName)}\n\n` +
-    `${addrSection}\n` +
+    `${addrSection}` +
     itemsSection +
     billSection;
 }
@@ -552,9 +552,44 @@ function formatBossOrderCard(order) {
   text += `⏰ <b>Time:</b> ${new Date(order.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}\n`;
 
   const rows = [];
+  const db = getDb();
+  const accounts = db.config?.accounts || {};
+  const accEntries = Object.entries(accounts);
 
-  // STATE 1: PENDING Order -> Boss can Accept/Reject, open links, and send genuine payment link/QR
+  // STATE 1: PENDING Order -> Boss can immediately choose account, Accept/Reject, open links, and send genuine payment QR
   if (order.status === 'PENDING') {
+    // 1. ACCOUNT PICKER ROW(S) DIRECTLY ON ORDER CARD
+    if (order.selectedAccount && accounts[order.selectedAccount]) {
+      const curAcc = accounts[order.selectedAccount];
+      const curPhone = curAcc.phone || curAcc.mobile || curAcc.name || order.selectedAccount;
+      rows.push([
+        Markup.button.callback(`📱 Active Acc: ${curPhone} ✅`, `boss_choose_acc_picker_${order.id}`),
+        Markup.button.callback('🔄 Switch Acc', `boss_choose_acc_picker_${order.id}`)
+      ]);
+    } else {
+      // Order just arrived! Give Boss immediate account choice buttons!
+      const loggedInAccs = accEntries.filter(([k, a]) => a.isLoggedIn || a.cookies);
+      const topAccs = loggedInAccs.length > 0 ? loggedInAccs.slice(0, 4) : accEntries.slice(0, 4);
+
+      for (let i = 0; i < topAccs.length; i += 2) {
+        const row = [];
+        const [k1, a1] = topAccs[i];
+        const p1 = a1.phone || a1.mobile || a1.name || k1;
+        row.push(Markup.button.callback(`📱 Use: ${p1}`, `boss_select_acc_${order.id}_${k1}`));
+        if (topAccs[i + 1]) {
+          const [k2, a2] = topAccs[i + 1];
+          const p2 = a2.phone || a2.mobile || a2.name || k2;
+          row.push(Markup.button.callback(`📱 Use: ${p2}`, `boss_select_acc_${order.id}_${k2}`));
+        }
+        rows.push(row);
+      }
+      if (accEntries.length > 4) {
+        rows.push([
+          Markup.button.callback(`👥 Choose Other Acc (${accEntries.length} Total)`, `boss_choose_acc_picker_${order.id}`)
+        ]);
+      }
+    }
+
     rows.push([
       Markup.button.callback('✅ Accept Order', `boss_action_accept_${order.id}`),
       Markup.button.callback('❌ Reject Order', `boss_action_sorry_${order.id}`)
@@ -582,6 +617,14 @@ function formatBossOrderCard(order) {
   }
   // STATE 2: ACCEPTED Order -> Send payment link, Send QR, Message user, Tracking, Complete
   else if (order.status === 'ACCEPTED') {
+    if (order.selectedAccount && accounts[order.selectedAccount]) {
+      const curAcc = accounts[order.selectedAccount];
+      const curPhone = curAcc.phone || curAcc.mobile || curAcc.name || order.selectedAccount;
+      rows.push([
+        Markup.button.callback(`📱 Active Acc: ${curPhone} ✅`, `boss_choose_acc_picker_${order.id}`),
+        Markup.button.callback('🔄 Switch Acc', `boss_choose_acc_picker_${order.id}`)
+      ]);
+    }
     rows.push([
       Markup.button.callback('💳 Send Swiggy Payment Link', `boss_prompt_send_link_${order.id}`),
       Markup.button.callback('📸 Send Swiggy Payment QR', `boss_prompt_send_qr_${order.id}`)
@@ -1904,12 +1947,14 @@ bot.action(/^boss_choose_acc_picker_(.+)$/, async (ctx) => {
     const row = [];
     const [k1, a1] = accEntries[i];
     const s1 = a1.isLoggedIn ? '🟢' : '⚪';
-    row.push(Markup.button.callback(`${s1} ${a1.name || k1}`, `boss_select_acc_${orderId}_${k1}`));
+    const p1 = a1.phone || a1.mobile || a1.name || k1;
+    row.push(Markup.button.callback(`${s1} ${p1}`, `boss_select_acc_${orderId}_${k1}`));
 
     if (accEntries[i + 1]) {
       const [k2, a2] = accEntries[i + 1];
       const s2 = a2.isLoggedIn ? '🟢' : '⚪';
-      row.push(Markup.button.callback(`${s2} ${a2.name || k2}`, `boss_select_acc_${orderId}_${k2}`));
+      const p2 = a2.phone || a2.mobile || a2.name || k2;
+      row.push(Markup.button.callback(`${s2} ${p2}`, `boss_select_acc_${orderId}_${k2}`));
     }
     buttons.push(row);
   }
@@ -1930,7 +1975,7 @@ bot.action(/^boss_choose_acc_picker_(.+)$/, async (ctx) => {
   );
 });
 
-// Selecting Account for Order -> Runs Swiggy Verification & Cart Inspection
+// Selecting Account for Order -> Runs Group Cart Sync, Coupon Optimizer & Authentic Payment QR Capture
 bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const payload = ctx.match[1];
@@ -1958,45 +2003,113 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
   if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
 
   const acc = db.config.accounts?.[accKey];
-  const accName = acc?.name || accKey.toUpperCase();
+  const accPhone = acc?.phone || acc?.mobile || acc?.name || '7016132396';
+  const accName = acc?.name || accPhone;
 
   order.selectedAccount = accKey;
+  order.orderAccount = accPhone;
   saveDb(db);
 
-  await ctx.answerCbQuery(`Selected ${accName}! Verifying with Swiggy... 🔍`).catch(() => {});
-  const waitMsg = await ctx.reply(`🔍 <b>Verifying Swiggy Cart with ${accName}'s Account...</b>\nApplying best coupon, free delivery & free cash to minimise cost...`, { parse_mode: 'HTML' });
+  await ctx.answerCbQuery(`Selected ${accPhone}! Processing cart & capturing payment QR... 🚀`).catch(() => {});
+  const waitMsg = await ctx.reply(
+    `⏳ <b>Processing Order #${orderId} on Swiggy Account: ${escapeHtml(accPhone)} (${escapeHtml(accName)})...</b>\n\n` +
+    `1️⃣ Cloning items from Customer Group Cart into account cart\n` +
+    `2️⃣ Setting genuine customer delivery address\n` +
+    `3️⃣ Auto-applying best coupon (DELULU4FOOD, Swiggy One, Free Cash)\n` +
+    `4️⃣ Navigating to checkout & capturing authentic Swiggy Payment QR...`,
+    { parse_mode: 'HTML' }
+  );
 
-  // If account has session cookies or tid, run full live verification
-  if (acc?.cookies || acc?.tid) {
-    try {
-      const liveData = await inspectCartForAccount(acc);
-      if (liveData) {
-        if (liveData.restaurantName) order.restaurantName = liveData.restaurantName;
-        if (liveData.items && liveData.items.length > 0) order.items = liveData.items;
-        if (liveData.address && (!order.address || order.address === 'Address pending / not provided')) {
-          order.address = liveData.address;
-        }
-        order.itemTotal = liveData.itemTotal;
-        order.subtotal = liveData.subtotal;
-        order.deliveryFee = liveData.deliveryFee;
-        order.freeDeliveryDiscount = liveData.freeDeliveryDiscount;
-        order.swiggyOneApplied = liveData.swiggyOneApplied;
-        order.swiggyOneSavings = liveData.swiggyOneSavings;
-        order.couponCode = liveData.couponCode;
-        order.discountAmount = liveData.discountAmount;
-        order.freeCashBalance = liveData.freeCashBalance;
-        order.freeCashApplied = liveData.freeCashApplied;
-        order.finalPayable = liveData.finalPayable;
-        order.totalSavings = liveData.totalSavings;
-        if (liveData.addressDetails) {
-          order.addressDetails = liveData.addressDetails;
-        }
-        order.taxesAndCharges = liveData.taxesAndCharges || 0;
-        order.swiggyVerified = true;
+  // Run full group cart sync, address binding, coupon optimization & checkout payment screen capture
+  try {
+    const result = await syncGroupCartAndCheckoutForAccount(acc, order);
+    console.log(`[syncGroupCartAndCheckoutForAccount] Result for Order #${orderId}:`, {
+      success: result.success,
+      hasQr: Boolean(result.qrBuffer),
+      paymentUrl: result.paymentUrl,
+      itemsCount: result.cartData?.items?.length || 0
+    });
+
+    if (result.cartData) {
+      const cd = result.cartData;
+      if (cd.restaurantName) order.restaurantName = cd.restaurantName;
+      if (cd.items && cd.items.length > 0) order.items = cd.items;
+      if (cd.address && (!order.address || order.address === 'Address pending / not provided')) {
+        order.address = cd.address;
       }
-    } catch (e) {
-      console.error('Error inspecting cart for chosen account:', e.message);
+      order.itemTotal = cd.itemTotal || order.itemTotal;
+      order.subtotal = cd.subtotal || order.subtotal;
+      order.deliveryFee = cd.deliveryFee || 0;
+      order.freeDeliveryDiscount = cd.freeDeliveryDiscount || 0;
+      order.swiggyOneApplied = cd.swiggyOneApplied || false;
+      order.swiggyOneSavings = cd.swiggyOneSavings || 0;
+      if (cd.couponCode) {
+        order.couponCode = cd.couponCode;
+        order.discountAmount = cd.discountAmount || 0;
+      }
+      order.freeCashBalance = cd.freeCashBalance || 0;
+      order.freeCashApplied = cd.freeCashApplied || 0;
+      order.finalPayable = cd.finalPayable || order.finalPayable;
+      order.totalSavings = cd.totalSavings || order.totalSavings;
+      if (cd.addressDetails) {
+        order.addressDetails = cd.addressDetails;
+      }
+      order.packingCharges = cd.packingCharges || 0;
+      order.taxesAndCharges = cd.taxesAndCharges || 0;
+      order.swiggyVerified = true;
     }
+
+    if (result.paymentUrl) {
+      order.swiggyPaymentUrl = result.paymentUrl;
+    }
+
+    // If authentic Swiggy payment QR buffer was captured:
+    if (result.qrBuffer) {
+      order.genuineQrBuffer = result.qrBuffer;
+      // 1. Allot & send the authentic Swiggy payment screen QR directly to the customer!
+      if (order.userChatId || order.userId) {
+        try {
+          const userQrMsg = await bot.telegram.sendPhoto(
+            order.userChatId || order.userId,
+            { source: result.qrBuffer },
+            {
+              caption: `💳 <b>Official Swiggy Payment QR (Order #${order.id})</b>\n\n` +
+                `🏪 <b>${escapeHtml(order.restaurantName || 'Swiggy Order')}</b>\n` +
+                `💰 <b>Amount To Pay: ₹${order.finalPayable || order.subtotal}</b>\n` +
+                (order.totalSavings > 0 ? `🎉 <b>Total Savings: ₹${order.totalSavings}</b>\n` : '') +
+                `\n<i>Is QR code ko PhonePe, Google Pay ya kisi bhi UPI app se scan karke payment karein, phir neeche <b>[ 💸 I Have Paid / Confirm Payment ]</b> dabayein!</i>`,
+              parse_mode: 'HTML',
+              ...Markup.inlineKeyboard([
+                ...(order.swiggyPaymentUrl ? [[Markup.button.url('🌐 Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)]] : []),
+                [Markup.button.callback('💸 I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)]
+              ])
+            }
+          );
+          if (userQrMsg?.photo && userQrMsg.photo.length > 0) {
+            order.customQrFileId = userQrMsg.photo[userQrMsg.photo.length - 1].file_id;
+          }
+        } catch (err) {
+          console.error('[SendUserQR] Failed to send payment QR to user:', err.message);
+        }
+      }
+
+      // 2. Also send the genuine QR to Boss for immediate visibility
+      try {
+        await ctx.replyWithPhoto(
+          { source: result.qrBuffer },
+          {
+            caption: `📸 <b>Live Swiggy Checkout Payment QR (Order #${order.id})</b>\n\n` +
+              `📱 Account: <b>${escapeHtml(accPhone)}</b> (${escapeHtml(accName)})\n` +
+              `🏪 Restaurant: <b>${escapeHtml(order.restaurantName || 'Swiggy Order')}</b>\n` +
+              `💰 Amount To Pay: <b>₹${order.finalPayable || order.subtotal}</b> (Saved: ₹${order.totalSavings || 0})\n\n` +
+              `✅ <i>Yeh payment QR customer ko deliver ho chuka hai!</i>`,
+            parse_mode: 'HTML'
+          }
+        );
+      } catch (e) {}
+    }
+  } catch (e) {
+    console.error('Error syncing group cart and checkout for chosen account:', e.message);
   }
 
   saveDb(db);
@@ -2007,10 +2120,11 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
   } catch (e) {}
 
   await ctx.reply(
-    `✅ <b>Order #${orderId} linked to ${accName}!</b>\n\n` +
-    `💰 <b>Final Amount (On Swiggy Payment Page): ₹${order.finalPayable || order.subtotal || 350}</b>\n` +
+    `✅ <b>Order #${orderId} cloned & processed on ${escapeHtml(accPhone)}!</b>\n\n` +
+    `💰 <b>Final Amount To Pay: ₹${order.finalPayable || order.subtotal || 350}</b>\n` +
     (order.totalSavings > 0 ? `🎉 Total Savings Applied: ₹${order.totalSavings}\n` : '') +
-    `\nUser ke card par <b>[ ✅ Accept Order (Amount Okay) ]</b> deliver ho chuka hai!`,
+    (order.customQrFileId ? `📸 <b>Official Payment QR Delivered to Customer!</b>\n` : '') +
+    `\nCustomer ke card par full itemized receipt & payment button ready hai!`,
     { parse_mode: 'HTML' }
   );
 });

@@ -737,8 +737,9 @@ async function transferGroupCartToPersonalCart(page, groupCartId, restaurantId, 
     // (browser already has WAF token + account cookies set at this point)
     try {
       const webGroupData = await page.evaluate(async (gcId, rId) => {
-        // Try web variant of group cart view
+        // Try official and web variant of group cart view
         const endpoints = [
+          `https://www.swiggy.com/dapi/cart/group/view?group_cart_id=${gcId}`,
           `https://www.swiggy.com/dapi/group-orders/${gcId}`,
           `https://www.swiggy.com/dapi/group-orders/view?groupCartId=${gcId}&restaurantId=${rId}`,
         ];
@@ -747,7 +748,7 @@ async function transferGroupCartToPersonalCart(page, groupCartId, restaurantId, 
             const r = await fetch(ep);
             if (!r.ok) continue;
             const j = await r.json();
-            const raw = j?.data?.groupCart?.items || j?.data?.items || j?.data?.cart?.items || [];
+            const raw = j?.data?.items || j?.data?.groupCart?.items || j?.data?.cart?.items || [];
             if (raw.length > 0) return raw;
           } catch (e) {}
         }
@@ -1992,5 +1993,258 @@ export async function fetchSwiggyProfileFromCookies(cookies) {
     return { name: null, phone: null };
   }
 }
+
+// ---------------------------------------------------------------------------
+// SYNC GROUP CART & CHECKOUT FOR CHOSEN ACCOUNT
+// 1. Clones group cart items from customer link into chosen account's personal cart
+// 2. Binds customer delivery address (OFO / coordinates)
+// 3. Auto-applies maximum discounts (best coupon, Swiggy One, Free Cash)
+// 4. Navigates to Swiggy checkout -> PROCEED TO PAY and captures authentic payment screen QR
+// ---------------------------------------------------------------------------
+export async function syncGroupCartAndCheckoutForAccount(account, order) {
+  if (!account) return { success: false, error: 'No account provided' };
+
+  const cookies = account.cookies || '';
+  if (!cookies && !account.tid) {
+    return { success: false, error: 'Account has no active session or cookies' };
+  }
+
+  // 1. Resolve cart link metadata
+  let cartMeta = null;
+  if (order.cart) {
+    try {
+      cartMeta = await resolveSwiggyLink(order.cart);
+    } catch (e) {}
+  }
+
+  // 2. Resolve address link metadata
+  let addrMeta = null;
+  if (order.address) {
+    try {
+      addrMeta = await resolveSwiggyLink(order.address);
+    } catch (e) {}
+  }
+
+  let ad = order.addressDetails || addrMeta?.addressDetails || parseAddressDetails(order.address);
+  if (ad) {
+    order.addressDetails = ad;
+  }
+
+  let browser = null;
+  try {
+    browser = await puppeteer.launch({
+      executablePath: CHROME_PATH,
+      headless: PUPPETEER_HEADLESS,
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--no-sandbox',
+        '--disable-gpu',
+        '--disable-dev-shm-usage',
+        '--no-first-run'
+      ]
+    });
+
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 900 });
+
+    // Step 1: Solve WAF on swiggy.com root
+    console.log('[SyncAccount] 1. Solving WAF on Swiggy root...');
+    await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+    for (let i = 0; i < 20; i++) {
+      const pageCookies = await page.cookies();
+      const waf = pageCookies.find(c => c.name === 'aws-waf-token');
+      if (waf && waf.value.length > 50) break;
+      await new Promise(r => setTimeout(r, 300));
+    }
+    await new Promise(r => setTimeout(r, 800));
+
+    // Step 2: Inject account cookies
+    console.log('[SyncAccount] 2. Injecting account session cookies...');
+    const currentCookies = await page.cookies();
+    await page.deleteCookie(...currentCookies.filter(c => c.name !== 'aws-waf-token'));
+
+    const cookiePairs = cookies.split(';').map(s => s.trim()).filter(Boolean);
+    const parsedCookies = cookiePairs.map(p => {
+      const [name, ...val] = p.split('=');
+      return { name, value: val.join('='), domain: '.swiggy.com', path: '/' };
+    }).filter(c => c.name !== 'aws-waf-token');
+
+    if (account.tid && !parsedCookies.some(c => c.name === '_session_tid')) {
+      parsedCookies.push({ name: '_session_tid', value: account.tid, domain: '.swiggy.com', path: '/' });
+    }
+    if (account.tid && !parsedCookies.some(c => c.name === 'tid')) {
+      parsedCookies.push({ name: 'tid', value: account.tid, domain: '.swiggy.com', path: '/' });
+    }
+    if (account.token && !parsedCookies.some(c => c.name === 'token')) {
+      parsedCookies.push({ name: 'token', value: account.token, domain: '.swiggy.com', path: '/' });
+    }
+    if (account.sid && !parsedCookies.some(c => c.name === '_sid')) {
+      parsedCookies.push({ name: '_sid', value: account.sid, domain: '.swiggy.com', path: '/' });
+    }
+    if (account.deviceId && !parsedCookies.some(c => c.name === '_device_id')) {
+      parsedCookies.push({ name: '_device_id', value: account.deviceId, domain: '.swiggy.com', path: '/' });
+    }
+    if (!parsedCookies.some(c => c.name === '_is_logged_in')) {
+      parsedCookies.push({ name: '_is_logged_in', value: '1', domain: '.swiggy.com', path: '/' });
+    }
+
+    const lat = ad?.lat || '17.442991';
+    const lng = ad?.lng || '78.362384';
+    const city = ad?.city || 'Hyderabad';
+    const addressStr = ad?.address || `${city} Address`;
+    parsedCookies.push({
+      name: 'userLocation',
+      value: encodeURIComponent(JSON.stringify({
+        lat,
+        lng,
+        address: addressStr,
+        area: city,
+        showUserDefaultAddressHint: false
+      })),
+      domain: '.swiggy.com',
+      path: '/'
+    });
+
+    await page.setCookie(...parsedCookies).catch(() => {});
+    await new Promise(r => setTimeout(r, 600));
+
+    // Step 3: Attach delivery address if OFO link provided
+    if (addrMeta?.ofoUser && addrMeta?.ofoToken) {
+      const ofoUrl = `https://www.swiggy.com/ofo/address/${encodeURIComponent(addrMeta.ofoUser)}/${addrMeta.ofoToken}?pushScreen=true`;
+      console.log(`[SyncAccount] 3. Visiting OFO address link: ${ofoUrl}`);
+      await page.goto(ofoUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    // Step 4: Clone / Sync Group Cart into Account's personal cart
+    const groupCartId = cartMeta?.groupCartId || order.groupCartId;
+    const restaurantId = cartMeta?.restaurantId || order.restaurantId;
+
+    if (groupCartId) {
+      console.log(`[SyncAccount] 4. Cloning group cart (ID: ${groupCartId}, Rest: ${restaurantId})...`);
+      const cloned = await page.evaluate(async (gcId, rId) => {
+        let fetchedItems = [];
+        try {
+          const vRes = await fetch(`https://www.swiggy.com/dapi/cart/group/view?group_cart_id=${gcId}`);
+          if (vRes.ok) {
+            const vJson = await vRes.json();
+            const raw = vJson?.data?.items || vJson?.data?.groupCart?.items || [];
+            for (const it of raw) {
+              const id = String(it.item_id || it.itemId);
+              if (id) {
+                fetchedItems.push({
+                  itemId: id,
+                  name: it.name || it.dish_name || 'Item',
+                  qty: it.quantity || 1,
+                  price: (it.final_price || it.price || 0) / 100
+                });
+              }
+            }
+          }
+        } catch (e) {}
+
+        // Join & Transfer
+        try {
+          await fetch('https://www.swiggy.com/dapi/cart/group/join', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ group_cart_id: gcId, guest_user_name: 'Member' })
+          });
+          await fetch('https://www.swiggy.com/dapi/cart/group/transfer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ group_cart_id: gcId })
+          });
+        } catch (e) {}
+
+        // Flush-sync items into account's cart
+        if (fetchedItems.length > 0) {
+          const cartItems = {};
+          for (const it of fetchedItems) {
+            cartItems[it.itemId] = {
+              quantity: it.qty,
+              itemId: it.itemId,
+              variantGroupId: null
+            };
+          }
+          await fetch('https://www.swiggy.com/dapi/cart', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              flushFirst: 1,
+              restaurantId: String(rId || ''),
+              cartItems
+            })
+          }).catch(() => {});
+        }
+
+        return { fetchedItems };
+      }, groupCartId, restaurantId || '');
+
+      if (cloned?.fetchedItems && cloned.fetchedItems.length > 0) {
+        order.items = cloned.fetchedItems.map(it => ({
+          name: it.name,
+          qty: it.qty,
+          price: it.price,
+          lineTotal: Math.round(it.price * it.qty * 100) / 100
+        }));
+      }
+    } else if (order.cart && order.cart.startsWith('http')) {
+      console.log(`[SyncAccount] Navigating to cart URL: ${order.cart}`);
+      await page.goto(order.cart, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    // Step 5: Optimize cart (best coupon, Swiggy One, Free Cash)
+    console.log('[SyncAccount] 5. Optimizing cart with best coupon & Free Cash...');
+    const cartData = await extractAndOptimizeCartData(page);
+
+    // Step 6: Proceed to checkout and capture genuine Swiggy payment screen QR
+    console.log('[SyncAccount] 6. Navigating to checkout for real payment screen...');
+    await page.goto('https://www.swiggy.com/checkout', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Click DELIVER HERE if needed
+    await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('*'));
+      const btn = els.find(e => e.innerText?.trim() === 'DELIVER HERE');
+      if (btn) btn.click();
+    });
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Click PROCEED TO PAY
+    await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('*'));
+      const btn = els.find(e => e.innerText?.trim() === 'PROCEED TO PAY');
+      if (btn) btn.click();
+    });
+    await new Promise(r => setTimeout(r, 6000));
+
+    // Expand Wallets / PhonePe / UPI to reveal genuine payment QR
+    await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('*'));
+      const pp = els.find(e => e.innerText && (e.innerText.includes('PhonePe') || e.innerText.includes('UPI')));
+      if (pp) pp.click();
+    });
+    await new Promise(r => setTimeout(r, 2500));
+
+    const paymentUrl = page.url();
+    const qrBuffer = await page.screenshot({ fullPage: false });
+
+    await browser.close().catch(() => {});
+
+    return {
+      success: true,
+      cartData,
+      qrBuffer,
+      paymentUrl: paymentUrl && (paymentUrl.includes('swiggy.com/payments') || paymentUrl.includes('checkout') || paymentUrl.includes('juspay') || paymentUrl.includes('phonepe')) ? paymentUrl : null
+    };
+  } catch (err) {
+    console.error('[syncGroupCartAndCheckoutForAccount] Error:', err.message);
+    if (browser) await browser.close().catch(() => {});
+    return { success: false, error: err.message };
+  }
+}
+
 
 
