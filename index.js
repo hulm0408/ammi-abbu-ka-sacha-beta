@@ -2296,6 +2296,126 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
   });
 });
 
+// Boss Action: Trigger Login via OTP for an Account
+bot.action(/^boss_login_acc_otp_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const rawPayload = ctx.match[1];
+  const accKey = rawPayload.split('_')[0] === 'acc' ? rawPayload.split('_').slice(0, 2).join('_') : rawPayload.split('_')[0];
+  const db = getDb();
+  const acc = db.config.accounts?.[accKey] || db.config.accounts?.[rawPayload];
+  const phone = acc?.phone || acc?.mobile || accKey.replace(/^acc_/, '').slice(-10);
+  const accName = acc?.name || phone;
+
+  if (!phone || phone.length < 10) {
+    return ctx.answerCbQuery('Invalid phone number for account').catch(() => {});
+  }
+
+  await ctx.answerCbQuery(`Sending OTP to ${phone}... ⚡`).catch(() => {});
+  const waitMsg = await ctx.reply(`📲 <b>Requesting Swiggy OTP for ${escapeHtml(phone)} (${escapeHtml(accName)})...</b>`, { parse_mode: 'HTML' });
+
+  try {
+    const result = await requestSwiggyOtpViaBridge(ctx.from.id, phone, accKey, accName);
+    try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
+
+    if (result.success) {
+      userWaitState[ctx.from.id] = {
+        action: 'waiting_swiggy_otp_bridge',
+        targetAcc: accKey,
+        phone
+      };
+      await ctx.reply(
+        `📲 <b>Swiggy OTP Sent Successfully!</b>\n` +
+        `📱 Mobile: <code>${phone}</code>\n` +
+        `👤 Account: <b>${escapeHtml(accName)}</b>\n\n` +
+        `👉 <i>Kripya mobile par aaya hua 6-digit OTP yahan type karein:</i>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🔄 Re-enter OTP', `prompt_reenter_otp_${phone}`),
+              Markup.button.callback('📨 Resend OTP', `resend_otp_${phone}`)
+            ],
+            [
+              Markup.button.callback('📋 Paste Session JSON', `boss_login_acc_json_${accKey}`),
+              Markup.button.callback('❌ Cancel', 'close_menu')
+            ]
+          ])
+        }
+      );
+    } else {
+      const errCard = formatOtpSendErrorCard(phone, result);
+      await ctx.reply(errCard.text, {
+        parse_mode: 'HTML',
+        ...errCard.keyboard
+      });
+    }
+  } catch (err) {
+    try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
+    await ctx.reply(`❌ <b>Error:</b> ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+  }
+});
+
+// Boss Action: Prompt to paste Session JSON for an Account
+bot.action(/^boss_login_acc_json_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const rawPayload = ctx.match[1];
+  const accKey = rawPayload.split('_')[0] === 'acc' ? rawPayload.split('_').slice(0, 2).join('_') : rawPayload.split('_')[0];
+  const db = getDb();
+  const acc = db.config.accounts?.[accKey] || db.config.accounts?.[rawPayload];
+  const phone = acc?.phone || acc?.mobile || accKey.replace(/^acc_/, '').slice(-10);
+  const accName = acc?.name || phone;
+
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[ctx.from.id] = {
+    action: 'waiting_json_login',
+    targetAcc: accKey,
+    phone
+  };
+
+  await ctx.reply(
+    `📋 <b>Paste Swiggy Session JSON for ${escapeHtml(accName)} (${escapeHtml(phone)}):</b>\n\n` +
+    `Browser ya app se copy kiya hua full Swiggy session JSON yahan bhejein:\n\n` +
+    `<i>(Format: <code>{"tid":"...","sid":"...","cookies":"..."}</code>)</i>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { force_reply: true, input_field_placeholder: 'Paste session JSON here...' }
+    }
+  );
+});
+
+// Boss Action: Add new account directly while handling an order
+bot.action(/^boss_add_new_acc_for_order_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const orderId = ctx.match[1];
+  await ctx.answerCbQuery().catch(() => {});
+
+  userWaitState[ctx.from.id] = {
+    action: 'waiting_phone_for_new_acc_order',
+    orderId
+  };
+
+  await ctx.reply(
+    `➕ <b>Add New Swiggy Account for Order #${orderId}:</b>\n\n` +
+    `👉 <i>Enter 10-digit Mobile Number:</i>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
+    }
+  );
+});
+
+// Boss Action: Back to order review card
+bot.action(/^boss_back_to_order_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const orderId = ctx.match[1];
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+
+  await ctx.answerCbQuery().catch(() => {});
+  await updateOrderCards(order);
+});
+
 // Boss Action: Send Bill & Confirmation Request to Customer
 bot.action(/^boss_send_qr_to_user_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
@@ -5521,7 +5641,7 @@ bot.on('text', async (ctx) => {
   }
 
   // B: Login with Number - Phone Input
-  if (state && state.action === 'waiting_phone_for_number_login') {
+  if (state && (state.action === 'waiting_phone_for_number_login' || state.action === 'waiting_phone_for_new_acc_order')) {
     const cleanPhone = rawText.replace(/[^0-9]/g, '').slice(-10);
     if (cleanPhone.length !== 10 || !/^[6-9]\d{9}$/.test(cleanPhone)) {
       await ctx.reply(

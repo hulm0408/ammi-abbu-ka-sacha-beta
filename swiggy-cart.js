@@ -2347,12 +2347,18 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
     browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
       headless: PUPPETEER_HEADLESS,
+      protocolTimeout: 60000,
       args: [
         '--disable-blink-features=AutomationControlled',
         '--no-sandbox',
         '--disable-gpu',
         '--disable-dev-shm-usage',
-        '--no-first-run'
+        '--no-first-run',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--window-size=1280,900',
+        '--lang=en-US,en'
       ]
     });
 
@@ -2436,7 +2442,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
     console.log('[SyncAccount] 3. Verifying session validity on Swiggy...');
     const sessionCheck = await page.evaluate(async () => {
       try {
-        const res = await fetch('https://www.swiggy.com/dapi/cart');
+        const res = await fetch('https://www.swiggy.com/dapi/cart', { signal: AbortSignal.timeout(8000) });
         const json = await res.json();
         return {
           statusCode: json?.statusCode,
@@ -2471,7 +2477,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
       console.log(`[SyncAccount] 4. Fetching shared OFO address via /dapi/social/getAddress/${ofoToken}...`);
       const ofoAddress = await page.evaluate(async (tok) => {
         try {
-          const res = await fetch(`https://www.swiggy.com/dapi/social/getAddress/${tok}`);
+          const res = await fetch(`https://www.swiggy.com/dapi/social/getAddress/${tok}`, { signal: AbortSignal.timeout(8000) });
           const json = await res.json();
           if (json?.statusCode === 0 && json?.data) {
             return json.data;
@@ -2527,25 +2533,59 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
           await fetch('https://www.swiggy.com/dapi/cart/group/join', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ group_cart_id: gcId })
+            body: JSON.stringify({ group_cart_id: gcId }),
+            signal: AbortSignal.timeout(8000)
           });
         } catch (e) {}
         try {
           await fetch('https://www.swiggy.com/dapi/cart/group/transfer', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ group_cart_id: gcId })
+            body: JSON.stringify({ group_cart_id: gcId }),
+            signal: AbortSignal.timeout(8000)
           });
         } catch (e) {}
       }, groupCartId);
       await new Promise(r => setTimeout(r, 2000));
+
+      // Explicitly push items to account's cart if order has pre-parsed items
+      if (order.items && order.items.length > 0) {
+        console.log(`[SyncAccount] Syncing ${order.items.length} items directly to account personal cart...`);
+        await page.evaluate(async (items, rId) => {
+          try {
+            const cartItems = {};
+            for (const item of items) {
+              if (item.itemId) {
+                cartItems[item.itemId] = {
+                  quantity: item.qty || 1,
+                  addons: {},
+                  variants: {}
+                };
+              }
+            }
+            if (Object.keys(cartItems).length > 0) {
+              await fetch('https://www.swiggy.com/dapi/cart', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  cartItems,
+                  restaurantId: String(rId || ''),
+                  couponCode: ''
+                }),
+                signal: AbortSignal.timeout(8000)
+              });
+            }
+          } catch (e) {}
+        }, order.items, restaurantId);
+        await new Promise(r => setTimeout(r, 1500));
+      }
     }
 
     // Step 6: Read authenticated /dapi/cart items, addresses and bill summary
     console.log('[SyncAccount] 6. Reading real cart items and bill summary from /dapi/cart...');
     const dapiData = await page.evaluate(async () => {
       try {
-        const res = await fetch('https://www.swiggy.com/dapi/cart');
+        const res = await fetch('https://www.swiggy.com/dapi/cart', { signal: AbortSignal.timeout(8000) });
         const json = await res.json();
         return json?.data || null;
       } catch (e) {
@@ -2579,14 +2619,15 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
       const ciMap = dapiData.cartItems || {};
       const parsedItems = Object.values(ciMap).map(ci => {
         const itemInfo = ci.items?.[0] || {};
-        const unitPrice = (itemInfo.final_price || itemInfo.base_price || itemInfo.price || 0) / 100;
         const qty = ci.quantity || 1;
+        const totalRaw = itemInfo.final_price || itemInfo.subtotal || itemInfo.variants_price || itemInfo.base_price || itemInfo.price || 0;
+        const unitPrice = totalRaw > 0 ? (totalRaw / 100 / qty) : 0;
         return {
           itemId: String(ci.itemId || itemInfo.menu_item_id || ''),
           name: itemInfo.name || 'Dish Item',
           qty,
-          price: unitPrice,
-          lineTotal: Math.round(unitPrice * qty * 100) / 100
+          price: Math.round(unitPrice * 100) / 100,
+          lineTotal: Math.round((unitPrice * qty) * 100) / 100
         };
       }).filter(it => it.name);
 

@@ -35,6 +35,7 @@ let deleteVerifyRequestCount = 0;
 let prewarmedBrowser = null;
 let prewarmedPage = null;
 let isPrewarming = false;
+let prewarmedAt = 0;
 
 // Helper to decode JWT payload safely
 export function decodeJwtPayload(jwtToken) {
@@ -239,13 +240,20 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account) {
 
 // Pre-warm browser in background so when user asks for OTP, it fires instantly
 export async function prewarmBrowser() {
-  if (isPrewarming || (prewarmedPage && prewarmedBrowser?.connected)) return;
+  if (isPrewarming || (prewarmedPage && prewarmedBrowser?.connected && (Date.now() - prewarmedAt < 180000))) return;
   isPrewarming = true;
 
   try {
+    if (prewarmedBrowser) {
+      await prewarmedBrowser.close().catch(() => {});
+      prewarmedBrowser = null;
+      prewarmedPage = null;
+    }
+
     const browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
       headless: HEADLESS_MODE,
+      protocolTimeout: 60000,
       args: [
         '--disable-blink-features=AutomationControlled',
         ...(IS_LINUX ? [] : ['--window-position=-32000,-32000']),
@@ -255,6 +263,9 @@ export async function prewarmBrowser() {
         '--disable-dev-shm-usage',
         '--no-first-run',
         '--no-default-browser-check',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
         '--window-size=1280,900',
         '--lang=en-US,en'
       ]
@@ -294,6 +305,7 @@ export async function prewarmBrowser() {
 
     prewarmedBrowser = browser;
     prewarmedPage = page;
+    prewarmedAt = Date.now();
     console.log('⚡ [SwiggyBridge] Pre-warmed Chrome is primed with valid AWS WAF token on swiggy.com! Next OTP will fire in <1s.');
   } catch (err) {
     console.error('Failed to prewarm Chrome:', err.message);
@@ -307,25 +319,31 @@ export async function prewarmBrowser() {
   }
 }
 
-// Safe evaluate that handles "Execution context was destroyed" gracefully
+// Safe evaluate that handles "Execution context was destroyed" and hangs gracefully
 async function safeEvaluate(page, fn, ...args) {
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await page.evaluate(fn, ...args);
+      const evalPromise = page.evaluate(fn, ...args);
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('CDP evaluate timeout after 12s')), 12000)
+      );
+      return await Promise.race([evalPromise, timeoutPromise]);
     } catch (err) {
       if (
         err.message.includes('Execution context was destroyed') ||
         err.message.includes('Cannot find context') ||
-        err.message.includes('target closed')
+        err.message.includes('target closed') ||
+        err.message.includes('timed out') ||
+        err.message.includes('timeout')
       ) {
-        console.log(`[SwiggyBridge] Context navigating/reloaded, waiting for page to settle (attempt ${attempt + 1}/4)...`);
-        await new Promise(r => setTimeout(r, 2000));
+        console.log(`[SwiggyBridge] Context navigating/reloaded or slow (attempt ${attempt + 1}/3)...`);
+        await new Promise(r => setTimeout(r, 1500));
       } else {
         throw err;
       }
     }
   }
-  throw new Error('Navigation in progress, please retry.');
+  throw new Error('Browser evaluate timed out. Please retry.');
 }
 
 export function parseSwiggyOtpError(otpResult) {
@@ -432,18 +450,39 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       delete activeSessions[userId];
     }
 
-    // Use prewarmed instance if available for instant OTP
-    if (prewarmedPage && prewarmedBrowser?.connected) {
+    // Use prewarmed instance if available, fresh (< 3 mins), and responsive
+    let isUsable = false;
+    if (prewarmedPage && prewarmedBrowser?.connected && (Date.now() - prewarmedAt < 180000)) {
+      try {
+        await Promise.race([
+          prewarmedPage.evaluate(() => 1),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Ping timeout')), 1200))
+        ]);
+        isUsable = true;
+      } catch (pingErr) {
+        console.log('[SwiggyBridge] Prewarmed browser ping failed/unresponsive. Discarding stale instance.');
+        isUsable = false;
+      }
+    }
+
+    if (isUsable) {
       browser = prewarmedBrowser;
       page = prewarmedPage;
       prewarmedBrowser = null;
       prewarmedPage = null;
       console.log(`⚡ [SwiggyBridge] Using primed Chrome for instantaneous OTP to ${cleanPhone}...`);
     } else {
+      if (prewarmedBrowser) {
+        await prewarmedBrowser.close().catch(() => {});
+        prewarmedBrowser = null;
+        prewarmedPage = null;
+      }
+
       // Launch fresh
       browser = await puppeteer.launch({
         executablePath: CHROME_PATH,
         headless: HEADLESS_MODE,
+        protocolTimeout: 60000,
         args: [
           '--disable-blink-features=AutomationControlled',
           ...(IS_LINUX ? [] : ['--window-position=-32000,-32000']),
@@ -453,6 +492,9 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
           '--disable-dev-shm-usage',
           '--no-first-run',
           '--no-default-browser-check',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
           '--window-size=1280,900',
           '--lang=en-US,en'
         ]
@@ -505,7 +547,8 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
             method: 'POST',
             headers,
             body: JSON.stringify({ mobile: mobileNumber }),
-            credentials: 'include'
+            credentials: 'include',
+            signal: AbortSignal.timeout(8000)
           });
 
           let rawText = await res.text().catch(() => '');
@@ -519,7 +562,8 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ mobile: mobileNumber }),
-                credentials: 'include'
+                credentials: 'include',
+                signal: AbortSignal.timeout(8000)
               });
               const altText = await altRes.text().catch(() => '');
               const altData = JSON.parse(altText);
@@ -563,7 +607,8 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
               name: name,
               email: `${mobileNumber}@gmail.com`
             }),
-            credentials: 'include'
+            credentials: 'include',
+            signal: AbortSignal.timeout(8000)
           });
           const text = await res.text().catch(() => '');
           let data = {};
@@ -910,7 +955,8 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
             method: 'POST',
             headers,
             body: JSON.stringify({ mobile: mobileNumber, otp: otpCode }),
-            credentials: 'include'
+            credentials: 'include',
+            signal: AbortSignal.timeout(8000)
           });
           const data = await res.json().catch(() => ({}));
           return { status: res.status, data };
@@ -974,7 +1020,8 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
                 name: name,
                 email: `${mobileNumber}@gmail.com`
               }),
-              credentials: 'include'
+              credentials: 'include',
+              signal: AbortSignal.timeout(8000)
             });
             const data = await res.json().catch(() => ({}));
             return { status: res.status, data };
