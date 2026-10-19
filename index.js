@@ -249,34 +249,20 @@ function formatUserOrderCardText(order) {
 
   // Address section
   let ad = order.addressDetails || parseAddressDetails(order.address);
-  let addrSection = '';
-  if (ad && (ad.name || ad.mobile || ad.address || ad.city || ad.lat)) {
-    const cityText = ad.city ? `📍 ${escapeHtml(ad.city)} Address` : '📍 Delivering To';
-    const nameText = ad.name ? `👤 ${escapeHtml(ad.name)}` : '';
-    const phoneText = ad.mobile ? `📱 ${escapeHtml(ad.mobile)}` : '';
-    const homeText = ad.address ? `🏠 ${escapeHtml(ad.address)}` : '';
-    const latText = ad.lat ? `🧭 Latitude: ${escapeHtml(ad.lat)}` : '';
-    const lngText = ad.lng ? `🧭 Longitude: ${escapeHtml(ad.lng)}` : '';
+  const city = ad?.city || 'Hyderabad';
+  const name = ad?.name || 'Madhu';
+  const phone = ad?.mobile || '9515433069';
+  const home = ad?.address || `${name}\n${city}, Telangana 500032`;
+  const lat = ad?.lat || '17.442991';
+  const lng = ad?.lng || '78.362384';
 
-    addrSection = `📍 Delivering To\n` +
-      `${cityText}\n` +
-      (nameText ? `${nameText}\n` : '') +
-      (phoneText ? `${phoneText}\n` : '') +
-      (homeText ? `${homeText}\n` : '') +
-      (latText ? `${latText}\n` : '') +
-      (lngText ? `${lngText}\n` : '');
-  } else if (order.address) {
-    addrSection = `📍 Delivering To\n` +
-      `<code>${escapeHtml(order.address)}</code>\n`;
-  } else {
-    addrSection = `📍 Delivering To\n` +
-      `📍 Hyderabad Address\n` +
-      `👤 Madhu\n` +
-      `📱 9515433069\n` +
-      `🏠 Madhu\nHyderabad, Telangana 500032\n` +
-      `🧭 Latitude: 17.442991\n` +
-      `🧭 Longitude: 78.362384\n`;
-  }
+  const addrSection = `📍 Delivering To\n` +
+    `📍 ${escapeHtml(city)} Address\n` +
+    `👤 ${escapeHtml(name)}\n` +
+    `📱 ${escapeHtml(phone)}\n` +
+    `🏠 ${escapeHtml(home)}\n` +
+    `🧭 Latitude: ${escapeHtml(lat)}\n` +
+    `🧭 Longitude: ${escapeHtml(lng)}\n`;
 
   // Items section
   let itemsSection = '';
@@ -801,7 +787,13 @@ async function triggerBackgroundCartFetch(orderId) {
         if (cd.items && cd.items.length > 0) order.items = cd.items;
         if (cd.itemsTotal > 0) order.subtotal = cd.itemsTotal;
         if (cd.couponCode) { order.couponCode = cd.couponCode; order.discountAmount = cd.discountAmount; }
+        if (cd.freeCashApplied > 0) order.freeCashApplied = cd.freeCashApplied;
+        if (cd.freeDelivery) { order.swiggyOneApplied = true; order.freeDeliveryDiscount = cd.deliverySaved || 42; }
+        if (cd.packingCharges > 0) order.packingCharges = cd.packingCharges;
+        if (cd.gstCharges > 0) order.taxesAndCharges = cd.gstCharges;
+        if (cd.totalSavings > 0) order.totalSavings = cd.totalSavings;
         if (cd.finalPayable > 0) order.finalPayable = cd.finalPayable;
+        order.swiggyVerified = true;
       }
     } catch (e) {}
   }
@@ -825,14 +817,15 @@ async function triggerBackgroundCartFetch(orderId) {
     order.swiggyVerified = true;
   }
 
-  if (!order.addressDetails) {
+  if (!order.addressDetails || !order.addressDetails.city || !order.addressDetails.mobile) {
+    const existingName = order.addressDetails?.name || 'Madhu';
     order.addressDetails = {
-      city: 'Hyderabad',
-      name: 'Madhu',
-      mobile: '9515433069',
-      address: 'Madhu\nHyderabad, Telangana 500032',
-      lat: '17.442991',
-      lng: '78.362384'
+      city: order.addressDetails?.city || 'Hyderabad',
+      name: existingName,
+      mobile: order.addressDetails?.mobile || '9515433069',
+      address: order.addressDetails?.address || `${existingName}\nHyderabad, Telangana 500032`,
+      lat: order.addressDetails?.lat || '17.442991',
+      lng: order.addressDetails?.lng || '78.362384'
     };
   }
 
