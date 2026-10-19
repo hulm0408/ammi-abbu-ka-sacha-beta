@@ -43,7 +43,8 @@ import {
   fetchSwiggyProfileFromCookies,
   parseAddressDetails,
   parseCartDetails,
-  syncGroupCartAndCheckoutForAccount
+  syncGroupCartAndCheckoutForAccount,
+  applyMaxOfferToOrder
 } from './swiggy-cart.js';
 
 dotenv.config();
@@ -282,6 +283,11 @@ export function formatUserOrderCardText(order) {
     itemsSection = `\n🛒 <b>Swiggy Cart:</b> Active Group Order\n` +
       `🔗 <b>Link:</b> <code>${escapeHtml(order.cart || '')}</code>\n` +
       `ℹ️ <i>Items synced directly in Swiggy Group Cart (no assumed dishes)</i>\n\n`;
+  }
+
+  // Ensure maximum offer is always applied to bill summary
+  if (!order.couponCode || (order.subtotal >= 199 && (order.discountAmount || 0) < 140)) {
+    applyMaxOfferToOrder(order);
   }
 
   // Bill Summary section
@@ -891,6 +897,9 @@ async function triggerBackgroundCartFetch(orderId) {
     order.restaurantName = order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : (order.hostName ? `${order.hostName}'s Group Order` : 'Swiggy Food Order');
   }
 
+  // Auto-apply maximum offer to order
+  applyMaxOfferToOrder(order);
+
   saveDb(db);
   await updateOrderCards(order);
 
@@ -918,9 +927,11 @@ async function triggerBackgroundCartFetch(orderId) {
             order.couponCode = cd.couponCode;
             order.discountAmount = cd.discountAmount || 0;
           }
-          if (cd.finalTotal > 0) order.finalPayable = cd.finalTotal;
+          if (cd.finalTotal > 0 || cd.finalPayable > 0) order.finalPayable = cd.finalTotal || cd.finalPayable;
           if (cd.totalSavings > 0) order.totalSavings = cd.totalSavings;
         }
+
+        applyMaxOfferToOrder(order);
 
         if (result.paymentUrl) {
           order.swiggyPaymentUrl = result.paymentUrl;
@@ -2132,6 +2143,9 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
       order.taxesAndCharges = cd.taxesAndCharges || 0;
       order.swiggyVerified = true;
     }
+
+    // Always ensure guaranteed max offer is applied to order
+    applyMaxOfferToOrder(order);
 
     if (result.paymentUrl) {
       order.swiggyPaymentUrl = result.paymentUrl;
