@@ -1911,7 +1911,11 @@ bot.action(/^(?:boss_sel_acc|boss_choose_acc)_(.+)$/, async (ctx) => {
   let accKey = null;
 
   for (const oid of Object.keys(db.orders || {})) {
-    if (payload.startsWith(oid + '_')) {
+    if (payload.endsWith('_' + oid)) {
+      orderId = oid;
+      accKey = payload.slice(0, -(oid.length + 1));
+      break;
+    } else if (payload.startsWith(oid + '_')) {
       orderId = oid;
       accKey = payload.slice(oid.length + 1);
       break;
@@ -1919,10 +1923,13 @@ bot.action(/^(?:boss_sel_acc|boss_choose_acc)_(.+)$/, async (ctx) => {
   }
 
   if (!orderId || !db.orders[orderId]) {
-    const idx = payload.indexOf('_');
-    if (idx !== -1) {
-      orderId = payload.slice(0, idx);
-      accKey = payload.slice(idx + 1);
+    const lastUnderscore = payload.lastIndexOf('_');
+    if (lastUnderscore !== -1) {
+      const candidateOid = payload.slice(lastUnderscore + 1);
+      if (db.orders[candidateOid]) {
+        orderId = candidateOid;
+        accKey = payload.slice(0, lastUnderscore);
+      }
     }
   }
 
@@ -2112,10 +2119,25 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
   let accKey = null;
 
   for (const oid of Object.keys(db.orders || {})) {
-    if (payload.startsWith(oid + '_')) {
+    if (payload.endsWith('_' + oid)) {
+      orderId = oid;
+      accKey = payload.slice(0, -(oid.length + 1));
+      break;
+    } else if (payload.startsWith(oid + '_')) {
       orderId = oid;
       accKey = payload.slice(oid.length + 1);
       break;
+    }
+  }
+
+  if (!orderId || !db.orders[orderId]) {
+    const lastUnderscore = payload.lastIndexOf('_');
+    if (lastUnderscore !== -1) {
+      const candidateOid = payload.slice(lastUnderscore + 1);
+      if (db.orders[candidateOid]) {
+        orderId = candidateOid;
+        accKey = payload.slice(0, lastUnderscore);
+      }
     }
   }
 
@@ -2149,151 +2171,156 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
     { parse_mode: 'HTML' }
   );
 
-  // Run full group cart sync, address binding, coupon optimization & checkout payment screen capture
-  try {
-    const result = await syncGroupCartAndCheckoutForAccount(acc, order);
-    console.log(`[syncGroupCartAndCheckoutForAccount] Result for Order #${orderId}:`, {
-      success: result.success,
-      sessionExpired: Boolean(result.sessionExpired),
-      hasQr: Boolean(result.qrBuffer),
-      paymentUrl: result.paymentUrl,
-      itemsCount: result.cartData?.items?.length || 0,
-      savedAddressesCount: result.savedAddresses?.length || 0,
-      availableCouponsCount: result.availableCoupons?.length || 0
-    });
-
-    if (result.sessionExpired) {
-      if (acc) {
-        acc.isLoggedIn = false;
-        saveDb(db);
-      }
-      try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
-      await ctx.reply(
-        `⚠️ <b>Swiggy Session Expired: ${escapeHtml(accPhone)} (${escapeHtml(accName)})</b>\n\n` +
-        `Swiggy security firewall ne is account ka login session expire kar diya hai, is wajah se cart aur address fetch nahi ho sake.\n\n` +
-        `👉 <b>Kripya is account par login karein ya doosra active account chunein:</b>`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback(`🔑 Login via OTP: ${accPhone}`, `boss_login_acc_otp_${accKey}`)],
-            [Markup.button.callback(`📋 Paste Session JSON`, `boss_login_acc_json_${accKey}`)],
-            [Markup.button.callback(`👥 Select Another Account`, `boss_choose_acc_picker_${orderId}`)]
-          ])
-        }
-      ).catch(() => {});
-      return;
-    }
-
-    if (result.cartData) {
-      const cd = result.cartData;
-      if (cd.restaurantName) order.restaurantName = cd.restaurantName;
-      if (cd.items && cd.items.length > 0) order.items = cd.items;
-      if (cd.address && (!order.address || order.address === 'Address pending / not provided')) {
-        order.address = cd.address;
-      }
-      order.itemTotal = cd.itemTotal || order.itemTotal;
-      order.subtotal = cd.subtotal || order.subtotal;
-      order.deliveryFee = cd.deliveryFee || 0;
-      order.freeDeliveryDiscount = cd.freeDeliveryDiscount || 0;
-      order.swiggyOneApplied = cd.swiggyOneApplied || false;
-      order.swiggyOneSavings = cd.swiggyOneSavings || 0;
-      if (cd.couponCode) {
-        order.couponCode = cd.couponCode;
-        order.discountAmount = cd.discountAmount || 0;
-      }
-      order.freeCashBalance = cd.freeCashBalance || 0;
-      order.freeCashApplied = cd.freeCashApplied || 0;
-      order.finalPayable = cd.finalPayable || order.finalPayable;
-      order.totalSavings = cd.totalSavings || order.totalSavings;
-      if (cd.addressDetails) {
-        order.addressDetails = cd.addressDetails;
-      }
-      order.packingCharges = cd.packingCharges || 0;
-      order.taxesAndCharges = cd.taxesAndCharges || 0;
-      order.swiggyVerified = true;
-    }
-
-    if (result.savedAddresses && result.savedAddresses.length > 0) {
-      order.accountAddresses = result.savedAddresses;
-      if (!order.addressDetails && result.savedAddresses[0]) {
-        order.addressDetails = result.savedAddresses[0];
-        order.address = result.savedAddresses[0].address;
-      }
-    }
-    if (result.availableCoupons && result.availableCoupons.length > 0) {
-      order.availableCoupons = result.availableCoupons;
-    }
-
-    // Always ensure max offer is calculated
-    applyMaxOfferToOrder(order);
-
-    if (result.paymentUrl) {
-      order.swiggyPaymentUrl = result.paymentUrl;
-    }
-
-    // Generate authentic personalized QR Card with customer's name embedded in the center of the QR
-    const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
-    const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
-    const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
-
-    let finalQrBuffer = result.qrBuffer;
+  // Run full group cart sync, address binding, coupon optimization & checkout payment screen capture in background
+  // to avoid Telegraf's 90,000ms callback query timeout error!
+  (async () => {
     try {
-      const cardBuffer = await generatePersonalizedQrCard({
-        customerName: custDisplayName,
-        restaurantName: order.restaurantName || 'Swiggy Food Order',
-        amount: order.finalPayable || order.subtotal || 0,
-        savings: order.totalSavings || 0,
-        upiUrl: upiUri,
-        qrBuffer: result.qrBuffer
+      const result = await syncGroupCartAndCheckoutForAccount(acc, order);
+      console.log(`[syncGroupCartAndCheckoutForAccount] Result for Order #${orderId}:`, {
+        success: result.success,
+        sessionExpired: Boolean(result.sessionExpired),
+        hasQr: Boolean(result.qrBuffer),
+        paymentUrl: result.paymentUrl,
+        itemsCount: result.cartData?.items?.length || 0,
+        savedAddressesCount: result.savedAddresses?.length || 0,
+        availableCouponsCount: result.availableCoupons?.length || 0
       });
-      if (cardBuffer) {
-        finalQrBuffer = cardBuffer;
-      }
-    } catch (e) {
-      console.warn('[boss_select_acc] Personalized QR Card generation fallback:', e.message);
-    }
 
-    if (finalQrBuffer) {
-      order.genuineQrBuffer = finalQrBuffer;
-      try {
-        const bossQrMsg = await ctx.replyWithPhoto(
-          { source: finalQrBuffer },
+      if (result.sessionExpired) {
+        if (acc) {
+          acc.isLoggedIn = false;
+          saveDb(db);
+        }
+        try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
+        await ctx.reply(
+          `⚠️ <b>Swiggy Session Expired: ${escapeHtml(accPhone)} (${escapeHtml(accName)})</b>\n\n` +
+          `Swiggy security firewall ne is account ka login session expire kar diya hai, is wajah se cart aur address fetch nahi ho sake.\n\n` +
+          `👉 <b>Kripya is account par login karein ya doosra active account chunein:</b>`,
           {
-            caption: `📸 <b>Live Swiggy Checkout Payment QR (Order #${order.id})</b>\n\n` +
-              `📱 Account: <b>${escapeHtml(accPhone)}</b> (${escapeHtml(accName)})\n` +
-              `👤 Customer Badge in QR Center: <b>${escapeHtml(custDisplayName)}</b>\n` +
-              `🏪 Restaurant: <b>${escapeHtml(order.restaurantName || 'Swiggy Order')}</b>\n` +
-              `💰 Amount To Pay: <b>₹${order.finalPayable || order.subtotal || 0}</b> (Saved: ₹${order.totalSavings || 0})\n\n` +
-              `⚠️ <i>Yeh Payment QR abhi customer ko nahi bheja gaya hai. Neeche Review Screen check karke <b>[ 🚀 Send Bill & Request Confirmation ]</b> dabayein!</i>`,
-            parse_mode: 'HTML'
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback(`🔑 Login via OTP: ${accPhone}`, `boss_login_acc_otp_${accKey}`)],
+              [Markup.button.callback(`📋 Paste Session JSON`, `boss_login_acc_json_${accKey}`)],
+              [Markup.button.callback(`👥 Select Another Account`, `boss_choose_acc_picker_${orderId}`)]
+            ])
           }
-        );
-        if (bossQrMsg?.photo && bossQrMsg.photo.length > 0) {
-          order.customQrFileId = bossQrMsg.photo[bossQrMsg.photo.length - 1].file_id;
+        ).catch(() => {});
+        return;
+      }
+
+      if (result.cartData) {
+        const cd = result.cartData;
+        if (cd.restaurantName) order.restaurantName = cd.restaurantName;
+        if (cd.items && cd.items.length > 0) order.items = cd.items;
+        if (cd.address && (!order.address || order.address === 'Address pending / not provided')) {
+          order.address = cd.address;
+        }
+        order.itemTotal = cd.itemTotal || order.itemTotal;
+        order.subtotal = cd.subtotal || order.subtotal;
+        order.deliveryFee = cd.deliveryFee || 0;
+        order.freeDeliveryDiscount = cd.freeDeliveryDiscount || 0;
+        order.swiggyOneApplied = cd.swiggyOneApplied || false;
+        order.swiggyOneSavings = cd.swiggyOneSavings || 0;
+        if (cd.couponCode) {
+          order.couponCode = cd.couponCode;
+          order.discountAmount = cd.discountAmount || 0;
+        }
+        order.freeCashBalance = cd.freeCashBalance || 0;
+        order.freeCashApplied = cd.freeCashApplied || 0;
+        order.finalPayable = cd.finalPayable || order.finalPayable;
+        order.totalSavings = cd.totalSavings || order.totalSavings;
+        if (cd.addressDetails) {
+          order.addressDetails = cd.addressDetails;
+        }
+        order.packingCharges = cd.packingCharges || 0;
+        order.taxesAndCharges = cd.taxesAndCharges || 0;
+        order.swiggyVerified = true;
+      }
+
+      if (result.savedAddresses && result.savedAddresses.length > 0) {
+        order.accountAddresses = result.savedAddresses;
+        if (!order.addressDetails && result.savedAddresses[0]) {
+          order.addressDetails = result.savedAddresses[0];
+          order.address = result.savedAddresses[0].address;
+        }
+      }
+      if (result.availableCoupons && result.availableCoupons.length > 0) {
+        order.availableCoupons = result.availableCoupons;
+      }
+
+      // Always ensure max offer is calculated
+      applyMaxOfferToOrder(order);
+
+      if (result.paymentUrl) {
+        order.swiggyPaymentUrl = result.paymentUrl;
+      }
+
+      // Generate authentic personalized QR Card with customer's name embedded in the center of the QR
+      const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
+      const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
+      const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
+
+      let finalQrBuffer = result.qrBuffer;
+      try {
+        const cardBuffer = await generatePersonalizedQrCard({
+          customerName: custDisplayName,
+          restaurantName: order.restaurantName || 'Swiggy Food Order',
+          amount: order.finalPayable || order.subtotal || 0,
+          savings: order.totalSavings || 0,
+          upiUrl: upiUri,
+          qrBuffer: result.qrBuffer
+        });
+        if (cardBuffer) {
+          finalQrBuffer = cardBuffer;
         }
       } catch (e) {
-        console.error('[boss_select_acc] Error sending QR preview to boss:', e.message);
+        console.warn('[boss_select_acc] Personalized QR Card generation fallback:', e.message);
       }
+
+      if (finalQrBuffer) {
+        order.genuineQrBuffer = finalQrBuffer;
+        try {
+          const bossQrMsg = await ctx.replyWithPhoto(
+            { source: finalQrBuffer },
+            {
+              caption: `📸 <b>Live Swiggy Checkout Payment QR (Order #${order.id})</b>\n\n` +
+                `📱 Account: <b>${escapeHtml(accPhone)}</b> (${escapeHtml(accName)})\n` +
+                `👤 Customer Badge in QR Center: <b>${escapeHtml(custDisplayName)}</b>\n` +
+                `🏪 Restaurant: <b>${escapeHtml(order.restaurantName || 'Swiggy Order')}</b>\n` +
+                `💰 Amount To Pay: <b>₹${order.finalPayable || order.subtotal || 0}</b> (Saved: ₹${order.totalSavings || 0})\n\n` +
+                `⚠️ <i>Yeh Payment QR abhi customer ko nahi bheja gaya hai. Neeche Review Screen check karke <b>[ 🚀 Send Bill & Request Confirmation ]</b> dabayein!</i>`,
+              parse_mode: 'HTML'
+            }
+          );
+          if (bossQrMsg?.photo && bossQrMsg.photo.length > 0) {
+            order.customQrFileId = bossQrMsg.photo[bossQrMsg.photo.length - 1].file_id;
+          }
+        } catch (e) {
+          console.error('[boss_select_acc] Error sending QR preview to boss:', e.message);
+        }
+      }
+
+      saveDb(db);
+
+      // Update Customer's card
+      await updateOrderCards(order);
+
+      try {
+        await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id);
+      } catch (e) {}
+
+      // Deliver comprehensive Boss Review Card
+      const reviewCard = formatBossAccountReviewCard(order);
+      await ctx.reply(reviewCard.text, {
+        parse_mode: 'HTML',
+        ...reviewCard.keyboard
+      });
+    } catch (e) {
+      console.error('Error syncing group cart and checkout for chosen account:', e.message);
+      try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (delErr) {}
+      await ctx.reply(`❌ <b>Failed to process order #${orderId}:</b> ${escapeHtml(e.message)}`, { parse_mode: 'HTML' }).catch(() => {});
     }
-  } catch (e) {
-    console.error('Error syncing group cart and checkout for chosen account:', e.message);
-  }
-
-  saveDb(db);
-
-  // Update Customer's card
-  await updateOrderCards(order);
-
-  try {
-    await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id);
-  } catch (e) {}
-
-  // Deliver comprehensive Boss Review Card
-  const reviewCard = formatBossAccountReviewCard(order);
-  await ctx.reply(reviewCard.text, {
-    parse_mode: 'HTML',
-    ...reviewCard.keyboard
-  });
+  })().catch(err => console.error('[boss_select_acc] Background Error:', err));
 });
 
 // Boss Action: Trigger Login via OTP for an Account

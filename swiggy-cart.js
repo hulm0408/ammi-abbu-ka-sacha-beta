@@ -2447,7 +2447,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
         return {
           statusCode: json?.statusCode,
           statusMessage: json?.statusMessage,
-          isExpired: json?.statusCode === 1 && (json?.statusMessage?.toLowerCase().includes('expire') || json?.statusMessage?.toLowerCase().includes('login') || json?.statusMessage?.toLowerCase().includes('oops')),
+          isExpired: json?.statusCode === 1 && (json?.statusMessage?.toLowerCase().includes('expire') || json?.statusMessage?.toLowerCase().includes('login') || json?.statusMessage?.toLowerCase().includes('logged out') || json?.statusMessage?.toLowerCase().includes('unauthorized')),
           data: json?.data
         };
       } catch (e) {
