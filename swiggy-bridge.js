@@ -158,6 +158,74 @@ async function safeEvaluate(page, fn, ...args) {
   throw new Error('Navigation in progress, please retry.');
 }
 
+export function parseSwiggyOtpError(otpResult) {
+  if (!otpResult) {
+    return {
+      message: 'Swiggy API dwara koi response nahi mila. Kripya dobara try karein.',
+      swiggyStatus: 'No Response',
+      details: 'Empty response from Swiggy'
+    };
+  }
+
+  const swiggyMsg = (otpResult.data?.statusMessage || otpResult.data?.message || '').trim();
+  const rawLower = ((otpResult.rawText || '') + ' ' + swiggyMsg).toLowerCase();
+  const status = otpResult.status;
+
+  if (status === 429 || rawLower.includes('rate limit') || rawLower.includes('too many') || rawLower.includes('limit reached') || rawLower.includes('maximum attempts')) {
+    return {
+      message: 'Swiggy Rate Limit: Is mobile number ya IP par Swiggy ne OTP limit laga di hai (Too many requests). Kripya 15-30 minute intezaar karein ya doosra number / session JSON paste karein.',
+      swiggyStatus: swiggyMsg || 'Swiggy Rate Limit (429 Too Many Requests)',
+      details: `HTTP ${status || 429} | Rate limit reached on Swiggy`
+    };
+  }
+
+  if (status === 403 || rawLower.includes('waf') || rawLower.includes('captcha') || rawLower.includes('challenge') || rawLower.includes('forbidden')) {
+    return {
+      message: 'Swiggy Anti-Bot Protection (AWS WAF): Swiggy security firewall ne browser request ko verify nahi hone diya. Kripya Session JSON se bina OTP ke turant login karein.',
+      swiggyStatus: swiggyMsg || 'Security Challenge (WAF 403 Forbidden)',
+      details: `HTTP ${status || 403} | AWS WAF Anti-bot challenge`
+    };
+  }
+
+  if (status === 400 || status === 422 || rawLower.includes('invalid mobile') || rawLower.includes('valid 10 digit')) {
+    return {
+      message: `Invalid Mobile Number: Swiggy ne is number ko reject kiya (${swiggyMsg || 'Invalid format'}). Kripya 10-digit valid Indian number daalein.`,
+      swiggyStatus: swiggyMsg || 'Invalid Mobile Number',
+      details: `HTTP ${status || 400}`
+    };
+  }
+
+  if (status === 500 || status === 502 || status === 503 || status === 504) {
+    return {
+      message: `Swiggy Server Error (${status}): Swiggy backend servers par temporary issue chal raha hai. Kripya 1-2 minute baad dobara koshish karein.`,
+      swiggyStatus: swiggyMsg || `Swiggy Server Down (${status})`,
+      details: `HTTP ${status}`
+    };
+  }
+
+  if (otpResult.error) {
+    return {
+      message: `Puppeteer / Browser Error: ${otpResult.error}`,
+      swiggyStatus: otpResult.error,
+      details: 'Browser context error'
+    };
+  }
+
+  if (swiggyMsg) {
+    return {
+      message: `Swiggy Error: "${swiggyMsg}" (HTTP ${status || 200})`,
+      swiggyStatus: swiggyMsg,
+      details: `HTTP ${status || 200} | Swiggy Code: ${otpResult.data?.statusCode ?? 'none'}`
+    };
+  }
+
+  return {
+    message: `Swiggy API Error: OTP deliver nahi ho paya (HTTP ${status || 'unknown'}). Kripya Session JSON se login karein.`,
+    swiggyStatus: `HTTP ${status || 'unknown'} - OTP Failed`,
+    details: `HTTP ${status || 'unknown'}`
+  };
+}
+
 export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', targetAccName = null) {
   const cleanPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
 
@@ -244,29 +312,57 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       console.log(`⚡ [SwiggyBridge] Fast-path: Directly initiating signup with provided name "${targetAccName}"...`);
       otpResult = { status: 200, data: { statusCode: 1, statusMessage: 'not registered' } };
     } else {
-      // Request SMS OTP inside browser context
+      // Request SMS OTP inside browser context (with dual endpoint fallback)
       otpResult = await safeEvaluate(page, async (mobileNumber, waf) => {
         try {
           const headers = {
             'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            'User-Agent': navigator.userAgent
           };
           if (waf) headers['aws-waf-token'] = waf;
-          const res = await fetch('https://www.swiggy.com/dapi/auth/sms-otp', {
+
+          // Attempt 1: Standard sms-otp endpoint
+          let res = await fetch('https://www.swiggy.com/dapi/auth/sms-otp', {
             method: 'POST',
             headers,
             body: JSON.stringify({ mobile: mobileNumber }),
             credentials: 'include'
           });
-          const data = await res.json().catch(() => ({}));
-          return { status: res.status, data };
+
+          let rawText = await res.text().catch(() => '');
+          let data = {};
+          try { data = JSON.parse(rawText); } catch (e) {}
+
+          // Attempt 2: If primary endpoint returned non-200 or 404, try otp-generate
+          if ((res.status !== 200 && res.status !== 202) || (data.statusCode && data.statusCode !== 0 && data.statusCode !== 1)) {
+            try {
+              const altRes = await fetch('https://www.swiggy.com/dapi/auth/otp-generate', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ mobile: mobileNumber }),
+                credentials: 'include'
+              });
+              const altText = await altRes.text().catch(() => '');
+              const altData = JSON.parse(altText);
+              if (altRes.status === 200 && (altData.statusCode === 0 || !altData.statusCode)) {
+                return { status: altRes.status, data: altData, rawText: altText, endpoint: 'otp-generate' };
+              }
+            } catch (e) {}
+          }
+
+          return { status: res.status, data, rawText };
         } catch (err) {
           return { status: 500, error: err.message };
         }
       }, cleanPhone, wafToken);
     }
 
-    const isUnregistered = otpResult.data?.statusCode === 1 || otpResult.data?.statusMessage?.includes('not registered');
+    const isUnregistered = otpResult.data?.statusCode === 1 && (
+      otpResult.data?.statusMessage?.toLowerCase().includes('not registered') ||
+      otpResult.data?.statusMessage?.toLowerCase().includes('new user') ||
+      otpResult.data?.statusMessage?.toLowerCase().includes('user not found')
+    );
 
     if (isUnregistered) {
       // Check if a real human name was provided by the user
@@ -317,8 +413,10 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
             }),
             credentials: 'include'
           });
-          const data = await res.json().catch(() => ({}));
-          return { status: res.status, data };
+          const text = await res.text().catch(() => '');
+          let data = {};
+          try { data = JSON.parse(text); } catch (e) {}
+          return { status: res.status, data, rawText: text };
         } catch (err) {
           return { status: 500, error: err.message };
         }
@@ -349,9 +447,14 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
         };
       } else {
         await browser.close().catch(() => {});
-        const errorMsg = signupInitResult.data?.statusMessage || signupInitResult.error || 'Failed to send OTP';
+        const parsedErr = parseSwiggyOtpError(signupInitResult);
         setTimeout(() => prewarmBrowser().catch(() => {}), 1000);
-        return { success: false, message: errorMsg, swiggyStatus: errorMsg };
+        return {
+          success: false,
+          message: parsedErr.message,
+          swiggyStatus: parsedErr.swiggyStatus,
+          details: parsedErr.details
+        };
       }
     }
 
@@ -360,6 +463,14 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
     );
 
     if (isSent) {
+      const safetyTimer = setTimeout(() => {
+        if (activeSessions[userId]?.phone === cleanPhone) {
+          console.log(`[SwiggyBridge] Session for ${cleanPhone} timed out after 5 mins. Closing browser.`);
+          activeSessions[userId].browser?.close().catch(() => {});
+          delete activeSessions[userId];
+        }
+      }, 300000);
+
       activeSessions[userId] = {
         browser,
         page,
@@ -367,10 +478,10 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
         targetAcc: targetAcc || `acc_${cleanPhone}`,
         targetAccName: targetAccName || null,
         isNewUser: false,
+        safetyTimer,
         createdAt: Date.now()
       };
 
-      // Prime the next warm browser in background
       return { 
         success: true, 
         phone: cleanPhone, 
@@ -379,15 +490,25 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       };
     } else {
       await browser.close().catch(() => {});
-      const errorMsg = otpResult.data?.statusMessage || otpResult.error || 'Failed to send OTP';
+      const parsedErr = parseSwiggyOtpError(otpResult);
       setTimeout(() => prewarmBrowser().catch(() => {}), 1000);
-      return { success: false, message: errorMsg, swiggyStatus: errorMsg };
+      return {
+        success: false,
+        message: parsedErr.message,
+        swiggyStatus: parsedErr.swiggyStatus,
+        details: parsedErr.details
+      };
     }
   } catch (err) {
     if (browser) await browser.close().catch(() => {});
     delete activeSessions[userId];
     setTimeout(() => prewarmBrowser().catch(() => {}), 1000);
-    return { success: false, message: err.message };
+    return {
+      success: false,
+      message: `System / Browser Error: ${err.message}`,
+      swiggyStatus: err.message,
+      details: err.stack ? err.stack.split('\n')[0] : err.message
+    };
   }
 }
 
@@ -655,11 +776,20 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
     let statusMsg = verifyResult?.data?.statusMessage || '';
     let isSuccess = (verifyResult?.status === 200 || verifyResult?.status === 202) && statusCode === 0;
 
-    if (statusCode === 1 && (statusMsg.toLowerCase().includes('invalid') || statusMsg.toLowerCase().includes('incorrect'))) {
+    if (statusCode === 1 && !isUnregistered) {
+      if (session.safetyTimer) clearTimeout(session.safetyTimer);
+      session.safetyTimer = setTimeout(() => {
+        if (activeSessions[userId]?.phone === phone) {
+          console.log(`[SwiggyBridge] Session for ${phone} expired after OTP retry window. Closing browser.`);
+          activeSessions[userId].browser?.close().catch(() => {});
+          delete activeSessions[userId];
+        }
+      }, 180000);
+
       return {
         success: false,
-        swiggyStatus: statusMsg || 'Invalid OTP',
-        message: statusMsg || 'Invalid OTP. Please check and re-enter.'
+        swiggyStatus: statusMsg || 'Galat OTP (Invalid OTP)',
+        message: statusMsg || 'Galat OTP enter kiya hai. Kripya check karke dubara daalein.'
       };
     }
 
@@ -728,11 +858,25 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
     const isReallyLoggedIn = checkLoggedInFromCookies(cookies);
 
     if (!isSuccess && !isReallyLoggedIn) {
+      if (session.safetyTimer) clearTimeout(session.safetyTimer);
+      session.safetyTimer = setTimeout(() => {
+        if (activeSessions[userId]?.phone === phone) {
+          console.log(`[SwiggyBridge] Session for ${phone} expired after OTP retry window. Closing browser.`);
+          activeSessions[userId].browser?.close().catch(() => {});
+          delete activeSessions[userId];
+        }
+      }, 180000);
+
+      const errReason = statusMsg || verifyResult?.error || (verifyResult?.status === 429 ? 'Maximum OTP verification attempts exceeded' : 'Invalid or expired OTP');
       return {
         success: false,
-        swiggyStatus: statusMsg || verifyResult?.error || 'Invalid or expired OTP',
-        message: statusMsg || verifyResult?.error || 'Invalid or expired OTP. Please try again.'
+        swiggyStatus: errReason,
+        message: errReason
       };
+    }
+
+    if (session.safetyTimer) {
+      clearTimeout(session.safetyTimer);
     }
 
     // Extract authentic profile name from Swiggy's response

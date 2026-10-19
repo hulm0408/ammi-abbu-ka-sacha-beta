@@ -380,13 +380,15 @@ export function applyMaxOfferToOrder(order) {
 
   // Determine subtotal
   let subtotal = order.subtotal || order.itemTotal || 0;
-  if (!subtotal && order.items && Array.isArray(order.items)) {
+  if (!subtotal && order.items && Array.isArray(order.items) && order.items.length > 0) {
     subtotal = Math.round(order.items.reduce((s, it) => s + (it.lineTotal || ((it.price || 0) * (it.qty || 1))), 0) * 100) / 100;
   }
   if (!subtotal && order.finalPayable > 0) {
     subtotal = order.finalPayable;
   }
-  if (!subtotal) subtotal = 214.29;
+  if (!subtotal || subtotal <= 0) {
+    return order;
+  }
   order.subtotal = Math.round(subtotal * 100) / 100;
 
   // 1. Max Coupon Discount
@@ -413,35 +415,29 @@ export function applyMaxOfferToOrder(order) {
     order.discountAmount = maxDiscount;
   }
 
-  // 2. Free Cash / Swiggy Money (-₹50)
-  if (!order.freeCashApplied || order.freeCashApplied <= 0) {
-    order.freeCashApplied = 50;
+  // 2. Free Delivery (Free upto 7km, saves ₹42)
+  if (order.swiggyOneApplied || order.freeDeliveryDiscount > 0) {
+    order.swiggyOneApplied = true;
+    order.freeDeliveryDiscount = order.freeDeliveryDiscount || 42;
+    order.deliveryFee = 0;
+  } else if (order.deliveryFee === undefined) {
+    order.deliveryFee = 0;
+    order.swiggyOneApplied = true;
+    order.freeDeliveryDiscount = 42;
   }
 
-  // 3. Free Delivery (Free upto 7km, saves ₹42)
-  order.swiggyOneApplied = true;
-  order.freeDeliveryDiscount = order.freeDeliveryDiscount || 42;
-  order.deliveryFee = 0;
+  // 3. Packing Charges & Taxes
+  const packing = order.packingCharges || 0;
+  const taxes = order.taxesAndCharges || 0;
 
-  // 4. Packing Charges & Taxes
-  if (!order.packingCharges || order.packingCharges <= 0) {
-    order.packingCharges = 29;
-  }
-  if (!order.taxesAndCharges || order.taxesAndCharges <= 0) {
-    order.taxesAndCharges = 52.14;
-  }
+  // 4. Total Savings: Delivery saved + Coupon discount + Free Cash
+  order.totalSavings = Math.round(((order.freeDeliveryDiscount || 0) + (order.discountAmount || 0) + (order.freeCashApplied || 0)) * 100) / 100;
 
-  // 5. Total Savings: Delivery saved (42) + Coupon discount + Free Cash
-  order.totalSavings = Math.round(((order.freeDeliveryDiscount || 42) + (order.discountAmount || 0) + (order.freeCashApplied || 0)) * 100) / 100;
-
-  // 6. Final Payable
-  let computedPayable;
-  if (Math.abs(order.subtotal - 214.29) < 2) {
-    computedPayable = 76;
-  } else {
-    computedPayable = Math.max(1, Math.round(order.subtotal - order.discountAmount - order.freeCashApplied + (order.taxesAndCharges > 40 ? order.taxesAndCharges : (order.packingCharges + order.taxesAndCharges))));
+  // 5. Final Payable
+  const computedPayable = Math.max(1, Math.round((order.subtotal - (order.discountAmount || 0) - (order.freeCashApplied || 0) + (order.deliveryFee || 0) + packing + taxes) * 100) / 100);
+  if (!order.finalPayable || !order.swiggyVerified) {
+    order.finalPayable = computedPayable;
   }
-  order.finalPayable = computedPayable;
 
   return order;
 }
@@ -2219,20 +2215,40 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
     const groupCartId = cartMeta?.groupCartId || order.groupCartId;
     const restaurantId = cartMeta?.restaurantId || order.restaurantId;
 
-    let targetMenuUrl = null;
-    if (restaurantId && groupCartId) {
-      targetMenuUrl = `https://www.swiggy.com/menu/${restaurantId}?group_cart_id=${groupCartId}`;
+    let targetCartUrl = null;
+    if (order.cart && (order.cart.includes('/gc/') || order.cart.includes('group-order') || order.cart.includes('group_cart'))) {
+      targetCartUrl = order.cart;
+    } else if (restaurantId && groupCartId) {
+      targetCartUrl = `https://www.swiggy.com/menu/${restaurantId}?group_cart_id=${groupCartId}`;
     } else if (order.cart && order.cart.startsWith('http')) {
-      targetMenuUrl = order.cart;
+      targetCartUrl = order.cart;
     }
 
-    if (targetMenuUrl) {
-      console.log(`[SyncAccount] 4. Navigating to group cart menu URL: ${targetMenuUrl}`);
-      await page.goto(targetMenuUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    if (targetCartUrl) {
+      console.log(`[SyncAccount] 4. Navigating to group cart URL: ${targetCartUrl}`);
+      // Click via in-page link so Swiggy redirects and session context remain intact
+      await page.evaluate((url) => {
+        const a = document.createElement('a');
+        a.href = url;
+        a.id = 'temp-gc-link';
+        document.body.appendChild(a);
+        a.click();
+      }, targetCartUrl).catch(() => {});
       await new Promise(r => setTimeout(r, 4000));
+
+      // Click Join Group Cart button if present
+      await page.evaluate(() => {
+        const all = Array.from(document.querySelectorAll('button, a, div[role="button"], span, div'));
+        const joinBtn = all.find(el => {
+          const t = el.innerText?.trim().toLowerCase();
+          return t === 'join' || t === 'join group' || t === 'join order' || t === 'join group order' || t === 'join cart';
+        });
+        if (joinBtn) joinBtn.click();
+      });
+      await new Promise(r => setTimeout(r, 3000));
     }
 
-    // Step 5: Read authenticated /dapi/cart items and bill summary
+    // Step 5: Read authenticated /dapi/cart items, addresses and bill summary
     console.log('[SyncAccount] 5. Reading real cart items and bill summary from /dapi/cart...');
     const dapiData = await page.evaluate(async () => {
       try {
@@ -2243,6 +2259,20 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
         return null;
       }
     });
+
+    let savedAddresses = [];
+    if (dapiData?.cartMeta?.addresses && Array.isArray(dapiData.cartMeta.addresses)) {
+      savedAddresses = dapiData.cartMeta.addresses.map(a => ({
+        id: a.id,
+        name: a.name || '',
+        mobile: a.mobile || '',
+        city: a.city || 'Address',
+        address: `${a.flat_no && a.flat_no !== 'None' ? a.flat_no + ', ' : ''}${a.address || ''}`.trim(),
+        lat: a.lat || '',
+        lng: a.lng || '',
+        annotation: a.annotation || ''
+      }));
+    }
 
     let cartData = null;
     if (dapiData) {
@@ -2268,34 +2298,20 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
       if (restName) {
         order.restaurantName = restName;
       }
-      if (cm.item_total > 0) {
-        order.subtotal = cm.item_total;
-      }
-      if (cm.coupon_code) {
-        order.couponCode = cm.coupon_code;
-        order.discountAmount = cm.coupon_discount || 0;
-      }
-      if (cm.free_cash_applied > 0) {
-        order.freeCashApplied = cm.free_cash_applied;
-      }
-      if (cm.is_swiggy_one_free_delivery_applicable || cm.free_delivery) {
+      order.subtotal = cm.item_total || cm.cart_subtotal || order.subtotal || 0;
+      order.finalPayable = cm.order_total || cm.cart_total || cm.bill_total || cm.final_total || order.finalPayable || 0;
+      order.couponCode = cm.coupon_code || order.couponCode || null;
+      order.discountAmount = cm.coupon_discount_total || cm.coupon_discount_effective || cm.coupon_discount || order.discountAmount || 0;
+      order.deliveryFee = cm.delivery_charges !== undefined ? cm.delivery_charges : (cm.delivery_fee !== undefined ? cm.delivery_fee : (cm.distance_fee || 0));
+      order.freeDeliveryDiscount = cm.free_delivery_discount || (cm.is_swiggy_one_free_delivery_applicable ? 42 : 0);
+      if (order.freeDeliveryDiscount > 0 || cm.is_swiggy_one_free_delivery_applicable) {
         order.swiggyOneApplied = true;
-        order.freeDeliveryDiscount = 42;
       }
-      if (cm.delivery_fee !== undefined) {
-        order.deliveryFee = cm.delivery_fee;
-      }
-      if (cm.packaging_fee || cm.basePackagingCharges) {
-        order.packingCharges = cm.packaging_fee || cm.basePackagingCharges;
-      }
-      if (cm.total_taxes || cm.gst_charges) {
-        order.taxesAndCharges = cm.total_taxes || cm.gst_charges;
-      }
-      if (cm.savings > 0) {
-        order.totalSavings = cm.savings;
-      }
-      if (cm.final_total > 0) {
-        order.finalPayable = cm.final_total;
+      order.packingCharges = cm.total_packing_charges || cm.restaurant_packing_charges || cm.packaging_fee || cm.basePackagingCharges || 0;
+      order.taxesAndCharges = cm.total_tax || cm.del_fee_taxes || cm.total_taxes || cm.gst_charges || 0;
+      order.totalSavings = cm.discount_total || cm.trade_discount_total || cm.savings || order.totalSavings || 0;
+      if (cm.swiggy_money || cm.free_cash_applied) {
+        order.freeCashApplied = cm.swiggy_money || cm.free_cash_applied;
       }
 
       cartData = {
@@ -2303,11 +2319,67 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
         items: order.items,
         subtotal: order.subtotal,
         finalTotal: order.finalPayable,
+        finalPayable: order.finalPayable,
         couponCode: order.couponCode,
         discountAmount: order.discountAmount,
         totalSavings: order.totalSavings
       };
     }
+
+    // Discover available coupons on this account
+    const availableCoupons = await page.evaluate(async (rId, rLat, rLng) => {
+      let coupons = [];
+      try {
+        const res = await fetch('https://www.swiggy.com/dapi/coupon/all');
+        const j = await res.json();
+        if (j?.data?.coupons && Array.isArray(j.data.coupons)) {
+          coupons = j.data.coupons.map(c => ({
+            code: c.code || c.couponCode,
+            title: c.title || '',
+            description: c.description || '',
+            discount: c.discount || 0
+          }));
+        }
+      } catch (e) {}
+
+      if (rId) {
+        try {
+          const off = await fetch(`https://www.swiggy.com/dapi/offers/payment?lat=${rLat || '26.892114'}&lng=${rLng || '80.945550'}&restaurantId=${rId}`);
+          const offJson = await off.json();
+          const str = JSON.stringify(offJson);
+          const matches = str.match(/"couponCode":"([^"]+)"/g) || [];
+          for (const m of matches) {
+            const code = m.replace('"couponCode":"', '').replace('"', '');
+            if (!coupons.some(c => c.code === code)) {
+              coupons.push({ code, title: code, description: 'Swiggy Promo' });
+            }
+          }
+        } catch (e) {}
+
+        try {
+          const menuRes = await fetch(`https://www.swiggy.com/dapi/menu/pl?page-type=REGULAR_MENU&complete-menu=true&lat=${rLat || '26.892114'}&lng=${rLng || '80.945550'}&restaurantId=${rId}`);
+          const menuJson = await menuRes.json();
+          const str = JSON.stringify(menuJson);
+          const matches = str.match(/"couponCode":"([^"]+)"/g) || [];
+          for (const m of matches) {
+            const code = m.replace('"couponCode":"', '').replace('"', '');
+            if (!coupons.some(c => c.code === code)) {
+              coupons.push({ code, title: code, description: 'Restaurant Offer' });
+            }
+          }
+        } catch (e) {}
+      }
+
+      // Add standard popular codes if none found
+      const defaults = ['DELULU4FOOD', 'SWIGGYIT', 'PARTY', 'STEALDEAL', 'WELCOME50'];
+      for (const d of defaults) {
+        if (!coupons.some(c => c.code === d)) {
+          coupons.push({ code: d, title: d, description: 'Swiggy Promo Code' });
+        }
+      }
+
+      return coupons;
+    }, restaurantId, lat, lng);
 
     // Step 6: Optimize coupon and proceeds to checkout
     console.log('[SyncAccount] 6. Optimizing cart coupon & navigating to checkout...');
@@ -2341,7 +2413,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
       if (optData.taxesAndCharges > 0) order.taxesAndCharges = optData.taxesAndCharges;
     }
 
-    // Always ensure guaranteed max offer is applied to order
+    // Always ensure max offer is calculated if subtotal exists
     applyMaxOfferToOrder(order);
 
     // Reconstruct updated cartData for return to caller
@@ -2401,6 +2473,8 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
     return {
       success: true,
       cartData: cartData || { items: order.items, restaurantName: order.restaurantName },
+      savedAddresses: savedAddresses || [],
+      availableCoupons: availableCoupons || [],
       qrBuffer,
       paymentUrl: paymentUrl && (paymentUrl.includes('swiggy.com/payments') || paymentUrl.includes('checkout') || paymentUrl.includes('juspay') || paymentUrl.includes('phonepe')) ? paymentUrl : null
     };
