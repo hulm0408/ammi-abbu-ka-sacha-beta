@@ -360,8 +360,15 @@ export async function resolveSwiggyLink(url) {
     } catch (e) {}
   }
 
+  // Check onelink address sharing (e.g. swiggy.onelink.me/JgkQ/to4k9pgg or swiggy.onelink.me/JgkQ/0tabg8ag)
+  const onelinkAddrMatch = cleanUrl.match(/onelink\.me\/[a-zA-Z0-9]+\/([a-zA-Z0-9_\-]+)/i) || resolved.match(/onelink\.me\/[a-zA-Z0-9]+\/([a-zA-Z0-9_\-]+)/i);
+  if (onelinkAddrMatch && !ofoToken) {
+    ofoToken = onelinkAddrMatch[1];
+    if (!ofoUser) ofoUser = 'Customer';
+  }
+
   // Check OFO address direct URL
-  const ofoDirect = resolved.match(/\/ofo\/address\/([^\/\?]+)\/([^\/\?]+)/i);
+  const ofoDirect = resolved.match(/\/ofo\/address\/([^\/\?]+)\/([^\/\?]+)/i) || cleanUrl.match(/\/ofo\/address\/([^\/\?]+)\/([^\/\?]+)/i);
   if (ofoDirect) {
     ofoUser = decodeURIComponent(ofoDirect[1]);
     ofoToken = ofoDirect[2];
@@ -378,7 +385,7 @@ export async function resolveSwiggyLink(url) {
   const parsedAddr = parseAddressDetails(cleanUrl);
 
   const isCart = Boolean(groupCartId || restaurantId || cleanUrl.includes('/gc/') || cleanUrl.includes('group-order') || cleanUrl.includes('/cart') || cleanUrl.includes('/menu') || cleanUrl.includes('Diet Coke') || cleanUrl.includes('Items Total'));
-  const isAddress = !isCart && Boolean(ofoUser || mapCoords || cleanUrl.includes('ofo/address') || cleanUrl.includes('address') || cleanUrl.includes('maps.google') || cleanUrl.includes('goo.gl') || parsedAddr);
+  const isAddress = !isCart && Boolean(ofoToken || ofoUser || mapCoords || cleanUrl.includes('ofo/address') || cleanUrl.includes('onelink.me') || cleanUrl.includes('address') || cleanUrl.includes('maps.google') || cleanUrl.includes('goo.gl') || parsedAddr);
 
   let addressDetails = null;
   if (parsedAddr) {
@@ -406,13 +413,13 @@ export async function resolveSwiggyLink(url) {
       lat: mapCoords.lat,
       lng: mapCoords.lng
     };
-  } else if (ofoUser) {
+  } else if (ofoToken || ofoUser) {
     addressDetails = {
-      name: ofoUser,
+      name: ofoUser || 'Customer',
       token: ofoToken,
-      city: 'Local Area',
+      city: 'Shared Location',
       mobile: null,
-      address: `Delivering to ${ofoUser}`,
+      address: `Shared Swiggy Delivery Address (${ofoToken || ofoUser})`,
       lat: null,
       lng: null
     };
@@ -2350,8 +2357,15 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
     });
 
     const page = await browser.newPage();
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      window.chrome = { runtime: {} };
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'hi'] });
+    });
+
     await page.setViewport({ width: 1280, height: 900 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36');
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9',
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
@@ -2418,40 +2432,85 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
     await page.setCookie(...parsedCookies).catch(() => {});
     await new Promise(r => setTimeout(r, 600));
 
-    // Step 3: Attach delivery address if OFO link provided
-    if (addrMeta?.ofoUser && addrMeta?.ofoToken) {
-      const ofoUrl = `https://www.swiggy.com/ofo/address/${encodeURIComponent(addrMeta.ofoUser)}/${addrMeta.ofoToken}?pushScreen=true`;
-      console.log(`[SyncAccount] 3. Visiting OFO address link: ${ofoUrl}`);
-      await page.goto(ofoUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-      await new Promise(r => setTimeout(r, 2000));
+    // Step 3: Verify session validity on Swiggy
+    console.log('[SyncAccount] 3. Verifying session validity on Swiggy...');
+    const sessionCheck = await page.evaluate(async () => {
+      try {
+        const res = await fetch('https://www.swiggy.com/dapi/cart');
+        const json = await res.json();
+        return {
+          statusCode: json?.statusCode,
+          statusMessage: json?.statusMessage,
+          isExpired: json?.statusCode === 1 && (json?.statusMessage?.toLowerCase().includes('expire') || json?.statusMessage?.toLowerCase().includes('login') || json?.statusMessage?.toLowerCase().includes('oops')),
+          data: json?.data
+        };
+      } catch (e) {
+        return { error: e.message };
+      }
+    });
+
+    if (sessionCheck?.isExpired) {
+      console.warn(`[SyncAccount] ⚠️ Session EXPIRED for account ${account.phone || account.name}: ${sessionCheck.statusMessage}`);
+      await browser.close().catch(() => {});
+      return {
+        success: false,
+        sessionExpired: true,
+        accountPhone: account.phone || account.name,
+        error: `Session expired on Swiggy for account ${account.phone || account.name}. Please re-login with OTP or Session JSON.`
+      };
     }
 
-    // Step 4: Clone / Sync Group Cart into Account's personal cart
-    const groupCartId = cartMeta?.groupCartId || order.groupCartId;
-    const restaurantId = cartMeta?.restaurantId || order.restaurantId;
-
-    let targetCartUrl = null;
-    if (order.cart && (order.cart.includes('/gc/') || order.cart.includes('group-order') || order.cart.includes('group_cart'))) {
-      targetCartUrl = order.cart;
-    } else if (restaurantId && groupCartId) {
-      targetCartUrl = `https://www.swiggy.com/menu/${restaurantId}?group_cart_id=${groupCartId}`;
-    } else if (order.cart && order.cart.startsWith('http')) {
-      targetCartUrl = order.cart;
+    // Step 4: Extract shared delivery address if OFO link/token provided
+    let ofoToken = addrMeta?.ofoToken || order.ofoToken;
+    if (!ofoToken && order.address) {
+      const om = order.address.match(/onelink\.me\/[a-zA-Z0-9]+\/([a-zA-Z0-9_\-]+)/i) || order.address.match(/\/ofo\/address\/[^\/]+\/([a-zA-Z0-9_\-]+)/i);
+      if (om) ofoToken = om[1];
     }
 
-    if (targetCartUrl) {
-      console.log(`[SyncAccount] 4. Navigating to group cart URL: ${targetCartUrl}`);
-      // Click via in-page link so Swiggy redirects and session context remain intact
-      await page.evaluate((url) => {
-        const a = document.createElement('a');
-        a.href = url;
-        a.id = 'temp-gc-link';
-        document.body.appendChild(a);
-        a.click();
-      }, targetCartUrl).catch(() => {});
-      await new Promise(r => setTimeout(r, 4000));
+    if (ofoToken) {
+      console.log(`[SyncAccount] 4. Fetching shared OFO address via /dapi/social/getAddress/${ofoToken}...`);
+      const ofoAddress = await page.evaluate(async (tok) => {
+        try {
+          const res = await fetch(`https://www.swiggy.com/dapi/social/getAddress/${tok}`);
+          const json = await res.json();
+          if (json?.statusCode === 0 && json?.data) {
+            return json.data;
+          }
+          return null;
+        } catch (e) {
+          return null;
+        }
+      }, ofoToken);
 
-      // Click Join Group Cart button if present
+      if (ofoAddress) {
+        console.log(`[SyncAccount] ✅ Successfully fetched recipient address: ${ofoAddress.name || ofoAddress.mobile}`);
+        const resolvedAddress = {
+          name: ofoAddress.name || ofoAddress.customer_name || 'Customer',
+          mobile: ofoAddress.mobile || ofoAddress.phone || '',
+          city: ofoAddress.city || ofoAddress.address_line1 || 'Address',
+          address: `${ofoAddress.flat_no && ofoAddress.flat_no !== 'None' ? ofoAddress.flat_no + ', ' : ''}${ofoAddress.address || ofoAddress.address_line1 || ''}`.trim(),
+          lat: ofoAddress.lat || ofoAddress.latitude || '',
+          lng: ofoAddress.lng || ofoAddress.longitude || '',
+          annotation: ofoAddress.annotation || 'Delivery'
+        };
+        order.addressDetails = resolvedAddress;
+        if (resolvedAddress.address) {
+          order.address = resolvedAddress.address;
+        }
+      }
+    }
+
+    // Step 5: Join / Sync Group Cart into Account's personal cart (NEVER navigate to swig.gy which crashes on swiggy://)
+    const groupCartId = cartMeta?.groupCartId || order.groupCartId || (order.cart && order.cart.match(/\/gc\/\d+\/[^-]+-(\d+)/i)?.[1]);
+    const restaurantId = cartMeta?.restaurantId || order.restaurantId || (order.cart && order.cart.match(/\/gc\/(\d+)\//i)?.[1]);
+
+    if (restaurantId && groupCartId) {
+      const cleanMenuUrl = `https://www.swiggy.com/menu/${restaurantId}?group_cart_id=${groupCartId}`;
+      console.log(`[SyncAccount] 5. Navigating safely to group cart menu: ${cleanMenuUrl}`);
+      await page.goto(cleanMenuUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+      await new Promise(r => setTimeout(r, 3500));
+
+      // Click Join Group Cart button if present in DOM
       await page.evaluate(() => {
         const all = Array.from(document.querySelectorAll('button, a, div[role="button"], span, div'));
         const joinBtn = all.find(el => {
@@ -2460,11 +2519,30 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
         });
         if (joinBtn) joinBtn.click();
       });
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 2000));
+
+      // Also call direct group cart APIs
+      await page.evaluate(async (gcId) => {
+        try {
+          await fetch('https://www.swiggy.com/dapi/cart/group/join', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ group_cart_id: gcId })
+          });
+        } catch (e) {}
+        try {
+          await fetch('https://www.swiggy.com/dapi/cart/group/transfer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ group_cart_id: gcId })
+          });
+        } catch (e) {}
+      }, groupCartId);
+      await new Promise(r => setTimeout(r, 2000));
     }
 
-    // Step 5: Read authenticated /dapi/cart items, addresses and bill summary
-    console.log('[SyncAccount] 5. Reading real cart items and bill summary from /dapi/cart...');
+    // Step 6: Read authenticated /dapi/cart items, addresses and bill summary
+    console.log('[SyncAccount] 6. Reading real cart items and bill summary from /dapi/cart...');
     const dapiData = await page.evaluate(async () => {
       try {
         const res = await fetch('https://www.swiggy.com/dapi/cart');
@@ -2487,6 +2565,12 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
         lng: a.lng || '',
         annotation: a.annotation || ''
       }));
+    }
+
+    if (order.addressDetails?.address) {
+      if (!savedAddresses.some(a => a.address === order.addressDetails.address)) {
+        savedAddresses.unshift(order.addressDetails);
+      }
     }
 
     let cartData = null;
