@@ -725,11 +725,12 @@ async function sendPaymentQrToUser(order) {
   const targetChat = order.userChatId || order.userId;
   if (!targetChat) return;
 
-  // 1. If genuine custom QR photo from Swiggy was uploaded by Boss
-  if (order.customQrFileId) {
+  // 1. If genuine custom QR photo from Swiggy was uploaded by Boss OR captured by automation
+  if (order.customQrFileId || order.genuineQrBuffer) {
     try {
       const payable = order.finalPayable ? `₹${order.finalPayable}` : 'As shown on Swiggy';
-      await bot.telegram.sendPhoto(targetChat, order.customQrFileId, {
+      const photoSource = order.customQrFileId || { source: Buffer.from(order.genuineQrBuffer) };
+      await bot.telegram.sendPhoto(targetChat, photoSource, {
         caption: `🟢 <b>Official Swiggy Payment QR (Order #${order.id})</b>\n\n` +
           `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
           `💰 <b>Payable on Swiggy:</b> <b>${payable}</b>\n\n` +
@@ -846,15 +847,17 @@ async function triggerBackgroundCartFetch(orderId) {
     }
   }
 
-  // 3. Auto account select (prioritize 7016132396 or host account or active account)
+  // 3. Auto account select (prioritize verified logged-in account, host account or active account)
   let hostAccKey = null;
   try {
     const meta = await resolveSwiggyLink(order.cart);
     if (meta.hostName) {
       const hostEntry = Object.entries(db.config?.accounts || {}).find(([k, a]) =>
-        (a.swiggyName && a.swiggyName.trim().toLowerCase() === meta.hostName.trim().toLowerCase()) ||
-        (a.name && a.name.trim().toLowerCase().includes(meta.hostName.trim().toLowerCase())) ||
-        (a.phone && a.phone.trim() === meta.hostName.trim())
+        a.isLoggedIn !== false && (a.cookies || a.tid) && (
+          (a.swiggyName && a.swiggyName.trim().toLowerCase() === meta.hostName.trim().toLowerCase()) ||
+          (a.name && a.name.trim().toLowerCase().includes(meta.hostName.trim().toLowerCase())) ||
+          (a.phone && a.phone.trim() === meta.hostName.trim())
+        )
       );
       if (hostEntry) hostAccKey = hostEntry[0];
     }
@@ -863,14 +866,14 @@ async function triggerBackgroundCartFetch(orderId) {
   let accKey = order.selectedAccount || hostAccKey;
   if (!accKey) {
     const accList = Object.entries(db.config?.accounts || {});
-    const match7016 = accList.find(([k, a]) => a.phone === '7016132396' || a.mobile === '7016132396');
+    const match7016 = accList.find(([k, a]) => (a.phone === '7016132396' || a.mobile === '7016132396') && a.isLoggedIn !== false);
     if (match7016) {
       accKey = match7016[0];
-    } else if (db.config?.activeOrderAccount && db.config?.accounts?.[db.config.activeOrderAccount]) {
+    } else if (db.config?.activeOrderAccount && db.config?.accounts?.[db.config.activeOrderAccount] && db.config.accounts[db.config.activeOrderAccount].isLoggedIn !== false) {
       accKey = db.config.activeOrderAccount;
     } else {
-      const loggedInEntry = accList.find(([k, a]) => a.isLoggedIn);
-      accKey = loggedInEntry ? loggedInEntry[0] : accList[0]?.[0];
+      const loggedInEntry = accList.find(([k, a]) => a.isLoggedIn && (a.cookies || a.tid));
+      accKey = loggedInEntry ? loggedInEntry[0] : (accList.find(([k, a]) => a.cookies || a.tid)?.[0] || accList[0]?.[0]);
     }
   }
 
@@ -890,6 +893,7 @@ async function triggerBackgroundCartFetch(orderId) {
       if (cartMeta?.restaurantId) order.restaurantId = cartMeta.restaurantId;
       if (cartMeta?.restaurantName) order.restaurantName = cartMeta.restaurantName;
       if (cartMeta?.hostName) order.hostName = cartMeta.hostName;
+      if (cartMeta?.groupCartId) order.groupCartId = cartMeta.groupCartId;
       if (cartMeta?.cartDetails) {
         const cd = cartMeta.cartDetails;
         if (cd.restaurantName) order.restaurantName = cd.restaurantName;
@@ -914,6 +918,101 @@ async function triggerBackgroundCartFetch(orderId) {
 
   saveDb(db);
   await updateOrderCards(order);
+
+  // 6. Automatically clone group cart items into account's own cart, optimize coupon, and allot authentic QR
+  if (!order._syncing && accKey && db.config?.accounts?.[accKey]) {
+    const targetAcc = db.config.accounts[accKey];
+    order._syncing = true;
+    (async () => {
+      try {
+        console.log(`[AutoFetch] 🚀 Auto-cloning group cart for Order #${orderId} on Account ${targetAcc.phone || accKey}...`);
+        const result = await syncGroupCartAndCheckoutForAccount(targetAcc, order);
+        console.log(`[AutoFetch] ✅ Sync result for Order #${orderId}:`, {
+          success: result.success,
+          itemsCount: order.items?.length || 0,
+          hasQr: Boolean(result.qrBuffer),
+          payable: order.finalPayable
+        });
+
+        if (result.cartData) {
+          const cd = result.cartData;
+          if (cd.restaurantName) order.restaurantName = cd.restaurantName;
+          if (cd.items && cd.items.length > 0) order.items = cd.items;
+          if (cd.subtotal > 0) order.subtotal = cd.subtotal;
+          if (cd.couponCode) {
+            order.couponCode = cd.couponCode;
+            order.discountAmount = cd.discountAmount || 0;
+          }
+          if (cd.finalTotal > 0) order.finalPayable = cd.finalTotal;
+          if (cd.totalSavings > 0) order.totalSavings = cd.totalSavings;
+        }
+
+        if (result.paymentUrl) {
+          order.swiggyPaymentUrl = result.paymentUrl;
+        }
+
+        if (result.qrBuffer) {
+          order.genuineQrBuffer = result.qrBuffer;
+
+          // Allot and send authentic Swiggy payment QR directly to customer
+          if (order.userChatId || order.userId) {
+            try {
+              const userQrMsg = await bot.telegram.sendPhoto(
+                order.userChatId || order.userId,
+                { source: result.qrBuffer },
+                {
+                  caption: `💳 <b>Official Swiggy Payment QR (Order #${order.id})</b>\n\n` +
+                    `🏪 <b>${escapeHtml(order.restaurantName || 'Swiggy Order')}</b>\n` +
+                    `💰 <b>Amount To Pay: ₹${order.finalPayable || order.subtotal || ''}</b>\n` +
+                    (order.totalSavings > 0 ? `🎉 <b>Total Savings: ₹${order.totalSavings}</b>\n` : '') +
+                    `\n<i>Is QR code ko PhonePe, Google Pay ya kisi bhi UPI app se scan karke payment karein, phir neeche <b>[ 💸 I Have Paid / Confirm Payment ]</b> dabayein!</i>`,
+                  parse_mode: 'HTML',
+                  ...Markup.inlineKeyboard([
+                    ...(order.swiggyPaymentUrl ? [[Markup.button.url('🌐 Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)]] : []),
+                    [Markup.button.callback('💸 I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)]
+                  ])
+                }
+              );
+              if (userQrMsg?.photo && userQrMsg.photo.length > 0) {
+                order.customQrFileId = userQrMsg.photo[userQrMsg.photo.length - 1].file_id;
+              }
+              order.qrSent = true;
+              order.qrDelivered = true;
+            } catch (err) {
+              console.error('[AutoFetch] Failed to send payment QR to user:', err.message);
+            }
+          }
+
+          // Notify Boss that authentic QR is ready and delivered
+          const bossIds = db.config.bossIds || [db.config.bossId];
+          for (const bId of bossIds) {
+            try {
+              await bot.telegram.sendPhoto(bId, { source: Buffer.from(result.qrBuffer) }, {
+                caption: `📸 <b>Genuine Swiggy Payment QR Ready & Delivered (Order #${order.id})</b>\n\n` +
+                  `📱 <b>Account:</b> ${escapeHtml(targetAcc.phone || accKey)}\n` +
+                  `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
+                  `💰 <b>Payable:</b> ₹${order.finalPayable || order.subtotal || 0}\n\n` +
+                  `<i>✨ Yeh authentic Swiggy checkout QR customer ko allot aur send kar diya gaya hai!</i>`,
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                  [Markup.button.callback('✅ Accept Order', `boss_action_accept_${order.id}`)],
+                  [Markup.button.callback('❌ Reject Order', `boss_action_sorry_${order.id}`)]
+                ])
+              });
+            } catch (e) {}
+          }
+        }
+
+        order.swiggyVerified = true;
+      } catch (err) {
+        console.error(`[AutoFetch] Error during auto sync for Order #${orderId}: ${err.message}`);
+      } finally {
+        order._syncing = false;
+        saveDb(getDb());
+        await updateOrderCards(order);
+      }
+    })();
+  }
 }
 
 function escapeHtml(str) {
@@ -3254,6 +3353,12 @@ bot.action([/^boss_upload_custom_qr_(.+)$/, /^boss_prompt_send_qr_(.+)$/, /^boss
   if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
 
   await ctx.answerCbQuery().catch(() => {});
+
+  // If genuine QR is already captured from Swiggy checkout, send immediately to user!
+  if (order.genuineQrBuffer || order.customQrFileId) {
+    await sendPaymentQrToUser(order);
+    return ctx.reply(`✅ <b>Genuine Swiggy Payment QR successfully sent to Customer for Order #${orderId}!</b>`, { parse_mode: 'HTML' });
+  }
 
   userWaitState[ctx.from.id] = { action: 'waiting_custom_qr_photo', orderId };
   await ctx.reply(

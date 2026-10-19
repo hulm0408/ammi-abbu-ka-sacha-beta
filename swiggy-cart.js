@@ -2046,6 +2046,11 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 900 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+    });
 
     // Step 1: Solve WAF on swiggy.com root
     console.log('[SyncAccount] 1. Solving WAF on Swiggy root...');
@@ -2054,9 +2059,9 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
       const pageCookies = await page.cookies();
       const waf = pageCookies.find(c => c.name === 'aws-waf-token');
       if (waf && waf.value.length > 50) break;
-      await new Promise(r => setTimeout(r, 300));
+      await new Promise(r => setTimeout(r, 400));
     }
-    await new Promise(r => setTimeout(r, 800));
+    await new Promise(r => setTimeout(r, 1000));
 
     // Step 2: Inject account cookies
     console.log('[SyncAccount] 2. Injecting account session cookies...');
@@ -2120,87 +2125,116 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
     const groupCartId = cartMeta?.groupCartId || order.groupCartId;
     const restaurantId = cartMeta?.restaurantId || order.restaurantId;
 
-    if (groupCartId) {
-      console.log(`[SyncAccount] 4. Cloning group cart (ID: ${groupCartId}, Rest: ${restaurantId})...`);
-      const cloned = await page.evaluate(async (gcId, rId) => {
-        let fetchedItems = [];
-        try {
-          const vRes = await fetch(`https://www.swiggy.com/dapi/cart/group/view?group_cart_id=${gcId}`);
-          if (vRes.ok) {
-            const vJson = await vRes.json();
-            const raw = vJson?.data?.items || vJson?.data?.groupCart?.items || [];
-            for (const it of raw) {
-              const id = String(it.item_id || it.itemId);
-              if (id) {
-                fetchedItems.push({
-                  itemId: id,
-                  name: it.name || it.dish_name || 'Item',
-                  qty: it.quantity || 1,
-                  price: (it.final_price || it.price || 0) / 100
-                });
-              }
-            }
-          }
-        } catch (e) {}
-
-        // Join & Transfer
-        try {
-          await fetch('https://www.swiggy.com/dapi/cart/group/join', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ group_cart_id: gcId, guest_user_name: 'Member' })
-          });
-          await fetch('https://www.swiggy.com/dapi/cart/group/transfer', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ group_cart_id: gcId })
-          });
-        } catch (e) {}
-
-        // Flush-sync items into account's cart
-        if (fetchedItems.length > 0) {
-          const cartItems = {};
-          for (const it of fetchedItems) {
-            cartItems[it.itemId] = {
-              quantity: it.qty,
-              itemId: it.itemId,
-              variantGroupId: null
-            };
-          }
-          await fetch('https://www.swiggy.com/dapi/cart', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              flushFirst: 1,
-              restaurantId: String(rId || ''),
-              cartItems
-            })
-          }).catch(() => {});
-        }
-
-        return { fetchedItems };
-      }, groupCartId, restaurantId || '');
-
-      if (cloned?.fetchedItems && cloned.fetchedItems.length > 0) {
-        order.items = cloned.fetchedItems.map(it => ({
-          name: it.name,
-          qty: it.qty,
-          price: it.price,
-          lineTotal: Math.round(it.price * it.qty * 100) / 100
-        }));
-      }
+    let targetMenuUrl = null;
+    if (restaurantId && groupCartId) {
+      targetMenuUrl = `https://www.swiggy.com/menu/${restaurantId}?group_cart_id=${groupCartId}`;
     } else if (order.cart && order.cart.startsWith('http')) {
-      console.log(`[SyncAccount] Navigating to cart URL: ${order.cart}`);
-      await page.goto(order.cart, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-      await new Promise(r => setTimeout(r, 2000));
+      targetMenuUrl = order.cart;
     }
 
-    // Step 5: Optimize cart (best coupon, Swiggy One, Free Cash)
-    console.log('[SyncAccount] 5. Optimizing cart with best coupon & Free Cash...');
-    const cartData = await extractAndOptimizeCartData(page);
+    if (targetMenuUrl) {
+      console.log(`[SyncAccount] 4. Navigating to group cart menu URL: ${targetMenuUrl}`);
+      await page.goto(targetMenuUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      await new Promise(r => setTimeout(r, 4000));
+    }
 
-    // Step 6: Proceed to checkout and capture genuine Swiggy payment screen QR
-    console.log('[SyncAccount] 6. Navigating to checkout for real payment screen...');
+    // Step 5: Read authenticated /dapi/cart items and bill summary
+    console.log('[SyncAccount] 5. Reading real cart items and bill summary from /dapi/cart...');
+    const dapiData = await page.evaluate(async () => {
+      try {
+        const res = await fetch('https://www.swiggy.com/dapi/cart');
+        const json = await res.json();
+        return json?.data || null;
+      } catch (e) {
+        return null;
+      }
+    });
+
+    let cartData = null;
+    if (dapiData) {
+      const cm = dapiData.cartMeta || {};
+      const ciMap = dapiData.cartItems || {};
+      const parsedItems = Object.values(ciMap).map(ci => {
+        const itemInfo = ci.items?.[0] || {};
+        const unitPrice = (itemInfo.final_price || itemInfo.base_price || itemInfo.price || 0) / 100;
+        const qty = ci.quantity || 1;
+        return {
+          itemId: String(ci.itemId || itemInfo.menu_item_id || ''),
+          name: itemInfo.name || 'Dish Item',
+          qty,
+          price: unitPrice,
+          lineTotal: Math.round(unitPrice * qty * 100) / 100
+        };
+      }).filter(it => it.name);
+
+      if (parsedItems.length > 0) {
+        order.items = parsedItems;
+      }
+      const restName = cm.restaurant_details?.name || cm.restaurant_details?.restaurant_name || cm.restaurantName || cm.restaurant_name;
+      if (restName) {
+        order.restaurantName = restName;
+      }
+      if (cm.item_total > 0) {
+        order.subtotal = cm.item_total;
+      }
+      if (cm.coupon_code) {
+        order.couponCode = cm.coupon_code;
+        order.discountAmount = cm.coupon_discount || 0;
+      }
+      if (cm.free_cash_applied > 0) {
+        order.freeCashApplied = cm.free_cash_applied;
+      }
+      if (cm.is_swiggy_one_free_delivery_applicable || cm.free_delivery) {
+        order.swiggyOneApplied = true;
+        order.freeDeliveryDiscount = 42;
+      }
+      if (cm.delivery_fee !== undefined) {
+        order.deliveryFee = cm.delivery_fee;
+      }
+      if (cm.packaging_fee || cm.basePackagingCharges) {
+        order.packingCharges = cm.packaging_fee || cm.basePackagingCharges;
+      }
+      if (cm.total_taxes || cm.gst_charges) {
+        order.taxesAndCharges = cm.total_taxes || cm.gst_charges;
+      }
+      if (cm.savings > 0) {
+        order.totalSavings = cm.savings;
+      }
+      if (cm.final_total > 0) {
+        order.finalPayable = cm.final_total;
+      }
+
+      cartData = {
+        restaurantName: order.restaurantName,
+        items: order.items,
+        subtotal: order.subtotal,
+        finalTotal: order.finalPayable,
+        couponCode: order.couponCode,
+        discountAmount: order.discountAmount,
+        totalSavings: order.totalSavings
+      };
+    }
+
+    // Step 6: Optimize coupon and proceeds to checkout
+    console.log('[SyncAccount] 6. Optimizing cart coupon & navigating to checkout...');
+    try {
+      const optData = await extractAndOptimizeCartData(page);
+      if (optData) {
+        if (!order.couponCode && optData.couponCode) {
+          order.couponCode = optData.couponCode;
+          order.discountAmount = optData.discountAmount || 0;
+        }
+        if (optData.finalPayable > 0 && !order.finalPayable) {
+          order.finalPayable = optData.finalPayable;
+        }
+        if (optData.totalSavings > 0 && !order.totalSavings) {
+          order.totalSavings = optData.totalSavings;
+        }
+      }
+    } catch (e) {}
+
+    // Step 7: Proceed to checkout and capture genuine Swiggy payment screen QR
+    console.log('[SyncAccount] 7. Navigating to checkout for real payment screen...');
     await page.goto('https://www.swiggy.com/checkout', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
     await new Promise(r => setTimeout(r, 3000));
 
@@ -2223,7 +2257,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
     // Expand Wallets / PhonePe / UPI to reveal genuine payment QR
     await page.evaluate(() => {
       const els = Array.from(document.querySelectorAll('*'));
-      const pp = els.find(e => e.innerText && (e.innerText.includes('PhonePe') || e.innerText.includes('UPI')));
+      const pp = els.find(e => e.innerText && (e.innerText.includes('PhonePe') || e.innerText.includes('UPI QR') || e.innerText.includes('UPI')));
       if (pp) pp.click();
     });
     await new Promise(r => setTimeout(r, 2500));
@@ -2235,7 +2269,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
 
     return {
       success: true,
-      cartData,
+      cartData: cartData || { items: order.items, restaurantName: order.restaurantName },
       qrBuffer,
       paymentUrl: paymentUrl && (paymentUrl.includes('swiggy.com/payments') || paymentUrl.includes('checkout') || paymentUrl.includes('juspay') || paymentUrl.includes('phonepe')) ? paymentUrl : null
     };
