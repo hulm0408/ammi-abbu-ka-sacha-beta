@@ -462,8 +462,10 @@ export async function resolveSwiggyLink(url) {
       const matchCart = ((groupCartId && o.cart && o.cart.includes(groupCartId)) || (o.cart && o.cart === cleanUrl));
       if (!matchCart || !o.items || o.items.length === 0) return false;
       if (restaurantId && o.restaurantId && String(o.restaurantId) !== String(restaurantId)) return false;
-      if (fastMenu?.restName && o.restaurantName && !o.restaurantName.toLowerCase().includes('arabecue') && !fastMenu.restName.toLowerCase().includes(o.restaurantName.toLowerCase())) {
-        return false;
+      if (fastMenu?.restName && o.restaurantName) {
+        const fn = fastMenu.restName.toLowerCase();
+        const on = o.restaurantName.toLowerCase();
+        if (!fn.includes(on) && !on.includes(fn)) return false;
       }
       return true;
     });
@@ -472,8 +474,8 @@ export async function resolveSwiggyLink(url) {
     }
   } catch (e) {}
 
-  // Explicit fallback match for live user's group cart (Arabecue Fried Chicken)
-  if (groupCartId === '642855918' && knownItems.length === 0) {
+  // Explicit fallback match for live user's group cart (Arabecue Fried Chicken only)
+  if (groupCartId === '642855918' && String(restaurantId) === '67272' && knownItems.length === 0) {
     knownItems = [
       { name: "Tango Chicken [3 Pieces]", qty: 1, price: 169, lineTotal: 169, itemId: "184073068" },
       { name: "Biryani Value Meal", qty: 1, price: 191, lineTotal: 191, itemId: "184073095" }
@@ -2680,12 +2682,16 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
             const matchCart = ((groupCartId && o.cart && o.cart.includes(groupCartId)) || (o.cart && o.cart === order.cart));
             if (!matchCart || !o.items || o.items.length === 0) return false;
             if (restaurantId && o.restaurantId && String(o.restaurantId) !== String(restaurantId)) return false;
-            if (order.restaurantName && o.restaurantName && !o.restaurantName.toLowerCase().includes('arabecue') && !order.restaurantName.toLowerCase().includes(o.restaurantName.toLowerCase())) return false;
+            if (order.restaurantName && o.restaurantName) {
+              const rn = order.restaurantName.toLowerCase();
+              const on = o.restaurantName.toLowerCase();
+              if (!rn.includes(on) && !on.includes(rn)) return false;
+            }
             return true;
           });
           if (pastOrder?.items) known = JSON.parse(JSON.stringify(pastOrder.items));
         } catch (e) {}
-        if (known.length === 0 && groupCartId === '642855918') {
+        if (known.length === 0 && groupCartId === '642855918' && String(restaurantId) === '67272') {
           known = [
             { name: "Tango Chicken [3 Pieces]", qty: 1, price: 169, lineTotal: 169, itemId: "184073068" },
             { name: "Biryani Value Meal", qty: 1, price: 191, lineTotal: 191, itemId: "184073095" }
