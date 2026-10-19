@@ -6213,6 +6213,21 @@ bot.on('text', async (ctx) => {
     const draftUpdates = { cart: cartVal };
     if (parsedCart) draftUpdates.cartDetails = parsedCart;
 
+    // Fast-resolve link metadata (restaurant & dishes for group carts)
+    try {
+      const linkMeta = await resolveSwiggyLink(cartVal);
+      if (linkMeta?.cartDetails) {
+        draftUpdates.cartDetails = {
+          ...(linkMeta.cartDetails || {}),
+          ...(draftUpdates.cartDetails || {})
+        };
+      }
+      if (linkMeta?.restaurantName && !draftUpdates.cartDetails?.restaurantName) {
+        draftUpdates.cartDetails = draftUpdates.cartDetails || {};
+        draftUpdates.cartDetails.restaurantName = linkMeta.restaurantName;
+      }
+    } catch (e) {}
+
     // Check if user also sent address details in the same text
     const parsedAddr = parseAddressDetails(rawText);
     const curBefore = getDraft(userId);
@@ -6745,6 +6760,29 @@ async function handleSendToBoss(ctx) {
     if (cd.gstCharges > 0) newOrder.taxesAndCharges = cd.gstCharges;
     if (cd.totalSavings > 0) newOrder.totalSavings = cd.totalSavings;
     if (cd.finalPayable > 0) newOrder.finalPayable = cd.finalPayable;
+  }
+
+  // Fallback: If items are missing, resolve directly from cart link
+  if (!newOrder.items || newOrder.items.length === 0) {
+    try {
+      const linkMeta = await resolveSwiggyLink(newOrder.cart);
+      if (linkMeta?.cartDetails?.items?.length > 0) {
+        newOrder.items = linkMeta.cartDetails.items;
+        if (!newOrder.restaurantName) newOrder.restaurantName = linkMeta.restaurantName;
+        if (!newOrder.subtotal) newOrder.subtotal = linkMeta.cartDetails.subtotal || linkMeta.cartDetails.itemsTotal;
+      }
+    } catch (e) {}
+  }
+
+  // Fallback: If addressDetails is missing, resolve directly from address link
+  if (!newOrder.addressDetails && newOrder.address) {
+    try {
+      const addrMeta = await resolveSwiggyLink(newOrder.address);
+      if (addrMeta?.addressDetails) {
+        newOrder.addressDetails = addrMeta.addressDetails;
+        if (addrMeta.addressDetails.address) newOrder.address = addrMeta.addressDetails.address;
+      }
+    } catch (e) {}
   }
 
   db.orders[orderId] = newOrder;
