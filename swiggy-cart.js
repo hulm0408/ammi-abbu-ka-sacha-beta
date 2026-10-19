@@ -49,7 +49,7 @@ export function generateUpiQrUrl(amount, orderId, upiId = null) {
   };
 }
 
-// Generates a sleek, authentic, personalized Swiggy Payment Card image with customer's name
+// Generates a sleek, authentic, personalized Swiggy Payment Card image with customer's name IN CENTER OF QR
 export async function generatePersonalizedQrCard({
   customerName = 'Abbu & Ammi',
   restaurantName = 'Swiggy Food Order',
@@ -63,8 +63,9 @@ export async function generatePersonalizedQrCard({
     qrDataUrl = `data:image/png;base64,${Buffer.isBuffer(qrBuffer) ? qrBuffer.toString('base64') : qrBuffer}`;
   } else if (upiUrl) {
     qrDataUrl = await QRCode.toDataURL(upiUrl, {
-      margin: 1,
-      width: 320,
+      margin: 2,
+      width: 360,
+      errorCorrectionLevel: 'H',
       color: { dark: '#000000', light: '#ffffff' }
     });
   }
@@ -119,40 +120,62 @@ export async function generatePersonalizedQrCard({
       border-radius: 20px;
       margin-bottom: 14px;
     }
-    .user-pill {
-      background: linear-gradient(90deg, #fc8019, #ff5200);
-      color: #ffffff;
-      font-size: 18px;
-      font-weight: 700;
-      padding: 8px 20px;
-      border-radius: 14px;
-      display: inline-block;
-      margin-bottom: 12px;
-      box-shadow: 0 4px 15px rgba(252, 128, 25, 0.3);
-    }
     .restaurant-title {
       font-size: 20px;
       font-weight: 600;
       color: #e5e7eb;
-      margin-bottom: 20px;
+      margin-bottom: 18px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
     .qr-frame {
       background: #ffffff;
-      padding: 14px;
+      padding: 12px;
       border-radius: 20px;
       display: inline-block;
       box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
       margin-bottom: 18px;
     }
-    .qr-frame img {
+    .qr-wrapper {
+      position: relative;
+      display: inline-block;
+      width: 260px;
+      height: 260px;
+    }
+    .qr-wrapper img {
       display: block;
-      width: 250px;
-      height: 250px;
+      width: 260px;
+      height: 260px;
       border-radius: 8px;
       object-fit: contain;
+    }
+    .qr-center-badge {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: #ffffff;
+      border: 3px solid #fc8019;
+      border-radius: 12px;
+      padding: 5px 14px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      max-width: 140px;
+      min-width: 65px;
+      z-index: 10;
+    }
+    .qr-center-badge span {
+      font-size: 14px;
+      font-weight: 800;
+      color: #fc8019;
+      letter-spacing: 0.5px;
+      text-transform: capitalize;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .amount-box {
       margin-bottom: 12px;
@@ -202,14 +225,16 @@ export async function generatePersonalizedQrCard({
       ⚡ SWIGGY OFFICIAL INSTANT PAY
     </div>
     <br>
-    <div class="user-pill">
-      👤 Order for: ${customerName}
-    </div>
     <div class="restaurant-title">
       🏪 ${restaurantName}
     </div>
     <div class="qr-frame">
-      <img src="${qrDataUrl}" alt="Payment QR" />
+      <div class="qr-wrapper">
+        <img src="${qrDataUrl}" alt="Payment QR" />
+        <div class="qr-center-badge">
+          <span>${customerName}</span>
+        </div>
+      </div>
     </div>
     <div class="amount-box">
       <div class="amount-label">Amount To Pay</div>
@@ -1249,8 +1274,8 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '', accountSessi
       const page = await browser.newPage();
       await page.setViewport({ width: 1280, height: 900 });
 
-      // First solve fresh WAF challenge on swiggy.com quickly
-      await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+      // First solve fresh WAF challenge on swiggy.com/restaurants quickly
+      await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
       for (let i = 0; i < 15; i++) {
         const pageCookies = await page.cookies();
         const waf = pageCookies.find(c => c.name === 'aws-waf-token');
@@ -2332,9 +2357,9 @@ export async function syncGroupCartAndCheckoutForAccount(account, order) {
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
     });
 
-    // Step 1: Solve WAF on swiggy.com root
-    console.log('[SyncAccount] 1. Solving WAF on Swiggy root...');
-    await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+    // Step 1: Solve WAF on swiggy.com/restaurants
+    console.log('[SyncAccount] 1. Solving WAF on Swiggy restaurants...');
+    await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
     for (let i = 0; i < 20; i++) {
       const pageCookies = await page.cookies();
       const waf = pageCookies.find(c => c.name === 'aws-waf-token');

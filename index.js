@@ -26,7 +26,7 @@ import {
   canTransitionOrder,
   getNextAutoUserName,
 } from './store.js';
-import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload } from './swiggy-bridge.js';
+import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers } from './swiggy-bridge.js';
 import {
   verifyAndInspectSwiggyLink,
   inspectCartForAccount,
@@ -44,7 +44,8 @@ import {
   parseAddressDetails,
   parseCartDetails,
   syncGroupCartAndCheckoutForAccount,
-  applyMaxOfferToOrder
+  applyMaxOfferToOrder,
+  generatePersonalizedQrCard
 } from './swiggy-cart.js';
 
 dotenv.config();
@@ -656,6 +657,9 @@ function getBossPanelKeyboard() {
           { text: 'Total Left', callback_data: 'boss_prompt_slots_left', style: 'primary' }
         ],
         [
+          { text: '🎁 Claim ₹50 Off Offers (All Accounts)', callback_data: 'boss_claim_all_event_offers', style: 'success' }
+        ],
+        [
           { text: 'Claim Free Cash', callback_data: 'boss_claim_freecash', style: 'success' },
           { text: 'Set UPI ID', callback_data: 'boss_prompt_set_upi', style: 'primary' }
         ],
@@ -850,7 +854,30 @@ async function sendPaymentQrToUser(order) {
   const targetChat = order.userChatId || order.userId;
   if (!targetChat) return;
 
-  // 1. If genuine custom QR photo from Swiggy was uploaded by Boss OR captured by automation
+  // 1. Ensure personalized QR code with customer's Telegram name in center of QR
+  if (!order.genuineQrBuffer && !order.customQrFileId && (order.finalPayable || order.subtotal)) {
+    const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
+    const db = getDb();
+    const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
+    const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
+    try {
+      const generatedBuf = await generatePersonalizedQrCard({
+        customerName: custDisplayName,
+        restaurantName: order.restaurantName || 'Swiggy Food Order',
+        amount: order.finalPayable || order.subtotal || 0,
+        savings: order.totalSavings || 0,
+        upiUrl: upiUri
+      });
+      if (generatedBuf) {
+        order.genuineQrBuffer = generatedBuf;
+        saveDb(db);
+      }
+    } catch (e) {
+      console.warn('[sendPaymentQrToUser] Card generation fallback:', e.message);
+    }
+  }
+
+  // 2. If genuine custom QR photo from Swiggy was uploaded by Boss OR captured by automation
   if (order.customQrFileId || order.genuineQrBuffer) {
     try {
       const payable = order.finalPayable ? `₹${order.finalPayable}` : 'As shown on Swiggy';
@@ -1616,19 +1643,29 @@ async function handleProcessJsonLogin(ctx, rawJson, userId) {
       saveDb(db);
     }
 
-    const successText = `✅ <b>Swiggy Account Connected via JSON!</b> 🎉\n\n` +
-      `👤 <b>Name (from Swiggy):</b> <b>${escapeHtml(swiggyName)}</b>\n` +
-      `📱 <b>Mobile:</b> <code>${cleanPhone || 'Linked'}</code>\n` +
-      `🔑 <b>Session:</b> Verified & Active 🟢\n\n` +
-      `<i>Aap is account se bina kisi manual setup ke direct orders process kar sakte hain!</i>`;
+    const claimWait = await ctx.reply('⏳ <i>Swiggy Breakfast (6am-11am) & Late Night (9pm-11pm) ₹50 OFF offers auto-claim ho rahe hain...</i>', { parse_mode: 'HTML' });
+    const offersResult = await claimSwiggyBreakfastAndLateNightOffers({
+      phone: cleanPhone,
+      token: parsed.token || parsed.tid,
+      tid: parsed.tid,
+      cookies: cookieStr
+    });
+    try { await bot.telegram.deleteMessage(ctx.chat.id, claimWait.message_id); } catch (e) {}
 
-    const buttons = [
-      [Markup.button.callback('👥 View Connected Accounts', 'boss_view_accounts')],
-      [Markup.button.callback('📱 Login Another (Number)', 'boss_login_with_number')],
-      [Markup.button.callback('🔑 Login Another (JSON)', 'boss_login_with_json')]
-    ];
+    const accData = db.config.accounts[accKey] || {};
+    accData.offers = offersResult;
+    saveDb(db);
 
-    await ctx.reply(successText, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+    await sendAccountLoginAndOffersCard(ctx, {
+      accountKey: accKey,
+      targetAcc: accKey,
+      name: swiggyName,
+      swiggyName,
+      phone: cleanPhone,
+      customerId: profile?.id || parsed.customerId || 'Verified',
+      exportJson: parsed,
+      offers: offersResult
+    }, ctx.from.id, null);
   } else {
     await ctx.reply(`❌ <b>Import Failed:</b> ${result.message}`, getBossPanelKeyboard());
   }
@@ -1667,11 +1704,11 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
   const bothClaimed = isLateNightClaimed && isBreakfastClaimed;
 
   const lateNightStatusText = isLateNightClaimed 
-    ? `✅ <code>CLAIMED</code> (50 off on 199)` 
-    : `❌ <code>CLAIM FAILED</code>`;
+    ? `✅ <code>CLAIMED</code> (50 off on 199)${lateNight.message ? ` — <i>${escapeHtml(lateNight.message)}</i>` : ''}` 
+    : `❌ <code>CLAIM FAILED</code>${lateNight.message ? ` (<i>${escapeHtml(lateNight.message)}</i>)` : ''}`;
   const breakfastStatusText = isBreakfastClaimed 
-    ? `✅ <code>CLAIMED</code> (50 off on 199)` 
-    : `❌ <code>CLAIM FAILED</code>`;
+    ? `✅ <code>CLAIMED</code> (50 off on 199)${breakfast.message ? ` — <i>${escapeHtml(breakfast.message)}</i>` : ''}` 
+    : `❌ <code>CLAIM FAILED</code>${breakfast.message ? ` (<i>${escapeHtml(breakfast.message)}</i>)` : ''}`;
 
   const headerTag = bothClaimed 
     ? `<blockquote>⚡ <b>SWIGGY CLAIMING SUCCESS</b></blockquote>` 
@@ -1798,18 +1835,16 @@ bot.action(/^boss_use_acc_(.+)$/, async (ctx) => {
 // Action: Retry offer claims
 bot.action(/^boss_retry_claim_(.+)$/, async (ctx) => {
   const accKey = ctx.match[1];
-  await ctx.answerCbQuery('Retrying offer claims... ⏳').catch(() => {});
+  await ctx.answerCbQuery('Retrying offer claims with Swiggy API... ⏳').catch(() => {});
   const db = getDb();
   const acc = db.config.accounts?.[accKey];
   if (!acc) return ctx.reply('❌ Account not found.');
 
-  await ctx.reply(`⏳ <i>Retrying Late Night & Breakfast offer claims for <b>${escapeHtml(acc.name || accKey)}</b>...</i>`, { parse_mode: 'HTML' });
-  await new Promise(r => setTimeout(r, 800));
-  acc.offers = {
-    lateNight: { name: 'Swiggy Late Night', status: 'CLAIMED', discount: '50 off on 199' },
-    breakfast: { name: 'Swiggy Breakfast', status: 'CLAIMED', discount: '50 off on 199' }
-  };
+  const retryWait = await ctx.reply(`⏳ <i>Swiggy Breakfast & Late Night offers claim request process ho rahi hai for <b>${escapeHtml(acc.name || accKey)}</b>...</i>`, { parse_mode: 'HTML' });
+  const claimRes = await claimSwiggyBreakfastAndLateNightOffers(acc);
+  acc.offers = claimRes;
   saveDb(db);
+  try { await bot.telegram.deleteMessage(ctx.chat.id, retryWait.message_id); } catch (e) {}
 
   await sendAccountLoginAndOffersCard(ctx, {
     accountKey: accKey,
@@ -2169,19 +2204,40 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
       order.swiggyPaymentUrl = result.paymentUrl;
     }
 
-    // If authentic Swiggy payment QR buffer was captured:
-    // Send preview ONLY to Boss so Boss can review! Do NOT send to customer yet!
-    if (result.qrBuffer) {
-      order.genuineQrBuffer = result.qrBuffer;
+    // Generate authentic personalized QR Card with customer's name embedded in the center of the QR
+    const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
+    const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
+    const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
+
+    let finalQrBuffer = result.qrBuffer;
+    try {
+      const cardBuffer = await generatePersonalizedQrCard({
+        customerName: custDisplayName,
+        restaurantName: order.restaurantName || 'Swiggy Food Order',
+        amount: order.finalPayable || order.subtotal || 0,
+        savings: order.totalSavings || 0,
+        upiUrl: upiUri,
+        qrBuffer: result.qrBuffer
+      });
+      if (cardBuffer) {
+        finalQrBuffer = cardBuffer;
+      }
+    } catch (e) {
+      console.warn('[boss_select_acc] Personalized QR Card generation fallback:', e.message);
+    }
+
+    if (finalQrBuffer) {
+      order.genuineQrBuffer = finalQrBuffer;
       try {
         const bossQrMsg = await ctx.replyWithPhoto(
-          { source: result.qrBuffer },
+          { source: finalQrBuffer },
           {
             caption: `📸 <b>Live Swiggy Checkout Payment QR (Order #${order.id})</b>\n\n` +
               `📱 Account: <b>${escapeHtml(accPhone)}</b> (${escapeHtml(accName)})\n` +
+              `👤 Customer Badge in QR Center: <b>${escapeHtml(custDisplayName)}</b>\n` +
               `🏪 Restaurant: <b>${escapeHtml(order.restaurantName || 'Swiggy Order')}</b>\n` +
               `💰 Amount To Pay: <b>₹${order.finalPayable || order.subtotal || 0}</b> (Saved: ₹${order.totalSavings || 0})\n\n` +
-              `⚠️ <i>Yeh Payment QR abhi customer ko nahi bheja gaya hai. Neeche Review Screen check karke <b>[ 🚀 Send Bill & Payment QR to Customer ]</b> dabayein!</i>`,
+              `⚠️ <i>Yeh Payment QR abhi customer ko nahi bheja gaya hai. Neeche Review Screen check karke <b>[ 🚀 Send Bill & Request Confirmation ]</b> dabayein!</i>`,
             parse_mode: 'HTML'
           }
         );
@@ -2198,14 +2254,14 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
 
   saveDb(db);
 
-  // Update Customer's card (shows clean minimal Under Review screen, NO giant paragraphs!)
+  // Update Customer's card
   await updateOrderCards(order);
 
   try {
     await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id);
   } catch (e) {}
 
-  // Deliver comprehensive Boss Review Card (Address History, Order Items, Coupons, Final Charges, Payment QR & Action Buttons)
+  // Deliver comprehensive Boss Review Card
   const reviewCard = formatBossAccountReviewCard(order);
   await ctx.reply(reviewCard.text, {
     parse_mode: 'HTML',
@@ -2213,7 +2269,7 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
   });
 });
 
-// Boss Action: Send Bill & Official Swiggy Payment QR to Customer (Approved by Boss)
+// Boss Action: Send Bill & Confirmation Request to Customer
 bot.action(/^boss_send_qr_to_user_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
@@ -2224,37 +2280,56 @@ bot.action(/^boss_send_qr_to_user_(.+)$/, async (ctx) => {
   order.paymentSentToUser = true;
   saveDb(db);
 
-  await ctx.answerCbQuery('Sending Bill & Payment QR to Customer... 🚀').catch(() => {});
+  await ctx.answerCbQuery('Sending Bill & Confirmation Request to Customer... 🚀').catch(() => {});
 
-  // 1. Send Payment QR to Customer
+  // 1. Send Bill & Confirmation Request to Customer
   const custChatId = order.userChatId || order.userId;
   if (custChatId) {
     try {
-      const qrPhoto = order.genuineQrBuffer ? { source: order.genuineQrBuffer } : (order.customQrFileId || null);
-      if (qrPhoto) {
-        await bot.telegram.sendPhoto(
-          custChatId,
-          qrPhoto,
-          {
-            caption: `💳 <b>Official Swiggy Payment QR (Order #${order.id})</b>\n\n` +
-              `🏪 <b>${escapeHtml(order.restaurantName || 'Swiggy Order')}</b>\n` +
-              `💰 <b>Amount To Pay: ₹${order.finalPayable || order.subtotal || 0}</b>\n` +
-              (order.totalSavings > 0 ? `🎉 <b>Total Savings: ₹${order.totalSavings}</b>\n` : '') +
-              `\n<i>Is QR code ko PhonePe, Google Pay ya kisi bhi UPI app se scan karke payment karein, phir neeche <b>[ 💸 I Have Paid / Confirm Payment ]</b> dabayein!</i>`,
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              ...(order.swiggyPaymentUrl ? [[Markup.button.url('💳 Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)]] : []),
-              [Markup.button.callback('💸 I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)]
-            ])
-          }
-        );
+      if (!order.genuineQrBuffer) {
+        const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
+        const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
+        const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
+        order.genuineQrBuffer = await generatePersonalizedQrCard({
+          customerName: custDisplayName,
+          restaurantName: order.restaurantName || 'Swiggy Food Order',
+          amount: order.finalPayable || order.subtotal || 0,
+          savings: order.totalSavings || 0,
+          upiUrl: upiUri
+        }).catch(err => {
+          console.warn('[boss_send_qr_to_user] Card generation fallback:', err.message);
+          return null;
+        });
+        saveDb(db);
       }
+
+      // Send Customer confirmation & payment prompt
+      const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
+      const confirmText = `🧾 <b>Swiggy Order #${order.id} Ready for Confirmation!</b>\n\n` +
+        `👤 <b>Customer:</b> <b>${escapeHtml(custDisplayName)}</b>\n` +
+        `🏪 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
+        `💰 <b>Amount To Pay: ₹${order.finalPayable || order.subtotal || 0}</b>\n` +
+        (order.totalSavings > 0 ? `🎉 <b>Discounts & Offers Saved: ₹${order.totalSavings}</b>\n` : '') +
+        `\n👉 <i>Aapka order review ho gaya hai! Neeche <b>[ ✅ Confirm Order & Get Payment QR ]</b> dabakar payment QR prapt karein:</i>`;
+
+      await bot.telegram.sendMessage(
+        custChatId,
+        confirmText,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('✅ Confirm Order & Get Payment QR', `user_confirm_get_qr_${order.id}`)],
+            ...(order.swiggyPaymentUrl ? [[Markup.button.url('💳 Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)]] : []),
+            [Markup.button.callback('🟠 Cancel Order', `action_cancel_order_confirm_${order.id}`)]
+          ])
+        }
+      );
     } catch (err) {
-      console.error('[boss_send_qr_to_user] Failed to send payment QR to user:', err.message);
+      console.error('[boss_send_qr_to_user] Failed to send bill to user:', err.message);
     }
   }
 
-  // 2. Update Customer's main order card to show full verified receipt & payment buttons
+  // 2. Update Customer's main order card
   await updateOrderCards(order);
 
   // 3. Update Boss review card
@@ -2271,7 +2346,20 @@ bot.action(/^boss_send_qr_to_user_(.+)$/, async (ctx) => {
     });
   }
 
-  await ctx.reply(`✅ <b>Bill & Official Swiggy Payment QR Customer ko bhej diya gaya hai!</b>`, { parse_mode: 'HTML' });
+  await ctx.reply(`✅ <b>Bill & Confirmation Request Customer ko bhej diya gaya hai!</b>\n<i>User ke confirm karte hi QR code unhe send ho jayega.</i>`, { parse_mode: 'HTML' });
+});
+
+// Customer Action: Confirm Order & Get Personalized QR Card
+bot.action(/^user_confirm_get_qr_(.+)$/, async (ctx) => {
+  const orderId = ctx.match[1];
+  const db = getDb();
+  const order = db.orders[orderId];
+  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  if (Number(order.userId) !== Number(ctx.from.id) && !isBoss(ctx.from.id)) {
+    return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+  }
+  await ctx.answerCbQuery('Order Confirmed! Generating your payment QR with your name... 🚀').catch(() => {});
+  await sendPaymentQrToUser(order);
 });
 
 // Boss Action: Coupon Picker
@@ -4029,6 +4117,9 @@ async function showFamilyAccounts(ctx) {
 
   const buttons = [
     [
+      Markup.button.callback('🎁 Claim ₹50 Off Offers (All Accounts)', 'boss_claim_all_event_offers')
+    ],
+    [
       Markup.button.callback('Login with JSON', 'boss_login_with_json'),
       Markup.button.callback('Login with Number', 'boss_login_with_number')
     ],
@@ -4057,6 +4148,110 @@ async function showFamilyAccounts(ctx) {
     ...Markup.inlineKeyboard(buttons)
   });
 }
+
+// Boss Action: Claim ₹50 Off Offers in All Logged-in Accounts
+bot.action('boss_claim_all_event_offers', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery('Claiming ₹50 Off offers in all accounts... 🚀').catch(() => {});
+
+  const db = getDb();
+  const accounts = db.config.accounts || {};
+  const accEntries = Object.entries(accounts);
+
+  if (accEntries.length === 0) {
+    return ctx.reply('⚠️ <b>Koi bhi logged-in account nahi mila!</b>\n\nPehle Number ya JSON se account add karein.', {
+      parse_mode: 'HTML',
+      ...getBossPanelKeyboard()
+    });
+  }
+
+  const waitMsg = await ctx.reply(
+    `⏳ <b>Swiggy Breakfast & Late Night Offers Claiming...</b>\n\n` +
+    `🍳 <b>Breakfast (6AM–11AM):</b> ₹50 OFF on ₹199\n` +
+    `🌙 <b>Dinner Late Night (9PM–11PM):</b> ₹50 OFF on ₹199\n\n` +
+    `<i>Sabhi ${accEntries.length} accounts me Swiggy backend API call ki ja rahi hai...</i>`,
+    { parse_mode: 'HTML' }
+  );
+
+  let successCount = 0;
+  let partialCount = 0;
+  let failCount = 0;
+  const results = [];
+
+  for (const [key, acc] of accEntries) {
+    const accLabel = `${acc.phone || key}${acc.name ? ` (${acc.name})` : ''}`;
+    try {
+      const claimRes = await claimSwiggyBreakfastAndLateNightOffers(acc);
+      acc.offers = claimRes;
+      if (claimRes.bothClaimed) {
+        successCount++;
+      } else if (claimRes.success) {
+        partialCount++;
+      } else {
+        failCount++;
+      }
+      results.push({
+        label: accLabel,
+        key,
+        res: claimRes
+      });
+    } catch (e) {
+      failCount++;
+      results.push({
+        label: accLabel,
+        key,
+        res: { success: false, error: e.message }
+      });
+    }
+  }
+
+  saveDb(db);
+
+  try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
+
+  let reportText = `🎁 <b>SWIGGY OFFERS CLAIM REPORT (ALL ACCOUNTS)</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `🍳 <b>Breakfast (6AM–11AM):</b> 50 OFF on 199\n` +
+    `🌙 <b>Late Night (9PM–11PM):</b> 50 OFF on 199\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+  for (const item of results) {
+    const r = item.res;
+    if (r.error || r.reason) {
+      reportText += `📱 <b>${escapeHtml(item.label)}:</b>\n` +
+        `  ❌ <b>Status:</b> <code>${escapeHtml(r.error || r.reason)}</code>\n\n`;
+      continue;
+    }
+
+    const bf = r.breakfast || {};
+    const ln = r.lateNight || {};
+
+    const bfTag = bf.status === 'CLAIMED' ? '✅ CLAIMED' : '❌ FAILED';
+    const lnTag = ln.status === 'CLAIMED' ? '✅ CLAIMED' : '❌ FAILED';
+
+    reportText += `📱 <b>${escapeHtml(item.label)}:</b>\n` +
+      `  • 🍳 <b>Breakfast:</b> ${bfTag} (50 off on 199)\n` +
+      `    <i>${escapeHtml(bf.message || bf.rawMessage || 'Done')}</i>\n` +
+      `  • 🌙 <b>Late Night:</b> ${lnTag} (50 off on 199)\n` +
+      `    <i>${escapeHtml(ln.message || ln.rawMessage || 'Done')}</i>\n\n`;
+  }
+
+  reportText += `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `📊 <b>Summary:</b> <b>${successCount}</b> Fully Active | <b>${partialCount}</b> Partial | <b>${failCount}</b> Failed\n` +
+    `<i>100% Genuine Swiggy responses recorded directly from Swiggy API!</i>`;
+
+  const buttons = [
+    [
+      Markup.button.callback('🔄 Retry Claim in All', 'boss_claim_all_event_offers'),
+      Markup.button.callback('👥 View Accounts', 'boss_view_accounts')
+    ],
+    [
+      Markup.button.callback('🏠 Boss Panel', 'boss_panel_home')
+    ]
+  ];
+
+  await sendSafeHtml(ctx, reportText, Markup.inlineKeyboard(buttons));
+});
 
 // Switch Active Account Picker
 bot.action('boss_switch_active_picker', async (ctx) => {

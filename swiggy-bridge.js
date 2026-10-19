@@ -96,7 +96,7 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account) {
 
   let token = account.token;
   let jwtTid = account.tid;
-  const cookieStr = account.cookies || '';
+  let cookieStr = account.cookies || '';
 
   if (cookieStr) {
     const tidCookie = cookieStr.split(';').map(s => s.trim()).find(s => s.startsWith('tid='));
@@ -111,8 +111,16 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account) {
     }
   }
 
-  if (!token || !jwtTid) {
+  if (!token && jwtTid) {
+    token = jwtTid;
+  }
+
+  if (!jwtTid && !token) {
     return { success: false, reason: 'Missing Swiggy token or JWT tid' };
+  }
+
+  if (!cookieStr && jwtTid) {
+    cookieStr = `tid=${jwtTid}` + (account.sid ? `; _sid=${account.sid}` : '') + (account.deviceId ? `; _device_id=${account.deviceId}` : '');
   }
 
   let bfCampaign = 'byo-bf-v10-14';
@@ -161,7 +169,7 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account) {
 
   const headers = {
     'Content-Type': 'application/json',
-    'token': token,
+    'token': token || jwtTid,
     'tid': jwtTid,
     'Cookie': cookieStr,
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -184,6 +192,18 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account) {
     const bfJson = await resBf.json().catch(() => ({}));
     const lnJson = await resLn.json().catch(() => ({}));
 
+    const formatOfferMsg = (res, json) => {
+      if (res.ok) {
+        if (json.message?.toLowerCase().includes('already')) {
+          return `Already Active (${json.message})`;
+        }
+        return json.message || 'Claimed Successfully';
+      }
+      if (res.status === 401) return 'HTTP 401 Unauthorized (Session Expired)';
+      if (res.status === 403) return 'HTTP 403 Forbidden (WAF Blocked)';
+      return `HTTP ${res.status} (${json.message || res.statusText || 'Error'})`;
+    };
+
     console.log(`[EventsClaim] Account ${account.phone || account.name || 'User'} result:`, {
       breakfast: { campaign: bfCampaign, status: resBf.status, msg: bfJson.message },
       lateNight: { campaign: lnCampaign, status: resLn.status, msg: lnJson.message }
@@ -191,19 +211,24 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account) {
 
     return {
       success: resBf.ok || resLn.ok,
+      bothClaimed: resBf.ok && resLn.ok,
       breakfast: {
         name: 'Breakfast Morning (6AM-11AM)',
         campaign: bfCampaign,
         status: resBf.ok ? 'CLAIMED' : 'FAILED',
+        statusCode: resBf.status,
         discount: '₹50 OFF on ₹199',
-        message: bfJson.message || (resBf.ok ? 'Subscribed' : `HTTP ${resBf.status}`)
+        rawMessage: bfJson.message || '',
+        message: formatOfferMsg(resBf, bfJson)
       },
       lateNight: {
         name: 'Dinner Late Night (9PM-11PM)',
         campaign: lnCampaign,
         status: resLn.ok ? 'CLAIMED' : 'FAILED',
+        statusCode: resLn.status,
         discount: '₹50 OFF on ₹199',
-        message: lnJson.message || (resLn.ok ? 'Subscribed' : `HTTP ${resLn.status}`)
+        rawMessage: lnJson.message || '',
+        message: formatOfferMsg(resLn, lnJson)
       }
     };
   } catch (err) {
