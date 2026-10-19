@@ -594,19 +594,6 @@ function formatBossOrderCard(order) {
       Markup.button.callback('✅ Accept Order', `boss_action_accept_${order.id}`),
       Markup.button.callback('❌ Reject Order', `boss_action_sorry_${order.id}`)
     ]);
-    const linkRow = [];
-    if (order.cart && order.cart.startsWith('http')) {
-      linkRow.push(Markup.button.url('🛒 Open Cart in Swiggy', order.cart));
-    }
-    if (order.address && order.address.startsWith('http')) {
-      linkRow.push(Markup.button.url('📍 Open Address', order.address));
-    }
-    if (linkRow.length > 0) rows.push(linkRow);
-
-    rows.push([
-      Markup.button.callback('💳 Send Swiggy Payment Link', `boss_prompt_send_link_${order.id}`),
-      Markup.button.callback('📸 Send Swiggy Payment QR', `boss_prompt_send_qr_${order.id}`)
-    ]);
     rows.push([
       makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
       makeCopyButton('🔵 Copy Address', order.address || '', `boss_copy_addr_${order.id}`)
@@ -615,7 +602,7 @@ function formatBossOrderCard(order) {
       Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`)
     ]);
   }
-  // STATE 2: ACCEPTED Order -> Send payment link, Send QR, Message user, Tracking, Complete
+  // STATE 2: ACCEPTED Order -> Tracking, Done, Reject, Copy, Message User
   else if (order.status === 'ACCEPTED') {
     if (order.selectedAccount && accounts[order.selectedAccount]) {
       const curAcc = accounts[order.selectedAccount];
@@ -625,18 +612,6 @@ function formatBossOrderCard(order) {
         Markup.button.callback('🔄 Switch Acc', `boss_choose_acc_picker_${order.id}`)
       ]);
     }
-    rows.push([
-      Markup.button.callback('💳 Send Swiggy Payment Link', `boss_prompt_send_link_${order.id}`),
-      Markup.button.callback('📸 Send Swiggy Payment QR', `boss_prompt_send_qr_${order.id}`)
-    ]);
-    const linkRow = [];
-    if (order.cart && order.cart.startsWith('http')) {
-      linkRow.push(Markup.button.url('🛒 Open Cart in Swiggy', order.cart));
-    }
-    if (order.address && order.address.startsWith('http')) {
-      linkRow.push(Markup.button.url('📍 Open Address', order.address));
-    }
-    if (linkRow.length > 0) rows.push(linkRow);
 
     rows.push([
       makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
