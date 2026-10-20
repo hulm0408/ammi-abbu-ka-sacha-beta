@@ -1066,10 +1066,14 @@ export async function fetchFastRestaurantInfo(restaurantId, lat = '26.8658609', 
   }
 }
 
-// Cleanly extract structured delivery address from Swiggy native share messages, receipts, coordinates, or plain text
+// Cleanly extract structured delivery address from Swiggy native share messages, Swiggy World receipts, coordinates, or plain text
 export function parseAddressDetails(text) {
   if (!text) return null;
-  const str = String(text).trim();
+  // Normalize markdown tel/url links like `[9823305540](tel:9823305540)` -> `9823305540` and HTML `&amp;` -> `&`
+  const str = String(text)
+    .replace(/\[([^\]]+)\]\(tel:[^)]+\)/gi, '$1')
+    .replace(/&amp;/gi, '&')
+    .trim();
 
   // Pure single URL with no accompanying text is handled by URL resolvers, not text parser
   if (/^https?:\/\/\S+$/i.test(str)) {
@@ -1079,15 +1083,14 @@ export function parseAddressDetails(text) {
   let name = null, mobile = null, city = null, address = null, flat_no = null, area = null, landmark = null, lat = null, lng = null;
 
   // 1. Check Swiggy App's native "Share Address" message format:
-  // "Hey! Save my address on Swiggy using the link:https://swiggy.onelink.me/JgkQ/j37ai838.\n\nAddress: Ground, 504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India"
   const swiggyShareAddrMatch = str.match(/(?:^|\n)\s*Address\s*:\s*([^\n\r]+(?:\n(?!https?:\/\/)[^\n\r]+)*)/i);
   if (swiggyShareAddrMatch) {
     address = swiggyShareAddrMatch[1].replace(/https?:\/\/\S+/gi, '').trim().replace(/[,\s]+$/, '');
   }
 
-  // 2. Focus on Delivering To section if present in receipt text
-  let searchScope = str;
-  const delivSectionMatch = str.match(/(?:📍\s*Delivering\s*To|Delivering\s*To)[\s\S]*?(?=\n(?:[0-9]️⃣|[0-9]+\.|📦|🧾|🍽|💳|💰|Total\s*Savings|Your\s*Cart|Bill\s*Summary)|$)/i);
+  // 2. Isolate ONLY the address block BEFORE "Select an Available Payment Method" / "Final Bill" / "Bill Summary" / "Items Total"
+  let searchScope = str.split(/\n\s*(?:Select\s+an\s+Available\s+Payment\s+Method|Final\s+Bill|Bill\s+Summary|Items\s+Total\s*:)/i)[0] || str;
+  const delivSectionMatch = searchScope.match(/(?:📍\s*Delivering\s*To|Delivering\s*To)[\s\S]*/i);
   if (delivSectionMatch) {
     searchScope = delivSectionMatch[0];
   }
@@ -1108,16 +1111,23 @@ export function parseAddressDetails(text) {
     }
   }
 
-  const nameMatch = searchScope.match(/(?:👤|recipient|receiver|customer\s*name|name)\s*[:\-]\s*([^\n\r]+)/i) || str.match(/(?:👤|name)\s*[:\-]\s*([^\n\r]+)/i);
+  const nameMatch = searchScope.match(/(?:👤|recipient|receiver|customer\s*name|name)\s*[:\-]?\s*([^\n\r]+)/i);
   if (nameMatch) {
     const candidateName = nameMatch[1].replace(/https?:\/\/\S+/gi, '').trim();
     if (candidateName && candidateName.length <= 50) name = candidateName;
   }
 
-  const cityMatch = searchScope.match(/(?:📍\s*([a-zA-Z\s]+)\s+Address|city\s*[:\-]\s*([^\n\r,]+))/i);
-  if (cityMatch) {
-    city = (cityMatch[1] || cityMatch[2] || '').trim();
-  } else {
+  // Match `<City> Address` header with OR without 📍 emoji (e.g. `Pune Address`, `Lucknow Address`)
+  const cityHeaderMatch = searchScope.match(/(?:^|\n)\s*(?:📍\s*)?([A-Za-z][A-Za-z\s]{1,30}?)\s+Address\s*(?:\n|$)/i)
+    || searchScope.match(/city\s*[:\-]\s*([^\n\r,]+)/i);
+  if (cityHeaderMatch) {
+    const c = (cityHeaderMatch[1] || '').trim();
+    if (!/^(delivering|delivery|your|saved|order|billing)$/i.test(c)) {
+      city = c;
+    }
+  }
+
+  if (!city) {
     const knownCities = [
       'Lucknow', 'Hyderabad', 'Secunderabad', 'Bangalore', 'Bengaluru', 'New Delhi', 'Delhi',
       'Mumbai', 'Navi Mumbai', 'Thane', 'Pune', 'Kolkata', 'Chennai', 'Jaipur', 'Ahmedabad',
@@ -1128,10 +1138,45 @@ export function parseAddressDetails(text) {
       'Amritsar', 'Dehradun', 'Jodhpur', 'Udaipur', 'Gwalior', 'Jabalpur', 'Visakhapatnam', 'Vijayawada'
     ];
     for (const c of knownCities) {
-      if (new RegExp('\\b' + c + '\\b', 'i').test(address || str)) {
+      if (new RegExp('\\b' + c + '\\b', 'i').test(address || searchScope)) {
         city = c;
         break;
       }
+    }
+  }
+
+  // 3. Parse structured multi-line Swiggy World address block:
+  //    Pune Address
+  //    Prathmesh
+  //    9823305540
+  //    Flat no. 412 , 4th floor Parivartan society dandekar pool pune
+  //    Pune, Maharashtra 411030
+  //    Latitude: 18.502975
+  const scopeLines = searchScope
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(l => l && !/^(Delivering\s*To|📍\s*Delivering\s*To|Your\s*Cart)$/i.test(l));
+
+  const headerIdx = scopeLines.findIndex(l => /^(?:📍\s*)?[A-Za-z][A-Za-z\s]{1,30}\s+Address$/i.test(l));
+  const phoneIdx = mobile ? scopeLines.findIndex(l => l.includes(mobile)) : -1;
+  const latIdx = scopeLines.findIndex(l => /^(?:🧭\s*)?Latitude\s*:/i.test(l));
+
+  if (!name && phoneIdx > 0) {
+    const prevLine = scopeLines[phoneIdx - 1];
+    if (prevLine && prevLine.length <= 50 && !/\s+Address$/i.test(prevLine) && !/\d{4,}/.test(prevLine)) {
+      name = prevLine.replace(/^👤\s*/, '').trim();
+    }
+  } else if (!name && headerIdx >= 0 && scopeLines[headerIdx + 1] && !/\d{6,}/.test(scopeLines[headerIdx + 1])) {
+    name = scopeLines[headerIdx + 1].replace(/^👤\s*/, '').trim();
+  }
+
+  if (!address && phoneIdx >= 0 && (latIdx > phoneIdx || scopeLines.length > phoneIdx + 1)) {
+    const endIdx = latIdx > phoneIdx ? latIdx : scopeLines.length;
+    const addrLines = scopeLines
+      .slice(phoneIdx + 1, endIdx)
+      .filter(l => !/^₹|\s*[×x]\s*\d+\s*=\s*₹|Subtotal\s*:|^Order\s*Account\s*:/i.test(l));
+    if (addrLines.length > 0) {
+      address = addrLines.join('\n').replace(/^🏠\s*/, '').trim();
     }
   }
 
@@ -1140,19 +1185,17 @@ export function parseAddressDetails(text) {
     if (addrEmojiMatch) {
       address = addrEmojiMatch[1].replace(/https?:\/\/\S+/gi, '').trim();
     } else {
-      // Clean boilerplate & URLs and check if text genuinely describes a street / house / area address
-      const stripped = str
+      const stripped = searchScope
         .replace(/Hey!\s*Save my address on Swiggy using the link\s*:?\s*/gi, '')
         .replace(/https?:\/\/\S+/gi, '')
         .replace(/^[\s\.,:\-]+|[\s\.,:\-]+$/g, '')
         .trim();
 
       const looksLikeRealAddress =
-        !str.includes('Your Cart') &&
-        !str.includes('Items Total') &&
+        !searchScope.includes('Your Cart') &&
         stripped.length >= 10 &&
         (
-          /\b[1-8]\d{5}\b/.test(stripped) || // 6-digit Indian PIN code
+          /\b[1-8]\d{5}\b/.test(stripped) ||
           Boolean(city) ||
           /\b(house|flat|floor|ground|plot|block|sector|phase|nagar|ganj|colony|road|rd|marg|street|st|lane|gali|apartment|apt|tower|hostel|campus|near|opp|opposite|behind|beside|india|uttar pradesh|telangana|karnataka|maharashtra|delhi|rajasthan|bihar|madhya pradesh|west bengal|gujarat|tamil nadu|chhattisgarh)\b/i.test(stripped)
         );
@@ -1163,9 +1206,9 @@ export function parseAddressDetails(text) {
     }
   }
 
-  // Derive flat_no, area, landmark cleanly from comma-separated address parts
+  // Derive flat_no, area, landmark cleanly from comma/newline-separated address parts
   if (address) {
-    const segs = address.split(',').map(s => s.trim()).filter(Boolean);
+    const segs = address.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
     if (segs.length >= 2) {
       flat_no = segs[0];
       const nonCountry = segs.filter(s => !/^india$/i.test(s) && !/\b\d{6}\b/.test(s) && (!city || s.toLowerCase() !== city.toLowerCase()));
@@ -1182,14 +1225,17 @@ export function parseAddressDetails(text) {
 
 export function parseCartDetails(text) {
   if (!text) return null;
-  const str = String(text).trim();
+  const str = String(text)
+    .replace(/\[([^\]]+)\]\(tel:[^)]+\)/gi, '$1')
+    .replace(/&amp;/gi, '&')
+    .trim();
 
   let restaurantName = null;
   const restMatch = str.match(/🏪\s*([^\n\r]+)/i);
   if (restMatch) restaurantName = restMatch[1].trim();
 
   let orderAccount = null;
-  const accMatch = str.match(/📱\s*Order\s*Account[:\s]*([0-9]{10})/i);
+  const accMatch = str.match(/(?:📱\s*)?Order\s*Account[:\s]*([0-9]{10})/i);
   if (accMatch) orderAccount = accMatch[1].trim();
 
   const items = [];
@@ -1206,12 +1252,11 @@ export function parseCartDetails(text) {
     });
   }
 
-  // Also parse Swiggy World plain text receipt lines: "<Dish Name>\n₹70 × 3 = ₹210"
   if (items.length === 0) {
     const plainReceiptRegex = /([^\n\r₹]+)\r?\n₹([0-9.]+)\s*[×x]\s*([0-9]+)\s*=\s*₹([0-9.]+)/gi;
     while ((m = plainReceiptRegex.exec(str)) !== null) {
       const dish = m[1].trim();
-      if (dish && !/^(Your Cart|Delivering To|Bill Summary)$/i.test(dish)) {
+      if (dish && !/^(Your Cart|Delivering To|Bill Summary|Final Bill)$/i.test(dish)) {
         const qty = parseInt(m[3], 10) || 1;
         items.push({
           name: dish,
@@ -1229,18 +1274,22 @@ export function parseCartDetails(text) {
   }
 
   let itemsTotal = null;
-  const itemsTotMatch = str.match(/Items\s*Total[:\s]*₹([0-9.]+)/i) || str.match(/Subtotal[:\s]*₹([0-9.]+)/i);
+  const itemsTotMatch = str.match(/Items?\s*Total[:\s]*₹([0-9.]+)/i) || str.match(/Subtotal[:\s]*₹([0-9.]+)/i);
   if (itemsTotMatch) itemsTotal = parseFloat(itemsTotMatch[1]);
 
   let couponCode = null, discountAmount = 0;
-  const coupMatch = str.match(/Coupon\s*([A-Z0-9_]+)[:\s]*[-−–]\s*₹([0-9.]+)/i);
-  if (coupMatch) {
-    couponCode = coupMatch[1].trim();
+  const coupMatch = str.match(/Coupon(?:\s+Discount)?\s*\(?([A-Z0-9_]+)\)?[:\s]*[-−–]\s*₹([0-9.]+)/i);
+  if (coupMatch && coupMatch[1].toUpperCase() !== 'NOT') {
+    couponCode = coupMatch[1].trim().toUpperCase();
     discountAmount = parseFloat(coupMatch[2]);
   }
 
+  let swiggyOneMembershipFee = 0;
+  const oneMatch = str.match(/Swiggy\s*One(?:\s*Lite)?\s*Membership[:\s]*\+?₹([0-9.]+)/i);
+  if (oneMatch) swiggyOneMembershipFee = parseFloat(oneMatch[1]);
+
   let freeCashApplied = 0;
-  const fcMatch = str.match(/Free\s*Cash\s*\)?[:\s]*[-−–]\s*₹([0-9.]+)/i);
+  const fcMatch = str.match(/(?:Swiggy\s*Money\s*\/\s*)?Free\s*Cash(?:\s*Applied)?\s*\)?[:\s]*[-−–]\s*₹([0-9.]+)/i);
   if (fcMatch) freeCashApplied = parseFloat(fcMatch[1]);
 
   let packingCharges = 0;
@@ -1248,18 +1297,28 @@ export function parseCartDetails(text) {
   if (packMatch) packingCharges = parseFloat(packMatch[1]);
 
   let gstCharges = 0;
-  const gstMatch = str.match(/GST\s*&\s*Other\s*Charges[:\s]*₹([0-9.]+)/i);
+  const gstMatch = str.match(/GST\s*(?:&|and)\s*(?:Other\s*)?Charges[:\s]*₹([0-9.]+)/i);
   if (gstMatch) gstCharges = parseFloat(gstMatch[1]);
 
+  let deliveryFee = 0;
+  const delFeeNumMatch = str.match(/Delivery\s*Fee[:\s]*₹([0-9.]+)/i);
+  if (delFeeNumMatch) deliveryFee = parseFloat(delFeeNumMatch[1]);
+
+  let deliverySaved = 0;
+  const delSavedMatch = str.match(/Delivery\s*Fee:\s*FREE\s*\(₹([0-9.]+)\s*saved\)/i)
+    || str.match(/Free\s*Delivery:\s*₹0\s*\(₹([0-9.]+)\s*saved\)/i);
+  if (delSavedMatch) deliverySaved = parseFloat(delSavedMatch[1]);
+
   let finalPayable = null;
-  const payMatch = str.match(/Final\s*Payable[:\s]*₹([0-9.]+)/i);
+  const payMatch = str.match(/Final\s*(?:Total|Payable)[:\s]*₹([0-9.]+)/i)
+    || str.match(/To\s*Pay[:\s]*₹([0-9.]+)/i);
   if (payMatch) finalPayable = parseFloat(payMatch[1]);
 
   let totalSavings = 0;
   const savMatch = str.match(/Total\s*Savings[:\s]*₹([0-9.]+)/i);
   if (savMatch) totalSavings = parseFloat(savMatch[1]);
 
-  const freeDelivery = /Delivery\s*Fee:\s*FREE/i.test(str);
+  const freeDelivery = /Delivery\s*Fee:\s*FREE/i.test(str) || /Free\s*Delivery\s*upto/i.test(str) || deliverySaved > 0;
 
   if (items.length > 0 || finalPayable || itemsTotal) {
     const calcSub = itemsTotal || Math.round(items.reduce((s, i) => s + (i.lineTotal || i.price * i.qty), 0) * 100) / 100;
@@ -1271,8 +1330,12 @@ export function parseCartDetails(text) {
       subtotal: calcSub,
       couponCode,
       discountAmount,
+      swiggyOneMembershipFee,
       freeCashApplied,
       freeDelivery,
+      deliverySaved,
+      freeDeliveryDiscount: deliverySaved,
+      deliveryFee,
       packingCharges,
       gstCharges,
       finalPayable,
@@ -1546,25 +1609,28 @@ export function applyMaxOfferToOrder(order) {
   const discount = Number(order.discountAmount || 0);
   const tradeDisc = Number(order.tradeDiscountTotal || 0);
   const freeCash = Number(order.freeCashApplied || 0);
+  const swiggyOneFee = Number(order.swiggyOneMembershipFee || 0);
   const delivery = Number(order.deliveryFee || 0);
   const packing = Number(order.packingCharges || 0);
   const taxes = Number(order.taxesAndCharges || 0);
-  const freeDelSaved = Number(order.freeDeliveryDiscount || 0);
+  const freeDelSaved = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
 
-  order.totalSavings = Math.round((freeDelSaved + discount + tradeDisc + freeCash) * 100) / 100;
+  if (!order.totalSavings || !order.swiggyVerified) {
+    order.totalSavings = Math.round((freeDelSaved + discount + tradeDisc + freeCash) * 100) / 100;
+  }
 
   // If Swiggy checkout returned an authoritative `order_total`, keep it intact unless manually changed
   if (!order.swiggyVerified || !order.finalPayable || Number(order.finalPayable) <= 0) {
     order.finalPayable = Math.max(
       1,
-      Math.round((order.subtotal - discount - tradeDisc - freeCash + delivery + packing + taxes) * 100) / 100
+      Math.round(order.subtotal - discount - tradeDisc - freeCash + swiggyOneFee + delivery + (taxes > 0 ? taxes : packing))
     );
   }
 
   return order;
 }
 
-// Parse a live Swiggy /dapi/cart `data` payload into a normalized, honest cart object
+// Parse a live Swiggy /dapi/cart `data` payload into a normalized, 100% accurate cart object
 function parseDapiCartPayload(data) {
   if (!data || !data.cartMeta) return null;
   const cm = data.cartMeta;
@@ -1620,26 +1686,60 @@ function parseDapiCartPayload(data) {
     };
   }
 
-  const itemTotal = Number(cm.item_total ?? cm.cart_subtotal ?? items.reduce((s, i) => s + i.lineTotal, 0));
-  const deliveryFee = Number(cm.delivery_charges ?? cm.positiveDeliveryChargesExclusive ?? 0);
-  const freeDeliveryDiscount = Number(cm.free_delivery_discount ?? cm.deliveryChargeStrikeOffAmount ?? 0);
-  const swiggyOneApplied = Boolean(
+  // Extract eligible Swiggy One / One Lite plan nudge if Swiggy offers it on this account
+  const renderingList = Array.isArray(cm.rendering_details) ? cm.rendering_details : [];
+  const superNudge = renderingList.find(r => r.key === 'super_v3_nudge')?.meta || null;
+  const planRaw = superNudge?.plan_details || null;
+  const eligibleSuperPlan = planRaw?.plan_id
+    ? {
+        planId: String(planRaw.plan_id),
+        name: planRaw.name || 'Swiggy One Lite Membership',
+        priceRupees: Math.round((Number(planRaw.final_price ?? planRaw.base_price ?? 100) / 100) * 100) / 100
+      }
+    : null;
+
+  const subItems = Array.isArray(data.subscriptionItems) ? data.subscriptionItems : [];
+  const swiggyOneMembershipFee = Number(
+    cm.subscription_total ||
+    (subItems.length > 0 ? Number(subItems[0]?.final_price ?? subItems[0]?.base_price ?? 100) / 100 : 0) ||
+    0
+  );
+
+  const itemTotal = Number(cm.item_total ?? cm.cart_subtotal_without_packing ?? cm.cart_subtotal ?? items.reduce((s, i) => s + i.lineTotal, 0));
+  const deliveryFee = Number(cm.positiveDeliveryChargesExclusive ?? cm.delivery_charges ?? 0);
+
+  // Delivery is genuinely FREE only when effective delivery charge is 0!
+  // Never mistake promotional `deliveryChargeStrikeOffAmount` on a paid-delivery cart for FREE delivery!
+  const swiggyOneApplied = deliveryFee <= 0 && Boolean(
+    swiggyOneMembershipFee > 0 ||
     cm.swiggyOneBenefitsApplicable ||
+    cm.oneLiteBenefitsApplicable ||
     cm.fullCouponLessFreeDeliveryApplied ||
     cm.is_swiggy_one_free_delivery_applicable ||
-    freeDeliveryDiscount > 0
+    cm.free_shipping ||
+    Number(cm.free_delivery_discount) > 0 ||
+    Number(cm.delivery_fee_reversal) > 0
   );
-  const couponCode = (cm.is_coupon_valid === 1 || cm.coupon_discount_total > 0) ? (cm.coupon_code || null) : (cm.coupon_code || null);
-  const couponDiscount = Number(cm.coupon_discount_total ?? cm.coupon_discount_effective ?? 0);
+  const rawFreeDelSaved = deliveryFee <= 0
+    ? Number(cm.free_delivery_discount || cm.delivery_fee_reversal || cm.deliveryChargeStrikeOffAmount || cm.strike_off_amount_without_tax || 0)
+    : 0;
+  const freeDeliveryDiscount = Math.round(rawFreeDelSaved * 100) / 100;
+
+  // Coupon is valid ONLY when Swiggy confirms `is_coupon_valid === 1` OR `coupon_discount_total > 0`
+  const isCouponValid = Boolean(cm.is_coupon_valid === 1 || Number(cm.coupon_discount_total) > 0);
+  const couponCode = isCouponValid && cm.coupon_code ? String(cm.coupon_code).trim().toUpperCase() : null;
+  const couponDiscount = isCouponValid ? Number(cm.coupon_discount_total ?? cm.coupon_discount_effective ?? 0) : 0;
+
   const tradeDiscountTotal = Number(cm.trade_discount_total ?? items.reduce((s, i) => s + (i.tradeDiscount || 0), 0));
-  const packingCharges = Number(cm.total_packing_charges ?? cm.restaurant_packing_charges ?? cm.packaging_fee ?? 0);
-  const baseTax = Number(cm.total_tax ?? cm.taxesAndCharges ?? 0);
-  const platformFee = Number(cm.convenience_fees_with_tax ?? cm.convenience_fee ?? cm.platform_fee ?? 0);
-  const taxesAndCharges = baseTax + platformFee;
+  const packingCharges = Number(cm.total_packing_charges ?? cm.basePackagingCharges ?? cm.restaurant_packing_charges ?? cm.packaging_fee ?? 0);
+  const taxesAndCharges = cm.taxesAndCharges !== undefined
+    ? Number(cm.taxesAndCharges)
+    : (Number(cm.total_tax || 0) + Number(cm.convenience_fees ?? cm.convenience_fee ?? cm.platform_fee ?? 0) + packingCharges);
+
   const freeCashBalance = Number(cm.user_swiggy_money ?? 0);
   const freeCashApplied = Number(cm.swiggy_money ?? 0);
   const orderTotal = Number(cm.order_total ?? 0);
-  const totalSavings = Math.round((Number(cm.discount_total || (couponDiscount + tradeDiscountTotal)) + freeDeliveryDiscount + freeCashApplied) * 100) / 100;
+  const totalSavings = Math.round((couponDiscount + tradeDiscountTotal + freeDeliveryDiscount + freeCashApplied) * 100) / 100;
 
   return {
     restaurantId,
@@ -1660,20 +1760,22 @@ function parseDapiCartPayload(data) {
       lng: String(a.lng || ''),
       annotation: a.annotation || ''
     })),
+    eligibleSuperPlan,
+    swiggyOneMembershipFee: Math.round(swiggyOneMembershipFee * 100) / 100,
     itemTotal: Math.round(itemTotal * 100) / 100,
     subtotal: Math.round(itemTotal * 100) / 100,
     tradeDiscountTotal: Math.round(tradeDiscountTotal * 100) / 100,
     deliveryFee: Math.round(deliveryFee * 100) / 100,
-    freeDeliveryDiscount: Math.round(freeDeliveryDiscount * 100) / 100,
+    freeDeliveryDiscount,
     swiggyOneApplied,
-    swiggyOneSavings: Math.round(freeDeliveryDiscount * 100) / 100,
+    swiggyOneSavings: freeDeliveryDiscount,
     couponCode,
     discountAmount: Math.round(couponDiscount * 100) / 100,
     freeCashBalance: Math.round(freeCashBalance * 100) / 100,
     freeCashApplied: Math.round(freeCashApplied * 100) / 100,
     packingCharges: Math.round(packingCharges * 100) / 100,
     taxesAndCharges: Math.round(taxesAndCharges * 100) / 100,
-    finalPayable: Math.round(orderTotal > 0 ? orderTotal : Math.max(0, itemTotal - couponDiscount - tradeDiscountTotal + deliveryFee + packingCharges + taxesAndCharges)),
+    finalPayable: Math.round(orderTotal > 0 ? orderTotal : Math.max(0, itemTotal - couponDiscount - tradeDiscountTotal + swiggyOneMembershipFee + deliveryFee + taxesAndCharges)),
     totalSavings
   };
 }
@@ -2121,7 +2223,7 @@ export async function fetchAccountOrders(cookiesOrAcc) {
   }
 }
 
-// Format clean, accurate Swiggy cart receipt (100% genuine values, zero fake charges!)
+// Format clean, exact Swiggy World receipt + Final Bill (matches user's exact format 100%)
 export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
   const lines = [];
 
@@ -2130,24 +2232,34 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
     lines.push(`Order Account: ${accStr}\n`);
   }
 
-  lines.push(`Your Cart`);
-  lines.push(`${order.restaurantName || 'Swiggy Food Order'}\n`);
+  if (order.restaurantName) {
+    lines.push(`Your Cart`);
+    lines.push(`${order.restaurantName}\n`);
+  }
 
-  lines.push(`Delivering To`);
-  const addr = order.addressDetails;
-  if (addr && (addr.address || addr.lat)) {
-    const city = addr.city ? `${addr.city} Address` : 'Delivery Address';
-    lines.push(city);
+  const addr = order.addressDetails || parseAddressDetails(order.address);
+  if (addr && (addr.address || addr.lat || addr.name || addr.mobile)) {
+    const cityLabel = addr.city ? `${addr.city} Address` : 'Delivery Address';
+    lines.push(cityLabel);
     if (addr.name) lines.push(addr.name);
     if (addr.mobile) lines.push(addr.mobile);
-    if (addr.flat_no && !addr.address?.startsWith(addr.flat_no)) lines.push(addr.flat_no);
-    if (addr.address) lines.push(addr.address);
+    if (addr.flat_no && addr.address && !addr.address.startsWith(addr.flat_no)) {
+      lines.push(addr.flat_no);
+    }
+    if (addr.address) {
+      for (const aLine of String(addr.address).split(/\r?\n/).map(s => s.trim()).filter(Boolean)) {
+        lines.push(aLine);
+      }
+    }
     if (addr.lat) lines.push(`Latitude: ${addr.lat}`);
     if (addr.lng) lines.push(`Longitude: ${addr.lng}`);
+    lines.push(`Select an Available Payment Method`);
   } else if (order.address && order.address !== 'Address pending / not provided' && !order.address.includes('onelink.me/JgkQ')) {
     lines.push(`Delivery Address`);
     lines.push(order.address);
+    lines.push(`Select an Available Payment Method`);
   } else {
+    lines.push(`Delivering To`);
     lines.push(`Address pending / share full address or map pin`);
   }
   lines.push('');
@@ -2167,10 +2279,10 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
   }
 
   const hasItems = order.items && order.items.length > 0;
-  const hasPayable = Boolean(order.finalPayable && Number(order.finalPayable) > 0);
+  const hasPayable = Boolean((order.finalPayable && Number(order.finalPayable) > 0) || (order.subtotal && Number(order.subtotal) > 0));
 
   if (hasItems || hasPayable) {
-    lines.push(`Bill Summary`);
+    lines.push(`Final Bill`);
     const sub = order.itemTotal || order.subtotal || 0;
     lines.push(`Items Total: ₹${sub > 0 ? sub : (order.finalPayable || 0)}`);
 
@@ -2178,20 +2290,29 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
       lines.push(`Restaurant Offer Discount: −₹${order.tradeDiscountTotal}`);
     }
 
-    if (order.couponCode) {
-      lines.push(`Coupon ${order.couponCode}: −₹${order.discountAmount || 0}`);
-    } else {
-      lines.push(`Coupon: Not Applied`);
+    if (order.couponCode && Number(order.discountAmount || 0) > 0) {
+      lines.push(`Coupon ${order.couponCode}: −₹${order.discountAmount}`);
+    } else if (order.couponCode) {
+      lines.push(`Coupon ${order.couponCode}: −₹0`);
+    }
+
+    const oneFee = Number(order.swiggyOneMembershipFee || 0);
+    if (oneFee > 0) {
+      lines.push(`Swiggy One Lite Membership: +₹${oneFee}`);
     }
 
     if (order.freeCashApplied > 0) {
       lines.push(`Swiggy Money / Free Cash: −₹${order.freeCashApplied}`);
     }
 
-    if (order.freeDeliveryDiscount > 0 || (order.swiggyOneApplied && !order.deliveryFee)) {
-      const savedTxt = order.freeDeliveryDiscount > 0 ? ` (₹${order.freeDeliveryDiscount} saved)` : '';
+    const freeDelSaved = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
+    const isFreeDel = (Number(order.deliveryFee || 0) <= 0) && (freeDelSaved > 0 || order.swiggyOneApplied || oneFee > 0 || order.freeDelivery);
+
+    if (isFreeDel) {
+      lines.push(`Free Delivery upto 7km`);
+      const savedTxt = freeDelSaved > 0 ? ` (₹${freeDelSaved} saved)` : '';
       lines.push(`Delivery Fee: FREE${savedTxt}`);
-    } else if (order.deliveryFee > 0) {
+    } else if (Number(order.deliveryFee || 0) > 0) {
       lines.push(`Delivery Fee: ₹${order.deliveryFee}`);
     } else {
       lines.push(`Delivery Fee: FREE`);
@@ -2205,8 +2326,13 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
     if (gst > 0) {
       lines.push(`GST & Other Charges: ₹${gst}`);
     }
+
+    lines.push(`━━━━━━━━━━━━━━`);
+    if (Number(order.totalSavings || 0) > 0) {
+      lines.push(`Total Savings: ₹${order.totalSavings}`);
+    }
     if (order.finalPayable && Number(order.finalPayable) > 0) {
-      lines.push(`\nFinal Payable: ₹${order.finalPayable}`);
+      lines.push(`Final Total: ₹${order.finalPayable}`);
     }
   } else {
     lines.push(`🛒 <b>Cart Status:</b> <i>Waiting for Swiggy items / cart verification...</i>`);
@@ -2233,20 +2359,12 @@ export async function captureSwiggyPaymentScreenshot(cookies) {
       ]
     });
     const page = await browser.newPage();
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      window.chrome = { runtime: {} };
+    });
     await page.setViewport({ width: 1280, height: 900 });
     await page.setUserAgent(DESKTOP_UA);
-
-    await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 22000 }).catch(() => {});
-    for (let i = 0; i < 16; i++) {
-      const pageCookies = await page.cookies();
-      const waf = pageCookies.find(c => c.name === 'aws-waf-token');
-      if (waf && waf.value.length > 50) {
-        cachedWafToken = waf.value;
-        cachedWafAt = Date.now();
-        break;
-      }
-      await new Promise(r => setTimeout(r, 450));
-    }
 
     const cleanStr = cleanSwiggyCookieString(cookies);
     const parsedCookies = cleanStr.split(';').map(s => s.trim()).filter(Boolean).map(p => {
@@ -2258,8 +2376,20 @@ export async function captureSwiggyPaymentScreenshot(cookies) {
       await page.setCookie(...parsedCookies).catch(() => {});
     }
 
+    await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 22000 }).catch(() => {});
+    for (let i = 0; i < 18; i++) {
+      const pageCookies = await page.cookies();
+      const waf = pageCookies.find(c => c.name === 'aws-waf-token');
+      if (waf && waf.value.length > 50) {
+        cachedWafToken = waf.value;
+        cachedWafAt = Date.now();
+        break;
+      }
+      await new Promise(r => setTimeout(r, 400));
+    }
+
     await page.goto('https://www.swiggy.com/checkout', { waitUntil: 'domcontentloaded', timeout: 22000 }).catch(() => {});
-    await new Promise(r => setTimeout(r, 2500));
+    await new Promise(r => setTimeout(r, 3000));
 
     const stateInfo = await page.evaluate(() => {
       const text = document.body.innerText || '';
@@ -2587,12 +2717,16 @@ export async function applyLiveCouponToOrder(account, order, couponCode) {
 }
 
 // ---------------------------------------------------------------------------
-// SYNC GROUP CART, DELIVERY ADDRESS & BEST GENUINE COUPON INTO SELECTED ACCOUNT
+// SYNC GROUP CART, DELIVERY ADDRESS, SWIGGY ONE LITE (+₹1) & MAX COUPON ENGINE
 // Fast API pipeline (<3s without screenshot, +checkout capture when needed):
-//   1. Resolves live Group Cart via `chkout.swiggy.com/api/v1/shared_cart`
-//   2. Matches or saves customer's delivery address via `POST /dapi/address`
-//   3. Syncs exact `menu_item_id`, `quantity`, `addons`, `variants` & `address_id` via `POST /dapi/cart`
-//   4. Discovers & tests REAL Swiggy coupons via `POST /dapi/cart/applyCoupon`, keeping lowest `order_total`
+//   1. Pre-claims Breakfast & Late Night ₹50 OFF event campaigns on the account
+//   2. Resolves live Group Cart via `chkout.swiggy.com/api/v1/shared_cart`
+//   3. Matches or saves customer's delivery address via `POST /dapi/address`
+//   4. Syncs exact `menu_item_id`, `quantity`, `addons`, `variants` & `address_id` via `POST /dapi/cart`
+//   5. Auto-adds eligible `+₹1` Swiggy One / One Lite Membership if it lowers `order_total` (FREE delivery!)
+//   6. Discovers ALL real account/restaurant/payment/campaign coupons (`offers/payment`, `offers/restaurant`,
+//      `menu/pl`, `DELULU4FOOD`, `STEALDEAL`, `MEALDEAL`, `FLAT150`, `TRYNEW`, etc.) and tests them on live cart,
+//      strictly keeping whichever achieves MAXIMUM SAVINGS & MINIMUM `Final Total` (`order_total`)!
 // ---------------------------------------------------------------------------
 export async function syncGroupCartAndCheckoutForAccount(account, order, options = {}) {
   const { captureScreenshot = true } = options;
@@ -2615,8 +2749,11 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       };
     }
 
-    // Best-effort auto-claim of morning/late-night event offers in background
-    claimSwiggyBreakfastAndLateNightOffers(account).catch(() => {});
+    // Unlock Breakfast / Late Night ₹50 OFF campaigns BEFORE evaluating coupons (capped at 2s)
+    await Promise.race([
+      claimSwiggyBreakfastAndLateNightOffers(account).catch(() => null),
+      new Promise(r => setTimeout(r, 2000))
+    ]);
 
     // Step 2: Resolve Cart & Address links cleanly (without ever overwriting valid address details!)
     let cartMeta = null;
@@ -2756,70 +2893,150 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       });
       if (syncJson?.data?.cartMeta) {
         liveCart = parseDapiCartPayload(syncJson.data);
+      } else {
+        liveCart = null;
       }
     }
 
-    // Step 4: Discover real available coupons & test best genuine coupon on Swiggy (`POST /dapi/cart/applyCoupon`)
+    // Step 4: Auto-apply eligible Swiggy One / One Lite Plan (`+₹1` -> `FREE Delivery`) ONLY when it strictly lowers `finalPayable`!
+    if (liveCart && liveCart.items?.length > 0 && liveCart.eligibleSuperPlan && liveCart.deliveryFee > liveCart.eligibleSuperPlan.priceRupees) {
+      try {
+        const planId = String(liveCart.eligibleSuperPlan.planId);
+        const { json: subJson } = await dapiFetch(account, 'cart/addSubscriptionToCart', {
+          method: 'POST',
+          lat,
+          lng,
+          body: { subscriptionItems: [{ plan_id: planId, quantity: 1 }] }
+        });
+        if (subJson?.statusCode === 0 && subJson?.data?.cartMeta) {
+          const withPlan = parseDapiCartPayload(subJson.data);
+          if (withPlan && withPlan.items?.length > 0 && withPlan.finalPayable < liveCart.finalPayable) {
+            liveCart = withPlan;
+          }
+        }
+      } catch (e) {}
+    }
+
+    // Step 5: Complete Multi-Source Max-Coupon Engine!
     const availableCoupons = [];
     const pushCoupon = (code, title = '', description = '') => {
       const c = String(code || '').trim().toUpperCase();
-      if (!c || availableCoupons.some(x => x.code === c)) return;
+      if (!c || c === 'NOT' || c === 'NONE' || c === 'NOFOMO' || availableCoupons.some(x => x.code === c)) return;
       availableCoupons.push({ code: c, title: title || c, description: description || 'Swiggy Offer' });
     };
 
+    if (order.couponCode) pushCoupon(order.couponCode, order.couponCode, 'Order Coupon');
     if (liveCart?.couponCode) pushCoupon(liveCart.couponCode, liveCart.couponCode, 'Currently Applied');
 
     try {
-      const [offersResp, menuResp] = await Promise.all([
+      const cartVal = Math.round(liveCart?.finalPayable || liveCart?.subtotal || order.subtotal || 250);
+      const [offersPayResp, offersRestResp, menuResp] = await Promise.all([
         restaurantId
-          ? dapiFetch(account, `offers/payment?lat=${lat}&lng=${lng}&restaurantId=${restaurantId}&cartTotal=${liveCart?.subtotal || 200}`, { lat, lng, timeoutMs: 7000 })
+          ? dapiFetch(
+              account,
+              `offers/payment?lat=${lat}&lng=${lng}&restaurantId=${restaurantId}&cart_value=${cartVal}&restaurant_id=${restaurantId}&sourcePage=cart&source_page=cart`,
+              { lat, lng, timeoutMs: 7000 }
+            )
+          : Promise.resolve({ json: null }),
+        restaurantId
+          ? dapiFetch(account, `offers/restaurant?lat=${lat}&lng=${lng}&restaurantId=${restaurantId}`, { lat, lng, timeoutMs: 6000 })
           : Promise.resolve({ json: null }),
         restaurantId
           ? dapiFetch(account, `menu/pl?page-type=REGULAR_MENU&complete-menu=false&lat=${lat}&lng=${lng}&restaurantId=${restaurantId}`, { lat, lng, timeoutMs: 7000 })
           : Promise.resolve({ json: null })
       ]);
 
-      for (const blob of [offersResp?.json, menuResp?.json]) {
+      for (const blob of [offersPayResp?.json, offersRestResp?.json, menuResp?.json]) {
         if (!blob) continue;
         const rawStr = JSON.stringify(blob);
         for (const m of rawStr.matchAll(/"couponCode"\s*:\s*"([A-Z0-9_]{3,25})"/gi)) {
-          pushCoupon(m[1], m[1], 'Restaurant / Payment Offer');
+          pushCoupon(m[1], m[1], 'Swiggy Live Offer');
         }
       }
     } catch (e) {}
 
-    for (const std of ['TRYNEW', 'WELCOME50', 'SWIGGYIT', 'PARTY', 'STEALDEAL', 'JUMBO']) {
-      pushCoupon(std, std, 'Swiggy Promo');
+    const CAMPAIGN_CODES = [
+      'DELULU4FOOD',
+      'FLAT150',
+      'FLAT140',
+      'STEALDEAL',
+      'MEALDEAL',
+      'FLAT125',
+      'TRYNEW',
+      'WELCOMEBACK',
+      'WELCOME50',
+      'FLAT100',
+      'BINGE',
+      'PARTY',
+      'JUMBO',
+      'SWIGGYIT',
+      'SWIGGY50',
+      'FLAT75',
+      'FLAT50'
+    ];
+    for (const std of CAMPAIGN_CODES) {
+      pushCoupon(std, std, 'Swiggy Max Promo');
     }
 
-    // Test candidate coupons directly on Swiggy cart if cart has items, keeping whichever achieves lowest real `finalPayable`!
-    if (liveCart && liveCart.items?.length > 0) {
+    const isStrictlyBetterCart = (candidate, incumbent) => {
+      if (!candidate || !candidate.items?.length) return false;
+      if (!incumbent || !incumbent.items?.length) return true;
+      if (candidate.finalPayable > 0 && incumbent.finalPayable > 0 && candidate.finalPayable !== incumbent.finalPayable) {
+        return candidate.finalPayable < incumbent.finalPayable;
+      }
+      if ((candidate.discountAmount || 0) !== (incumbent.discountAmount || 0)) {
+        return (candidate.discountAmount || 0) > (incumbent.discountAmount || 0);
+      }
+      return (candidate.totalSavings || 0) > (incumbent.totalSavings || 0);
+    };
+
+    if (liveCart && liveCart.items?.length > 0 && (!restaurantId || String(liveCart.restaurantId) === String(restaurantId))) {
       let bestCartState = liveCart;
       let bestCode = liveCart.couponCode || '';
+      const validVerifiedCoupons = [];
 
-      for (const cand of availableCoupons.slice(0, 7)) {
-        if (cand.code === bestCode && bestCartState.discountAmount > 0) continue;
+      for (const cand of availableCoupons.slice(0, 18)) {
+        if (cand.code === bestCode && bestCartState.discountAmount > 0) {
+          validVerifiedCoupons.push({ ...cand, discountAmount: bestCartState.discountAmount, finalPayable: bestCartState.finalPayable });
+          continue;
+        }
         const tested = await applyLiveCouponToOrder(account, order, cand.code);
         if (tested && tested.items?.length > 0) {
-          if (tested.discountAmount > bestCartState.discountAmount || (tested.finalPayable > 0 && tested.finalPayable < bestCartState.finalPayable)) {
+          if (tested.couponCode === cand.code && tested.discountAmount > 0) {
+            validVerifiedCoupons.push({
+              ...cand,
+              title: `${cand.code} (−₹${tested.discountAmount})`,
+              discountAmount: tested.discountAmount,
+              finalPayable: tested.finalPayable
+            });
+          }
+          if (isStrictlyBetterCart(tested, bestCartState)) {
             bestCartState = tested;
             bestCode = tested.couponCode || cand.code;
           }
         }
       }
 
-      // Restore winning coupon so live Swiggy cart holds the exact optimal price ready for checkout!
+      validVerifiedCoupons.sort((a, b) => (b.discountAmount || 0) - (a.discountAmount || 0));
+      if (validVerifiedCoupons.length > 0) {
+        const validSet = new Set(validVerifiedCoupons.map(v => v.code));
+        const remainder = availableCoupons.filter(c => !validSet.has(c.code));
+        availableCoupons.length = 0;
+        availableCoupons.push(...validVerifiedCoupons, ...remainder);
+      }
+
       if (bestCode) {
         const finalApplied = await applyLiveCouponToOrder(account, order, bestCode);
         if (finalApplied && finalApplied.items?.length > 0) bestCartState = finalApplied;
-      } else if (liveCart.couponCode === '') {
-        await applyLiveCouponToOrder(account, order, 'REMOVE').catch(() => {});
+      } else {
+        const cleaned = await applyLiveCouponToOrder(account, order, 'REMOVE').catch(() => null);
+        if (cleaned && cleaned.items?.length > 0) bestCartState = cleaned;
       }
 
       liveCart = bestCartState;
     }
 
-    // Step 5: Populate `order` cleanly with 100% genuine Swiggy numbers
+    // Step 6: Populate `order` cleanly with 100% genuine Swiggy numbers
     if (liveCart && liveCart.items?.length > 0 && (!restaurantId || String(liveCart.restaurantId) === String(restaurantId))) {
       order.items = liveCart.items;
       if (liveCart.restaurantName) order.restaurantName = liveCart.restaurantName;
@@ -2827,6 +3044,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       order.itemTotal = liveCart.itemTotal;
       order.subtotal = liveCart.subtotal;
       order.tradeDiscountTotal = liveCart.tradeDiscountTotal || 0;
+      order.swiggyOneMembershipFee = liveCart.swiggyOneMembershipFee || 0;
       order.deliveryFee = liveCart.deliveryFee;
       order.freeDeliveryDiscount = liveCart.freeDeliveryDiscount;
       order.swiggyOneApplied = liveCart.swiggyOneApplied;
@@ -2852,6 +3070,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       itemTotal: order.itemTotal || order.subtotal || 0,
       subtotal: order.subtotal || 0,
       tradeDiscountTotal: order.tradeDiscountTotal || 0,
+      swiggyOneMembershipFee: order.swiggyOneMembershipFee || 0,
       finalTotal: order.finalPayable || order.subtotal || 0,
       finalPayable: order.finalPayable || order.subtotal || 0,
       couponCode: order.couponCode || null,
@@ -2887,4 +3106,112 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     console.error('[syncGroupCartAndCheckoutForAccount] Error:', err.message);
     return { success: false, error: err.message };
   }
+}
+
+// ---------------------------------------------------------------------------
+// MULTI-ACCOUNT MAX COUPON FINDER (`🏆 Auto Best Account + Max Coupon`)
+// Tests ALL logged-in Swiggy accounts safely and locks in the #1 lowest `Final Total`!
+// ---------------------------------------------------------------------------
+export async function findBestMaxCouponAccountForOrder(order, options = {}) {
+  const { captureScreenshot = true } = options;
+  const db = getDb();
+  const accounts = db?.config?.accounts || {};
+  const liveEntries = Object.entries(accounts).filter(([, a]) => a.isLoggedIn && (a.cookies || a.tid));
+
+  if (liveEntries.length === 0) {
+    return { success: false, error: 'No logged-in Swiggy accounts available.' };
+  }
+
+  let bestResult = null;
+  let bestKey = null;
+  let bestOrderSnapshot = null;
+  const accountComparison = [];
+
+  for (const [key, acc] of liveEntries) {
+    const preCart = await inspectCartForAccount(acc).catch(() => null);
+    const hadPreExistingCart = Boolean(preCart?.items?.length > 0 && preCart?.restaurantId);
+
+    const probeOrder = JSON.parse(JSON.stringify(order));
+    const res = await syncGroupCartAndCheckoutForAccount(acc, probeOrder, { captureScreenshot: false });
+
+    const restoreOrFlushAccount = async (targetAcc, savedPreCart, fallbackRestId) => {
+      if (savedPreCart?.items?.length > 0 && savedPreCart?.restaurantId) {
+        await dapiFetch(targetAcc, 'cart', {
+          method: 'POST',
+          lat: savedPreCart.addressDetails?.lat || '26.8658609',
+          lng: savedPreCart.addressDetails?.lng || '80.9307755',
+          body: {
+            flushFirst: true,
+            cart: {
+              restaurantId: String(savedPreCart.restaurantId),
+              address_id: String(savedPreCart.addressDetails?.id || ''),
+              couponCode: String(savedPreCart.couponCode || ''),
+              cartItems: savedPreCart.items.map(it => ({
+                addons: Array.isArray(it.addons) ? it.addons : [],
+                variants: Array.isArray(it.variants) ? it.variants : [],
+                menu_item_id: Number(it.menu_item_id || it.itemId),
+                quantity: Number(it.qty || it.quantity || 1)
+              })),
+              mealItems: [],
+              subscriptionItems: []
+            }
+          }
+        }).catch(() => {});
+      } else if (fallbackRestId) {
+        await dapiFetch(targetAcc, 'cart', {
+          method: 'POST',
+          body: { flushFirst: true, cart: { restaurantId: String(fallbackRestId), address_id: '', couponCode: '', cartItems: [], mealItems: [], subscriptionItems: [] } }
+        }).catch(() => {});
+      }
+    };
+
+    if (res?.success) {
+      accountComparison.push({
+        key,
+        phone: acc.phone || key,
+        name: acc.name || key,
+        couponCode: probeOrder.couponCode || null,
+        discountAmount: probeOrder.discountAmount || 0,
+        totalSavings: probeOrder.totalSavings || 0,
+        finalPayable: probeOrder.finalPayable || 0
+      });
+
+      const isBetter =
+        !bestOrderSnapshot ||
+        (probeOrder.finalPayable > 0 && bestOrderSnapshot.finalPayable > 0 && probeOrder.finalPayable < bestOrderSnapshot.finalPayable) ||
+        (probeOrder.finalPayable === bestOrderSnapshot.finalPayable && (probeOrder.totalSavings || 0) > (bestOrderSnapshot.totalSavings || 0));
+
+      if (isBetter) {
+        if (bestKey && bestKey !== key && bestResult) {
+          await restoreOrFlushAccount(accounts[bestKey], bestResult._preCart, bestOrderSnapshot?.restaurantId);
+        }
+        bestKey = key;
+        bestResult = { ...res, _preCart: hadPreExistingCart ? preCart : null };
+        bestOrderSnapshot = probeOrder;
+      } else {
+        await restoreOrFlushAccount(acc, hadPreExistingCart ? preCart : null, probeOrder.restaurantId);
+      }
+    }
+  }
+
+  if (!bestKey || !bestOrderSnapshot || !bestResult) {
+    return { success: false, error: 'Could not sync cart on any active account.', accountComparison };
+  }
+
+  Object.assign(order, bestOrderSnapshot);
+  order.selectedAccount = bestKey;
+  order.orderAccount = accounts[bestKey]?.phone || bestKey;
+
+  let qrBuffer = null;
+  if (captureScreenshot && accounts[bestKey]) {
+    qrBuffer = await captureSwiggyPaymentScreenshot(accounts[bestKey].cookies).catch(() => null);
+  }
+
+  return {
+    ...bestResult,
+    qrBuffer,
+    winningKey: bestKey,
+    winningAccount: accounts[bestKey],
+    accountComparison
+  };
 }

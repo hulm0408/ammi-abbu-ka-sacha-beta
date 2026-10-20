@@ -46,6 +46,7 @@ import {
   parseAddressDetails,
   parseCartDetails,
   syncGroupCartAndCheckoutForAccount,
+  findBestMaxCouponAccountForOrder,
   applyMaxOfferToOrder,
   generatePersonalizedQrCard,
   reverseGeocodeCoords,
@@ -249,30 +250,52 @@ function getBossReplyKeyboard() {
   ]).resize().persistent(false);
 }
 
-// Render the exact itemized receipt and bill summary matching the user's template
-// Render clean itemized receipt and bill summary without fake numbers or coordinate dumps
+// Render the exact Swiggy World address block + itemized list + Final Bill matching Boss's exact layout
 export function formatUserOrderCardText(order, isBossView = false) {
   const db = getDb();
   const selectedAcc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
   const accPhone = order.orderAccount || selectedAcc?.phone || selectedAcc?.mobile || null;
-  const restName = order.restaurantName || order.restaurant || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : 'Swiggy Food Order');
+  const restName = order.restaurantName || order.restaurant || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : '');
 
-  // Address section (clean, without internal GPS numbers)
-  let ad = order.addressDetails || parseAddressDetails(order.address);
-  let addrSection = '📍 <b>Delivering To:</b>\n';
-  if (ad && (ad.name || ad.mobile || ad.address || ad.city)) {
-    if (ad.name) addrSection += `👤 ${escapeHtml(ad.name)}\n`;
-    if (ad.mobile) addrSection += `📱 ${escapeHtml(ad.mobile)}\n`;
-    if (ad.address) addrSection += `🏠 ${escapeHtml(ad.address)}\n`;
-    else if (ad.city) addrSection += `🏠 ${escapeHtml(ad.city)} Address\n`;
+  // Exact Swiggy World Address Block:
+  // Pune Address
+  // Prathmesh
+  // <a href="tel:9823305540">9823305540</a>
+  // Flat no. 412 , 4th floor Parivartan society dandekar pool pune
+  // Pune, Maharashtra 411030
+  // Latitude: 18.502975
+  // Longitude: 73.846375
+  // Select an Available Payment Method
+  const ad = order.addressDetails || parseAddressDetails(order.address);
+  let addrSection = '';
+  if (ad && (ad.name || ad.mobile || ad.address || ad.city || ad.lat)) {
+    const cityHeader = ad.city ? `${escapeHtml(ad.city)} Address` : 'Delivery Address';
+    addrSection += `<b>${cityHeader}</b>\n`;
+    if (ad.name) addrSection += `${escapeHtml(ad.name)}\n`;
+    if (ad.mobile) {
+      const cleanTel = String(ad.mobile).replace(/\D/g, '').slice(-10) || ad.mobile;
+      addrSection += `<a href="tel:${escapeHtml(cleanTel)}">${escapeHtml(ad.mobile)}</a>\n`;
+    }
+    if (ad.flat_no && ad.address && !String(ad.address).startsWith(ad.flat_no)) {
+      addrSection += `${escapeHtml(ad.flat_no)}\n`;
+    }
+    if (ad.address) {
+      const addrLines = String(ad.address).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      for (const ln of addrLines) {
+        addrSection += `${escapeHtml(ln)}\n`;
+      }
+    }
+    if (ad.lat) addrSection += `Latitude: ${escapeHtml(String(ad.lat))}\n`;
+    if (ad.lng) addrSection += `Longitude: ${escapeHtml(String(ad.lng))}\n`;
+    addrSection += `Select an Available Payment Method\n`;
   } else if (order.address) {
-    addrSection += `🔗 Address Link Attached ✅\n`;
+    addrSection += `<b>Delivery Address</b>\n${escapeHtml(order.address)}\nSelect an Available Payment Method\n`;
   } else {
-    addrSection += `<i>Address pending / not provided</i>\n`;
+    addrSection += `<b>Delivery Address</b>\n<i>Address pending / not provided</i>\n`;
   }
 
-  // Items section - Real items
-  let itemsSection = '';
+  // Real items section (shown when items exist)
+  let itemsSection = '\n';
   if (order.items && Array.isArray(order.items) && order.items.length > 0) {
     const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
     itemsSection = '\n' + order.items.map((it, idx) => {
@@ -281,39 +304,54 @@ export function formatUserOrderCardText(order, isBossView = false) {
       const lineTotal = it.lineTotal || Math.round((price * it.qty) * 100) / 100;
       return `${emoji} ${escapeHtml(it.name)}\n💵 ₹${price} × ${it.qty} = ₹${lineTotal}`;
     }).join('\n\n') + '\n\n';
-
-    const totalQty = order.items.reduce((s, it) => s + (it.qty || 1), 0);
-    const subtotal = order.subtotal || Math.round(order.items.reduce((s, it) => s + (it.lineTotal || (it.price * it.qty)), 0) * 100) / 100;
-    itemsSection += `📦 ${totalQty} Items • Subtotal: ₹${subtotal}\n\n`;
-  } else {
-    itemsSection = `\n🛒 <b>Swiggy Cart:</b> ${order.cart ? 'Link Attached ✅' : 'Pending'}\n\n`;
   }
 
-  // Bill Summary section
+  // Exact `Final Bill` section matching user's exact specification:
+  // Final Bill
+  // Items Total: ₹234
+  // Coupon DELULU4FOOD: −₹140
+  // Swiggy One Lite Membership: +₹1
+  // Free Delivery upto 7km
+  // Delivery Fee: FREE (₹39 saved)
+  // Packing Charges: ₹20
+  // GST & Other Charges: ₹43.68
+  // ━━━━━━━━━━━━━━
+  // Total Savings: ₹179
+  // Final Total: ₹139
   let billSection = '';
   if (order.finalPayable || order.subtotal) {
-    billSection = `🧾 <b>Bill Summary:</b>\n`;
-    if (order.subtotal) billSection += `🍽 Items Total: ₹${order.subtotal}\n`;
+    billSection = `<b>Final Bill</b>\n`;
+    if (order.subtotal) billSection += `Items Total: ₹${order.subtotal}\n`;
+    if (order.tradeDiscountTotal > 0) {
+      billSection += `Restaurant Offer Discount: −₹${order.tradeDiscountTotal}\n`;
+    }
     if (order.couponCode && order.discountAmount > 0) {
-      billSection += `🎟 Coupon Discount (${escapeHtml(order.couponCode)}): −₹${order.discountAmount}\n`;
+      billSection += `Coupon ${escapeHtml(order.couponCode)}: −₹${order.discountAmount}\n`;
+    }
+    const oneFee = Number(order.swiggyOneMembershipFee || 0);
+    if (oneFee > 0) {
+      billSection += `Swiggy One Lite Membership: +₹${oneFee}\n`;
     }
     if (order.freeCashApplied > 0) {
-      billSection += `💸 Free Cash Applied: −₹${order.freeCashApplied}\n`;
+      billSection += `Swiggy Money / Free Cash: −₹${order.freeCashApplied}\n`;
     }
-    if (order.swiggyOneApplied || order.freeDeliveryDiscount > 0) {
-      const savedDel = order.freeDeliveryDiscount || order.deliverySaved || 42;
-      billSection += `✨ Delivery Fee: FREE (₹${savedDel} saved)\n`;
-    } else if (order.deliveryFee > 0) {
-      billSection += `🚚 Delivery Fee: ₹${order.deliveryFee}\n`;
+    const savedDel = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
+    const isFreeDel = Number(order.deliveryFee || 0) <= 0 && (order.swiggyOneApplied || savedDel > 0 || oneFee > 0 || order.freeDelivery);
+    if (isFreeDel) {
+      billSection += `Free Delivery upto 7km\n`;
+      billSection += `Delivery Fee: FREE${savedDel > 0 ? ` (₹${savedDel} saved)` : ''}\n`;
+    } else if (Number(order.deliveryFee || 0) > 0) {
+      billSection += `Delivery Fee: ₹${order.deliveryFee}\n`;
+    } else {
+      billSection += `Delivery Fee: FREE\n`;
     }
-    if (order.packingCharges > 0) billSection += `📦 Packing Charges: ₹${order.packingCharges}\n`;
-    if (order.taxesAndCharges > 0) billSection += `🧾 GST & Charges: ₹${order.taxesAndCharges}\n`;
+    if (order.packingCharges > 0) billSection += `Packing Charges: ₹${order.packingCharges}\n`;
+    if (order.taxesAndCharges > 0) billSection += `GST &amp; Other Charges: ₹${order.taxesAndCharges}\n`;
     billSection += `━━━━━━━━━━━━━━\n`;
-    if (order.totalSavings > 0) billSection += `💰 Total Savings: ₹${order.totalSavings}\n`;
-    if (order.finalPayable) billSection += `💳 <b>To Pay: ₹${order.finalPayable}</b>`;
+    if (order.totalSavings > 0) billSection += `Total Savings: ₹${order.totalSavings}\n`;
+    if (order.finalPayable) billSection += `<b>Final Total: ₹${order.finalPayable}</b>`;
   } else {
-    billSection = `🧾 <b>Bill Summary:</b>\n` +
-      `⏳ <i>Calculating bill on Swiggy Payment Page...</i>`;
+    billSection = `<b>Final Bill</b>\n⏳ <i>Calculating max coupon &amp; bill on Swiggy...</i>`;
   }
 
   if (order.swiggyPaymentUrl) {
@@ -321,9 +359,10 @@ export function formatUserOrderCardText(order, isBossView = false) {
   }
 
   const accountLine = (isBossView && accPhone) ? `📱 <b>Order Account:</b> ${escapeHtml(accPhone)}\n` : '';
+  const cartHeader = restName ? `🛒 <b>Your Cart:</b> ${escapeHtml(restName)}\n\n` : '';
 
   return accountLine +
-    `🛒 <b>Your Cart:</b> ${escapeHtml(restName)}\n\n` +
+    cartHeader +
     `${addrSection}` +
     itemsSection +
     billSection;
@@ -477,21 +516,32 @@ function formatBossAccountReviewCard(order) {
   }
   text += '\n';
 
-  // 4. FINAL CHARGES
-  text += `🧾 <b>FINAL CHARGES:</b>\n`;
-  text += `🍽 Items Total: ₹${order.subtotal || 0}\n`;
-  if (order.discountAmount > 0) text += `🎟 Coupon Discount: −₹${order.discountAmount}\n`;
-  if (order.freeCashApplied > 0) text += `💸 Free Cash: −₹${order.freeCashApplied}\n`;
-  if (order.swiggyOneApplied || order.freeDeliveryDiscount > 0) {
-    text += `✨ Free Delivery: ₹0 (₹${order.freeDeliveryDiscount || 42} saved)\n`;
-  } else if (order.deliveryFee > 0) {
-    text += `🚚 Delivery Fee: ₹${order.deliveryFee}\n`;
+  // 4. EXACT SWIGGY WORLD FINAL BILL
+  text += `<b>Final Bill</b>\n`;
+  text += `Items Total: ₹${order.subtotal || 0}\n`;
+  if (order.tradeDiscountTotal > 0) text += `Restaurant Offer Discount: −₹${order.tradeDiscountTotal}\n`;
+  if (order.couponCode && order.discountAmount > 0) {
+    text += `Coupon ${escapeHtml(order.couponCode)}: −₹${order.discountAmount}\n`;
   }
-  if (order.packingCharges > 0) text += `📦 Packing Charges: ₹${order.packingCharges}\n`;
-  if (order.taxesAndCharges > 0) text += `🧾 GST & Charges: ₹${order.taxesAndCharges}\n`;
-  text += `━━━━━━━━━━━━━━━━━━\n`;
-  if (order.totalSavings > 0) text += `💰 <b>Total Savings: ₹${order.totalSavings}</b>\n`;
-  text += `💳 <b>Final Amount To Pay: ₹${order.finalPayable || order.subtotal || 0}</b>\n\n`;
+  if (Number(order.swiggyOneMembershipFee || 0) > 0) {
+    text += `Swiggy One Lite Membership: +₹${order.swiggyOneMembershipFee}\n`;
+  }
+  if (order.freeCashApplied > 0) text += `Swiggy Money / Free Cash: −₹${order.freeCashApplied}\n`;
+  const revSavedDel = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
+  const revIsFreeDel = Number(order.deliveryFee || 0) <= 0 && (order.swiggyOneApplied || revSavedDel > 0 || Number(order.swiggyOneMembershipFee || 0) > 0 || order.freeDelivery);
+  if (revIsFreeDel) {
+    text += `Free Delivery upto 7km\n`;
+    text += `Delivery Fee: FREE${revSavedDel > 0 ? ` (₹${revSavedDel} saved)` : ''}\n`;
+  } else if (Number(order.deliveryFee || 0) > 0) {
+    text += `Delivery Fee: ₹${order.deliveryFee}\n`;
+  } else {
+    text += `Delivery Fee: FREE\n`;
+  }
+  if (order.packingCharges > 0) text += `Packing Charges: ₹${order.packingCharges}\n`;
+  if (order.taxesAndCharges > 0) text += `GST &amp; Other Charges: ₹${order.taxesAndCharges}\n`;
+  text += `━━━━━━━━━━━━━━\n`;
+  if (order.totalSavings > 0) text += `Total Savings: ₹${order.totalSavings}\n`;
+  text += `<b>Final Total: ₹${order.finalPayable || order.subtotal || 0}</b>\n\n`;
 
   // 5. PAYMENT STATUS
   text += `💳 <b>OFFICIAL SWIGGY PAYMENT:</b>\n`;
@@ -520,6 +570,9 @@ function formatBossAccountReviewCard(order) {
       Markup.button.callback('🔄 Resend Bill & QR to Customer', `boss_send_qr_to_user_${order.id}`)
     ]);
   }
+  buttons.push([
+    Markup.button.callback('🏆 Auto Max Coupon (Best Acc)', `boss_auto_max_coupon_${order.id}`)
+  ]);
   buttons.push([
     Markup.button.callback('🔄 Switch Account', `boss_choose_acc_picker_${order.id}`),
     Markup.button.callback('🎟 Change Coupon', `boss_coupon_picker_${order.id}`)
@@ -743,8 +796,12 @@ function formatBossOrderCard(order) {
   const accounts = db.config?.accounts || {};
   const accEntries = Object.entries(accounts);
 
-  // STATE 1: PENDING Order -> Boss can immediately choose account, Accept/Reject, open links, and send genuine payment QR
+  // STATE 1: PENDING Order -> Boss can immediately auto-pick Max Coupon Account, choose account, Accept/Reject, open links, and send genuine payment QR
   if (order.status === 'PENDING') {
+    rows.push([
+      Markup.button.callback('🏆 Auto Max Coupon (Best Account)', `boss_auto_max_coupon_${order.id}`)
+    ]);
+
     // 1. ACCOUNT PICKER ROW(S) DIRECTLY ON ORDER CARD
     if (order.selectedAccount && accounts[order.selectedAccount]) {
       const curAcc = accounts[order.selectedAccount];
@@ -1056,10 +1113,16 @@ async function triggerBackgroundCartFetch(orderId) {
           order.subtotal = cd.subtotal || cd.itemsTotal || 0;
           if (cd.tradeDiscountTotal !== undefined) order.tradeDiscountTotal = cd.tradeDiscountTotal;
           if (cd.couponCode) { order.couponCode = cd.couponCode; order.discountAmount = cd.discountAmount || 0; }
+          if (cd.swiggyOneMembershipFee > 0) order.swiggyOneMembershipFee = cd.swiggyOneMembershipFee;
           if (cd.freeCashApplied > 0) order.freeCashApplied = cd.freeCashApplied;
-          if (cd.freeDelivery) { order.swiggyOneApplied = true; order.freeDeliveryDiscount = cd.deliverySaved || 0; }
+          if (cd.freeDelivery) {
+            order.freeDelivery = true;
+            order.swiggyOneApplied = true;
+            order.freeDeliveryDiscount = cd.freeDeliveryDiscount || cd.deliverySaved || 0;
+          }
           if (cd.packingCharges !== undefined) order.packingCharges = cd.packingCharges;
           if (cd.gstCharges !== undefined) order.taxesAndCharges = cd.gstCharges;
+          if (cd.totalSavings > 0) order.totalSavings = cd.totalSavings;
           if (cd.finalPayable > 0) {
             order.finalPayable = cd.finalPayable;
             order.swiggyVerified = true;
@@ -1067,6 +1130,17 @@ async function triggerBackgroundCartFetch(orderId) {
             order.swiggyVerified = false;
             applyMaxOfferToOrder(order);
           }
+        }
+      }
+
+      // Auto-sync live Group Cart & apply Max Coupon across active accounts immediately upon order arrival!
+      if (order.groupCartId && order.items?.length > 0 && !order.swiggyVerified) {
+        const bestRes = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false }).catch(() => null);
+        if (bestRes?.availableCoupons?.length > 0) {
+          order.availableCoupons = bestRes.availableCoupons;
+        }
+        if (bestRes?.savedAddresses?.length > 0 && (!order.accountAddresses || order.accountAddresses.length === 0)) {
+          order.accountAddresses = bestRes.savedAddresses;
         }
       }
 
@@ -2399,14 +2473,13 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
         }
         order.itemTotal = cd.itemTotal || order.itemTotal;
         order.subtotal = cd.subtotal || order.subtotal;
+        order.swiggyOneMembershipFee = cd.swiggyOneMembershipFee || 0;
         order.deliveryFee = cd.deliveryFee || 0;
         order.freeDeliveryDiscount = cd.freeDeliveryDiscount || 0;
         order.swiggyOneApplied = cd.swiggyOneApplied || false;
         order.swiggyOneSavings = cd.swiggyOneSavings || 0;
-        if (cd.couponCode) {
-          order.couponCode = cd.couponCode;
-          order.discountAmount = cd.discountAmount || 0;
-        }
+        order.couponCode = cd.couponCode || null;
+        order.discountAmount = cd.discountAmount || 0;
         order.freeCashBalance = cd.freeCashBalance || 0;
         order.freeCashApplied = cd.freeCashApplied || 0;
         order.finalPayable = cd.finalPayable || order.finalPayable;
@@ -2503,6 +2576,94 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
       await ctx.reply(`❌ <b>Failed to process order #${orderId}:</b> ${escapeHtml(e.message)}`, { parse_mode: 'HTML' }).catch(() => {});
     }
   })().catch(err => console.error('[boss_select_acc] Background Error:', err));
+});
+
+// 1-Tap Boss Action: Auto Scan ALL Logged-In Accounts -> Apply Swiggy One Lite (+₹1) + Max Coupon -> Pick Lowest Final Total!
+bot.action(/^boss_auto_max_coupon_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const orderId = ctx.match[1];
+  const db = getDb();
+  const order = db.orders[orderId];
+  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+
+  await ctx.answerCbQuery('Scanning all accounts for MAX Coupon + Lowest Bill... 🏆').catch(() => {});
+  const waitMsg = await ctx.reply(
+    `🏆 <b>Auto Max-Coupon & Best Account Engine (#${orderId})...</b>\n\n` +
+    `1️⃣ Checking all logged-in Swiggy accounts\n` +
+    `2️⃣ Unlocking ₹50 Event Offers & ₹1 Swiggy One Lite Free Delivery\n` +
+    `3️⃣ Testing all restaurant & campaign coupons (<code>DELULU4FOOD</code>, <code>STEALDEAL</code>, <code>MEALDEAL</code>, <code>FLAT150</code>, <code>TRYNEW</code>...)\n` +
+    `4️⃣ Locking the #1 Lowest <b>Final Total</b> & capturing Payment QR...`,
+    { parse_mode: 'HTML' }
+  );
+
+  (async () => {
+    try {
+      const best = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: true });
+      if (!best.success) {
+        try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
+        return ctx.reply(`⚠️ <b>Max Coupon Scan Failed:</b> ${escapeHtml(best.error || 'No active accounts')}`, { parse_mode: 'HTML' }).catch(() => {});
+      }
+
+      if (best.savedAddresses?.length > 0) order.accountAddresses = best.savedAddresses;
+      if (best.availableCoupons?.length > 0) order.availableCoupons = best.availableCoupons;
+      if (best.paymentUrl) order.swiggyPaymentUrl = best.paymentUrl;
+      applyMaxOfferToOrder(order);
+
+      const custDisplayName = order.userName || 'Customer';
+      const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
+      const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
+
+      let finalQrBuffer = best.qrBuffer;
+      try {
+        const cardBuffer = await generatePersonalizedQrCard({
+          customerName: custDisplayName,
+          restaurantName: order.restaurantName || 'Swiggy Food Order',
+          amount: order.finalPayable || order.subtotal || 0,
+          savings: order.totalSavings || 0,
+          upiUrl: upiUri,
+          qrBuffer: best.qrBuffer
+        });
+        if (cardBuffer) finalQrBuffer = cardBuffer;
+      } catch (e) {}
+
+      const winPhone = best.winningAccount?.phone || best.winningKey;
+      const winName = best.winningAccount?.name || winPhone;
+      const cmpLines = (best.accountComparison || [])
+        .map(c => `• <code>${escapeHtml(c.phone)}</code>: Final Total <b>₹${c.finalPayable}</b>${c.couponCode ? ` (${escapeHtml(c.couponCode)} −₹${c.discountAmount})` : ''}`)
+        .join('\n');
+
+      if (finalQrBuffer) {
+        order.genuineQrBuffer = finalQrBuffer;
+        try {
+          const bossQrMsg = await ctx.replyWithPhoto(
+            { source: finalQrBuffer },
+            {
+              caption: `🏆 <b>MAX COUPON WINNER ACCOUNT LOCKED! (Order #${order.id})</b>\n\n` +
+                `⭐ Winning Account: <b>${escapeHtml(winPhone)}</b> (${escapeHtml(winName)})\n` +
+                `🎟 Best Coupon: <b>${escapeHtml(order.couponCode || 'Auto Free Delivery')}</b> (−₹${order.discountAmount || 0})\n` +
+                `💰 Total Savings: <b>₹${order.totalSavings || 0}</b>\n` +
+                `💳 <b>Final Total: ₹${order.finalPayable || order.subtotal || 0}</b>\n` +
+                (cmpLines ? `\n📊 <b>Account Comparison:</b>\n${cmpLines}` : ''),
+              parse_mode: 'HTML'
+            }
+          );
+          if (bossQrMsg?.photo?.length > 0) {
+            order.customQrFileId = bossQrMsg.photo[bossQrMsg.photo.length - 1].file_id;
+          }
+        } catch (e) {}
+      }
+
+      saveDb(db);
+      await updateOrderCards(order);
+      try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
+
+      const reviewCard = formatBossAccountReviewCard(order);
+      await ctx.reply(reviewCard.text, { parse_mode: 'HTML', ...reviewCard.keyboard });
+    } catch (e) {
+      try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (err) {}
+      await ctx.reply(`❌ <b>Max Coupon Scan Error:</b> ${escapeHtml(e.message)}`, { parse_mode: 'HTML' }).catch(() => {});
+    }
+  })().catch(err => console.error('[boss_auto_max_coupon] Error:', err));
 });
 
 // Helper: parse `accKey` and optional `orderId` cleanly even when `accKey` contains underscores (`acc_9935123518` or `acc_9935123518_ORD1`)
