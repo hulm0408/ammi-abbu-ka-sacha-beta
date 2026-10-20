@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { getDb, saveDb } from './store.js';
-import { dapiFetch, inspectCartForAccount, parseAddressDetails } from './swiggy-cart.js';
+import { dapiFetch, inspectCartForAccount, parseAddressDetails, swiggyCartFlush } from './swiggy-cart.js';
 import {
   looksLikeBossOrderInput,
   handleBossForwardedOrderInput,
@@ -332,10 +332,7 @@ try {
   ok(deletedIds.includes(102) && cancelConfirmMsg?.text.includes('Order Cancelled'), 'Ammi\'s card cancelled cleanly via [ ❌ Cancel Order ]');
 
   // Cleanup live helper cart & verify both accounts clean!
-  await dapiFetch(accHelper, 'cart', {
-    method: 'POST',
-    body: { flushFirst: true, cart: { restaurantId: '444136', address_id: '', couponCode: '', cartItems: [], mealItems: [], subscriptionItems: [] } }
-  }).catch(() => {});
+  await swiggyCartFlush(accHelper).catch(() => {});
 
   const afterLiveCart = await inspectCartForAccount(accLive);
   const afterHelperCart = await inspectCartForAccount(accHelper);

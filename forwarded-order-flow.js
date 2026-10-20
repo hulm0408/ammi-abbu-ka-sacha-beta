@@ -9,12 +9,14 @@ import {
   resolveSwiggyLink,
   parseAddressDetails,
   reverseGeocodeCoords,
+  geocodeAddressDetails,
   syncGroupCartAndCheckoutForAccount,
   findBestMaxCouponAccountForOrder,
   generateRealSwiggyMerchantUpiQr,
   checkRealSwiggyPaymentAndExtractTracking,
   withSwiggyAccountLock,
   getBusySwiggyAccountsMap,
+  getSwiggySessionAuth,
   swiggyCartFlush,
   dapiFetch
 } from './swiggy-cart.js';
@@ -843,10 +845,25 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   const swiggyUrls = allUrls.filter(u => /(swiggy\.com|swig\.gy|onelink\.me)/i.test(u));
   const mapsUrls = allUrls.filter(u => /(maps\.app\.goo\.gl|google\.com\/maps|goo\.gl\/maps)/i.test(u));
 
-  // Resolve ALL links in the message IN PARALLEL!
-  const [resolvedSwiggyList, resolvedMapsList] = await Promise.all([
+  // Pre-extract plain-text street address BEFORE `Promise.all` so links + geocoding run 100% concurrently!
+  const textWithoutUrlsEarly = trimmed.replace(/https?:\/\/[^\s]+/gi, ' ').trim();
+  const earlyPlainAd =
+    allUrls.length === 0 && !isValidCartInput(trimmed) && isValidAddressInput(trimmed)
+      ? parseAddressDetails(trimmed)
+      : textWithoutUrlsEarly.length >= 12 && isValidAddressInput(textWithoutUrlsEarly)
+        ? parseAddressDetails(textWithoutUrlsEarly)
+        : null;
+  const firstAccEarly = earlyPlainAd && (!earlyPlainAd.lat || !earlyPlainAd.lng)
+    ? Object.values(getDb()?.config?.accounts || {}).find(a => a?.isLoggedIn && (a.cookies || a.tid || a.token)) || null
+    : null;
+
+  // Resolve ALL links + plain-text street address geocoding IN ONE SINGLE PARALLEL BATCH!
+  const [resolvedSwiggyList, resolvedMapsList, preGeocodedPlainAd] = await Promise.all([
     Promise.all(swiggyUrls.map(url => resolveSwiggyLink(url).then(resolved => ({ url, resolved })))),
-    Promise.all(mapsUrls.map(mUrl => resolveSwiggyLink(mUrl).then(resolved => ({ mUrl, resolved }))))
+    Promise.all(mapsUrls.map(mUrl => resolveSwiggyLink(mUrl).then(resolved => ({ mUrl, resolved })))),
+    earlyPlainAd && (!earlyPlainAd.lat || !earlyPlainAd.lng)
+      ? geocodeAddressDetails(earlyPlainAd, firstAccEarly).catch(() => earlyPlainAd)
+      : Promise.resolve(earlyPlainAd)
   ]);
 
   for (const { url, resolved } of resolvedSwiggyList) {
@@ -871,12 +888,20 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
         err.diag = { code: 'GROUP_CART_EXPIRED', stage: 'RESOLVE_CART_LINK', swiggyMessage: resolved?.groupCartStatus || 'EXPIRED' };
         throw err;
       }
+      if (resolved?.groupCartStatus === 'PLACED') {
+        const err = new Error(`Group Cart order was already placed on Swiggy: ${url}`);
+        err.diag = { code: 'GROUP_CART_ALREADY_PLACED', stage: 'RESOLVE_CART_LINK', swiggyMessage: 'PLACED' };
+        throw err;
+      }
       order.cart = url;
+      if (resolved?.groupCartId) order.groupCartId = resolved.groupCartId;
+      if (resolved?.hostName) order.hostName = resolved.hostName;
       if (resolved?.restaurantId) order.restaurantId = resolved.restaurantId;
       if (resolved?.restaurantName) order.restaurantName = resolved.restaurantName;
       if (resolved?.cartDetails?.items?.length) {
         order.items = resolved.cartDetails.items;
         order.subtotal = resolved.cartDetails.subtotal || 0;
+        order.tradeDiscountTotal = resolved.cartDetails.tradeDiscountTotal || 0;
       }
       updatedCart = true;
     }
@@ -901,7 +926,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       order.cart = trimmed;
       updatedCart = true;
     } else if (isValidAddressInput(trimmed)) {
-      const ad = parseAddressDetails(trimmed);
+      const ad = preGeocodedPlainAd || parseAddressDetails(trimmed);
       order.address = trimmed;
       order.addressOriginalText = trimmed;
       if (ad) {
@@ -914,7 +939,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   } else if (updatedCart && !updatedAddress) {
     const textWithoutUrls = trimmed.replace(/https?:\/\/[^\s]+/gi, ' ').trim();
     if (textWithoutUrls.length >= 12 && isValidAddressInput(textWithoutUrls)) {
-      const ad = parseAddressDetails(textWithoutUrls);
+      const ad = preGeocodedPlainAd || parseAddressDetails(textWithoutUrls);
       if (ad && (ad.address || ad.lat || /\d{6}/.test(textWithoutUrls))) {
         delete ad.id;
         if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
@@ -924,6 +949,16 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
         updatedAddress = true;
       }
     }
+  }
+
+  // Eagerly pre-geocode plain-text street addresses during message intake (~200ms via Swiggy autocomplete)
+  // so `order.addressDetails.lat`/`lng` are ALREADY ready in 0ms when any account / Multi-ID Best Offer syncs!
+  if (updatedAddress && order.addressDetails && (!order.addressDetails.lat || !order.addressDetails.lng)) {
+    try {
+      const db = getDb();
+      const firstAcc = Object.values(db?.config?.accounts || {}).find(a => a?.isLoggedIn && (a.cookies || a.tid || a.token)) || null;
+      order.addressDetails = await geocodeAddressDetails(order.addressDetails, firstAcc);
+    } catch (e) {}
   }
 
   return { updatedCart, updatedAddress };
@@ -1072,9 +1107,9 @@ export async function executeOrderBillSyncOnAccount({
   order.pendingSwiggyPaasId = '';
 
   const usedAcc = getDb().config?.accounts?.[order.selectedAccount];
-  if (usedAcc?.cookies) {
-    const allRes = await dapiFetch(usedAcc, 'order/all').catch(() => null);
-    const latestExisting = allRes?.json?.data?.orders?.[0]?.order_id;
+  if (usedAcc) {
+    const authSnap = await getSwiggySessionAuth(usedAcc).catch(() => null);
+    const latestExisting = authSnap?.orders?.[0]?.order_id;
     order.baselineSwiggyOrderId = latestExisting ? String(latestExisting) : '';
   }
 

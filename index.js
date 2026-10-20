@@ -57,7 +57,8 @@ import {
   applyLiveCouponToOrder,
   verifySwiggySessionLive,
   generateRealSwiggyMerchantUpiQr,
-  checkRealSwiggyPaymentAndExtractTracking
+  checkRealSwiggyPaymentAndExtractTracking,
+  startWafKeepWarmLoop
 } from './swiggy-cart.js';
 import {
   extractForwardSenderInfo,
@@ -1923,16 +1924,17 @@ async function handleProcessJsonLogin(ctx, rawJson, userId, targetKeyOverride = 
   const liveTid = liveCheck.liveTid || parsed.tid || '';
   const liveToken = liveCheck.token || parsed.token || '';
   const liveCustomerId = liveCheck.customerId || parsed.customerId || '';
+  const finalCookieStr = liveCheck.cookies || cookieStr;
 
   // 1. Fetch real profile from Swiggy if not already resolved by native profile endpoint
   const profile = (liveCheck.name && liveCheck.phone)
     ? { id: liveCustomerId, name: liveCheck.name, phone: liveCheck.phone }
-    : await fetchSwiggyProfileFromCookies({ ...parsed, tid: liveTid, token: liveToken, customerId: liveCustomerId, cookies: cookieStr }).catch(() => ({ name: null, phone: null }));
+    : await fetchSwiggyProfileFromCookies({ ...parsed, tid: liveTid, token: liveToken, customerId: liveCustomerId, cookies: finalCookieStr }).catch(() => ({ name: null, phone: null }));
   const cleanPhone = (profile?.phone || hintPhone ? String(profile?.phone || hintPhone).replace(/[^0-9]/g, '').slice(-10) : '');
   const swiggyName = profile?.name || parsed?.swiggyName || parsed?.name || (cleanPhone ? `User ${cleanPhone}` : 'Swiggy User');
   const accKey = finalTargetKey || (cleanPhone ? `acc_${cleanPhone}` : (parsed?.account || 'acc_' + Date.now()));
 
-  // 2. Import complete session into database + vault
+  // 2. Import complete session into database + vault (preserving freshly minted/existing `_session_tid`!)
   const result = importSessionJson({
     ...parsed,
     tid: liveTid,
@@ -1941,7 +1943,7 @@ async function handleProcessJsonLogin(ctx, rawJson, userId, targetKeyOverride = 
     name: swiggyName,
     swiggyName,
     phone: cleanPhone,
-    cookies: cookieStr
+    cookies: finalCookieStr
   }, accKey);
 
   try {
@@ -8638,6 +8640,7 @@ async function startBotWithRetry() {
     for (let attempt = 1; attempt <= 10; attempt++) {
       try {
         console.log('🤖 Telegram Swiggy Real OTP Flow Bot is running live!');
+        startWafKeepWarmLoop();
         if (process.env.PREWARM_CHROME === 'true') {
           console.log('⚡ Priming pre-warmed Chrome for instant OTP in background...');
           prewarmBrowser().catch(e => console.log('Prewarm init note:', e.message));

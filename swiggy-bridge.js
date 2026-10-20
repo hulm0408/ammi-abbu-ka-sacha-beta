@@ -187,8 +187,16 @@ export function checkLoggedInFromCookies(input) {
 // 2. Dinner Late Night Offer (9 PM To 11 PM) - https://events.swiggy.com/pick-your-late-night-offer
 // Automatically selects 50 off on 199 (value: 1)
 // ---------------------------------------------------------------------------
-export async function claimSwiggyBreakfastAndLateNightOffers(account) {
+const offerClaimCache = new Map(); // accSig -> ts
+const OFFER_CLAIM_TTL_MS = 30 * 60 * 1000;
+
+export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = false } = {}) {
   if (!account) return { success: false, reason: 'No account provided' };
+  const accSig = String(account.id || account.phone || account.customerId || account.token || (account.cookies || '').slice(0, 60));
+  if (!force && accSig && offerClaimCache.has(accSig)) {
+    const prev = offerClaimCache.get(accSig);
+    if (Date.now() - prev.ts < OFFER_CLAIM_TTL_MS) return prev.result;
+  }
 
   let token = account.token || '';
   let jwtTid = account.tid || '';
@@ -339,7 +347,7 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account) {
       lateNight: { campaign: lnCampaign, status: resLn.status, msg: lnJson.message }
     });
 
-    return {
+    const claimOut = {
       success: bfOk || lnOk,
       bothClaimed: bfOk && lnOk,
       sessionExpired: !bfOk && !lnOk && (resBf.status === 401 || resLn.status === 401 || liveSessionDead),
@@ -362,6 +370,8 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account) {
         message: formatOfferMsg(lnOk, resLn, lnJson)
       }
     };
+    if (accSig) offerClaimCache.set(accSig, { result: claimOut, ts: Date.now() });
+    return claimOut;
   } catch (err) {
     console.error('[EventsClaim] Request error:', err.message);
     return { success: false, error: err.message };

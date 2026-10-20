@@ -299,7 +299,11 @@ export function cleanEssentialSwiggyCookies(cookieStr = '', fallback = {}) {
   if (fallback.tid && !fallback.tid.includes('.') && !map.has('_session_tid')) {
     map.set('_session_tid', fallback.tid);
   }
-  if (fallback.tid && !map.has('tid')) map.set('tid', fallback.tid);
+  if (fallback.tid && fallback.tid.includes('.') && !map.has('tid')) {
+    map.set('tid', fallback.tid);
+  } else if (fallback.tid && !map.has('tid')) {
+    map.set('tid', fallback.tid);
+  }
   const fbSid = fallback.sid || fallback._sid || '';
   if (fbSid && !map.has('_sid')) map.set('_sid', fbSid);
   const fbDev = fallback.deviceId || fallback.device_id || fallback._device_id || fallback.swuid || '';
@@ -318,20 +322,26 @@ function syncAccountsJsonMirror(data) {
     const accounts = data?.config?.accounts || {};
     const mirrorList = Object.entries(accounts)
       .filter(([, a]) => a && a.isLoggedIn && (a.cookies || a.tid || a.token))
-      .map(([k, a]) => ({
-        account: k,
-        name: a.name || k,
-        phone: a.phone || a.mobile || '',
-        mobile: a.mobile || a.phone || '',
-        customerId: a.customerId || '',
-        token: a.token || '',
-        tid: a.tid || '',
-        sid: a.sid || '',
-        deviceId: a.deviceId || '',
-        cookies: cleanEssentialSwiggyCookies(a.cookies, a),
-        isLoggedIn: true,
-        savedAt: a.savedAt || new Date().toISOString()
-      }));
+      .map(([k, a]) => {
+        const cleanC = cleanEssentialSwiggyCookies(a.cookies, a);
+        const sessMatch = cleanC.match(/(?:^|;\s*)_session_tid=([^;]+)/);
+        const sessionTidVal = sessMatch ? sessMatch[1].trim() : (a._session_tid || '');
+        return {
+          account: k,
+          name: a.name || k,
+          phone: a.phone || a.mobile || '',
+          mobile: a.mobile || a.phone || '',
+          customerId: a.customerId || '',
+          ...(sessionTidVal ? { _session_tid: sessionTidVal } : {}),
+          token: a.token || '',
+          tid: a.tid || '',
+          sid: a.sid || '',
+          deviceId: a.deviceId || '',
+          cookies: cleanC,
+          isLoggedIn: true,
+          savedAt: a.savedAt || new Date().toISOString()
+        };
+      });
     fs.writeFileSync(ACCOUNTS_JSON_FILE, JSON.stringify(mirrorList, null, 2), 'utf-8');
   } catch (e) {}
 }
@@ -821,6 +831,7 @@ export function importSessionJson(rawJson, targetKey = null) {
       };
 
       const tid = data.tid || extractFromCookie('tid') || '';
+      const sessionTid = extractFromCookie('_session_tid') || data._session_tid || (!tid.includes('.') && tid.length >= 64 ? tid : '');
       const token = data.token || extractFromCookie('token') || tid || '';
       const sid = data.sid || extractFromCookie('_sid') || '';
       const deviceId = data.deviceId || extractFromCookie('_device_id') || '';
@@ -850,6 +861,7 @@ export function importSessionJson(rawJson, targetKey = null) {
         ...(data.swiggyName ? { swiggyName: data.swiggyName } : {}),
         name: data.name || db.config.accounts[key].name || (cleanPhone ? `Swiggy ${cleanPhone}` : 'Swiggy User'),
         customerId: customerId || db.config.accounts[key].customerId || '',
+        ...(sessionTid ? { _session_tid: sessionTid } : {}),
         token: token || db.config.accounts[key].token || '',
         tid: tid || db.config.accounts[key].tid || '',
         sid: sid || db.config.accounts[key].sid || '',
