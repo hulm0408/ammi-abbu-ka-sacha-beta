@@ -1,0 +1,23 @@
+name: Auto-Trigger Render Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  trigger-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render Deploy Hook (if configured)
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "🚀 Triggering Render Deploy Hook..."
+            curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_URL"
+            echo "✅ Render Deploy triggered successfully!"
+          else
+            echo "ℹ️ RENDER_DEPLOY_HOOK_URL secret not set yet — use Render Dashboard -> Manual Deploy -> Deploy latest commit (or add Deploy Hook URL secret for automatic future deploys)."
+          fi
