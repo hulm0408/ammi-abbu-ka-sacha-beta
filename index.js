@@ -7693,7 +7693,7 @@ bot.catch(async (err, ctx) => {
 });
 
 
-// Lightweight health check server for cloud platforms (Render, Railway, etc.) — explicitly binds 0.0.0.0
+// Lightweight health check server + 24x7 Render keep-alive pinger
 const healthPort = Number(process.env.PORT || 0);
 if (healthPort > 0) {
   const server = http.createServer((req, res) => {
@@ -7703,6 +7703,14 @@ if (healthPort > 0) {
   server.listen(healthPort, '0.0.0.0', () => {
     console.log(`🌐 Cloud health server listening on 0.0.0.0:${healthPort}`);
   });
+
+  // Self keep-alive ping every 8 minutes via public Render edge URL so container never idles out
+  const keepAliveUrl = (process.env.RENDER_EXTERNAL_URL || 'https://ammi-abbu-ka-sacha-beta.onrender.com').replace(/\/+$/, '') + '/';
+  setInterval(() => {
+    fetch(keepAliveUrl, { signal: AbortSignal.timeout(10000) })
+      .then(r => console.log(`💓 Keep-alive ping -> ${keepAliveUrl} [${r.status}]`))
+      .catch(e => console.log(`💓 Keep-alive retry note: ${e.message}`));
+  }, 8 * 60 * 1000).unref();
 }
 
 // Launch bot with retry resilience for cloud container handover
