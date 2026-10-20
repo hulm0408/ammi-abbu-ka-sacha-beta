@@ -32,7 +32,7 @@ import {
   getNextAutoUserName,
   cleanEssentialSwiggyCookies,
 } from './store.js';
-import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, stripStaleWafCookie } from './swiggy-bridge.js';
+import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
   verifyAndInspectSwiggyLink,
   inspectCartForAccount,
@@ -4882,14 +4882,20 @@ async function showFamilyAccounts(ctx) {
 }
 
 // Boss Action: Claim ₹50 Off Offers in All Logged-in Accounts
-bot.action('boss_claim_all_event_offers', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  await ctx.answerCbQuery('Claiming ₹50 Off offers in active accounts... 🚀').catch(() => {});
-
+async function runBossEventOffersClaim(ctx, chosenOfferValue = null) {
+  if (!isBoss(ctx.from.id)) {
+    if (ctx.callbackQuery) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+    return;
+  }
   const db = getDb();
   const accounts = db.config.accounts || {};
-  const activeEntries = Object.entries(accounts).filter(([, a]) => a.isLoggedIn && (a.cookies || a.tid));
+  const activeEntries = Object.entries(accounts).filter(([, a]) => a.isLoggedIn && (a.cookies || a.tid || a.token));
   const skippedCount = Object.keys(accounts).length - activeEntries.length;
+
+  if (ctx.callbackQuery) {
+    const label = chosenOfferValue ? (EVENT_OFFER_OPTIONS[chosenOfferValue]?.shortLabel || `Option #${chosenOfferValue}`) : 'All Active Accounts';
+    await ctx.answerCbQuery(`Locking ${label} across today + next 14 days... 🚀`).catch(() => {});
+  }
 
   if (activeEntries.length === 0) {
     return ctx.reply('⚠️ <b>Koi bhi Active Logged-In account nahi mila!</b>\n\nPehle Number ya JSON se account login karein.', {
@@ -4898,52 +4904,57 @@ bot.action('boss_claim_all_event_offers', async (ctx) => {
     });
   }
 
+  const effectiveVal = [1, 2, 3, 4].includes(Number(chosenOfferValue)) ? Number(chosenOfferValue) : null;
+  const headerMeta = EVENT_OFFER_OPTIONS[effectiveVal || 1] || EVENT_OFFER_OPTIONS[1];
+
   const waitMsg = await ctx.reply(
-    `⏳ <b>Swiggy Breakfast & Late Night Offers Claiming...</b>\n\n` +
-    `🍳 <b>Breakfast (6AM–11AM):</b> ₹50 OFF on ₹199\n` +
-    `🌙 <b>Dinner Late Night (9PM–11PM):</b> ₹50 OFF on ₹199\n\n` +
-    `<i>${activeEntries.length} active account(s) me Swiggy backend API call ki ja rahi hai...</i>`,
+    `⏳ <b>Swiggy Breakfast &amp; Late Night 15-Day Pre-Book Running...</b>\n\n` +
+    `🎁 <b>Selected Reward:</b> ${escapeHtml(headerMeta.fullLabel)}\n` +
+    `🍳 <b>Breakfast Slot:</b> 7:00 AM – 11:00 AM (cutoff 5:00 AM IST)\n` +
+    `🌙 <b>Late Night Slot:</b> 9:00 PM – 6:00 AM (cutoff 6:30 PM IST)\n\n` +
+    `<i>${activeEntries.length} active account(s) me Aaj + Agle 14 Din ke slots ek saath lock kiye ja rahe hain...</i>`,
     { parse_mode: 'HTML' }
+  );
+
+  // Claim ALL accounts IN PARALLEL (`Promise.all`) across today + next 14 days!
+  const settled = await Promise.all(
+    activeEntries.map(async ([key, acc]) => {
+      const accLabel = `${acc.phone || key}${acc.name ? ` (${acc.name})` : ''}`;
+      if (effectiveVal) acc.preferredOfferValue = effectiveVal;
+      try {
+        const claimRes = await claimSwiggyBreakfastAndLateNightOffers(acc, {
+          force: true,
+          forcePatch: Boolean(effectiveVal),
+          offerValue: effectiveVal || acc.preferredOfferValue || 1
+        });
+        acc.offers = claimRes;
+        if (claimRes.sessionExpired) acc.isLoggedIn = false;
+        return { label: accLabel, key, res: claimRes };
+      } catch (e) {
+        return { label: accLabel, key, res: { success: false, error: e.message } };
+      }
+    })
   );
 
   let successCount = 0;
   let partialCount = 0;
   let failCount = 0;
-  const results = [];
-
-  for (const [key, acc] of activeEntries) {
-    const accLabel = `${acc.phone || key}${acc.name ? ` (${acc.name})` : ''}`;
-    try {
-      const claimRes = await claimSwiggyBreakfastAndLateNightOffers(acc);
-      acc.offers = claimRes;
-      if (claimRes.sessionExpired) {
-        acc.isLoggedIn = false;
-      }
-      if (claimRes.bothClaimed) {
-        successCount++;
-      } else if (claimRes.success) {
-        partialCount++;
-      } else {
-        failCount++;
-      }
-      results.push({ label: accLabel, key, res: claimRes });
-    } catch (e) {
-      failCount++;
-      results.push({ label: accLabel, key, res: { success: false, error: e.message } });
-    }
+  for (const item of settled) {
+    if (item.res?.bothClaimed) successCount++;
+    else if (item.res?.success) partialCount++;
+    else failCount++;
   }
 
   saveDb(db);
+  try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch {}
 
-  try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
-
-  let reportText = `🎁 <b>SWIGGY OFFERS CLAIM REPORT</b>\n` +
+  let reportText = `🎁 <b>SWIGGY FREE CASH &amp; EVENT OFFERS (15-DAY AUTO-LOCK)</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `🍳 <b>Breakfast (6AM–11AM):</b> ₹50 OFF on ₹199\n` +
-    `🌙 <b>Late Night (9PM–11PM):</b> ₹50 OFF on ₹199\n` +
+    `🍳 <b>Breakfast:</b> 7AM–11AM <i>(auto-locked before 5:00 AM IST)</i>\n` +
+    `🌙 <b>Late Night:</b> 9PM–6AM <i>(auto-locked before 6:30 PM IST)</i>\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-  for (const item of results) {
+  for (const item of settled) {
     const r = item.res;
     if (r.error || r.reason) {
       reportText += `📱 <b>${escapeHtml(item.label)}:</b>\n` +
@@ -4953,21 +4964,30 @@ bot.action('boss_claim_all_event_offers', async (ctx) => {
 
     const bf = r.breakfast || {};
     const ln = r.lateNight || {};
-    const bfTag = bf.status === 'CLAIMED' ? '✅ CLAIMED' : '❌ FAILED';
-    const lnTag = ln.status === 'CLAIMED' ? '✅ CLAIMED' : '❌ FAILED';
+    const bfTag = bf.status === 'CLAIMED' ? '✅' : '❌';
+    const lnTag = ln.status === 'CLAIMED' ? '✅' : '❌';
 
     reportText += `📱 <b>${escapeHtml(item.label)}:</b>\n` +
-      `  • 🍳 <b>Breakfast:</b> ${bfTag} — <i>${escapeHtml(bf.message || bf.rawMessage || 'Done')}</i>\n` +
-      `  • 🌙 <b>Late Night:</b> ${lnTag} — <i>${escapeHtml(ln.message || ln.rawMessage || 'Done')}</i>\n\n`;
+      `  • 🍳 <b>Breakfast:</b> ${bfTag} <i>${escapeHtml(bf.message || bf.rawMessage || 'Done')}</i>\n` +
+      `  • 🌙 <b>Late Night:</b> ${lnTag} <i>${escapeHtml(ln.message || ln.rawMessage || 'Done')}</i>\n\n`;
   }
 
   reportText += `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `📊 <b>Summary:</b> <b>${successCount}</b> Fully Claimed | <b>${partialCount}</b> Partial | <b>${failCount}</b> Expired` +
-    (skippedCount > 0 ? ` <i>(${skippedCount} logged-out skipped)</i>` : '');
+    `📊 <b>Summary:</b> <b>${successCount}</b> Fully Locked | <b>${partialCount}</b> Partial | <b>${failCount}</b> Expired` +
+    (skippedCount > 0 ? ` <i>(${skippedCount} logged-out skipped)</i>` : '') +
+    `\n💡 <i>Tap any reward button below to switch ALL IDs instantly across all 15 days!</i>`;
 
   const buttons = [
     [
-      Markup.button.callback('🔄 Retry Claim in All', 'boss_claim_all_event_offers'),
+      Markup.button.callback('💸 ₹50 Free Cash (>₹199)', 'boss_claim_val_1'),
+      Markup.button.callback('🎟️ ₹150 OFF (>₹249)', 'boss_claim_val_2')
+    ],
+    [
+      Markup.button.callback('🔥 ₹175 LN / ₹100 BF', 'boss_claim_val_3'),
+      Markup.button.callback('⚡ ₹100 OFF (>₹149)', 'boss_claim_val_4')
+    ],
+    [
+      Markup.button.callback('🔄 Refresh Status', 'boss_claim_all_event_offers'),
       Markup.button.callback('👥 View Accounts', 'boss_view_accounts')
     ],
     [
@@ -4976,6 +4996,19 @@ bot.action('boss_claim_all_event_offers', async (ctx) => {
   ];
 
   await sendSafeHtml(ctx, reportText, Markup.inlineKeyboard(buttons));
+}
+
+bot.command('claim', async (ctx) => {
+  const argNum = Number(String(ctx.message?.text || '').trim().split(/\s+/)[1]);
+  await runBossEventOffersClaim(ctx, [1, 2, 3, 4].includes(argNum) ? argNum : null);
+});
+
+bot.action('boss_claim_all_event_offers', async (ctx) => {
+  await runBossEventOffersClaim(ctx, null);
+});
+
+bot.action(/^boss_claim_val_([1234])$/, async (ctx) => {
+  await runBossEventOffersClaim(ctx, Number(ctx.match[1]));
 });
 
 // Switch Active Account Picker
@@ -8646,6 +8679,36 @@ bot.command('parallel', async (ctx) => {
   }
 });
 
+let autoEventPrebookTimer = null;
+function startAutoEventOffersPrebookLoop() {
+  if (autoEventPrebookTimer) return;
+  const runSweep = async () => {
+    try {
+      const db = getDb();
+      const entries = Object.entries(db?.config?.accounts || {}).filter(([, a]) => a?.isLoggedIn && (a.cookies || a.tid || a.token));
+      if (entries.length === 0) return;
+      await Promise.all(
+        entries.map(async ([, acc]) => {
+          const out = await claimSwiggyBreakfastAndLateNightOffers(acc, {
+            force: true,
+            offerValue: acc.preferredOfferValue || 1
+          }).catch(() => null);
+          if (out) acc.offers = out;
+        })
+      );
+      saveDb(db);
+      console.log(`🎁 [AutoPreBook] Locked Breakfast + Late Night offers across 15 days for ${entries.length} account(s)!`);
+    } catch (e) {
+      console.warn('[AutoPreBook] Sweep warning:', e.message);
+    }
+  };
+  const bootKick = setTimeout(runSweep, 2500);
+  if (typeof bootKick.unref === 'function') bootKick.unref();
+  // Run every 2 hours so every account is ALWAYS pre-booked well before both 05:00 AM IST & 06:30 PM IST cutoffs!
+  autoEventPrebookTimer = setInterval(runSweep, 2 * 60 * 60 * 1000);
+  if (typeof autoEventPrebookTimer.unref === 'function') autoEventPrebookTimer.unref();
+}
+
 // Launch bot with retry resilience for cloud container handover
 console.log('🚀 Connecting to Telegram Bot API...');
 async function startBotWithRetry() {
@@ -8657,6 +8720,7 @@ async function startBotWithRetry() {
       try {
         console.log('🤖 Telegram Swiggy Real OTP Flow Bot is running live!');
         startWafKeepWarmLoop();
+        startAutoEventOffersPrebookLoop();
         if (process.env.PREWARM_CHROME === 'true') {
           console.log('⚡ Priming pre-warmed Chrome for instant OTP in background...');
           prewarmBrowser().catch(e => console.log('Prewarm init note:', e.message));

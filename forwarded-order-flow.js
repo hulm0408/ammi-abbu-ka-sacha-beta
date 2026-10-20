@@ -667,16 +667,30 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
 
-  // Stage 3: Account Selected & Live Bill Fetched -> [Generate QR] [Paid] [Switch Account] [Cancel]
+  // Stage 3: Account Selected & Live Bill Fetched -> [Generate QR] [Paid] [Re-Scan Offers] [Switch Account] [Cancel]
   if (hasAddress && hasCart && (order.cardStage === 'BILL_READY' || order.cardStage === 'QR_GENERATED')) {
     const bodyHtml = formatOrderBodyFn(order, true);
+    const offerNotes = [];
+    if (order.eventsClaimSummary) {
+      const bfMsg = order.eventsClaimSummary.breakfastMsg;
+      const lnMsg = order.eventsClaimSummary.lateNightMsg;
+      if (bfMsg) offerNotes.push(`🍳 <b>Breakfast:</b> ${escapeHtml(bfMsg)}`);
+      if (lnMsg) offerNotes.push(`🌙 <b>Late Night:</b> ${escapeHtml(lnMsg)}`);
+    }
+    if (Number(order.walletSplitPayAmount || 0) > 0) {
+      offerNotes.push(`💰 <b>Wallet Split-Pay Ready:</b> ₹${order.walletSplitPayAmount} Swiggy Money auto-deducts from UPI QR!`);
+    }
+    if (order.offerDiagnostics) {
+      offerNotes.push(`ℹ️ <i>${escapeHtml(order.offerDiagnostics)}</i>`);
+    }
+    const offerStrip = offerNotes.length > 0 ? `\n\n${offerNotes.join('\n')}` : '';
     const qrStatusNote = order.cardStage === 'QR_GENERATED'
       ? `\n\n🟢 <b>Official Swiggy Dynamic QR Active</b> (Swiggy Order <code>${escapeHtml(String(order.pendingSwiggyOrderId || ''))}</code> • Auto-detecting payment every 5s or tap <b>Paid</b>)`
       : '';
     const text =
       `🧾 <b>ORDER BILL READY (#${escapeHtml(order.id)})</b>\n` +
       `${senderLine}\n\n` +
-      `${bodyHtml}${qrStatusNote}`;
+      `${bodyHtml}${offerStrip}${qrStatusNote}`;
 
     const readyForQrCount = getBillReadyOrdersWaitingForQr(db).length;
     const rows = [
@@ -696,7 +710,10 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
         )
       ]);
     }
-    rows.push([Markup.button.callback('🔄 Change Swiggy Account', `fwd_rechoose_acc_${order.id}`)]);
+    rows.push([
+      Markup.button.callback('🎁 Re-Scan Max Offer', `fwd_rescan_max_${order.id}`),
+      Markup.button.callback('🔄 Change Account', `fwd_rechoose_acc_${order.id}`)
+    ]);
     rows.push([cancelBtn]);
     return { text, keyboard: Markup.inlineKeyboard(rows) };
   }
@@ -1628,5 +1645,33 @@ export function registerForwardedOrderHandlers(bot, {
       (freedAcc ? `\n🟢 <i>Account ${escapeHtml(freedAcc.phone || freedAccKey)} is now FREE for new orders!</i>` : ''),
       { parse_mode: 'HTML' }
     );
+  });
+
+  // 6. Force Re-Scan Max Coupon + Breakfast/Late Night Free Cash on Current Account
+  bot.action(/^fwd_rescan_max_([A-Za-z0-9_]+)$/, async (ctx) => {
+    if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
+    const orderId = ctx.match[1];
+    const db = getDb();
+    const order = db.orders?.[orderId];
+    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    const accKey = order.selectedAccount;
+    const acc = accKey ? db.config?.accounts?.[accKey] : null;
+    if (!acc || !acc.isLoggedIn) {
+      return ctx.answerCbQuery('⚠️ Select a logged-in Swiggy account first!', { show_alert: true });
+    }
+    await ctx.answerCbQuery('🎁 Re-claiming Free Cash & testing all Max Coupons...').catch(() => {});
+    try {
+      const { claimSwiggyBreakfastAndLateNightOffers } = await import('./swiggy-bridge.js');
+      await claimSwiggyBreakfastAndLateNightOffers(acc, { force: true }).catch(() => null);
+      order.couponCode = null;
+      await withSwiggyAccountLock(accKey, async () => {
+        const res = await syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false });
+        if (!res?.success) throw new Error(res?.error || 'Re-scan sync failed');
+      });
+      order.cardStage = 'BILL_READY';
+      await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, db, formatOrderBodyFn, { includeQrDelete: true });
+    } catch (err) {
+      await sendBossDiagnosticError(ctx, ctx.chat.id, err, { stage: 'RESCAN_MAX_OFFER', orderId: order.id, accountKey: accKey });
+    }
   });
 }

@@ -78,7 +78,7 @@ try {
     const rawOtherBotHexJson = JSON.stringify({
       phone: realWebHexAcc.phone,
       token: realWebHexAcc.token,
-      tid: realWebHexAcc.tid, // 1504-char hex `_session_tid` without dots!
+      tid: realWebHexAcc._session_tid || realWebHexAcc.tid, // 1536-char hex `_session_tid` without dots!
       sid: realWebHexAcc.sid,
       deviceId: realWebHexAcc.deviceId
     });
