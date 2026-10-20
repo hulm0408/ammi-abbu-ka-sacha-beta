@@ -52,10 +52,15 @@ import {
   reverseGeocodeCoords,
   geocodeAddressDetails,
   fetchAllAccountsSavedAddresses,
-  applyLiveCouponToOrder
+  applyLiveCouponToOrder,
+  generateRealSwiggyMerchantUpiQr,
+  checkRealSwiggyPaymentAndExtractTracking
 } from './swiggy-cart.js';
 import {
   extractForwardSenderInfo,
+  looksLikeBossOrderInput,
+  computeTrackHmac,
+  formatBossDiagnosticErrorMessage,
   deleteOrderBotMessages,
   buildForwardedOrderCardView,
   handleBossForwardedOrderInput,
@@ -5006,8 +5011,14 @@ bot.on('photo', async (ctx) => {
   const userId = ctx.from.id;
   const state = userWaitState[userId];
 
-  // If Boss forwards a photo message with caption from IB (e.g. screenshot + link/address), handle as Forwarded Order!
-  if (isBoss(userId) && ctx.message?.caption && extractForwardSenderInfo(ctx.message)) {
+  // If Boss sends/forwards a photo with a Cart/Address caption (not while manually uploading a custom QR), handle via Unified Card Flow!
+  if (
+    isBoss(userId) &&
+    (!state || state.action !== 'waiting_custom_qr_photo') &&
+    ctx.message?.caption &&
+    (extractForwardSenderInfo(ctx.message) || looksLikeBossOrderInput(ctx.message.caption))
+  ) {
+    delete userWaitState[userId];
     await handleBossForwardedOrderInput(ctx, {
       rawText: ctx.message.caption.trim(),
       formatOrderBodyFn: formatUserOrderCardText
@@ -6726,6 +6737,18 @@ bot.on('text', async (ctx) => {
     return;
   }
 
+  // Unified Direct Boss Card Workflow:
+  // When Boss directly sends any Cart link, Address link, or Address block from his Boss account (not forwarded),
+  // create/update the clean card under BOSS'S OWN NAME (`isForwarded: false`), generate 100% REAL Swiggy QR, & extract REAL tracking!
+  if (isBoss(userId) && (looksLikeBossOrderInput(rawText) || (state && ['waiting_cart', 'waiting_address'].includes(state.action)))) {
+    delete userWaitState[userId];
+    await handleBossForwardedOrderInput(ctx, {
+      rawText,
+      formatOrderBodyFn: formatUserOrderCardText
+    });
+    return;
+  }
+
   // Handle waiting_cart state
   if (state && state.action === 'waiting_cart') {
     const allLinks = extractAllLinks(rawText);
@@ -7132,7 +7155,7 @@ async function handleIncomingTelegramLocation(ctx, loc) {
 }
 
 bot.on('location', async (ctx) => {
-  if (ctx.from?.id && isBoss(ctx.from.id) && extractForwardSenderInfo(ctx.message)) {
+  if (ctx.from?.id && isBoss(ctx.from.id)) {
     delete userWaitState[ctx.from.id];
     await handleBossForwardedOrderInput(ctx, {
       location: ctx.message?.location,
@@ -8172,24 +8195,195 @@ bot.catch(async (err, ctx) => {
   try {
     const db = getDb();
     const bossIds = db?.config?.bossIds || [];
-    const shortErr = errMsg.slice(0, 300);
-    const errText = `⚠️ <b>Bot Error Alert</b>\n\n` +
-      `<b>Type:</b> ${updateType}\n` +
-      `<b>Error:</b> <code>${shortErr}</code>\n` +
-      `<i>${new Date().toLocaleTimeString('en-IN')}</i>`;
+    const diagMsg = formatBossDiagnosticErrorMessage(err, {
+      stage: `GLOBAL_BOT_CATCH_${updateType.toUpperCase()}`,
+      senderName: ctx?.from?.first_name || '',
+      isForwarded: Boolean(ctx?.message && extractForwardSenderInfo(ctx.message)),
+      cartLink: ctx?.callbackQuery?.data || ctx?.message?.text || ''
+    });
     for (const bossId of bossIds) {
-      await bot.telegram.sendMessage(bossId, errText, { parse_mode: 'HTML' }).catch(() => {});
+      await bot.telegram.sendMessage(bossId, diagMsg, { parse_mode: 'HTML' }).catch(() => {});
     }
   } catch (e) {}
 });
 
 
-// Lightweight health check server + 1-Click Full Session Code WebApp Clipboard Engine + 24x7 Keep-Alive
+// Lightweight health check server + Zero-Login Live Swiggy Order Tracker + 1-Click Session Copy WebApp + 24x7 Keep-Alive
 const healthPort = Number(process.env.PORT || 0);
 if (healthPort > 0) {
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     try {
       const reqUrl = new URL(req.url || '/', `http://localhost:${healthPort}`);
+
+      // Live Zero-Login Real-Time Swiggy Tracking JSON Endpoint (`/api/track/:orderId?sig=...`)
+      const apiTrackMatch = reqUrl.pathname.match(/^\/api\/track\/([A-Za-z0-9_]+)$/);
+      if (apiTrackMatch) {
+        const orderId = apiTrackMatch[1];
+        const sig = reqUrl.searchParams.get('sig') || '';
+        if (sig !== computeTrackHmac(orderId)) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+          return res.end(JSON.stringify({ ok: false, error: 'Unauthorized tracking signature' }));
+        }
+        const db = getDb();
+        const order = db.orders?.[orderId];
+        if (!order) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+          return res.end(JSON.stringify({ ok: false, error: 'Order not found' }));
+        }
+        const acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
+        let live = null;
+        if (acc?.cookies && (order.swiggyOrderId || order.pendingSwiggyOrderId)) {
+          live = await checkRealSwiggyPaymentAndExtractTracking(acc, order).catch(() => null);
+          if (live?.paid) {
+            order.liveOrderStatus = live.orderStatus || order.liveOrderStatus;
+            order.etaMinutes = live.etaMinutes || order.etaMinutes;
+            if (live.deliveryBoy?.name) order.deliveryBoyName = live.deliveryBoy.name;
+            if (live.deliveryBoy?.mobile) order.deliveryBoyMobile = live.deliveryBoy.mobile;
+            saveDb(db);
+          }
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store'
+        });
+        return res.end(JSON.stringify({
+          ok: true,
+          orderId: order.id,
+          swiggyOrderId: live?.swiggyOrderId || order.swiggyOrderId || '',
+          customerName: order.fwdSenderName || order.userName || 'Customer',
+          restaurantName: live?.restaurantName || order.restaurantName || 'Swiggy Restaurant',
+          restaurantAddress: live?.restaurantAddress || '',
+          orderStatus: live?.orderStatus || order.liveOrderStatus || 'Order Confirmed',
+          statusSubText: live?.statusSubText || '',
+          etaMinutes: live?.etaMinutes || order.etaMinutes || '',
+          deliveryBoy: live?.deliveryBoy || { name: order.deliveryBoyName || '', mobile: order.deliveryBoyMobile || '', lat: null, lng: null },
+          deliveryAddress: live?.deliveryAddress || order.addressDetails || { address: order.address || '' },
+          items: order.items || [],
+          finalPayable: order.finalPayable || 0,
+          swiggyWebTrackUrl: live?.swiggyWebTrackUrl || order.trackingLink || `https://www.swiggy.com/track-order/${order.swiggyOrderId || ''}`,
+          updatedAt: new Date().toISOString()
+        }));
+      }
+
+      // Live Zero-Login Shareable Swiggy Tracking Web Page (`/track/:orderId?sig=...`)
+      const pageTrackMatch = reqUrl.pathname.match(/^\/track\/([A-Za-z0-9_]+)$/);
+      if (pageTrackMatch) {
+        const orderId = pageTrackMatch[1];
+        const sig = reqUrl.searchParams.get('sig') || '';
+        if (sig !== computeTrackHmac(orderId)) {
+          res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+          return res.end('Invalid or unauthorized live tracking link.');
+        }
+        const safeOrderId = JSON.stringify(orderId);
+        const safeSig = JSON.stringify(sig);
+        const trackHtml = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Live Swiggy Order Tracking • #${escapeHtml(orderId)}</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+  body{background:#0f172a;color:#f8fafc;min-height:100vh;padding:14px}
+  .wrap{max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+  .card{background:#1e293b;border:1px solid #334155;border-radius:18px;padding:16px;box-shadow:0 12px 30px rgba(0,0,0,.35)}
+  .badge{display:inline-flex;align-items:center;gap:6px;background:rgba(16,185,129,.16);color:#34d399;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:700}
+  .status{font-size:22px;font-weight:800;margin-top:10px;color:#fff}
+  .sub{font-size:13px;color:#94a3b8;margin-top:4px}
+  #map{width:100%;height:240px;border-radius:14px;overflow:hidden;background:#0b1220}
+  .row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.14);font-size:14px}
+  .row:last-child{border-bottom:none}
+  .muted{color:#94a3b8;font-size:13px}
+  .btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:13px 16px;border-radius:12px;background:#fc8019;color:#fff;text-decoration:none;font-weight:800;font-size:15px}
+  .callbtn{padding:7px 13px;border-radius:10px;background:#10b981;color:#fff;text-decoration:none;font-weight:700;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span class="badge">🟢 LIVE SWIGGY TRACKING</span>
+      <span class="muted" id="eta">Checking ETA...</span>
+    </div>
+    <div class="status" id="st">Fetching live order status...</div>
+    <div class="sub" id="sub">Syncing directly with Swiggy servers every 8s</div>
+  </div>
+  <div class="card" style="padding:10px"><div id="map"></div></div>
+  <div class="card" id="riderCard" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div class="muted">Delivery Partner</div>
+        <div style="font-size:17px;font-weight:800;margin-top:2px" id="riderName">-</div>
+      </div>
+      <a class="callbtn" id="riderCall" href="#" style="display:none">📞 Call Rider</a>
+    </div>
+  </div>
+  <div class="card">
+    <div class="row"><span class="muted">Restaurant</span><strong id="rest">-</strong></div>
+    <div class="row"><span class="muted">Swiggy Order ID</span><code id="soid">-</code></div>
+    <div class="row"><span class="muted">Order For</span><strong id="cust">-</strong></div>
+    <div class="row"><span class="muted">Paid Amount</span><strong id="amt">-</strong></div>
+  </div>
+  <a class="btn" id="swLink" href="https://www.swiggy.com/my-account/orders" target="_blank" rel="noopener">🟠 Open in Swiggy App / Web</a>
+</div>
+<script>
+const OID = ${safeOrderId}, SIG = ${safeSig};
+let map, riderMarker, destMarker;
+async function refresh() {
+  try {
+    const r = await fetch('/api/track/' + encodeURIComponent(OID) + '?sig=' + encodeURIComponent(SIG));
+    const d = await r.json();
+    if (!d.ok) return;
+    document.getElementById('st').textContent = d.orderStatus || 'Order Confirmed';
+    document.getElementById('sub').textContent = d.statusSubText || ('Last synced: ' + new Date().toLocaleTimeString());
+    document.getElementById('eta').textContent = d.etaMinutes ? ('⏱ ' + d.etaMinutes + ' mins') : 'Live';
+    document.getElementById('rest').textContent = d.restaurantName || '-';
+    document.getElementById('soid').textContent = d.swiggyOrderId || '-';
+    document.getElementById('cust').textContent = d.customerName || '-';
+    document.getElementById('amt').textContent = d.finalPayable ? ('₹' + d.finalPayable) : '-';
+    if (d.swiggyWebTrackUrl) document.getElementById('swLink').href = d.swiggyWebTrackUrl;
+    if (d.deliveryBoy && d.deliveryBoy.name) {
+      document.getElementById('riderCard').style.display = 'block';
+      document.getElementById('riderName').textContent = '🏍 ' + d.deliveryBoy.name;
+      if (d.deliveryBoy.mobile) {
+        const cb = document.getElementById('riderCall');
+        cb.style.display = 'inline-block';
+        cb.href = 'tel:' + d.deliveryBoy.mobile;
+      }
+    }
+    const dLat = parseFloat(d.deliveryAddress && d.deliveryAddress.lat), dLng = parseFloat(d.deliveryAddress && d.deliveryAddress.lng);
+    const rLat = parseFloat(d.deliveryBoy && d.deliveryBoy.lat), rLng = parseFloat(d.deliveryBoy && d.deliveryBoy.lng);
+    const cLat = !isNaN(rLat) ? rLat : (!isNaN(dLat) ? dLat : 26.8658);
+    const cLng = !isNaN(rLng) ? rLng : (!isNaN(dLng) ? dLng : 80.9307);
+    if (!map && window.L) {
+      map = L.map('map').setView([cLat, cLng], 15);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
+    }
+    if (map && !isNaN(dLat) && !isNaN(dLng)) {
+      if (!destMarker) destMarker = L.marker([dLat, dLng]).addTo(map).bindPopup('📍 Delivery Address');
+      else destMarker.setLatLng([dLat, dLng]);
+    }
+    if (map && !isNaN(rLat) && !isNaN(rLng)) {
+      if (!riderMarker) riderMarker = L.marker([rLat, rLng]).addTo(map).bindPopup('🏍 Delivery Partner (Live)').openPopup();
+      else riderMarker.setLatLng([rLat, rLng]);
+      map.setView([rLat, rLng], 15);
+    }
+  } catch (e) {}
+}
+refresh();
+setInterval(refresh, 8000);
+</script>
+</body>
+</html>`;
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store, no-cache, must-revalidate'
+        });
+        return res.end(trackHtml);
+      }
+
       if (reqUrl.pathname === '/copy') {
         const accKey = reqUrl.searchParams.get('acc') || '';
         const sig = reqUrl.searchParams.get('sig') || '';

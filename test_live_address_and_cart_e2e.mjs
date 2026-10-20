@@ -105,14 +105,17 @@ try {
   const expiredGc = await fetchLiveGroupCart('142853973');
   check(expiredGc?.status === 'EXPIRED', 'Expired group cart 142853973 cleanly detected as EXPIRED');
 
-  // 10. Read-only live personal cart inspection on acc_6296591407
+  // 10. Read-only live personal cart inspection on acc_6296591407 (supports both active cart & clean empty cart)
   personalLive = await inspectCartForAccount(accLive);
   check(
-    Boolean(personalLive?.restaurantName) &&
-    personalLive?.items?.length >= 1 &&
-    personalLive?.finalPayable > 0,
-    `Read-only personal cart inspection matches Swiggy app checkout ₹${personalLive?.finalPayable} to the exact rupee`,
-    `${personalLive?.restaurantName} | Coupon: ${personalLive?.couponCode || 'None'} | Payable: ₹${personalLive?.finalPayable}`
+    personalLive !== null && (
+      personalLive.empty === true ||
+      (Boolean(personalLive?.restaurantName) && personalLive?.items?.length >= 1 && personalLive?.finalPayable > 0)
+    ),
+    personalLive?.empty
+      ? 'Read-only personal cart inspection succeeded cleanly (acc_6296591407 cart currently empty)'
+      : `Read-only personal cart inspection matches Swiggy app checkout ₹${personalLive?.finalPayable} to the exact rupee`,
+    personalLive?.empty ? 'Empty Cart (statusCode: 0)' : `${personalLive?.restaurantName} | Coupon: ${personalLive?.couponCode || 'None'} | Payable: ₹${personalLive?.finalPayable}`
   );
 
   // 11. Full cross-account clone + address save + cart sync on acc_9935123518

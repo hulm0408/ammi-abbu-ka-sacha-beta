@@ -3215,3 +3215,337 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     accountComparison
   };
 }
+
+// ===========================================================================
+// REAL SWIGGY PAYMENT GATEWAY DYNAMIC UPI QR + LIVE ORDER CONFIRM & TRACKING
+// ===========================================================================
+
+function buildSwiggyPaymentsApiHeaders(account, auth, { cartId = '', addressId = '', lat = '', lng = '' } = {}) {
+  const cookies = parseCookieMap(account?.cookies || '');
+  const deviceId = auth?.deviceId || cookies._device_id || cookies._swuid || '';
+  return {
+    'content-type': 'application/json',
+    'accept': '*/*',
+    'origin': 'https://www.swiggy.com',
+    'referer': 'https://www.swiggy.com/',
+    'marketplaceid': '1',
+    'statusbarheight': '0',
+    'accessibility-enabled': 'false',
+    'x-web-checkout-flow': 'payment',
+    'x-checkout-webview': 'ANDROID',
+    'iswebcachingxpenabled': 'false',
+    'tid': auth?.jwtTid || cookies.tid || '',
+    'cartid': String(cartId || ''),
+    'swuid': cookies._swuid || deviceId,
+    'marketplacebusinessline': 'regular',
+    'token': account?.token || cookies.token || '',
+    'platform': 'swiggy-android',
+    'sid': auth?.sid || cookies._sid || '',
+    'userid': String(auth?.userId || ''),
+    'isfrombottombar': 'false',
+    'custom-success-screen': 'false',
+    'm_id': 'CHECKOUT',
+    'x-client-id': 'web-payment',
+    'browser-user-agent': DESKTOP_UA,
+    'user-agent': DESKTOP_UA,
+    'marketplacecategory': 'food',
+    'issuperuser': 'false',
+    'version-code': '1600',
+    'deviceid': deviceId,
+    'isfirstsessionpostdeployment': 'false',
+    'iswebviewassetscached': 'false',
+    'agent-type': 'Swiggy-Android',
+    'analyticsplatform': 'an',
+    'x-origin-id': 'ANDROID',
+    'cartaddressid': String(addressId || ''),
+    'addressid': String(addressId || ''),
+    'lat': String(lat || ''),
+    'lng': String(lng || ''),
+    'tenant': 'SW-FOOD',
+    'client-id': 'swiggy-android'
+  };
+}
+
+/**
+ * Places a REAL pending UPI Intent order on Swiggy (`POST https://payments.swiggy.com/api/v3/order/place`)
+ * and extracts Swiggy's genuine merchant dynamic UPI QR URI (`upi://pay?pa=swiggyupi@...`),
+ * exact Swiggy `order_id`, and `transactionId` (`paas_id`).
+ * Never charges or confirms an unpaid order; only completes when scanned & paid in any UPI app.
+ */
+export async function generateRealSwiggyMerchantUpiQr(account, order) {
+  if (!account?.cookies) {
+    const err = new Error('Selected Swiggy account has no active session cookies.');
+    err.diag = { code: 'QR_NO_ACCOUNT_COOKIES', stage: 'GENERATE_REAL_QR' };
+    throw err;
+  }
+
+  let auth = await getSwiggySessionAuth(account, true);
+  if (!auth?.userId || !auth?.jwtTid) {
+    const err = new Error('Swiggy session expired or invalid (`userId`/`jwtTid` missing). Re-login account.');
+    err.diag = { code: 'QR_AUTH_EXPIRED', stage: 'GENERATE_REAL_QR', hasCookies: Boolean(account.cookies) };
+    throw err;
+  }
+
+  // Verify live Swiggy personal cart has items + `address_id`; re-sync automatically if stale/empty!
+  let curCart = await dapiFetch(account, 'cart');
+  let cm = curCart?.json?.data?.cartMeta || {};
+  let itemCount = Number(curCart?.json?.data?.totalItemsCount || curCart?.json?.data?.cartItemsCount || 0);
+
+  if ((!cm.address_id || !cm.order_total || itemCount <= 0) && (order?.cart || order?.cartLink || order?.items?.length)) {
+    await syncGroupCartAndCheckoutForAccount(account, order, { captureScreenshot: false });
+    auth = await getSwiggySessionAuth(account, true);
+    curCart = await dapiFetch(account, 'cart');
+    cm = curCart?.json?.data?.cartMeta || {};
+    itemCount = Number(curCart?.json?.data?.totalItemsCount || curCart?.json?.data?.cartItemsCount || 0);
+  }
+
+  const cartId = String(cm.originalCartId || cm.cart_id || '');
+  const addressId = String(cm.address_id || order?.addressDetails?.id || '');
+  const lat = String(order?.addressDetails?.lat || cm.restaurant_details?.lat || '26.8467');
+  const lng = String(order?.addressDetails?.lng || cm.restaurant_details?.lng || '80.9462');
+
+  if (!addressId || Number(cm.order_total || 0) <= 0) {
+    const err = new Error(
+      `Swiggy checkout cart is empty or missing delivery address_id (items=${itemCount}, order_total=${cm.order_total || 0}, address_id="${addressId}", msg="${cm.statusMessage || ''}").`
+    );
+    err.diag = {
+      code: 'QR_CART_NOT_READY',
+      stage: 'GENERATE_REAL_QR',
+      itemCount,
+      cartOrderTotal: cm.order_total || 0,
+      addressId,
+      cartMessage: cm.statusMessage || cm.ctaText || ''
+    };
+    throw err;
+  }
+
+  const headers = buildSwiggyPaymentsApiHeaders(account, auth, { cartId, addressId, lat, lng });
+
+  const placeRes = await fetch('https://payments.swiggy.com/api/v3/order/place', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      address_id: addressId,
+      lat,
+      lng,
+      payment_cod_method: 'UPIIntent',
+      order_comments: '',
+      force_validate_coupon: false,
+      upi_transaction_info: {
+        intent_app: 'com.google.android.apps.nbu.paisa.user',
+        intent_app_display_name: 'Google Pay'
+      }
+    })
+  });
+
+  const rawText = await placeRes.text();
+  let json = null;
+  try { json = JSON.parse(rawText); } catch (e) {}
+
+  const orderData = json?.data?.order_data || json?.data?.orderData || null;
+  let redir = orderData?.app_redirection_info ?? orderData?.appRedirectionInfo ?? null;
+  if (typeof redir === 'string') {
+    try { redir = JSON.parse(redir); } catch (e) { redir = null; }
+  }
+
+  const upiIntentUrl =
+    redir?.upiRedirect?.upiIntentRedirect?.upiIntentUrl ||
+    redir?.upi_intent_url ||
+    orderData?.upiIntentUrl ||
+    orderData?.upi_intent_url ||
+    '';
+
+  const swiggyOrderId = String(orderData?.order_id || orderData?.orderId || '');
+  const paymentTxnId = String(
+    redir?.upiRedirect?.upiIntentRedirect?.transactionId ||
+    orderData?.targeted_marketplace_payment_reference_id ||
+    orderData?.payment_info_v2?.payment_transactions?.[0]?.marketplace_reference_id ||
+    ''
+  );
+  const liveOrderTotal = Number(orderData?.order_total ?? cm.order_total ?? order?.finalPayable ?? 0);
+
+  if (!placeRes.ok || json?.statusCode !== 0 || !upiIntentUrl || !upiIntentUrl.startsWith('upi://')) {
+    const err = new Error(
+      `Swiggy payment gateway rejected QR creation: HTTP ${placeRes.status}, statusCode=${json?.statusCode}, msg="${json?.statusMessage || 'Unknown'}"`
+    );
+    err.diag = {
+      code: 'SWIGGY_PLACE_ORDER_QR_FAILED',
+      stage: 'POST_PAYMENTS_ORDER_PLACE',
+      httpStatus: placeRes.status,
+      swiggyStatusCode: json?.statusCode ?? null,
+      swiggyMessage: json?.statusMessage || '',
+      cartId,
+      addressId,
+      cartTotal: cm.order_total,
+      rawSnippet: rawText.slice(0, 500)
+    };
+    throw err;
+  }
+
+  return {
+    upiIntentUrl,
+    swiggyOrderId,
+    paymentTxnId,
+    amount: liveOrderTotal,
+    slaMinutes: orderData?.sla_time ? String(orderData.sla_time) : '',
+    restaurantName: orderData?.restaurant_name || cm.restaurant_details?.name || order?.restaurantName || '',
+    confirmWindowMs: Number(redir?.upiRedirect?.upiIntentRedirect?.upiIntentConfirmTimeInMs || 45000)
+  };
+}
+
+/**
+ * Checks LIVE payment status & extracts REAL Swiggy Order ID, Order Status, Rider Info & Live Tracking Data:
+ * 1) Non-destructively checks `GET https://payments.swiggy.com/api/v3/vpa-txn-status?paas_id=<txnId>&payment_code=UPIIntent`
+ * 2) As soon as `data === 'success'`, fires `POST https://payments.swiggy.com/api/v3/order/confirm?order_id=<id>` so Swiggy confirms kitchen dispatch!
+ * 3) Verifies real paid order via `GET /dapi/order/all` + `GET /dapi/order/details?type=full&version=V2` + `GET /dapi/order/trackV4` + `GET /dapi/order/trackV2/de`.
+ */
+export async function checkRealSwiggyPaymentAndExtractTracking(account, order) {
+  if (!account?.cookies) {
+    const err = new Error('Selected Swiggy account has no session cookies while checking payment.');
+    err.diag = { code: 'PAID_CHECK_NO_COOKIES', stage: 'CHECK_PAYMENT_AND_TRACKING' };
+    throw err;
+  }
+
+  const auth = await getSwiggySessionAuth(account, true);
+  if (!auth?.userId) {
+    const err = new Error('Swiggy session expired while checking payment status.');
+    err.diag = { code: 'PAID_CHECK_AUTH_EXPIRED', stage: 'CHECK_PAYMENT_AND_TRACKING' };
+    throw err;
+  }
+
+  const headers = buildSwiggyPaymentsApiHeaders(account, auth);
+  let gatewayTxnState = '';
+  let targetOrderId = String(order?.pendingSwiggyOrderId || order?.swiggyOrderId || '');
+  const pendingPaasId = String(order?.pendingSwiggyPaasId || '');
+
+  // Step 1: Non-destructive live gateway check on the exact QR `paas_id` (`transactionId`)
+  if (pendingPaasId) {
+    try {
+      const txnRes = await fetch(
+        `https://payments.swiggy.com/api/v3/vpa-txn-status?paas_id=${encodeURIComponent(pendingPaasId)}&payment_code=UPIIntent`,
+        { method: 'GET', headers }
+      );
+      const txnJson = await txnRes.json().catch(() => null);
+      gatewayTxnState = String(txnJson?.data || '').toLowerCase();
+
+      // ONLY confirm order on Swiggy AFTER payment genuinely succeeded (`success` / `completed`)!
+      if (['success', 'completed', 'paid'].includes(gatewayTxnState) && targetOrderId) {
+        await fetch(
+          `https://payments.swiggy.com/api/v3/order/confirm?order_id=${encodeURIComponent(targetOrderId)}`,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ order_id: targetOrderId, transaction_id: pendingPaasId })
+          }
+        ).catch(() => {});
+      }
+    } catch (e) {}
+  }
+
+  // Step 2: Re-fetch fresh `/dapi/order/all` to detect either:
+  //   - Exact paid `pendingSwiggyOrderId`, OR
+  //   - Any brand-new paid Swiggy order placed on this account after `baselineSwiggyOrderId`!
+  const freshAuth = await getSwiggySessionAuth(account, true);
+  const recentOrders = freshAuth?.orders || auth?.orders || [];
+  const baselineId = String(order?.baselineSwiggyOrderId || '');
+
+  let matchedOrder = null;
+  for (const o of recentOrders) {
+    const oid = String(o?.order_id || '');
+    if (!oid) continue;
+    if (baselineId && oid === baselineId) break;
+    if (targetOrderId && oid === targetOrderId) {
+      matchedOrder = o;
+      break;
+    }
+    if (!matchedOrder) matchedOrder = o;
+  }
+
+  // If order hasn't surfaced in `/dapi/order/all` yet, also check `order/details?order_id=<targetOrderId>&type=full&version=V2`
+  if (!matchedOrder && targetOrderId) {
+    const det = await dapiFetch(account, `order/details?order_id=${encodeURIComponent(targetOrderId)}&type=full&version=V2`).catch(() => null);
+    const detOrder = det?.json?.data?.orders?.[0];
+    if (detOrder) {
+      const payState = String(detOrder?.payment_info_v2?.payment_transactions?.[0]?.state || '').toUpperCase();
+      const postSt = String(detOrder?.post_status || '').toLowerCase();
+      if (payState === 'STATE_SUCCESS' || ['processing', 'completed', 'delivered'].includes(postSt) || ['success', 'completed', 'paid'].includes(gatewayTxnState)) {
+        matchedOrder = detOrder;
+      }
+    }
+  }
+
+  if (!matchedOrder) {
+    return {
+      paid: false,
+      txnState: gatewayTxnState || 'pending'
+    };
+  }
+
+  const payTxnState = String(matchedOrder?.payment_info_v2?.payment_transactions?.[0]?.state || '').toUpperCase();
+  const statusStr = String(matchedOrder?.order_status || matchedOrder?.post_status || '').toLowerCase();
+  const isPaidAndValid =
+    (payTxnState === 'STATE_SUCCESS' || ['success', 'completed', 'paid'].includes(gatewayTxnState) || (!payTxnState && !/fail|cancel|pending_payment/i.test(statusStr))) &&
+    !/cancel|fail|aborted|pending/i.test(statusStr === 'pending' ? 'pending' : (/cancel|fail|aborted/i.test(statusStr) ? statusStr : ''));
+
+  // Wait: if `post_status === 'pending'` AND payment is NOT `STATE_SUCCESS`, customer hasn't paid yet!
+  if (
+    payTxnState === 'STATE_PENDING' ||
+    payTxnState === 'STATE_FAILED' ||
+    (String(matchedOrder?.post_status || '').toLowerCase() === 'pending' && payTxnState !== 'STATE_SUCCESS')
+  ) {
+    return {
+      paid: false,
+      txnState: gatewayTxnState || payTxnState.toLowerCase() || 'pending'
+    };
+  }
+
+  if (!isPaidAndValid) {
+    return {
+      paid: false,
+      txnState: gatewayTxnState || statusStr || 'pending'
+    };
+  }
+
+  const confirmedOrderId = String(matchedOrder.order_id);
+  const customerId = String(matchedOrder.customer_id || auth.userId || '');
+
+  // Step 3: Fetch live `trackV4` + `trackV2/de` for real-time status text, ETA & rider coordinates!
+  const [trkRes, deRes] = await Promise.all([
+    dapiFetch(account, `order/trackV4?order_id=${encodeURIComponent(confirmedOrderId)}&type=full&version=V2&customer_id=${encodeURIComponent(customerId)}`).catch(() => null),
+    dapiFetch(account, `order/trackV2/de?order_id=${encodeURIComponent(confirmedOrderId)}`).catch(() => null)
+  ]);
+
+  const trkData = trkRes?.json?.data || {};
+  const deData = deRes?.json?.data || {};
+
+  // Check if Swiggy returned any shareable link in trackV4 actions
+  const allTrackJson = JSON.stringify(trkData);
+  const shareMatch = allTrackJson.match(/https?:\/\/(?:www\.)?(?:swig\.gy|swiggy\.com)\/[^\s"\\]+/i);
+  const nativeShareUrl =
+    matchedOrder?.shareable_url ||
+    trkData?.shareable_url ||
+    (shareMatch && !/support\/issues/i.test(shareMatch[0]) ? shareMatch[0] : null);
+
+  return {
+    paid: true,
+    txnState: 'success',
+    swiggyOrderId: confirmedOrderId,
+    customerId,
+    orderStatus: trkData?.order_status_details?.status_message || matchedOrder?.order_status || 'Order Confirmed',
+    statusSubText: trkData?.order_status_details?.status_tag_text || '',
+    etaMinutes: String(matchedOrder?.sla_time || ''),
+    restaurantName: matchedOrder?.restaurant_name || order?.restaurantName || '',
+    restaurantAddress: matchedOrder?.restaurant_address || '',
+    deliveryBoy: {
+      name: matchedOrder?.delivery_boy?.name || deData?.name || '',
+      mobile: matchedOrder?.delivery_boy?.mobile || deData?.mobile || '',
+      lat: deData?.lat || deData?.location?.lat || null,
+      lng: deData?.lng || deData?.location?.lng || null
+    },
+    deliveryAddress: matchedOrder?.delivery_address || order?.addressDetails || null,
+    nativeShareUrl,
+    swiggyWebTrackUrl: nativeShareUrl || `https://www.swiggy.com/track-order/${confirmedOrderId}`,
+    swiggyAppDeepLink: `swiggy://track-order?order_id=${confirmedOrderId}`
+  };
+}
+

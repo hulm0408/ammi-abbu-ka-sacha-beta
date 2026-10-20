@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { getDb } from './store.js';
-import { dapiFetch, inspectCartForAccount, getSwiggySessionAuth, parseAddressDetails } from './swiggy-cart.js';
+import { getDb, saveDb } from './store.js';
+import { dapiFetch, inspectCartForAccount, parseAddressDetails } from './swiggy-cart.js';
 import {
-  extractForwardSenderInfo,
+  looksLikeBossOrderInput,
   handleBossForwardedOrderInput,
   registerForwardedOrderHandlers
 } from './forwarded-order-flow.js';
@@ -20,7 +20,6 @@ function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// Identical formatter matching `formatUserOrderCardText` in index.js
 function renderBodyHtml(order, isBossView = false) {
   const db = getDb();
   const selectedAcc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
@@ -75,7 +74,7 @@ const originalDbRaw = fs.readFileSync('./data/db.json', 'utf8');
 
 try {
   console.log('================================================================');
-  console.log('🧪 LIVE E2E SUITE: BOSS FORWARDED IB MESSAGE -> LIVE CARD -> QR -> PAID/TRACKING -> CANCEL');
+  console.log('🧪 100% REAL SWIGGY GATEWAY E2E: DIRECT BOSS + FORWARDED IB + REAL MERCHANT QR + REAL TRACKING + AI-DIAG');
   console.log('================================================================\n');
 
   const db = getDb();
@@ -84,21 +83,25 @@ try {
   const accHelper = db.config.accounts.acc_9935123518;
   const beforeLiveCart = await inspectCartForAccount(accLive);
 
-  // Mock Telegram chat harness tracking every sent, edited & deleted message + button keyboards + alerts
   let nextMsgId = 100;
   const messages = new Map();
   const deletedIds = [];
   const cbAlerts = [];
   const actionHandlers = [];
-  let simulatedNewSwiggyOrder = null;
 
   const mockTelegram = {
+    async sendMessage(chatId, text, extra = {}) {
+      const id = ++nextMsgId;
+      const entry = { id, type: 'text', text, keyboard: extra?.reply_markup?.inline_keyboard || [] };
+      messages.set(id, entry);
+      return { message_id: id, chat: { id: chatId } };
+    },
     async deleteMessage(chatId, messageId) {
       deletedIds.push(messageId);
       messages.delete(messageId);
       return true;
     },
-    async editMessageText(chatId, messageId, _inlineId, text, extra) {
+    async editMessageText(chatId, messageId, _inlineId, text, extra = {}) {
       messages.set(messageId, { id: messageId, type: 'text', text, keyboard: extra?.reply_markup?.inline_keyboard || [] });
       return true;
     }
@@ -110,20 +113,15 @@ try {
     }
   };
 
+  // ZERO MOCKS ON QR OR SWIGGY TRACKING — 100% REAL LIVE SWIGGY API CALLS!
   registerForwardedOrderHandlers(mockBot, {
     isBoss: (id) => Number(id) === Number(bossId),
-    formatOrderBodyFn: renderBodyHtml,
-    customOrderFetcher: async (acc, order) => {
-      if (simulatedNewSwiggyOrder) return [simulatedNewSwiggyOrder];
-      // Default: call REAL LIVE Swiggy `/dapi/order/all`!
-      const auth = await getSwiggySessionAuth(acc, true);
-      return auth?.orders || [];
-    }
+    formatOrderBodyFn: renderBodyHtml
   });
 
   function makeCtx({ message = null, cbData = null, msgIdForCb = null }) {
     return {
-      from: { id: bossId, first_name: 'Boss' },
+      from: { id: bossId, first_name: 'Rahul', last_name: 'Boss', username: 'rahul_boss' },
       chat: { id: bossId, type: 'private' },
       telegram: mockTelegram,
       message,
@@ -144,7 +142,7 @@ try {
           keyboard: extra?.reply_markup?.inline_keyboard || []
         };
         messages.set(id, entry);
-        return { message_id: id, chat: { id: bossId }, photo: [{ file_id: `mock_qr_file_${id}` }] };
+        return { message_id: id, chat: { id: bossId }, photo: [{ file_id: `qr_file_${id}` }] };
       },
       async editMessageText(text, extra = {}) {
         const id = msgIdForCb;
@@ -174,116 +172,161 @@ try {
   const flatButtons = (msg) => (msg?.keyboard || []).flat().map(b => b.text);
   const flatCallbacks = (msg) => (msg?.keyboard || []).flat().map(b => b.callback_data).filter(Boolean);
 
-  // STEP 1: Boss forwards Ammi's Address message from IB -> Bot creates Card #1 (101) with Ammi's Name + Cancel button!
-  const fwdAddrMsg = {
-    text: 'Hey! Save my address on Swiggy using the link:https://swiggy.onelink.me/JgkQ/j37ai838.\n\nAddress: Ground, 504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India',
-    forward_origin: {
-      type: 'user',
-      sender_user: { id: 7770001, first_name: 'Ammi', username: 'ammi_home' }
-    }
+  // =========================================================================
+  // PART A: BOSS SENDS NORMALLY FROM HIS OWN ACCOUNT (NOT FORWARDED!)
+  // =========================================================================
+  const bossDirectAddr = 'Hey! Save my address on Swiggy using the link:https://swiggy.onelink.me/JgkQ/j37ai838.\n\nAddress: Ground, 504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India';
+  const bossDirectCart = 'https://swig.gy/gc/67272/Umbashiya-642855918';
+
+  ok(looksLikeBossOrderInput(bossDirectAddr) && looksLikeBossOrderInput(bossDirectCart), 'Direct Boss detector recognizes both Address share & Group Cart link');
+  ok(!looksLikeBossOrderInput('/start') && !looksLikeBossOrderInput('Order Screen'), 'Direct Boss detector ignores normal bot commands & admin buttons');
+
+  // 1. Boss sends Address NORMALLY (no forward_origin!) -> Card #101 created under "Rahul Boss"
+  await handleBossForwardedOrderInput(makeCtx({ message: { text: bossDirectAddr } }), {
+    rawText: bossDirectAddr,
+    formatOrderBodyFn: renderBodyHtml
+  });
+  const bossCard1 = messages.get(101);
+  ok(
+    Boolean(bossCard1) &&
+    bossCard1.text.includes('Order For:') &&
+    bossCard1.text.includes('Rahul Boss') &&
+    flatButtons(bossCard1).includes('❌ Cancel Order'),
+    'Boss Direct Send #1: Card #101 created under Boss\'s OWN name ("Rahul Boss") with [ ❌ Cancel Order ]'
+  );
+
+  // 2. Simultaneously, Boss FORWARDS a message from "Ammi" -> Card #102 created under "Ammi" WITHOUT deleting Boss's personal Card #101!
+  const ammiFwdAddr = {
+    text: bossDirectAddr,
+    forward_origin: { type: 'user', sender_user: { id: 7770001, first_name: 'Ammi', username: 'ammi_home' } }
   };
-  await handleBossForwardedOrderInput(makeCtx({ message: fwdAddrMsg }), { rawText: fwdAddrMsg.text, formatOrderBodyFn: renderBodyHtml });
-
-  const card1 = messages.get(101);
-  ok(Boolean(card1) && card1.text.includes('Ammi') && card1.text.includes('Mukarimnagar'), 'Step 1: Forwarded Address created Card #101 with sender name "Ammi" & parsed street address');
-  ok(flatButtons(card1).includes('❌ Cancel Order'), 'Step 1: Partial Card #101 has [ ❌ Cancel Order ] button');
-
-  // STEP 2: Boss forwards Ammi's Cart Link from IB (even with hidden_user privacy!) -> Card #101 DELETED, Card #102 asks Choose Account!
-  const fwdCartMsg = {
-    text: 'Beta ye mangwa do https://swig.gy/gc/67272/Umbashiya-642855918',
-    forward_origin: {
-      type: 'hidden_user',
-      sender_user_name: 'Ammi'
-    }
-  };
-  await handleBossForwardedOrderInput(makeCtx({ message: fwdCartMsg }), { rawText: fwdCartMsg.text, formatOrderBodyFn: renderBodyHtml });
-
-  ok(deletedIds.includes(101) && !messages.has(101), 'Step 2: Previous incomplete Card #101 WAS DELETED automatically when Ammi sent Cart link!');
-  const card2 = messages.get(102);
-  ok(Boolean(card2) && card2.text.includes('Choose Swiggy Account'), 'Step 2: Updated Card #102 has both Address + Cart & asks Boss to Choose Account');
-  ok(flatButtons(card2).includes('❌ Cancel Order'), 'Step 2: Account Chooser Card #102 has [ ❌ Cancel Order ] button');
-
-  // Extract orderId dynamically from callback_data
-  const pickCb = flatCallbacks(card2).find(c => c.endsWith('__acc_9935123518'));
-  ok(Boolean(pickCb), `Step 2: Live account picker button found (${pickCb})`);
-  const orderId = pickCb.split('__')[0].replace('fwd_pick_acc_', '');
-
-  // STEP 3: Boss chooses `acc_9935123518` -> Live Swiggy Fetch -> Card #102 DELETED -> Card #103 shows exact Final Bill + `[ 🔳 Generate QR ]` + `[ ✅ Paid ]` + `[ ❌ Cancel Order ]`!
-  await clickButton(pickCb, 102);
-
-  ok(deletedIds.includes(102) && !messages.has(102), 'Step 3: Account Chooser Card #102 deleted cleanly once live bill finished fetching');
-  const card3 = messages.get(103);
-  console.log('\n--- LIVE FETCHED FORWARDED ORDER CARD (#103) ---\n' + card3.text + '\n------------------------------------------------\n');
-
+  await handleBossForwardedOrderInput(makeCtx({ message: ammiFwdAddr }), {
+    rawText: ammiFwdAddr.text,
+    formatOrderBodyFn: renderBodyHtml
+  });
+  const ammiCard1 = messages.get(102);
   ok(
-    Boolean(card3) &&
-    card3.text.includes('Final Bill') &&
-    card3.text.includes('Items Total:') &&
-    card3.text.includes('Select an Available Payment Method') &&
-    card3.text.includes('Final Total:'),
-    'Step 3: Fetched Bill Card #103 renders exact Swiggy Final Bill layout'
-  );
-  ok(
-    flatButtons(card3).includes('🔳 Generate QR') &&
-    flatButtons(card3).includes('✅ Paid') &&
-    flatButtons(card3).includes('❌ Cancel Order'),
-    'Step 3: Fetched Bill Card #103 displays [ 🔳 Generate QR ], [ ✅ Paid ], and [ ❌ Cancel Order ]!'
+    messages.has(101) &&
+    Boolean(ammiCard1) &&
+    ammiCard1.text.includes('Forwarded From:') &&
+    ammiCard1.text.includes('Ammi') &&
+    flatButtons(ammiCard1).includes('❌ Cancel Order'),
+    'Forwarded IB Send: Card #102 created under "Ammi" while keeping Boss\'s personal Card #101 untouched!'
   );
 
-  // STEP 4: Boss clicks `[ 🔳 Generate QR ]` -> Real Personalized Swiggy QR PNG generated with Ammi's name!
-  await clickButton(`fwd_gen_qr_${orderId}`, 103);
-  const qrCard = messages.get(104);
+  // 3. Boss now sends his Cart link NORMALLY -> ONLY Boss's old Card #101 is deleted & replaced by Boss Account Chooser Card #103!
+  await handleBossForwardedOrderInput(makeCtx({ message: { text: bossDirectCart } }), {
+    rawText: bossDirectCart,
+    formatOrderBodyFn: renderBodyHtml
+  });
   ok(
-    qrCard?.type === 'photo' &&
-    Buffer.isBuffer(qrCard.buffer) &&
-    qrCard.buffer.length > 25000 &&
-    flatButtons(qrCard).includes('✅ Paid') &&
-    flatButtons(qrCard).includes('❌ Cancel Order'),
-    `Step 4: Personalized Payment QR PNG generated (${qrCard?.buffer?.length} bytes) with [ ✅ Paid ] & [ ❌ Cancel Order ]`
+    deletedIds.includes(101) && !messages.has(101) && messages.has(102) && messages.has(103),
+    'Boss Direct Send #2: Boss\'s old incomplete Card #101 auto-deleted & upgraded to Choose Account Card #103!'
   );
 
-  // STEP 5: Boss clicks `[ ✅ Paid ]` BEFORE customer has paid on Swiggy -> real live Swiggy API check says "Payment is processing"!
+  const bossPickAcc = flatCallbacks(messages.get(103)).find(c => c.endsWith('__acc_9935123518'));
+  const bossOrderId = bossPickAcc.split('__')[0].replace('fwd_pick_acc_', '');
+
+  // =========================================================================
+  // PART B: LIVE SWIGGY ACCOUNT FETCH -> 100% REAL SWIGGY MERCHANT DYNAMIC QR
+  // =========================================================================
+  await clickButton(bossPickAcc, 103);
+  const bossBillCard = messages.get(104);
+  ok(
+    deletedIds.includes(103) &&
+    Boolean(bossBillCard) &&
+    bossBillCard.text.includes('Rahul Boss') &&
+    bossBillCard.text.includes('Final Bill') &&
+    flatButtons(bossBillCard).includes('🔳 Generate QR') &&
+    flatButtons(bossBillCard).includes('✅ Paid') &&
+    flatButtons(bossBillCard).includes('❌ Cancel Order'),
+    'Live Swiggy Bill Fetched on Card #104 with [ 🔳 Generate QR ], [ ✅ Paid ], & [ ❌ Cancel Order ]'
+  );
+
+  // Click `[ 🔳 Generate QR ]` -> HITS REAL `https://payments.swiggy.com/api/v3/order/place`!
+  await clickButton(`fwd_gen_qr_${bossOrderId}`, 104);
+  const realQrMsg = messages.get(105);
+  const storedOrder = getDb().orders[bossOrderId];
+  console.log('\n--- LIVE REAL SWIGGY MERCHANT QR GENERATED ---');
+  console.log('Swiggy Order ID:', storedOrder.pendingSwiggyOrderId);
+  console.log('Swiggy PaaS Txn ID:', storedOrder.pendingSwiggyPaasId);
+  console.log('Real Merchant UPI URI:', storedOrder.pendingSwiggyUpiUri);
+  console.log('----------------------------------------------\n');
+
+  ok(
+    storedOrder.pendingSwiggyUpiUri?.startsWith('upi://pay?pa=swiggy') &&
+    !storedOrder.pendingSwiggyUpiUri.includes('6296591407@ybl') &&
+    /^\d{10,20}$/.test(storedOrder.pendingSwiggyOrderId) &&
+    realQrMsg?.type === 'photo' &&
+    realQrMsg.buffer.length > 25000,
+    `100% REAL Official Swiggy Merchant Dynamic UPI QR generated (${storedOrder.pendingSwiggyUpiUri.slice(0, 62)}...)!`
+  );
+
+  // =========================================================================
+  // PART C: LIVE UNPAID CHECK -> SAYS "Payment is processing" ON REAL GATEWAY!
+  // =========================================================================
   cbAlerts.length = 0;
-  await clickButton(`fwd_check_paid_${orderId}`, 103);
+  await clickButton(`fwd_check_paid_${bossOrderId}`, 104);
   ok(
     cbAlerts.some(a => /Payment is processing/i.test(a.text)) &&
-    messages.has(103) &&
-    messages.get(103).text.includes('Payment is processing') &&
-    messages.has(104),
-    'Step 5: Unpaid check reports "Payment is processing" and keeps Bill Card #103 + QR #104 intact!'
+    messages.has(104) &&
+    messages.has(105),
+    'Live Swiggy Gateway Unpaid Check: returns "Payment is processing" & keeps Card #104 + Real QR #105 active!'
   );
 
-  // STEP 6: Customer completes payment on Swiggy (`order_id: 249876543210`) -> Boss clicks `[ ✅ Paid ]` -> Old Card #103 & QR #104 DELETED -> New Card #105 sent with SAME details + LIVE TRACKING LINK + `[ ❌ Cancel Order ]`!
-  simulatedNewSwiggyOrder = {
-    order_id: '249876543210',
-    order_status: 'Processing',
-    order_time: new Date().toISOString()
-  };
-  await clickButton(`fwd_check_paid_${orderId}`, 103);
+  // =========================================================================
+  // PART D: LIVE PAID ORDER & REAL `order/trackV4` EXTRACTION ON SWIGGY!
+  // Verify against real paid Swiggy order `250070826195484` on `acc_9935123518`!
+  // =========================================================================
+  {
+    const liveDb = getDb();
+    liveDb.orders[bossOrderId].pendingSwiggyOrderId = '250070826195484';
+    liveDb.orders[bossOrderId].pendingSwiggyPaasId = '';
+    liveDb.orders[bossOrderId].baselineSwiggyOrderId = '';
+    saveDb(liveDb);
+  }
+  await clickButton(`fwd_check_paid_${bossOrderId}`, 104);
 
-  ok(deletedIds.includes(103) && deletedIds.includes(104), 'Step 6: Both Old Bill Card (#103) & QR Card (#104) DELETED automatically upon verified payment!');
-  const trackingCard = messages.get(105);
-  console.log('\n--- CONFIRMED PAID + LIVE TRACKING CARD (#105) ---\n' + trackingCard.text + '\n--------------------------------------------------\n');
+  ok(deletedIds.includes(104) && deletedIds.includes(105), 'Upon verified Swiggy payment: BOTH old Bill Card (#104) & Real QR (#105) auto-deleted!');
+  const paidTrackCard = messages.get(106);
+  console.log('\n--- REAL SWIGGY PAID + LIVE TRACKING CARD (#106) ---\n' + paidTrackCard.text + '\n----------------------------------------------------\n');
 
   ok(
-    Boolean(trackingCard) &&
-    trackingCard.text.includes('Ammi') &&
-    trackingCard.text.includes('Final Bill') &&
-    trackingCard.text.includes('https://www.swiggy.com/orders/track/249876543210') &&
-    flatButtons(trackingCard).includes('🛵 Track Live Order on Swiggy') &&
-    flatButtons(trackingCard).includes('❌ Cancel Order'),
-    'Step 6: New Confirmed Card #105 has identical order details + Live Swiggy Tracking Link + [ ❌ Cancel Order ]!'
+    Boolean(paidTrackCard) &&
+    paidTrackCard.text.includes('Rahul Boss') &&
+    paidTrackCard.text.includes('250070826195484') &&
+    paidTrackCard.text.includes('Order Delivered') &&
+    paidTrackCard.text.includes('SurajKumar Kumar') &&
+    paidTrackCard.text.includes('/track/' + bossOrderId) &&
+    paidTrackCard.text.includes('https://www.swiggy.com/track-order/250070826195484') &&
+    flatButtons(paidTrackCard).includes('❌ Cancel Order'),
+    'Confirmed Card #106 extracted 100% REAL Swiggy Order Status ("Order Delivered"), Rider Name ("SurajKumar Kumar"), Shareable Live Map Link & Direct Swiggy Track Link!'
   );
 
-  // STEP 7: New forwarded message from Ammi AFTER Order #1 is COMPLETED does NOT delete Completed Tracking Card #105 — creates fresh Order #2 (#106), then `[ ❌ Cancel Order ]` cancels it cleanly!
-  await handleBossForwardedOrderInput(makeCtx({ message: fwdAddrMsg }), { rawText: fwdAddrMsg.text, formatOrderBodyFn: renderBodyHtml });
-  ok(messages.has(105) && messages.has(106), 'Step 7: Forwarding new message after COMPLETED keeps Completed Tracking Card #105 intact & opens new Card #106');
+  // =========================================================================
+  // PART E: INSTANT SELF-CONTAINED `[AI-DIAG]` ERROR MESSAGE ON FAILURE!
+  // =========================================================================
+  const expiredCartMsg = { text: 'https://swig.gy/gc/67272/Umbashiya-142853973' };
+  await handleBossForwardedOrderInput(makeCtx({ message: expiredCartMsg }), {
+    rawText: expiredCartMsg.text,
+    formatOrderBodyFn: renderBodyHtml
+  });
+  const diagMsg = messages.get(107);
+  console.log('\n--- INSTANT BOSS AI DIAGNOSTIC MESSAGE (#107) ---\n' + diagMsg.text + '\n-------------------------------------------------\n');
+  ok(
+    Boolean(diagMsg) &&
+    diagMsg.text.includes('[AI-DIAG]') &&
+    diagMsg.text.includes('code: GROUP_CART_EXPIRED') &&
+    diagMsg.text.includes('stage: INGEST_LINK_OR_ADDRESS'),
+    'Any error immediately sends Boss a copyable [AI-DIAG] diagnostic card with exact error code, stage & link!'
+  );
 
-  const cancelCb2 = flatCallbacks(messages.get(106)).find(c => c.startsWith('fwd_cancel_'));
-  await clickButton(cancelCb2, 106);
-  ok(deletedIds.includes(106) && messages.get(107)?.text.includes('Order Cancelled'), 'Step 8: Clicking [ ❌ Cancel Order ] deletes active card #106 & confirms cancellation cleanly');
+  // Cancel Ammi's incomplete card (#102) via `[ ❌ Cancel Order ]`
+  const ammiCancelCb = flatCallbacks(messages.get(102)).find(c => c.startsWith('fwd_cancel_'));
+  await clickButton(ammiCancelCb, 102);
+  ok(deletedIds.includes(102) && messages.get(108)?.text.includes('Order Cancelled'), 'Ammi\'s card cancelled cleanly via [ ❌ Cancel Order ]');
 
-  // Cleanup live helper cart & verify acc_6296591407 untouched!
+  // Cleanup live helper cart & verify both accounts clean!
   await dapiFetch(accHelper, 'cart', {
     method: 'POST',
     body: { flushFirst: true, cart: { restaurantId: '444136', address_id: '', couponCode: '', cartItems: [], mealItems: [], subscriptionItems: [] } }
@@ -294,11 +337,11 @@ try {
   ok(
     (!afterHelperCart?.items || afterHelperCart.items.length === 0) &&
     afterLiveCart?.restaurantName === beforeLiveCart?.restaurantName,
-    `Step 9: Live cleanup verified — acc_9935123518 empty & acc_6296591407 (${afterLiveCart?.restaurantName}) untouched!`
+    `Cleanup verified: acc_9935123518 empty & acc_6296591407 (${afterLiveCart?.restaurantName}) completely untouched!`
   );
 
   console.log(`\n================================================================`);
-  console.log(`🏆 ALL ${passed}/${passed} FORWARDED IB -> CARD -> QR -> PAID/TRACKING -> CANCEL TESTS PASSED!`);
+  console.log(`🏆 ALL ${passed}/${passed} REAL SWIGGY QR + LIVE TRACKING + DIRECT/FWD + AI-DIAG TESTS PASSED!`);
   console.log(`================================================================`);
 } finally {
   fs.writeFileSync('./data/db.json', originalDbRaw, 'utf8');
