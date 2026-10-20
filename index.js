@@ -20,6 +20,8 @@ import {
   clearDraft,
   exportSessionJson,
   importSessionJson,
+  normalizeSwiggySessionPayload,
+  extractSwiggyAccountsListFromInput,
   getActiveOrderAccountKey,
   setActiveOrderAccountKey,
   permanentLogoutAccount,
@@ -53,6 +55,7 @@ import {
   geocodeAddressDetails,
   fetchAllAccountsSavedAddresses,
   applyLiveCouponToOrder,
+  verifySwiggySessionLive,
   generateRealSwiggyMerchantUpiQr,
   checkRealSwiggyPaymentAndExtractTracking
 } from './swiggy-cart.js';
@@ -65,7 +68,11 @@ import {
   buildForwardedOrderCardView,
   dispatchAllReadyOrdersInParallel,
   handleBossForwardedOrderInput,
-  registerForwardedOrderHandlers
+  registerForwardedOrderHandlers,
+  generateNamedUpiQrPngBuffer,
+  sanitizeUpiUriForQr,
+  safeTelegramCaption,
+  truncateDisplayField
 } from './forwarded-order-flow.js';
 
 dotenv.config();
@@ -81,6 +88,7 @@ if (!BOT_TOKEN) {
 const bot = new Telegraf(BOT_TOKEN);
 
 const userWaitState = {};
+const splitJsonChunks = {};
 
 function extractAllLinks(text) {
   if (!text) return [];
@@ -986,10 +994,13 @@ async function sendPaymentQrToUser(order) {
       const payable = order.finalPayable ? `₹${order.finalPayable}` : 'As shown on Swiggy';
       const photoSource = order.customQrFileId || { source: Buffer.from(order.genuineQrBuffer) };
       await bot.telegram.sendPhoto(targetChat, photoSource, {
-        caption: `🟢 <b>Official Swiggy Payment QR (Order #${order.id})</b>\n\n` +
-          `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
+        caption: safeTelegramCaption(
+          `🟢 <b>Official Swiggy Payment QR (Order #${order.id})</b>\n\n` +
+          `🏨 <b>Restaurant:</b> ${escapeHtml(truncateDisplayField(order.restaurantName || 'Swiggy Order', 120))}\n` +
           `💰 <b>Payable on Swiggy:</b> <b>${payable}</b>\n\n` +
           `<i>Scan this genuine Swiggy QR code in PhonePe / Google Pay / Paytm / BHIM to pay directly to Swiggy:</i>`,
+          1000
+        ),
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [Markup.button.callback('💸 I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)],
@@ -1782,98 +1793,119 @@ bot.action(/^prompt_reenter_otp_(\d{10})$/, async (ctx) => {
   );
 });
 
-// Process JSON / Cookie login, verify live Swiggy session, and fetch authentic profile
+// Process JSON / Cookie login (single account, Cookie-Editor array, OR multi-account `accounts.json` batch!),
+// verifying live against BOTH Swiggy Web DAPI (`_session_tid`) AND Swiggy Native Android (`chkout` + `profile` token sessions)!
 async function handleProcessJsonLogin(ctx, rawJson, userId, targetKeyOverride = null, orderIdOverride = null) {
   const prevState = userWaitState[userId] || {};
   const finalTargetKey = targetKeyOverride || prevState.targetAcc || null;
   const finalOrderId = orderIdOverride || prevState.orderId || null;
   delete userWaitState[userId];
 
-  const trimmedInput = typeof rawJson === 'string' ? rawJson.trim() : rawJson;
-  let parsed = null;
-  if (typeof trimmedInput === 'string') {
-    try {
-      parsed = JSON.parse(trimmedInput);
-    } catch (e) {
-      // Also support raw Cookie header string paste (`_session_tid=...; tid=...`)
-      if (trimmedInput.includes('=') && (trimmedInput.includes('_session_tid') || trimmedInput.includes('tid='))) {
-        parsed = { cookies: trimmedInput };
-      } else {
-        return ctx.reply('⚠️ Invalid JSON format. Kripya valid Swiggy Session JSON ya Cookie string bhejein.');
+  const extractedList = extractSwiggyAccountsListFromInput(rawJson);
+  if (!extractedList.length) {
+    return ctx.reply('⚠️ Invalid JSON format. Kripya valid Swiggy Session JSON, Cookie string, ya .json/.txt file bhejein.');
+  }
+
+  // Multi-account JSON array (`accounts.json` / `[ {...}, {...} ]`) — verify & import all active accounts simultaneously!
+  if (extractedList.length > 1) {
+    const statusMsg = await ctx.reply(
+      `⏳ <i>${extractedList.length} Swiggy accounts live verify ho rahe hain (Web + Android engine)...</i>`,
+      { parse_mode: 'HTML' }
+    );
+    const dbCheck = getDb();
+    const checks = await Promise.all(
+      extractedList.map(async (entry, idx) => {
+        const vaultFb = (entry.phone && dbCheck.sessionVault?.[entry.phone]) || null;
+        const candidateCookies = cleanEssentialSwiggyCookies(
+          (!entry.cookies?.includes('_session_tid=') && vaultFb?.cookies?.includes('_session_tid='))
+            ? `${vaultFb.cookies}; ${entry.cookies || ''}`
+            : (entry.cookies || ''),
+          entry
+        );
+        const mergedEntry = { ...entry, cookies: candidateCookies };
+        const live = await verifySwiggySessionLive(mergedEntry);
+        return { entry: mergedEntry, live, idx };
+      })
+    );
+
+    const activeImported = [];
+    const deadList = [];
+    for (const { entry, live, idx } of checks) {
+      if (!live?.valid) {
+        deadList.push(entry.phone || entry.name || `Account #${idx + 1}`);
+        continue;
+      }
+      const cleanPhone = (live.phone || entry.phone || '').replace(/\D/g, '').slice(-10);
+      const swiggyName = live.name || entry.swiggyName || entry.name || (cleanPhone ? `User ${cleanPhone}` : 'Swiggy User');
+      const accKey = cleanPhone ? `acc_${cleanPhone}` : (entry.account || `acc_${Date.now()}_${idx}`);
+      const res = importSessionJson({
+        ...entry,
+        tid: live.liveTid || entry.tid || '',
+        token: live.token || entry.token || '',
+        customerId: live.customerId || entry.customerId || '',
+        name: swiggyName,
+        swiggyName,
+        phone: cleanPhone,
+        cookies: live.cookies || entry.cookies || ''
+      }, accKey);
+      if (res.success) {
+        claimSwiggyBreakfastAndLateNightOffers({
+          phone: cleanPhone,
+          token: live.token || entry.token || live.liveTid,
+          tid: live.liveTid || entry.tid,
+          cookies: live.cookies || entry.cookies
+        }).catch(() => {});
+        activeImported.push(`✅ <b>${escapeHtml(swiggyName)}</b> (<code>${cleanPhone || accKey}</code>)`);
       }
     }
-  } else {
-    parsed = trimmedInput;
+
+    try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+
+    if (activeImported.length === 0) {
+      return ctx.reply(
+        `❌ <b>All ${extractedList.length} Sessions Really Expired on Swiggy!</b>\n\n` +
+        `Web + Native Android dono servers par check kiya gaya — ye accounts Swiggy server se logout ho chuke hain:\n` +
+        deadList.map(x => `• <code>${escapeHtml(x)}</code>`).join('\n'),
+        { parse_mode: 'HTML', ...getBossPanelKeyboard() }
+      );
+    }
+
+    return ctx.reply(
+      `🎉 <b>${activeImported.length}/${extractedList.length} Active Swiggy Accounts Logged In!</b>\n\n` +
+      activeImported.join('\n') +
+      (deadList.length > 0 ? `\n\n⚠️ <i>Skipped Truly Expired (${deadList.length}):</i> ${deadList.map(x => `<code>${escapeHtml(x)}</code>`).join(', ')}` : ''),
+      { parse_mode: 'HTML', ...getBossPanelKeyboard() }
+    );
   }
 
-  // Support Cookie-Editor JSON array `[ { name, value }, ... ]` directly too!
-  if (Array.isArray(parsed)) {
-    const cookiePairs = parsed
-      .filter(c => c && c.name && c.value !== undefined)
-      .map(c => `${c.name}=${c.value}`)
-      .join('; ');
-    const getC = (n) => parsed.find(c => c && c.name === n)?.value || '';
-    parsed = {
-      tid: getC('tid'),
-      sid: getC('_sid'),
-      deviceId: getC('_device_id'),
-      token: getC('token'),
-      cookies: cookiePairs
-    };
-  }
-
+  // Single account session JSON (supports Web `_session_tid`, hex-`tid`, Python/Android `{ tid, token, sid, deviceId }`, Cookie-Editor, etc.)
+  const parsed = extractedList[0];
   const dbCheck = getDb();
-  const parsedPhoneRaw = parsed?.phone || parsed?.mobile || '';
-  const hintPhone = parsedPhoneRaw ? String(parsedPhoneRaw).replace(/[^0-9]/g, '').slice(-10) : '';
+  const hintPhone = parsed.phone || '';
   const vaultFallback = (hintPhone && dbCheck.sessionVault?.[hintPhone]) || (finalTargetKey && dbCheck.sessionVault?.[finalTargetKey]) || null;
 
-  let rawCookieStr = parsed?.cookies || '';
+  let rawCookieStr = parsed.cookies || '';
   if ((!rawCookieStr || !rawCookieStr.includes('_session_tid=')) && vaultFallback?.cookies?.includes('_session_tid=')) {
-    rawCookieStr = vaultFallback.cookies;
+    rawCookieStr = `${vaultFallback.cookies}; ${rawCookieStr}`;
   }
-  if (!rawCookieStr && parsed?.tid) {
-    rawCookieStr = `tid=${parsed.tid}; _sid=${parsed.sid || ''}; _device_id=${parsed.deviceId || ''}; token=${parsed.token || parsed.tid}; _is_logged_in=1`;
-  }
-
-  const cookieStr = cleanEssentialSwiggyCookies(rawCookieStr, parsed || {});
-  if (!cookieStr && !parsed?.tid) {
-    return ctx.reply('⚠️ Invalid session: Isme Swiggy cookies ya tid token nahi mila.');
+  const cookieStr = cleanEssentialSwiggyCookies(rawCookieStr, parsed);
+  if (!cookieStr && !parsed.tid && !parsed.token) {
+    return ctx.reply('⚠️ Invalid session: Isme Swiggy cookies, tid ya token nahi mila.');
   }
 
-  const statusMsg = await ctx.reply('⏳ <i>Swiggy session live verify ho raha hai & profile fetch kiya ja raha hai...</i>', { parse_mode: 'HTML' });
+  const statusMsg = await ctx.reply('⏳ <i>Swiggy session live verify ho raha hai (Web + Native App engine)...</i>', { parse_mode: 'HTML' });
 
-  // Live check against zero-WAF Swiggy endpoint so broken/incomplete sessions are caught immediately
-  let liveTid = parsed?.tid || '';
-  let liveCustomerId = parsed?.customerId || '';
-  let liveSessionValid = true;
-  try {
-    const authRes = await fetch('https://www.swiggy.com/dapi/order/all', {
-      headers: {
-        'Cookie': stripStaleWafCookie(cookieStr),
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Referer': 'https://www.swiggy.com/my-account'
-      },
-      signal: AbortSignal.timeout(7000)
-    });
-    const authJson = await authRes.json().catch(() => null);
-    if (authRes.status === 200 && authJson?.statusCode === 1) {
-      liveSessionValid = false;
-    } else if (authRes.status === 200 && authJson?.tid) {
-      liveTid = authJson.tid;
-      const jwtData = decodeJwtPayload(liveTid);
-      if (jwtData?.user_id && jwtData.user_id !== '0') {
-        liveCustomerId = String(jwtData.user_id);
-      }
-    }
-  } catch (e) {}
+  const liveCheck = await verifySwiggySessionLive({
+    ...parsed,
+    cookies: cookieStr
+  });
 
-  if (!liveSessionValid) {
+  if (!liveCheck?.valid) {
     try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
     return ctx.reply(
-      `❌ <b>Swiggy Session Expired / Incomplete Code!</b>\n\n` +
-      `Swiggy server ne is pasted code ko reject kar diya hai (ya purana incomplete code tha jisme <code>_session_tid</code> cookie nahi thi).\n\n` +
-      `👉 <b>Kripya Mobile Number + OTP se fresh login karein — ab se Copy Code button 100% PURA code (with full cookies) copy karega!</b>`,
+      `❌ <b>Swiggy Session Genuinely Expired!</b>\n\n` +
+      `Swiggy Web + Native Android dono servers par live check kiya gaya — Swiggy ne bataya: <code>${escapeHtml(liveCheck?.androidMessage || liveCheck?.webMessage || 'Session expired')}</code>.\n\n` +
+      `👉 <b>Kripya Mobile Number + OTP se fresh login karein ya active Swiggy JSON bhejein!</b>`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
@@ -1888,8 +1920,14 @@ async function handleProcessJsonLogin(ctx, rawJson, userId, targetKeyOverride = 
     );
   }
 
-  // 1. Fetch real profile from Swiggy using clean cookies
-  const profile = await fetchSwiggyProfileFromCookies(cookieStr).catch(() => ({ name: null, phone: null }));
+  const liveTid = liveCheck.liveTid || parsed.tid || '';
+  const liveToken = liveCheck.token || parsed.token || '';
+  const liveCustomerId = liveCheck.customerId || parsed.customerId || '';
+
+  // 1. Fetch real profile from Swiggy if not already resolved by native profile endpoint
+  const profile = (liveCheck.name && liveCheck.phone)
+    ? { id: liveCustomerId, name: liveCheck.name, phone: liveCheck.phone }
+    : await fetchSwiggyProfileFromCookies({ ...parsed, tid: liveTid, token: liveToken, customerId: liveCustomerId, cookies: cookieStr }).catch(() => ({ name: null, phone: null }));
   const cleanPhone = (profile?.phone || hintPhone ? String(profile?.phone || hintPhone).replace(/[^0-9]/g, '').slice(-10) : '');
   const swiggyName = profile?.name || parsed?.swiggyName || parsed?.name || (cleanPhone ? `User ${cleanPhone}` : 'Swiggy User');
   const accKey = finalTargetKey || (cleanPhone ? `acc_${cleanPhone}` : (parsed?.account || 'acc_' + Date.now()));
@@ -1897,9 +1935,11 @@ async function handleProcessJsonLogin(ctx, rawJson, userId, targetKeyOverride = 
   // 2. Import complete session into database + vault
   const result = importSessionJson({
     ...parsed,
-    tid: liveTid || parsed?.tid || '',
+    tid: liveTid,
+    token: liveToken,
     customerId: liveCustomerId || profile?.id || parsed?.customerId || '',
     name: swiggyName,
+    swiggyName,
     phone: cleanPhone,
     cookies: cookieStr
   }, accKey);
@@ -1912,7 +1952,7 @@ async function handleProcessJsonLogin(ctx, rawJson, userId, targetKeyOverride = 
     const claimWait = await ctx.reply('⏳ <i>Swiggy Breakfast (6am-11am) & Late Night (9pm-11pm) ₹50 OFF offers auto-claim ho rahe hain...</i>', { parse_mode: 'HTML' });
     const offersResult = await claimSwiggyBreakfastAndLateNightOffers({
       phone: cleanPhone,
-      token: parsed?.token || liveTid,
+      token: liveToken || liveTid,
       tid: liveTid,
       cookies: cookieStr
     });
@@ -4103,13 +4143,19 @@ bot.action(/^user_accept_amount_(.+)$/, async (ctx) => {
 
   await ctx.answerCbQuery('Amount Accepted! Generating UPI QR... 💳').catch(() => {});
 
-  // Generate UPI QR Code automatically using bot's configured UPI ID
+  // Generate guaranteed-scannable high-clarity UPI QR Code automatically using bot's configured UPI ID
   const upiId = db.config.bossUpiId || '6296591407@ybl';
   const amt = order.finalPayable || 57;
-  const upiUri = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=Swiggy&am=${amt}&cu=INR&tn=Swiggy_Order_${order.id}`;
+  const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(order.restaurantName || 'Swiggy')}&am=${amt}&cu=INR&tn=Swiggy_Order_${order.id}`);
   let qrBuf = null;
   try {
-    qrBuf = await QRCode.toBuffer(upiUri, { width: 350, margin: 2 });
+    qrBuf = await generateNamedUpiQrPngBuffer({
+      upiUri,
+      senderName: order.userName || order.restaurantName || 'Swiggy',
+      restaurantName: order.restaurantName || 'Swiggy',
+      amount: amt,
+      orderId: order.id
+    });
   } catch (err) {
     console.error('Failed to generate QR buffer:', err.message);
   }
@@ -4225,36 +4271,44 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
       console.error('Failed to send genuine QR to boss:', err.message);
     }
   } else {
-    // Case 2: Instant High-Resolution Scannable UPI QR (< 100ms)
+    // Case 2: Instant High-Resolution Guaranteed-Scannable UPI QR (< 100ms, safe with giant names!)
     try {
-      const upiUri = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`;
-      const qrBuffer = await QRCode.toBuffer(upiUri, {
-        width: 800,
-        margin: 2,
-        color: { dark: '#000000', light: '#ffffff' }
+      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`);
+      const qrBuffer = await generateNamedUpiQrPngBuffer({
+        upiUri,
+        senderName: order.userName || payeeName,
+        restaurantName: payeeName,
+        amount: payable,
+        orderId
       });
 
       await bot.telegram.sendPhoto(order.userId, { source: qrBuffer }, {
-        caption: `🟢 <b>Swiggy Payment QR (Order #${orderId})</b>\n\n` +
-          `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Food Order')}\n` +
+        caption: safeTelegramCaption(
+          `🟢 <b>Swiggy Payment QR (Order #${orderId})</b>\n\n` +
+          `🏨 <b>Restaurant:</b> ${escapeHtml(truncateDisplayField(order.restaurantName || 'Swiggy Food Order', 120))}\n` +
           `💰 <b>Total Payable Amount:</b> <b>₹${payable}</b>\n` +
           (order.totalSavings > 0 ? `🎉 <b>Discounts Saved:</b> ₹${order.totalSavings}\n` : '') +
           `\n📱 <b>Payment Instructions:</b>\n` +
           `1. Kisi bhi UPI app (Google Pay / PhonePe / Paytm / BHIM) se QR scan karein.\n` +
           `2. Exact <b>₹${payable}</b> pay karein.\n` +
           `3. Payment hone ke baad niche <b>[ 💸 Confirm Payment / Done ]</b> dabayein:`,
+          1000
+        ),
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard(userButtons)
       });
 
       const userProfileUrl = `tg://user?id=${order.userId}`;
       await ctx.replyWithPhoto({ source: qrBuffer }, {
-        caption: `⚡ <b>AUTHENTIC UPI PAYMENT QR DELIVERED!</b>\n\n` +
+        caption: safeTelegramCaption(
+          `⚡ <b>AUTHENTIC UPI PAYMENT QR DELIVERED!</b>\n\n` +
           `📌 <b>Order #${orderId}</b> | Amount: <b>₹${payable}</b>\n` +
-          `👤 <b>Customer:</b> <a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> (TG ID: <a href="${userProfileUrl}">${order.userId}</a>)\n` +
+          `👤 <b>Customer:</b> <a href="${userProfileUrl}">${escapeHtml(truncateDisplayField(order.userName, 90))}</a> (TG ID: <a href="${userProfileUrl}">${order.userId}</a>)\n` +
           `💳 <b>Receiving UPI ID:</b> <code>${upiId}</code>\n` +
-          `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n\n` +
+          `🏨 <b>Restaurant:</b> ${escapeHtml(truncateDisplayField(order.restaurantName || 'Swiggy Order', 120))}\n\n` +
           `<i>User ke chat me scannable QR bhej diya gaya hai! Payment hote hi user confirm karega.</i>`,
+          1000
+        ),
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard(bossButtons)
       });
@@ -4311,18 +4365,23 @@ bot.action(/^boss_get_qr_(.+)$/, async (ctx) => {
     try {
       const upiId = db.config?.bossUpiId || '8249789547@paytm';
       const payeeName = order.restaurantName || 'Swiggy Food Order';
-      const upiUri = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`;
-      const qrBuffer = await QRCode.toBuffer(upiUri, {
-        width: 600,
-        margin: 2,
-        color: { dark: '#000000', light: '#ffffff' }
+      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`);
+      const qrBuffer = await generateNamedUpiQrPngBuffer({
+        upiUri,
+        senderName: order.userName || payeeName,
+        restaurantName: payeeName,
+        amount: payable,
+        orderId
       });
       await ctx.replyWithPhoto({ source: qrBuffer }, {
-        caption: `📷 <b>AUTHENTIC UPI PAYMENT QR FOR REQUEST #${orderId}</b>\n\n` +
+        caption: safeTelegramCaption(
+          `📷 <b>AUTHENTIC UPI PAYMENT QR FOR REQUEST #${orderId}</b>\n\n` +
           `💰 <b>Amount:</b> <b>₹${payable}</b>\n` +
           `💳 <b>Receiving UPI:</b> <code>${upiId}</code>\n` +
-          `🏨 <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n\n` +
+          `🏨 <b>Restaurant:</b> ${escapeHtml(truncateDisplayField(order.restaurantName || 'Swiggy Order', 120))}\n\n` +
           `<i>Kisi bhi UPI app (Google Pay / PhonePe / Paytm / BHIM) se scan karke payment ho jayega!</i>`,
+          1000
+        ),
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard(bossButtons)
       });
@@ -5121,8 +5180,8 @@ bot.on('document', async (ctx) => {
   const doc = ctx.message.document;
   if (!doc) return;
 
-  // Handle .json file upload for Free Cash Claim OR Login with JSON
-  if (doc.file_name && doc.file_name.toLowerCase().endsWith('.json') && isBoss(userId)) {
+  // Handle .json or .txt file upload for Free Cash Claim OR Login with JSON
+  if (doc.file_name && /\.(json|txt)$/i.test(doc.file_name) && isBoss(userId)) {
     try {
       const fileLink = await ctx.telegram.getFileLink(doc.file_id);
       const res = await fetch(fileLink.href);
@@ -5130,11 +5189,12 @@ bot.on('document', async (ctx) => {
 
       if (state && state.action === 'waiting_fc_json') {
         delete userWaitState[userId];
-        const parsed = JSON.parse(fileText);
-        const ck = Array.isArray(parsed)
-          ? parsed
-          : (parsed.cookies || (parsed.tid ? `tid=${parsed.tid}; _sid=${parsed.sid || ''}; token=${parsed.token || parsed.tid}` : ''));
-        const statusMsg = await ctx.reply('⏳ <i>Uploaded .json se Free Cash check & claim ho raha hai...</i>', { parse_mode: 'HTML' });
+        const norm = normalizeSwiggySessionPayload(fileText);
+        if (!norm) {
+          return ctx.reply('⚠️ File me valid Swiggy session nahi mila.');
+        }
+        const ck = norm.cookies || '';
+        const statusMsg = await ctx.reply('⏳ <i>Uploaded file se Free Cash check & claim ho raha hai...</i>', { parse_mode: 'HTML' });
         const fcRes = await claimInstamartFreeCash(ck);
         try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
         if (fcRes.status === 'CLAIMED') {
@@ -5148,7 +5208,7 @@ bot.on('document', async (ctx) => {
       await handleProcessJsonLogin(ctx, fileText, userId);
       return;
     } catch (e) {
-      return ctx.reply('⚠️ JSON file process karne me error aaya: ' + e.message);
+      return ctx.reply('⚠️ Session file process karne me error aaya: ' + e.message);
     }
   }
 
@@ -6115,18 +6175,50 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // A: Login with JSON (either waiting_json_login or directly pasted JSON string)
-  if ((state && (state.action === 'waiting_json_login' || state.action === 'waiting_json_import')) || (rawText.startsWith('{') && (rawText.includes('cookies') || rawText.includes('tid')))) {
-    try {
-      const parsed = JSON.parse(rawText);
-      if (parsed.cookies || parsed.tid) {
-        await handleProcessJsonLogin(ctx, rawText, userId);
-        return;
-      }
-    } catch (e) {
-      if (state && (state.action === 'waiting_json_login' || state.action === 'waiting_json_import')) {
-        return ctx.reply('⚠️ Invalid JSON format. Please send a valid Swiggy session JSON string.');
-      }
+  // A: Login with JSON / Cookie / Multi-Account Array / Telegram Split-Message Reassembly (>4096 chars!)
+  if (splitJsonChunks[userId]) {
+    clearTimeout(splitJsonChunks[userId].timer);
+    const combined = splitJsonChunks[userId].buf + rawText;
+    const extractedCombined = extractSwiggyAccountsListFromInput(combined);
+    if (extractedCombined.length > 0) {
+      delete splitJsonChunks[userId];
+      await handleProcessJsonLogin(ctx, combined, userId);
+      return;
+    }
+    splitJsonChunks[userId].buf = combined;
+    splitJsonChunks[userId].timer = setTimeout(() => {
+      const leftover = splitJsonChunks[userId]?.buf || '';
+      delete splitJsonChunks[userId];
+      if (leftover) handleProcessJsonLogin(ctx, leftover, userId).catch(() => {});
+    }, 1800);
+    return;
+  }
+
+  const looksLikeSessionPaste =
+    (state && (state.action === 'waiting_json_login' || state.action === 'waiting_json_import')) ||
+    ((rawText.startsWith('{') || rawText.startsWith('[') || rawText.startsWith('```') || rawText.includes('_session_tid=')) &&
+      /(_session_tid|session_tid|"tid"|"token"|"auth_token"|"access_token"|"cookies"|tid=)/i.test(rawText));
+
+  if (looksLikeSessionPaste) {
+    const quickExtracted = extractSwiggyAccountsListFromInput(rawText);
+    if (quickExtracted.length > 0) {
+      await handleProcessJsonLogin(ctx, rawText, userId);
+      return;
+    }
+    // If Telegram truncated a >4096-char pasted JSON across 2–3 messages, buffer chunk #1 cleanly for 1.8s!
+    if ((rawText.startsWith('{') || rawText.startsWith('[') || rawText.startsWith('```')) && rawText.length >= 3500) {
+      splitJsonChunks[userId] = {
+        buf: rawText,
+        timer: setTimeout(() => {
+          const leftover = splitJsonChunks[userId]?.buf || '';
+          delete splitJsonChunks[userId];
+          if (leftover) handleProcessJsonLogin(ctx, leftover, userId).catch(() => {});
+        }, 1800)
+      };
+      return;
+    }
+    if (state && (state.action === 'waiting_json_login' || state.action === 'waiting_json_import')) {
+      return ctx.reply('⚠️ Invalid JSON format. Kripya valid Swiggy session JSON, Cookie string, ya .json/.txt file bhejein.');
     }
   }
 

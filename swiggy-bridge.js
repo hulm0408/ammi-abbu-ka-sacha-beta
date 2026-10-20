@@ -123,16 +123,24 @@ export function checkLoggedInFromCookies(input) {
 
   if (typeof input === 'object' && !Array.isArray(input)) {
     if (input.isLoggedIn === false) return false;
-    if (input.tid) tidValue = input.tid;
-    if (input.token) tokenVal = input.token;
+    if (input.tid) tidValue = String(input.tid);
+    if (input._session_tid || input.session_tid || input.sessionTid) {
+      sessionTid = String(input._session_tid || input.session_tid || input.sessionTid);
+    }
+    if (!sessionTid && tidValue && !tidValue.includes('.')) {
+      sessionTid = tidValue;
+    }
+    if (input.token || input.auth_token || input.access_token || input.authToken || input.accessToken) {
+      tokenVal = String(input.token || input.auth_token || input.access_token || input.authToken || input.accessToken);
+    }
     if (input.cookies) input = input.cookies;
-    else if (!tidValue && !tokenVal) return Boolean(input.isLoggedIn);
+    else if (!tidValue && !tokenVal && !sessionTid) return Boolean(input.isLoggedIn);
   }
 
   if (Array.isArray(input)) {
     const getC = (n) => input.find(c => c && c.name === n)?.value || '';
     tidValue = tidValue || getC('tid');
-    sessionTid = getC('_session_tid');
+    sessionTid = sessionTid || getC('_session_tid');
     tokenVal = tokenVal || getC('token');
     isLoggedFlag = getC('_is_logged_in');
   } else if (typeof input === 'string') {
@@ -141,11 +149,14 @@ export function checkLoggedInFromCookies(input) {
       return m ? decodeURIComponent(m[1]).trim() : '';
     };
     tidValue = tidValue || getS(/(?:^|;\s*)tid=([^;]+)/);
-    sessionTid = getS(/(?:^|;\s*)_session_tid=([^;]+)/);
+    sessionTid = sessionTid || getS(/(?:^|;\s*)_session_tid=([^;]+)/);
     tokenVal = tokenVal || getS(/(?:^|;\s*)token=([^;]+)/);
     isLoggedFlag = getS(/(?:^|;\s*)_is_logged_in=([^;]+)/);
     if (!tidValue && input.includes('.') && input.length > 50 && !input.includes(';')) {
       tidValue = input.trim();
+    }
+    if (!sessionTid && /^[0-9a-fA-F]{40,}$/.test(input.trim())) {
+      sessionTid = input.trim();
     }
   }
 
@@ -154,12 +165,16 @@ export function checkLoggedInFromCookies(input) {
     if (payload && payload.user_id && payload.user_id !== '0' && payload.user_id !== '-1') {
       return true;
     }
+    // If `tid` is an explicit guest pre-OTP JWT (`user_id === "0"`) and there is NO real `_session_tid`, it is NOT logged in!
+    if (payload && (payload.user_id === '0' || payload.user_id === '-1') && !sessionTid && (!tokenVal || tokenVal === tidValue)) {
+      return false;
+    }
   }
 
   if (isLoggedFlag === '1' && (sessionTid.length >= 16 || tokenVal.length >= 10)) {
     return true;
   }
-  if (isLoggedFlag !== '0' && (sessionTid.length >= 32 || (tokenVal.length >= 16 && tidValue.length >= 50))) {
+  if (isLoggedFlag !== '0' && (sessionTid.length >= 32 || tokenVal.length >= 24 || (tokenVal.length >= 16 && tidValue.length >= 50))) {
     return true;
   }
 

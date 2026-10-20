@@ -25,6 +25,247 @@ const defaultData = {
   userStates: {}
 };
 
+// Strips markdown code fences and outer noise from pasted JSON / Cookie strings
+function unwrapRawSessionString(raw) {
+  if (typeof raw !== 'string') return raw;
+  let s = raw.trim();
+  s = s.replace(/^```(?:json|js|txt)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  if (/^cookie\s*:/i.test(s)) {
+    s = s.replace(/^cookie\s*:\s*/i, '').trim();
+  }
+  return s;
+}
+
+function isCookieEditorArray(arr) {
+  return (
+    Array.isArray(arr) &&
+    arr.length > 0 &&
+    arr.some(c => c && typeof c === 'object' && typeof c.name === 'string' && c.value !== undefined && !c.tid && !c.token && !c.phone && !c.mobile)
+  );
+}
+
+// Normalizes ANY single Swiggy session object/cookie string from ANY bot or browser extension into canonical fields
+export function normalizeSwiggySessionPayload(rawInput) {
+  if (!rawInput) return null;
+  let item = typeof rawInput === 'string' ? unwrapRawSessionString(rawInput) : rawInput;
+
+  if (typeof item === 'string') {
+    try {
+      item = JSON.parse(item);
+    } catch {
+      if (item.includes('=') && (item.includes('_session_tid') || item.includes('tid=') || item.includes('token='))) {
+        item = { cookies: item };
+      } else if (item.includes('.') && item.length > 60 && !item.includes(' ')) {
+        item = { tid: item };
+      } else if (/^[0-9a-fA-F]{40,}$/.test(item)) {
+        item = { _session_tid: item };
+      } else {
+        return null;
+      }
+    }
+  }
+
+  if (isCookieEditorArray(item)) {
+    const cookiePairs = item
+      .filter(c => c && c.name && c.value !== undefined)
+      .map(c => `${c.name}=${c.value}`)
+      .join('; ');
+    const getC = (n) => item.find(c => c && c.name === n)?.value || '';
+    item = {
+      _session_tid: getC('_session_tid'),
+      tid: getC('tid'),
+      sid: getC('_sid') || getC('sid'),
+      deviceId: getC('_device_id') || getC('deviceId') || getC('_swuid'),
+      token: getC('token'),
+      cookies: cookiePairs
+    };
+  }
+
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+
+  // Unwrap nested containers `{ session: {...} }`, `{ data: {...} }`, `{ account: {...} }`, `{ user: {...} }`
+  const inner =
+    (item.session && typeof item.session === 'object' && !Array.isArray(item.session) ? item.session : null) ||
+    (item.data && typeof item.data === 'object' && !Array.isArray(item.data) ? item.data : null) ||
+    (item.account && typeof item.account === 'object' && !Array.isArray(item.account) ? item.account : null) ||
+    (item.auth && typeof item.auth === 'object' && !Array.isArray(item.auth) ? item.auth : null) ||
+    null;
+  const src = inner ? { ...item, ...inner } : { ...item };
+  const hdr = (src.headers && typeof src.headers === 'object') ? src.headers : {};
+
+  // Normalize cookies whether string, Cookie-Editor array, or `{ key: value }` object map
+  let rawCookieStr = '';
+  const rawC = src.cookies ?? src.cookie ?? src.cookie_string ?? src.cookieString ?? hdr.Cookie ?? hdr.cookie ?? '';
+  if (typeof rawC === 'string') {
+    rawCookieStr = unwrapRawSessionString(rawC);
+  } else if (Array.isArray(rawC)) {
+    rawCookieStr = rawC
+      .filter(c => c && (c.name || c.key) && c.value !== undefined)
+      .map(c => `${c.name || c.key}=${c.value}`)
+      .join('; ');
+  } else if (rawC && typeof rawC === 'object') {
+    rawCookieStr = Object.entries(rawC)
+      .filter(([k, v]) => k && v !== undefined && v !== null && v !== '')
+      .map(([k, v]) => `${k}=${v}`)
+      .join('; ');
+  }
+
+  let sessionTid = String(
+    src._session_tid ||
+    src.session_tid ||
+    src.sessionTid ||
+    src.session_id ||
+    src.sessionId ||
+    (typeof src.session === 'string' ? src.session : '') ||
+    hdr._session_tid ||
+    ''
+  ).trim();
+
+  let rawTid = String(src.tid || src.jwt_tid || src.jwtTid || src.jwt || hdr.tid || '').trim();
+  // Critical fix: other bots often store the hex `_session_tid` directly inside `tid`!
+  if (rawTid && !rawTid.includes('.') && !sessionTid) {
+    sessionTid = rawTid;
+  }
+
+  let token = String(
+    src.token ||
+    src.auth_token ||
+    src.authToken ||
+    src.access_token ||
+    src.accessToken ||
+    src.swiggy_token ||
+    hdr.token ||
+    ''
+  ).trim();
+
+  let sid = String(src.sid || src._sid || src.session_sid || hdr.sid || '').trim();
+  let deviceId = String(
+    src.deviceId ||
+    src.device_id ||
+    src._device_id ||
+    src.swuid ||
+    src._swuid ||
+    src.uuid ||
+    hdr.deviceId ||
+    hdr['device-id'] ||
+    hdr.swuid ||
+    ''
+  ).trim();
+
+  let customerId = String(
+    src.customerId ||
+    src.customer_id ||
+    src.userId ||
+    src.user_id ||
+    src.userid ||
+    hdr.userid ||
+    hdr['user-id'] ||
+    (typeof src.id === 'number' || /^\d{5,15}$/.test(String(src.id || '')) ? src.id : '') ||
+    ''
+  ).trim();
+  if (customerId === '0' || customerId === '-1') customerId = '';
+
+  const rawPhone = String(
+    src.phone ||
+    src.mobile ||
+    src.phone_number ||
+    src.mobile_number ||
+    src.phoneNumber ||
+    src.mobileNumber ||
+    src.number ||
+    src.msisdn ||
+    ''
+  ).trim();
+  const cleanPhone = rawPhone ? rawPhone.replace(/[^0-9]/g, '').slice(-10) : '';
+  const name = String(src.swiggyName || src.name || src.full_name || src.user_name || src.username || '').trim();
+
+  const normalized = {
+    account: typeof src.account === 'string' ? src.account : '',
+    name,
+    swiggyName: String(src.swiggyName || '').trim(),
+    phone: cleanPhone,
+    mobile: cleanPhone,
+    customerId,
+    _session_tid: sessionTid,
+    tid: rawTid,
+    token,
+    sid,
+    deviceId,
+    cookies: rawCookieStr
+  };
+
+  normalized.cookies = cleanEssentialSwiggyCookies(rawCookieStr, normalized);
+  const getFromMap = (cookieKey) => {
+    const m = normalized.cookies.match(new RegExp(`(?:^|;\\s*)${cookieKey}=([^;]+)`));
+    return m ? m[1].trim() : '';
+  };
+
+  if (!normalized._session_tid) normalized._session_tid = getFromMap('_session_tid');
+  if (!normalized.tid || (!normalized.tid.includes('.') && getFromMap('tid').includes('.'))) {
+    normalized.tid = getFromMap('tid') || normalized.tid;
+  }
+  if (!normalized.token) normalized.token = getFromMap('token');
+  if (!normalized.sid) normalized.sid = getFromMap('_sid') || getFromMap('sid');
+  if (!normalized.deviceId) normalized.deviceId = getFromMap('_device_id') || getFromMap('_swuid');
+
+  if (!normalized.customerId && normalized.tid && normalized.tid.includes('.')) {
+    try {
+      const payload = JSON.parse(Buffer.from(normalized.tid.split('.')[1], 'base64').toString('utf8'));
+      if (payload?.user_id && String(payload.user_id) !== '0' && String(payload.user_id) !== '-1') {
+        normalized.customerId = String(payload.user_id);
+      }
+    } catch {}
+  }
+
+  const hasAnyAuth = Boolean(normalized._session_tid || normalized.tid || normalized.token || normalized.cookies);
+  return hasAnyAuth ? normalized : null;
+}
+
+// Extracts 1 or MANY normalized Swiggy session objects from single JSON, Cookie-Editor array, or multi-account `accounts.json` / `db.json`!
+export function extractSwiggyAccountsListFromInput(rawInput) {
+  if (!rawInput) return [];
+  let parsed = typeof rawInput === 'string' ? unwrapRawSessionString(rawInput) : rawInput;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      const single = normalizeSwiggySessionPayload(parsed);
+      return single ? [single] : [];
+    }
+  }
+
+  if (isCookieEditorArray(parsed)) {
+    const single = normalizeSwiggySessionPayload(parsed);
+    return single ? [single] : [];
+  }
+
+  if (Array.isArray(parsed)) {
+    return parsed.map(x => normalizeSwiggySessionPayload(x)).filter(Boolean);
+  }
+
+  if (parsed && typeof parsed === 'object') {
+    if (Array.isArray(parsed.cookies) && isCookieEditorArray(parsed.cookies)) {
+      const single = normalizeSwiggySessionPayload(parsed);
+      return single ? [single] : [];
+    }
+    const multiMap =
+      (parsed.config?.accounts && typeof parsed.config.accounts === 'object' ? parsed.config.accounts : null) ||
+      (parsed.accounts && typeof parsed.accounts === 'object' ? parsed.accounts : null);
+    if (multiMap) {
+      const arr = Array.isArray(multiMap)
+        ? multiMap
+        : Object.entries(multiMap).map(([k, v]) => (v && typeof v === 'object' ? { account: k, ...v } : null));
+      return arr.map(x => normalizeSwiggySessionPayload(x)).filter(Boolean);
+    }
+    if (Array.isArray(parsed.data)) {
+      return parsed.data.map(x => normalizeSwiggySessionPayload(x)).filter(Boolean);
+    }
+    const single = normalizeSwiggySessionPayload(parsed);
+    return single ? [single] : [];
+  }
+  return [];
+}
+
 // Strips only transient/analytics bloat while preserving 100% of Swiggy auth cookies (_session_tid, tid, token, _sid, _device_id, __SW, _swuid, _is_logged_in)
 export function cleanEssentialSwiggyCookies(cookieStr = '', fallback = {}) {
   const dropPrefixes = [
@@ -53,10 +294,18 @@ export function cleanEssentialSwiggyCookies(cookieStr = '', fallback = {}) {
     }
   }
 
+  const fbSessionTid = fallback._session_tid || fallback.session_tid || fallback.sessionTid || '';
+  if (fbSessionTid && !map.has('_session_tid')) map.set('_session_tid', fbSessionTid);
+  if (fallback.tid && !fallback.tid.includes('.') && !map.has('_session_tid')) {
+    map.set('_session_tid', fallback.tid);
+  }
   if (fallback.tid && !map.has('tid')) map.set('tid', fallback.tid);
-  if (fallback.sid && !map.has('_sid')) map.set('_sid', fallback.sid);
-  if (fallback.deviceId && !map.has('_device_id')) map.set('_device_id', fallback.deviceId);
-  if (fallback.token && !map.has('token')) map.set('token', fallback.token);
+  const fbSid = fallback.sid || fallback._sid || '';
+  if (fbSid && !map.has('_sid')) map.set('_sid', fbSid);
+  const fbDev = fallback.deviceId || fallback.device_id || fallback._device_id || fallback.swuid || '';
+  if (fbDev && !map.has('_device_id')) map.set('_device_id', fbDev);
+  const fbTok = fallback.token || fallback.auth_token || fallback.access_token || '';
+  if (fbTok && !map.has('token')) map.set('token', fbTok);
   if ((map.has('_session_tid') || map.has('tid') || map.has('token')) && !map.has('_is_logged_in')) {
     map.set('_is_logged_in', '1');
   }
@@ -68,7 +317,7 @@ function syncAccountsJsonMirror(data) {
   try {
     const accounts = data?.config?.accounts || {};
     const mirrorList = Object.entries(accounts)
-      .filter(([, a]) => a && a.isLoggedIn && a.cookies)
+      .filter(([, a]) => a && a.isLoggedIn && (a.cookies || a.tid || a.token))
       .map(([k, a]) => ({
         account: k,
         name: a.name || k,
@@ -398,7 +647,7 @@ export function getNextAutoUserName() {
 
 function pickNextActiveAccountKey(accounts, excludeKey = null) {
   for (const [k, a] of Object.entries(accounts || {})) {
-    if (k !== excludeKey && a && a.isLoggedIn && a.cookies) return k;
+    if (k !== excludeKey && a && a.isLoggedIn && (a.cookies || a.tid || a.token)) return k;
   }
   return null;
 }
@@ -540,121 +789,114 @@ export function exportSessionJson(key) {
 
 export function importSessionJson(rawJson, targetKey = null) {
   try {
-    let data = typeof rawJson === 'string' ? JSON.parse(rawJson.trim()) : rawJson;
+    const list = extractSwiggyAccountsListFromInput(rawJson);
+    if (!list.length) {
+      return { success: false, message: 'Invalid session JSON: missing cookies / tid / token' };
+    }
 
-    // Also support array of cookies exported directly from Cookie-Editor browser extension!
-    if (Array.isArray(data)) {
-      const cookiePairs = data
-        .filter(c => c && c.name && c.value !== undefined)
-        .map(c => `${c.name}=${c.value}`)
-        .join('; ');
-      const getC = (n) => data.find(c => c && c.name === n)?.value || '';
-      data = {
-        tid: getC('tid'),
-        sid: getC('_sid'),
-        deviceId: getC('_device_id'),
-        token: getC('token'),
-        cookies: cookiePairs
+    const results = [];
+    for (let idx = 0; idx < list.length; idx++) {
+      const data = list[idx];
+      const db = getDb();
+      if (!db.config.accounts) db.config.accounts = {};
+      if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
+      if (!db.sessionVault) db.sessionVault = {};
+
+      const cleanPhone = data.phone || '';
+      const key = (list.length === 1 && targetKey)
+        ? targetKey
+        : (cleanPhone ? `acc_${cleanPhone}` : (data.account || `acc_${Date.now()}_${idx}`));
+
+      // Recover full cookies from vault if user pasted an older partial JSON without `_session_tid`
+      const vaultBackup = db.sessionVault[cleanPhone] || db.sessionVault[key] || null;
+      let rawCookies = data.cookies || '';
+      if ((!rawCookies || !rawCookies.includes('_session_tid=')) && vaultBackup?.cookies?.includes('_session_tid=')) {
+        rawCookies = `${vaultBackup.cookies}; ${rawCookies}`;
+      }
+
+      const cookieStr = cleanEssentialSwiggyCookies(rawCookies, data);
+      const extractFromCookie = (name) => {
+        const m = cookieStr.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+        return m ? m[1] : '';
       };
+
+      const tid = data.tid || extractFromCookie('tid') || '';
+      const token = data.token || extractFromCookie('token') || tid || '';
+      const sid = data.sid || extractFromCookie('_sid') || '';
+      const deviceId = data.deviceId || extractFromCookie('_device_id') || '';
+      let customerId = data.customerId || '';
+      if (!customerId && tid && tid.includes('.')) {
+        try {
+          const payload = tid.split('.')[1];
+          if (payload) {
+            const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+            if (decoded?.user_id && String(decoded.user_id) !== '0' && String(decoded.user_id) !== '-1') {
+              customerId = String(decoded.user_id);
+            }
+          }
+        } catch {}
+      }
+
+      delete db.config.deletedAccounts[key];
+      if (!db.config.accounts[key]) {
+        db.config.accounts[key] = { id: key, name: data.name || (cleanPhone ? `Swiggy ${cleanPhone}` : 'Swiggy User') };
+      }
+
+      db.config.accounts[key] = {
+        ...db.config.accounts[key],
+        id: key,
+        mobile: cleanPhone || db.config.accounts[key].mobile || db.config.accounts[key].phone || '',
+        phone: cleanPhone || db.config.accounts[key].phone || db.config.accounts[key].mobile || '',
+        ...(data.swiggyName ? { swiggyName: data.swiggyName } : {}),
+        name: data.name || db.config.accounts[key].name || (cleanPhone ? `Swiggy ${cleanPhone}` : 'Swiggy User'),
+        customerId: customerId || db.config.accounts[key].customerId || '',
+        token: token || db.config.accounts[key].token || '',
+        tid: tid || db.config.accounts[key].tid || '',
+        sid: sid || db.config.accounts[key].sid || '',
+        deviceId: deviceId || db.config.accounts[key].deviceId || '',
+        cookies: cookieStr,
+        isLoggedIn: true,
+        savedAt: new Date().toISOString()
+      };
+
+      const finalPhone = db.config.accounts[key].phone;
+      db.sessionVault[finalPhone || key] = {
+        account: key,
+        name: db.config.accounts[key].name,
+        swiggyName: db.config.accounts[key].swiggyName || '',
+        mobile: finalPhone,
+        phone: finalPhone,
+        customerId: db.config.accounts[key].customerId,
+        token: db.config.accounts[key].token,
+        tid: db.config.accounts[key].tid,
+        sid: db.config.accounts[key].sid,
+        deviceId: db.config.accounts[key].deviceId,
+        cookies: cookieStr,
+        savedAt: db.config.accounts[key].savedAt
+      };
+
+      if (!db.config.activeOrderAccount || !db.config.accounts[db.config.activeOrderAccount]?.isLoggedIn) {
+        db.config.activeOrderAccount = key;
+      }
+
+      saveDb(db);
+      syncAccountsJsonMirror(db);
+
+      results.push({
+        success: true,
+        account: key,
+        name: db.config.accounts[key].name,
+        phone: db.config.accounts[key].phone,
+        mobile: db.config.accounts[key].mobile,
+        customerId: db.config.accounts[key].customerId,
+        token: db.config.accounts[key].token
+      });
     }
-
-    const db = getDb();
-    if (!db.config.accounts) db.config.accounts = {};
-    if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
-    if (!db.sessionVault) db.sessionVault = {};
-
-    const phone = data?.phone || data?.mobile || '';
-    const cleanPhone = phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : '';
-    const key = targetKey || (cleanPhone ? `acc_${cleanPhone}` : (data?.account || 'acc_' + Date.now()));
-
-    // Recover full cookies from vault if user pasted an older partial JSON without `_session_tid`
-    const vaultBackup = db.sessionVault[cleanPhone] || db.sessionVault[key] || null;
-    let rawCookies = data?.cookies || '';
-    if ((!rawCookies || !rawCookies.includes('_session_tid=')) && vaultBackup?.cookies?.includes('_session_tid=')) {
-      rawCookies = vaultBackup.cookies;
-    }
-
-    if (!data || (!rawCookies && !data.tid && !data.token)) {
-      return { success: false, message: 'Invalid session JSON: missing cookies / tid token' };
-    }
-
-    let cookieStr = cleanEssentialSwiggyCookies(
-      rawCookies || `tid=${data.tid || ''}; _sid=${data.sid || ''}; _device_id=${data.deviceId || ''}; token=${data.token || data.tid || ''}; _is_logged_in=1`,
-      data
-    );
-
-    const extractFromCookie = (name) => {
-      const m = cookieStr.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-      return m ? m[1] : '';
-    };
-
-    const tid = data.tid || extractFromCookie('tid') || '';
-    const token = data.token || extractFromCookie('token') || tid || '';
-    const sid = data.sid || extractFromCookie('_sid') || '';
-    const deviceId = data.deviceId || extractFromCookie('_device_id') || '';
-
-    let customerId = data.customerId || data.customer_id || data.userId || '';
-    if (!customerId && tid && tid.includes('.')) {
-      try {
-        const payload = tid.split('.')[1];
-        if (payload) {
-          const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
-          customerId = decoded.user_id || decoded.sub || '';
-        }
-      } catch (e) {}
-    }
-
-    delete db.config.deletedAccounts[key];
-    if (!db.config.accounts[key]) {
-      db.config.accounts[key] = { id: key, name: data.name || (cleanPhone ? `Swiggy ${cleanPhone}` : 'Swiggy User') };
-    }
-
-    db.config.accounts[key] = {
-      ...db.config.accounts[key],
-      id: key,
-      mobile: cleanPhone || db.config.accounts[key].mobile || db.config.accounts[key].phone || '',
-      phone: cleanPhone || db.config.accounts[key].phone || db.config.accounts[key].mobile || '',
-      name: data.name || db.config.accounts[key].name || (cleanPhone ? `Swiggy ${cleanPhone}` : 'Swiggy User'),
-      customerId: customerId || db.config.accounts[key].customerId || '',
-      token: token || db.config.accounts[key].token || '',
-      tid: tid || db.config.accounts[key].tid || '',
-      sid: sid || db.config.accounts[key].sid || '',
-      deviceId: deviceId || db.config.accounts[key].deviceId || '',
-      cookies: cookieStr,
-      isLoggedIn: true,
-      savedAt: new Date().toISOString()
-    };
-
-    const finalPhone = db.config.accounts[key].phone;
-    db.sessionVault[finalPhone || key] = {
-      account: key,
-      name: db.config.accounts[key].name,
-      mobile: finalPhone,
-      phone: finalPhone,
-      customerId: db.config.accounts[key].customerId,
-      token: db.config.accounts[key].token,
-      tid: db.config.accounts[key].tid,
-      sid: db.config.accounts[key].sid,
-      deviceId: db.config.accounts[key].deviceId,
-      cookies: cookieStr,
-      savedAt: db.config.accounts[key].savedAt
-    };
-
-    if (!db.config.activeOrderAccount || !db.config.accounts[db.config.activeOrderAccount]?.isLoggedIn) {
-      db.config.activeOrderAccount = key;
-    }
-
-    saveDb(db);
-    syncAccountsJsonMirror(db);
 
     return {
-      success: true,
-      account: key,
-      name: db.config.accounts[key].name,
-      phone: db.config.accounts[key].phone,
-      mobile: db.config.accounts[key].mobile,
-      customerId: db.config.accounts[key].customerId,
-      token: db.config.accounts[key].token
+      ...results[0],
+      importedCount: results.length,
+      accounts: results
     };
   } catch (err) {
     return { success: false, message: 'Invalid JSON format: ' + err.message };

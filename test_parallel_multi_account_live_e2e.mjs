@@ -44,17 +44,18 @@ try {
   // Snapshot pre-existing cart on `acc_6296591407` so we restore it byte-for-byte after parallel multi-ID live QR test!
   const savedPreCart2 = await inspectCartForAccount(acc2);
 
-  // Also add `acc_8001201740` WITHOUT `_session_tid=` (exact Render repro of partial token account!)
+  // Also add genuinely expired guest/unverified session `acc_8001201740` (`user_id: "0"`, dead on both Web & Android!)
+  const deadJwtTid = 'eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJkZjU0OGNiYy1jMjE5LTQxZWMtYjFiZC1lMzA0ZjBjOTkxZjMiLCJ1c2VyX2lkIjoiMCIsInNpZCI6InU4MmQzODVmZTBmLWYzOTktNDI0My04YjIwLTQxOTA4MTljOSJ9.LL75ejwNxZlvsIMpLVWoaxCyPHD7x--yhJLTsg8d4Xc';
   initDb.config.accounts.acc_8001201740 = {
     id: 'acc_8001201740',
     name: 'Swiggy 8001201740',
     phone: '8001201740',
     mobile: '8001201740',
-    tid: acc1.tid,
-    sid: acc1.sid,
-    deviceId: acc1.deviceId,
-    token: acc1.token,
-    cookies: `tid=${acc1.tid}; _sid=${acc1.sid}; _device_id=${acc1.deviceId}; token=${acc1.token}; _is_logged_in=1`,
+    tid: deadJwtTid,
+    sid: 'u82d385fe0f-f399-4243-8b20-4190819c9',
+    deviceId: 'f549cb00-0d53-f94e-6757-ce16edc55937',
+    token: deadJwtTid,
+    cookies: `tid=${deadJwtTid}; _sid=u82d385fe0f-f399-4243-8b20-4190819c9; _device_id=f549cb00-0d53-f94e-6757-ce16edc55937; token=${deadJwtTid}; _is_logged_in=1`,
     isLoggedIn: true
   };
   saveDb(initDb);

@@ -1,8 +1,10 @@
 import crypto from 'crypto';
 import QRCode from 'qrcode';
+import jsQR from 'jsqr';
 import { PNG } from 'pngjs';
 import { Markup } from 'telegraf';
 import { getDb, saveDb, upsertOrder } from './store.js';
+import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import {
   resolveSwiggyLink,
   parseAddressDetails,
@@ -13,6 +15,7 @@ import {
   checkRealSwiggyPaymentAndExtractTracking,
   withSwiggyAccountLock,
   getBusySwiggyAccountsMap,
+  swiggyCartFlush,
   dapiFetch
 } from './swiggy-cart.js';
 
@@ -88,7 +91,7 @@ function escapeHtml(str) {
 }
 
 function hasLiveWebSessionCookie(acc) {
-  return Boolean(acc?.isLoggedIn && String(acc?.cookies || '').includes('_session_tid='));
+  return Boolean(acc?.isLoggedIn && checkLoggedInFromCookies(acc));
 }
 
 export function formatBossDiagnosticErrorMessage(err, meta = {}) {
@@ -338,7 +341,8 @@ function fillRect(png, x0, y0, w, h, r, g, b) {
 
 function drawCenteredText(png, text, centerY, scale, r, g, b) {
   const maxChars = Math.max(10, Math.floor((png.width - 48) / (6 * scale)));
-  const tokens = tokenizeBannerText(text).slice(0, maxChars);
+  const tokens = Array.isArray(text) ? text.slice(0, maxChars) : tokenizeBannerText(text).slice(0, maxChars);
+  if (tokens.length === 0) return;
   const totalW = tokens.length * (6 * scale) - scale;
   let cursorX = Math.max(24, Math.floor((png.width - totalW) / 2));
   const startY = Math.floor(centerY - (7 * scale) / 2);
@@ -357,36 +361,155 @@ function drawCenteredText(png, text, centerY, scale, r, g, b) {
   }
 }
 
-export async function generateNamedUpiQrPngBuffer({ upiUri, senderName, amount, orderId }) {
-  const qrRawBuf = await QRCode.toBuffer(upiUri, {
-    type: 'png',
-    width: 680,
-    margin: 2,
-    errorCorrectionLevel: 'M'
-  });
-  const qrPng = PNG.sync.read(qrRawBuf);
+export function truncateDisplayField(rawText, maxChars = 90) {
+  const clean = String(rawText || '').replace(/\s+/g, ' ').trim();
+  if (clean.length <= maxChars) return clean;
+  return `${clean.slice(0, Math.max(8, maxChars - 3)).trim()}...`;
+}
 
-  const headerH = 118;
+export function safeTelegramCaption(htmlText, maxLen = 1000) {
+  const str = String(htmlText || '');
+  if (str.length <= maxLen) return str;
+  // Strip HTML safely only if extreme fallback needed so no broken `<b` tag ever occurs
+  const plain = str
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"');
+  return `${plain.slice(0, maxLen - 4).trim()}...`;
+}
+
+// Preserves bank-signed merchant UPI URIs (`sign=...`) 100% byte-for-byte intact while sanitizing unsigned `pn`/`tn` per NPCI UPI 2.0 spec (`<= 30` clean ASCII chars) so giant/Unicode names NEVER bloat QR density!
+export function sanitizeUpiUriForQr(rawUri) {
+  const raw = String(rawUri || '').trim();
+  if (!raw) throw new Error('Empty UPI URI passed to QR generator.');
+
+  // CRITICAL: Never alter a single character if bank cryptographic signature (`sign=`) is present!
+  if (/[?&]sign=/i.test(raw) || !/^upi:\/\/pay\?/i.test(raw)) {
+    return raw;
+  }
+
+  const qIdx = raw.indexOf('?');
+  const prefix = raw.slice(0, qIdx + 1);
+  const query = raw.slice(qIdx + 1);
+  const cleanAsciiParam = (val, maxLen, fallback) => {
+    let decoded = val;
+    try { decoded = decodeURIComponent(val.replace(/\+/g, ' ')); } catch {}
+    const ascii = String(decoded || '')
+      .normalize('NFKD')
+      .replace(/[^\x20-\x7E]/g, ' ')
+      .replace(/[&=+#%<>\\"`'|{}[\]^~]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, maxLen)
+      .trim();
+    return encodeURIComponent(ascii || fallback);
+  };
+
+  const parts = query.split('&').filter(Boolean).map(seg => {
+    const eq = seg.indexOf('=');
+    if (eq <= 0) return seg;
+    const k = seg.slice(0, eq);
+    const v = seg.slice(eq + 1);
+    const kl = k.toLowerCase();
+    if (kl === 'pn') return `${k}=${cleanAsciiParam(v, 28, 'Swiggy')}`;
+    if (kl === 'tn') return `${k}=${cleanAsciiParam(v, 32, 'Swiggy Order')}`;
+    return seg;
+  });
+
+  return `${prefix}${parts.join('&')}`;
+}
+
+export async function generateNamedUpiQrPngBuffer({ upiUri, senderName, restaurantName, amount, orderId }) {
+  const safeUri = sanitizeUpiUriForQr(upiUri);
+  // Adaptive ECC: 'M' for compact URIs (<= 175 chars), 'L' for long signed merchant URIs so module count stays big & crisp!
+  const ecc = safeUri.length > 175 ? 'L' : 'M';
+  const qrData = QRCode.create(safeUri, { errorCorrectionLevel: ecc });
+  const modCount = qrData.modules.size;
+  const quietModules = 4; // Full ISO/IEC 18004 4-module quiet zone!
+  const totalModules = modCount + quietModules * 2;
+
+  // Exact integer pixel scale per module (`8px`..`16px`) — ZERO anti-aliased gray pixels, AND total PNG strictly <= 1180px so Telegram NEVER downscales!
+  const modPx = Math.max(8, Math.min(16, Math.floor(820 / totalModules)));
+  const qrBoxPx = totalModules * modPx;
+  const guardPad = 32;
+  const outW = Math.max(760, qrBoxPx + guardPad * 2);
+
+  // Adaptive multi-line header layout so even 250-char names display cleanly without ever shrinking or touching the QR quiet zone!
+  const rawName = String(senderName || restaurantName || 'CUSTOMER').replace(/\s+/g, ' ').trim() || 'CUSTOMER';
+  const nameTokens = tokenizeBannerText(rawName);
+  let headerLines = [];
+  let nameScale = 4;
+
+  const fitCols4 = Math.floor((outW - 56) / 24);
+  const fitCols3 = Math.floor((outW - 56) / 18);
+  const fitCols2 = Math.floor((outW - 56) / 12);
+
+  if (nameTokens.length <= fitCols4) {
+    nameScale = 4;
+    headerLines = [nameTokens.length ? nameTokens : tokenizeBannerText('CUSTOMER')];
+  } else if (nameTokens.length <= fitCols3) {
+    nameScale = 3;
+    headerLines = [nameTokens];
+  } else {
+    nameScale = 2;
+    const line1 = nameTokens.slice(0, fitCols2);
+    let line2 = nameTokens.slice(fitCols2, fitCols2 * 2);
+    if (nameTokens.length > fitCols2 * 2 && line2.length >= 3) {
+      line2 = [...line2.slice(0, line2.length - 3), '.', '.', '.'];
+    }
+    headerLines = line2.length ? [line1, line2] : [line1];
+  }
+
+  const headerH = headerLines.length > 1 ? 142 : 118;
   const footerH = 104;
-  const sidePad = 40;
-  const outW = qrPng.width + sidePad * 2;
-  const outH = headerH + qrPng.height + footerH;
+  const outH = headerH + guardPad * 2 + qrBoxPx + footerH;
   const out = new PNG({ width: outW, height: outH });
 
+  // Pure high-contrast white background over entire canvas including quiet zone & guard frame
   fillRect(out, 0, 0, outW, outH, 255, 255, 255);
   fillRect(out, 0, 0, outW, headerH, 252, 128, 25);
   fillRect(out, 0, headerH - 6, outW, 6, 224, 98, 8);
 
-  const cleanName = String(senderName || 'CUSTOMER').trim() || 'CUSTOMER';
-  drawCenteredText(out, cleanName, 44, 4, 255, 255, 255);
-  drawCenteredText(out, `OFFICIAL SWIGGY QR  #${orderId || ''}`, 90, 2, 255, 245, 232);
+  if (headerLines.length === 1) {
+    drawCenteredText(out, headerLines[0], 44, nameScale, 255, 255, 255);
+    drawCenteredText(out, `OFFICIAL SWIGGY QR  #${String(orderId || '').slice(0, 24)}`, 90, 2, 255, 245, 232);
+  } else {
+    drawCenteredText(out, headerLines[0], 34, 2, 255, 255, 255);
+    drawCenteredText(out, headerLines[1], 66, 2, 255, 255, 255);
+    drawCenteredText(out, `OFFICIAL SWIGGY QR  #${String(orderId || '').slice(0, 24)}`, 108, 2, 255, 245, 232);
+  }
 
-  PNG.bitblt(qrPng, out, 0, 0, qrPng.width, qrPng.height, sidePad, headerH);
+  // Paint every dark QR module with 100% crisp integer coordinates — zero interpolation blur!
+  const qrOriginX = Math.floor((outW - qrBoxPx) / 2) + quietModules * modPx;
+  const qrOriginY = headerH + guardPad + quietModules * modPx;
+  for (let r = 0; r < modCount; r++) {
+    for (let c = 0; c < modCount; c++) {
+      if (qrData.modules.get(r, c)) {
+        fillRect(out, qrOriginX + c * modPx, qrOriginY + r * modPx, modPx, modPx, 0, 0, 0);
+      }
+    }
+  }
 
-  fillRect(out, 0, headerH + qrPng.height, outW, footerH, 248, 250, 252);
-  fillRect(out, 28, headerH + qrPng.height + 6, outW - 56, 2, 226, 232, 240);
-  drawCenteredText(out, `PAY ₹${amount}`, headerH + qrPng.height + 44, 4, 15, 23, 42);
-  drawCenteredText(out, `AUTO PLACES ORDER ON SWIGGY`, headerH + qrPng.height + 84, 2, 22, 163, 74);
+  const footerTop = headerH + guardPad * 2 + qrBoxPx;
+  fillRect(out, 0, footerTop, outW, footerH, 248, 250, 252);
+  fillRect(out, 28, footerTop + 6, outW - 56, 2, 226, 232, 240);
+  drawCenteredText(out, `PAY ₹${amount}`, footerTop + 44, 4, 15, 23, 42);
+  drawCenteredText(out, `AUTO PLACES ORDER ON SWIGGY`, footerTop + 84, 2, 22, 163, 74);
+
+  // Built-in real camera decoder verification on rendered pixels (`jsQR`) — fallback to ultra-clean pure QR if ever needed!
+  const decoded = jsQR(new Uint8ClampedArray(out.data), out.width, out.height);
+  if (!decoded || decoded.data !== safeUri) {
+    return QRCode.toBuffer(safeUri, {
+      type: 'png',
+      scale: 10,
+      margin: 4,
+      errorCorrectionLevel: ecc,
+      color: { dark: '#000000', light: '#FFFFFF' }
+    });
+  }
 
   return PNG.sync.write(out);
 }
@@ -994,6 +1117,7 @@ export async function executeRealQrGenerationForOrder({
   const qrBuffer = await generateNamedUpiQrPngBuffer({
     upiUri: realQr.upiIntentUrl,
     senderName: order.fwdSenderName || order.userName || 'Customer',
+    restaurantName: realQr.restaurantName || order.restaurantName || 'Swiggy',
     amount: payable,
     orderId: order.id
   });
@@ -1002,25 +1126,27 @@ export async function executeRealQrGenerationForOrder({
     await telegram.deleteMessage(chatId, order.activeQrMessageId).catch(() => {});
   }
 
-  const senderTag = escapeHtml(order.fwdSenderName || order.userName || 'Customer');
+  const senderTag = escapeHtml(truncateDisplayField(order.fwdSenderName || order.userName || 'Customer', 110));
+  const restTag = escapeHtml(truncateDisplayField(realQr.restaurantName || order.restaurantName || 'Swiggy', 120));
   const sendPhotoFn = typeof telegram.sendPhoto === 'function'
     ? (cid, photo, extra) => telegram.sendPhoto(cid, photo, extra)
     : null;
   if (!sendPhotoFn) {
     throw new Error('Telegram instance does not implement sendPhoto.');
   }
+  const rawQrCaption =
+    `🔳 <b>OFFICIAL SWIGGY DYNAMIC PAYMENT QR (#${escapeHtml(order.id)})</b>\n` +
+    `👤 <b>Order For:</b> ${senderTag}\n` +
+    `🍽 <b>Restaurant:</b> ${restTag}\n` +
+    `💰 <b>Exact Swiggy Amount:</b> ₹${payable}\n` +
+    `🆔 <b>Swiggy Checkout Order ID:</b> <code>${escapeHtml(order.pendingSwiggyOrderId)}</code>\n` +
+    `📱 <b>Swiggy Account:</b> <code>${escapeHtml(truncateDisplayField(acc.phone || order.selectedAccount, 40))}</code>\n\n` +
+    `<i>✅ 100% Real Swiggy Merchant Dynamic QR — Pay from GPay / PhonePe / Paytm to place order directly on Swiggy! Auto-detecting payment every 5s...</i>`;
   const qrSent = await sendPhotoFn(
     chatId,
     { source: qrBuffer },
     {
-      caption:
-        `🔳 <b>OFFICIAL SWIGGY DYNAMIC PAYMENT QR (#${escapeHtml(order.id)})</b>\n` +
-        `👤 <b>Order For:</b> ${senderTag}\n` +
-        `🍽 <b>Restaurant:</b> ${escapeHtml(realQr.restaurantName || order.restaurantName || 'Swiggy')}\n` +
-        `💰 <b>Exact Swiggy Amount:</b> ₹${payable}\n` +
-        `🆔 <b>Swiggy Checkout Order ID:</b> <code>${escapeHtml(order.pendingSwiggyOrderId)}</code>\n` +
-        `📱 <b>Swiggy Account:</b> <code>${escapeHtml(acc.phone || order.selectedAccount)}</code>\n\n` +
-        `<i>✅ 100% Real Swiggy Merchant Dynamic QR — Pay from GPay / PhonePe / Paytm to place order directly on Swiggy! Auto-detecting payment every 5s...</i>`,
+      caption: safeTelegramCaption(rawQrCaption, 1000),
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([
         [Markup.button.callback('✅ Paid (Verify & Get Live Tracking)', `fwd_check_paid_${order.id}`)],
@@ -1439,12 +1565,9 @@ export function registerForwardedOrderHandlers(bot, {
     const freedAcc = freedAccKey ? db.config?.accounts?.[freedAccKey] : null;
 
     // Flush unpaid cart cleanly & atomically inside per-account lock before returning (~180ms)!
-    if (freedAcc?.cookies && order.status !== 'COMPLETED' && order.restaurantId) {
+    if (freedAcc && (freedAcc.cookies || freedAcc.tid || freedAcc.token) && order.status !== 'COMPLETED') {
       await withSwiggyAccountLock(freedAccKey, () =>
-        dapiFetch(freedAcc, 'cart', {
-          method: 'POST',
-          body: { flushFirst: true, cart: { restaurantId: String(order.restaurantId), address_id: '', couponCode: '', cartItems: [], mealItems: [], subscriptionItems: [] } }
-        }).catch(() => {})
+        swiggyCartFlush(freedAcc).catch(() => {})
       ).catch(() => {});
     }
 

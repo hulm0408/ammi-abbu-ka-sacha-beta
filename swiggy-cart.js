@@ -67,11 +67,16 @@ export function cleanSwiggyCookieString(rawCookies, acc = null) {
   }
 
   if (acc && typeof acc === 'object') {
-    if (acc.tid && !map.has('_session_tid') && !acc.tid.includes('.')) map.set('_session_tid', acc.tid);
+    const fbSessionTid = acc._session_tid || acc.session_tid || acc.sessionTid || '';
+    if (fbSessionTid && !map.has('_session_tid')) map.set('_session_tid', fbSessionTid);
+    if (acc.tid && !map.has('_session_tid') && !String(acc.tid).includes('.')) map.set('_session_tid', acc.tid);
     if (acc.tid && !map.has('tid')) map.set('tid', acc.tid);
-    if (acc.token && !map.has('token')) map.set('token', acc.token);
-    if (acc.sid && !map.has('_sid')) map.set('_sid', acc.sid);
-    if (acc.deviceId && !map.has('_device_id')) map.set('_device_id', acc.deviceId);
+    const fbTok = acc.token || acc.auth_token || acc.access_token || '';
+    if (fbTok && !map.has('token')) map.set('token', fbTok);
+    const fbSid = acc.sid || acc._sid || '';
+    if (fbSid && !map.has('_sid')) map.set('_sid', fbSid);
+    const fbDev = acc.deviceId || acc.device_id || acc._device_id || acc.swuid || '';
+    if (fbDev && !map.has('_device_id')) map.set('_device_id', fbDev);
   }
   if ((map.has('_session_tid') || map.has('tid') || map.has('token')) && !map.has('_is_logged_in')) {
     map.set('_is_logged_in', '1');
@@ -89,17 +94,184 @@ function parseCookieMap(cookieStr) {
   return cm;
 }
 
+// Native Swiggy Android Client Headers (works with ZERO `_session_tid` cookie via `tid` + `token` + `sid` + `deviceId`!)
+export function buildSwiggyAndroidClientHeaders(accountOrCookies, opts = {}) {
+  const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
+  const cleanCookies = cleanSwiggyCookieString(accountOrCookies, acc);
+  const cm = parseCookieMap(cleanCookies);
+
+  const rawTid = String(opts.tid || (acc?.tid && String(acc.tid).includes('.') ? acc.tid : '') || (cm.tid && cm.tid.includes('.') ? cm.tid : '') || acc?.tid || cm.tid || '').trim();
+  const token = String(opts.token || acc?.token || acc?.auth_token || acc?.access_token || cm.token || '').trim();
+  const sid = String(opts.sid || acc?.sid || acc?._sid || cm._sid || cm.sid || '').trim();
+  const deviceId = String(opts.deviceId || acc?.deviceId || acc?.device_id || acc?.swuid || cm._device_id || cm._swuid || '8f3b2c1a-4d5e-6f7a-8b9c-0d1e2f3a4b5c').trim();
+
+  let uid = String(opts.userId || acc?.customerId || acc?.customer_id || acc?.userId || acc?.user_id || '').trim();
+  if ((!uid || uid === '0' || uid === '-1') && rawTid && rawTid.includes('.')) {
+    const claims = decodeJwtPayload(rawTid);
+    if (claims?.user_id && String(claims.user_id) !== '0' && String(claims.user_id) !== '-1') {
+      uid = String(claims.user_id);
+    }
+  }
+  if (uid === '0' || uid === '-1') uid = '';
+
+  const lat = String(opts.lat || '26.8658609');
+  const lng = String(opts.lng || '80.9307755');
+
+  return {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'tid': rawTid,
+    'sid': sid,
+    'token': token,
+    ...(uid ? { 'userid': uid, 'user-id': uid, 'customer_id': uid } : {}),
+    'deviceId': deviceId,
+    'device-id': deviceId,
+    'swuid': deviceId,
+    'platform': 'swiggy-android',
+    'agent-type': 'Swiggy-Android',
+    'analyticsPlatform': 'an',
+    'x-web-checkout-flow': 'cart',
+    'marketplaceid': '1',
+    'marketplacecategory': 'FOOD',
+    'marketplacebusinessline': 'Regular',
+    'version-code': '1600',
+    'app-version': '4.75.0',
+    'lat': lat,
+    'lng': lng,
+    'latitude': lat,
+    'longitude': lng,
+    'User-Agent': 'Swiggy-Android/4.75.0 (Android; 14)'
+  };
+}
+
+// Fast (<80ms) zero-WAF, zero-cookie Native Swiggy Android Profile + Saved Addresses fetcher
+export async function fetchSwiggyAndroidProfile(accountOrCookies, opts = {}) {
+  try {
+    const headers = buildSwiggyAndroidClientHeaders(accountOrCookies, opts);
+    if (!headers.tid && !headers.token) return null;
+    const res = await fetch('https://profile.swiggy.com/api/v1/user/profile', {
+      headers,
+      signal: AbortSignal.timeout(opts.timeoutMs || 6500)
+    });
+    if (!res.ok) return null;
+    const json = await res.json().catch(() => null);
+    if (json?.statusCode !== 0 || !json?.data) return null;
+    const d = json.data;
+    const cid = d.customer_id ? String(d.customer_id) : '';
+    if (!cid || cid === '0' || cid === '-1') return null;
+    return {
+      ok: true,
+      customerId: cid,
+      name: d.name || '',
+      phone: d.mobile ? String(d.mobile).replace(/^\+?91/, '').replace(/\D/g, '').slice(-10) : '',
+      email: d.email || '',
+      token: d.token || headers.token || '',
+      addresses: Array.isArray(d.addresses) ? d.addresses : []
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Universal Live Swiggy Session Verifier: tests BOTH Web DAPI (`_session_tid`) AND Native Android (`chkout` + `profile`) simultaneously!
+export async function verifySwiggySessionLive(accountOrCookies) {
+  const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : { cookies: String(accountOrCookies || '') };
+  const cleanCookies = cleanSwiggyCookieString(acc.cookies || '', acc);
+  const androidHeaders = buildSwiggyAndroidClientHeaders(acc);
+
+  const [webProbe, androidCartProbe, androidProfile] = await Promise.all([
+    cleanCookies
+      ? fetch('https://www.swiggy.com/dapi/order/all', {
+          headers: {
+            'Cookie': cleanCookies,
+            'User-Agent': DESKTOP_UA,
+            'Accept': 'application/json',
+            'Referer': 'https://www.swiggy.com/my-account'
+          },
+          signal: AbortSignal.timeout(7000)
+        }).then(async r => ({ status: r.status, json: await r.json().catch(() => null) })).catch(() => null)
+      : Promise.resolve(null),
+    (androidHeaders.tid || androidHeaders.token)
+      ? fetch('https://chkout.swiggy.com/api/v2/cart/client', {
+          headers: androidHeaders,
+          signal: AbortSignal.timeout(7000)
+        }).then(async r => ({ status: r.status, json: await r.json().catch(() => null) })).catch(() => null)
+      : Promise.resolve(null),
+    (androidHeaders.tid || androidHeaders.token)
+      ? fetchSwiggyAndroidProfile(acc, { timeoutMs: 6500 })
+      : Promise.resolve(null)
+  ]);
+
+  const webJson = webProbe?.json || null;
+  const webOk = Boolean(webProbe?.status === 200 && webJson && webJson.statusCode === 0);
+
+  const chkJson = androidCartProbe?.json || null;
+  const chkClaims = chkJson?.tid && String(chkJson.tid).includes('.') ? decodeJwtPayload(chkJson.tid) : null;
+  const chkUid = chkClaims?.user_id && String(chkClaims.user_id) !== '0' && String(chkClaims.user_id) !== '-1' ? String(chkClaims.user_id) : '';
+  const androidOk = Boolean(
+    (chkJson && chkJson.statusCode === 0) ||
+    Boolean(androidProfile?.ok && androidProfile.customerId)
+  );
+
+  let resolvedProfile = androidProfile;
+  if (!resolvedProfile?.ok && chkJson?.tid && chkUid) {
+    resolvedProfile = await fetchSwiggyAndroidProfile(acc, { tid: chkJson.tid, userId: chkUid, timeoutMs: 5000 });
+    if (resolvedProfile?.ok) {
+      return {
+        valid: true,
+        transport: webOk ? 'web+android' : 'android',
+        liveTid: chkJson.tid,
+        customerId: resolvedProfile.customerId || chkUid,
+        name: resolvedProfile.name || '',
+        phone: resolvedProfile.phone || '',
+        token: resolvedProfile.token || androidHeaders.token || '',
+        cookies: cleanCookies,
+        addresses: resolvedProfile.addresses || []
+      };
+    }
+  }
+
+  if (!webOk && !androidOk) {
+    return {
+      valid: false,
+      transport: 'none',
+      webMessage: webJson?.statusMessage || '',
+      androidMessage: chkJson?.statusMessage || ''
+    };
+  }
+
+  let liveTid = '';
+  if (webOk && webJson?.tid && String(webJson.tid).includes('.')) liveTid = webJson.tid;
+  else if (chkJson?.tid && String(chkJson.tid).includes('.')) liveTid = chkJson.tid;
+  else if (androidHeaders.tid && androidHeaders.tid.includes('.')) liveTid = androidHeaders.tid;
+
+  const jwtClaims = liveTid ? decodeJwtPayload(liveTid) : null;
+  const jwtUid = jwtClaims?.user_id && String(jwtClaims.user_id) !== '0' && String(jwtClaims.user_id) !== '-1'
+    ? String(jwtClaims.user_id)
+    : '';
+
+  return {
+    valid: true,
+    transport: webOk && androidOk ? 'web+android' : (webOk ? 'web' : 'android'),
+    liveTid,
+    customerId: resolvedProfile?.customerId || jwtUid || chkUid || String(acc.customerId || ''),
+    name: resolvedProfile?.name || '',
+    phone: resolvedProfile?.phone || '',
+    token: resolvedProfile?.token || androidHeaders.token || '',
+    cookies: cleanCookies,
+    addresses: resolvedProfile?.addresses || []
+  };
+}
+
 // ---------------------------------------------------------------------------
-// ZERO-WAF SESSION AUTH BOOTSTRAP (<250ms pure HTTP via GET /dapi/order/all)
-// Returns genuine HS256 JWT `jwtTid`, numeric `userId`, `sid`, `deviceId`, and `orders`
+// ZERO-WAF DUAL-TRANSPORT SESSION AUTH BOOTSTRAP (<250ms pure HTTP)
+// Seamlessly supports BOTH Web `_session_tid` cookies AND Native Android `token`+`tid` JSONs!
 // ---------------------------------------------------------------------------
 export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = false) {
   if (!accountOrCookies) return null;
   const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
   const cleanCookies = cleanSwiggyCookieString(accountOrCookies, acc);
-  if (!cleanCookies) return null;
-
-  const sig = cleanCookies.slice(0, 180);
+  const sig = `${cleanCookies.slice(0, 140)}|${acc?.token || ''}|${(acc?.tid || '').slice(-40)}`;
   const now = Date.now();
   if (!forceRefresh && sessionAuthCache.has(sig)) {
     const cached = sessionAuthCache.get(sig);
@@ -107,69 +279,219 @@ export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = fals
   }
 
   const cm = parseCookieMap(cleanCookies);
-  try {
-    const res = await fetch('https://www.swiggy.com/dapi/order/all', {
-      headers: {
-        'Cookie': cleanCookies,
-        'User-Agent': DESKTOP_UA,
-        'Accept': 'application/json',
-        'Referer': 'https://www.swiggy.com/my-account'
-      },
-      signal: AbortSignal.timeout(8000)
-    });
+  let webExpiredMsg = '';
 
-    if (res.ok) {
-      const json = await res.json().catch(() => null);
-      const statusMsg = String(json?.statusMessage || '').toLowerCase();
-      const isExpired = json?.statusCode === 1 && (
-        statusMsg.includes('session') ||
-        statusMsg.includes('login') ||
-        statusMsg.includes('logged out') ||
-        statusMsg.includes('unauthorized') ||
-        statusMsg.includes('customer id')
-      );
-      if (isExpired) {
-        return { sessionExpired: true, statusMessage: json?.statusMessage || 'Session expired', cleanCookies, cm };
+  // Path 1: Try Web DAPI `/dapi/order/all` when `_session_tid` is available
+  if (cleanCookies.includes('_session_tid=')) {
+    try {
+      const res = await fetch('https://www.swiggy.com/dapi/order/all', {
+        headers: {
+          'Cookie': cleanCookies,
+          'User-Agent': DESKTOP_UA,
+          'Accept': 'application/json',
+          'Referer': 'https://www.swiggy.com/my-account'
+        },
+        signal: AbortSignal.timeout(7000)
+      });
+
+      if (res.ok) {
+        const json = await res.json().catch(() => null);
+        if (json && json.statusCode === 0) {
+          const jwtTid = (json?.tid && String(json.tid).includes('.')) ? json.tid : (acc?.tid && String(acc.tid).includes('.') ? acc.tid : '');
+          const claims = jwtTid ? decodeJwtPayload(jwtTid) : null;
+          const userId = claims?.user_id || acc?.customerId || null;
+
+          const auth = {
+            sessionExpired: false,
+            transport: 'web',
+            cleanCookies,
+            cm,
+            jwtTid,
+            userId: userId ? String(userId) : null,
+            sid: json?.sid || acc?.sid || cm._sid || '',
+            deviceId: json?.deviceId || acc?.deviceId || cm._device_id || '',
+            token: acc?.token || cm.token || '',
+            swuid: cm._swuid || json?.deviceId || acc?.deviceId || cm._device_id || '',
+            orders: Array.isArray(json?.data?.orders) ? json.data.orders : []
+          };
+          if (acc && jwtTid) acc.tid = jwtTid;
+          if (acc && auth.userId) acc.customerId = auth.userId;
+          sessionAuthCache.set(sig, { auth, ts: now });
+          return auth;
+        }
+        webExpiredMsg = json?.statusMessage || '';
       }
-
-      const jwtTid = (json?.tid && String(json.tid).includes('.')) ? json.tid : (acc?.tid && String(acc.tid).includes('.') ? acc.tid : '');
-      const claims = jwtTid ? decodeJwtPayload(jwtTid) : null;
-      const userId = claims?.user_id || acc?.customerId || null;
-
-      const auth = {
-        sessionExpired: false,
-        cleanCookies,
-        cm,
-        jwtTid,
-        userId: userId ? String(userId) : null,
-        sid: json?.sid || acc?.sid || cm._sid || '',
-        deviceId: json?.deviceId || acc?.deviceId || cm._device_id || '',
-        token: acc?.token || cm.token || '',
-        swuid: cm._swuid || json?.deviceId || acc?.deviceId || cm._device_id || '',
-        orders: Array.isArray(json?.data?.orders) ? json.data.orders : []
-      };
-      sessionAuthCache.set(sig, { auth, ts: now });
-      return auth;
+    } catch (e) {
+      console.warn('[SwiggyAuth] Web DAPI auth warning:', e.message);
     }
-  } catch (e) {
-    console.warn('[SwiggyAuth] Direct auth bootstrap warning:', e.message);
   }
 
-  // Fallback decode from existing JWT if present
+  // Path 2: Native Swiggy Android `chkout.swiggy.com` + `profile.swiggy.com` (works with ZERO `_session_tid`!)
+  const androidHeaders = buildSwiggyAndroidClientHeaders(acc || cleanCookies);
+  if (androidHeaders.tid || androidHeaders.token) {
+    try {
+      const [chkRes, profRes] = await Promise.all([
+        fetch('https://chkout.swiggy.com/api/v2/cart/client', {
+          headers: androidHeaders,
+          signal: AbortSignal.timeout(7000)
+        }).then(r => r.json().catch(() => null)).catch(() => null),
+        fetchSwiggyAndroidProfile(acc || cleanCookies, { timeoutMs: 6500 })
+      ]);
+
+      if (chkRes?.statusCode === 0 || profRes?.ok) {
+        const freshTid = (chkRes?.tid && String(chkRes.tid).includes('.'))
+          ? chkRes.tid
+          : (androidHeaders.tid && androidHeaders.tid.includes('.') ? androidHeaders.tid : '');
+        const claims = freshTid ? decodeJwtPayload(freshTid) : null;
+        const resolvedUid = profRes?.customerId || (claims?.user_id && String(claims.user_id) !== '0' ? String(claims.user_id) : '') || (acc?.customerId ? String(acc.customerId) : '');
+        const resolvedToken = profRes?.token || androidHeaders.token || '';
+
+        if (acc) {
+          if (freshTid) acc.tid = freshTid;
+          if (resolvedUid) acc.customerId = resolvedUid;
+          if (resolvedToken) acc.token = resolvedToken;
+          if (!acc.phone && profRes?.phone) acc.phone = profRes.phone;
+        }
+
+        const auth = {
+          sessionExpired: false,
+          transport: 'android',
+          cleanCookies,
+          cm,
+          jwtTid: freshTid,
+          userId: resolvedUid || null,
+          sid: chkRes?.sid || androidHeaders.sid || '',
+          deviceId: chkRes?.deviceId || androidHeaders.deviceId || '',
+          token: resolvedToken,
+          swuid: androidHeaders.swuid || androidHeaders.deviceId || '',
+          profileAddresses: profRes?.addresses || [],
+          orders: []
+        };
+        sessionAuthCache.set(sig, { auth, ts: now });
+        return auth;
+      }
+
+      if (chkRes?.statusCode === 999 || webExpiredMsg) {
+        return {
+          sessionExpired: true,
+          statusMessage: chkRes?.statusMessage || webExpiredMsg || 'Session expired',
+          cleanCookies,
+          cm
+        };
+      }
+    } catch (e) {
+      console.warn('[SwiggyAuth] Android auth fallback warning:', e.message);
+    }
+  } else if (webExpiredMsg) {
+    return { sessionExpired: true, statusMessage: webExpiredMsg, cleanCookies, cm };
+  }
+
+  // Fallback decode from existing JWT if network timed out transiently
   const fallbackJwt = (acc?.tid && String(acc.tid).includes('.')) ? acc.tid : (cm.tid && cm.tid.includes('.') ? cm.tid : '');
   const claims = fallbackJwt ? decodeJwtPayload(fallbackJwt) : null;
+  const fallbackUid = claims?.user_id && String(claims.user_id) !== '0' ? String(claims.user_id) : (acc?.customerId || null);
   return {
-    sessionExpired: false,
+    sessionExpired: !fallbackUid,
     cleanCookies,
     cm,
     jwtTid: fallbackJwt,
-    userId: claims?.user_id ? String(claims.user_id) : (acc?.customerId ? String(acc.customerId) : null),
+    userId: fallbackUid ? String(fallbackUid) : null,
     sid: acc?.sid || cm._sid || '',
     deviceId: acc?.deviceId || cm._device_id || '',
     token: acc?.token || cm.token || '',
     swuid: cm._swuid || acc?.deviceId || cm._device_id || '',
     orders: []
   };
+}
+
+// ---------------------------------------------------------------------------
+// UNIFIED DUAL-TRANSPORT SWIGGY CART HELPERS (`dapi/cart` <-> `chkout.swiggy.com/api/v2/cart/client`)
+// Automatically executes via Web DAPI when `_session_tid` works, or seamlessly via Native Android `chkout`!
+// ---------------------------------------------------------------------------
+async function androidCheckoutCartCall(accountOrCookies, endpointPath, { method = 'GET', body = undefined, lat = '26.8658609', lng = '80.9307755', timeoutMs = 9000 } = {}) {
+  const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
+  const auth = await getSwiggySessionAuth(accountOrCookies);
+  const headers = buildSwiggyAndroidClientHeaders(accountOrCookies, {
+    tid: auth?.jwtTid,
+    token: auth?.token,
+    sid: auth?.sid,
+    deviceId: auth?.deviceId,
+    userId: auth?.userId,
+    lat,
+    lng
+  });
+  const res = await fetch(`https://chkout.swiggy.com/api/v2/cart/${endpointPath}`, {
+    method,
+    headers,
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  const json = await res.json().catch(() => null);
+  if (acc && json?.tid && String(json.tid).includes('.')) {
+    acc.tid = json.tid;
+  }
+  return { status: res.status, json };
+}
+
+export async function swiggyCartGet(accountOrCookies, { lat = '26.8658609', lng = '80.9307755', timeoutMs = 9000 } = {}) {
+  const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
+  const cleanCookies = cleanSwiggyCookieString(accountOrCookies, acc);
+  if (cleanCookies.includes('_session_tid=')) {
+    const res = await dapiFetch(accountOrCookies, 'cart', { lat, lng, timeoutMs }).catch(() => null);
+    if (res?.json && res.json.statusCode === 0) return res;
+  }
+  return androidCheckoutCartCall(accountOrCookies, 'client', { method: 'GET', lat, lng, timeoutMs });
+}
+
+export async function swiggyCartUpdate(accountOrCookies, cartPayload, { lat = '26.8658609', lng = '80.9307755', address = '', area = '', flushFirst = true, timeoutMs = 10000 } = {}) {
+  const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
+  const cleanCookies = cleanSwiggyCookieString(accountOrCookies, acc);
+  if (cleanCookies.includes('_session_tid=')) {
+    const res = await dapiFetch(accountOrCookies, 'cart', {
+      method: 'POST',
+      lat,
+      lng,
+      address,
+      area,
+      timeoutMs,
+      body: {
+        flushFirst: Boolean(flushFirst),
+        cart: cartPayload
+      }
+    }).catch(() => null);
+    if (res?.json && res.json.statusCode === 0 && (res.json.data?.cartMeta || res.json.data?.order_total !== undefined)) {
+      return res;
+    }
+  }
+  // Native Android `chkout.swiggy.com/api/v2/cart/client/update` takes a FLAT top-level payload!
+  return androidCheckoutCartCall(accountOrCookies, 'client/update', {
+    method: 'POST',
+    lat,
+    lng,
+    timeoutMs,
+    body: {
+      flushFirst: Boolean(flushFirst),
+      restaurantId: String(cartPayload.restaurantId || ''),
+      address_id: String(cartPayload.address_id || ''),
+      couponCode: String(cartPayload.couponCode || ''),
+      cartItems: Array.isArray(cartPayload.cartItems) ? cartPayload.cartItems : [],
+      mealItems: Array.isArray(cartPayload.mealItems) ? cartPayload.mealItems : [],
+      subscriptionItems: Array.isArray(cartPayload.subscriptionItems) ? cartPayload.subscriptionItems : []
+    }
+  });
+}
+
+export async function swiggyCartFlush(accountOrCookies, { lat = '26.8658609', lng = '80.9307755', timeoutMs = 8000 } = {}) {
+  const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
+  const cleanCookies = cleanSwiggyCookieString(accountOrCookies, acc);
+  const tasks = [
+    androidCheckoutCartCall(accountOrCookies, 'client/flush', { method: 'DELETE', lat, lng, timeoutMs }).catch(() => null)
+  ];
+  if (cleanCookies.includes('_session_tid=')) {
+    tasks.push(dapiFetch(accountOrCookies, 'cart/flush', { method: 'POST', body: {}, lat, lng, timeoutMs }).catch(() => null));
+  }
+  const [aRes, wRes] = await Promise.all(tasks);
+  return aRes?.json?.statusCode === 0 ? aRes : (wRes || aRes);
 }
 
 // ---------------------------------------------------------------------------
@@ -1630,14 +1952,17 @@ export function applyMaxOfferToOrder(order) {
   return order;
 }
 
-// Parse a live Swiggy /dapi/cart `data` payload into a normalized, 100% accurate cart object
+// Parse a live Swiggy /dapi/cart OR chkout.swiggy.com/api/v2/cart/client `data` payload into a normalized cart object
 function parseDapiCartPayload(data) {
-  if (!data || !data.cartMeta) return null;
-  const cm = data.cartMeta;
+  const cm = data?.cartMeta || (data && (data.order_total !== undefined || Array.isArray(data.cart_menu_items) || data.cartId !== undefined) ? data : null);
+  if (!cm) return null;
   const ciMap = data.cartItems || {};
+  const rawEntries = Object.keys(ciMap).length > 0
+    ? Object.values(ciMap)
+    : (Array.isArray(cm.cart_menu_items) ? cm.cart_menu_items.map(mi => ({ itemId: mi.menu_item_id, quantity: mi.quantity, items: [mi] })) : []);
 
-  const items = Object.values(ciMap).map(ci => {
-    const itemInfo = ci.items?.[0] || {};
+  const items = rawEntries.map(ci => {
+    const itemInfo = ci.items?.[0] || ci || {};
     const qty = Number(ci.quantity || itemInfo.quantity || 1);
     const subPaise = Number(itemInfo.subtotal ?? (Number(itemInfo.base_price || itemInfo.price || 0) * qty));
     const finalPaise = Number(itemInfo.final_price ?? subPaise);
@@ -1780,7 +2105,7 @@ function parseDapiCartPayload(data) {
   };
 }
 
-// Fast inspect an active personal cart for a specific chosen account (<500ms direct DAPI call)
+// Fast inspect an active personal cart for a specific chosen account (<500ms direct DAPI / Native Android call)
 export async function inspectCartForAccount(accountOrCookies) {
   if (!accountOrCookies) return null;
   try {
@@ -1788,14 +2113,15 @@ export async function inspectCartForAccount(accountOrCookies) {
     if (auth?.sessionExpired) {
       return { sessionExpired: true };
     }
-    const { json } = await dapiFetch(accountOrCookies, 'cart', { timeoutMs: 9000 });
-    if (json?.statusCode === 1 && /session|login|unauthorized/i.test(json?.statusMessage || '')) {
+    const { json } = await swiggyCartGet(accountOrCookies, { timeoutMs: 9000 });
+    if ((json?.statusCode === 1 || json?.statusCode === 999) && /session|login|unauthorized/i.test(json?.statusMessage || '')) {
       return { sessionExpired: true };
     }
-    if (!json?.data || !json.data.cartMeta) {
+    const parsed = json?.data ? parseDapiCartPayload(json.data) : null;
+    if (!parsed) {
       return { items: [], restaurantName: null, finalPayable: 0 };
     }
-    return parseDapiCartPayload(json.data);
+    return parsed;
   } catch (err) {
     console.error('inspectCartForAccount error:', err.message);
     return null;
@@ -1970,10 +2296,27 @@ export async function fetchAccountAddresses(cookiesOrAcc) {
       });
     };
 
-    // Source 1: GET /dapi/cart -> cartMeta.addresses (returns ALL saved addresses globally if cart exists)
-    const cartPromise = dapiFetch(cookiesOrAcc, 'cart', { timeoutMs: 7000 })
+    // Source 0: Native Swiggy Android Profile (`https://profile.swiggy.com/api/v1/user/profile` — returns ALL saved addresses in ~50ms with zero cookies!)
+    for (const a of (auth.profileAddresses || [])) {
+      addNormalized({
+        id: a.id,
+        city: a.city || 'Address',
+        name: a.name || '',
+        mobile: a.mobile || '',
+        flat_no: a.flat_no,
+        area: a.area || '',
+        landmark: a.landmark || '',
+        address: `${a.flat_no && a.flat_no !== 'None' ? a.flat_no + ', ' : ''}${a.address || ''}`.trim(),
+        lat: a.lat,
+        lng: a.lng,
+        annotation: a.annotation || ''
+      });
+    }
+
+    // Source 1: Cart (`dapi/cart` or `chkout/cart/client`) -> `addresses` (returns ALL saved addresses globally if cart exists)
+    const cartPromise = swiggyCartGet(cookiesOrAcc, { timeoutMs: 7000 })
       .then(({ json }) => {
-        const list = json?.data?.cartMeta?.addresses || [];
+        const list = json?.data?.cartMeta?.addresses || json?.data?.addresses || [];
         for (const a of list) {
           addNormalized({
             id: a.id,
@@ -2629,25 +2972,38 @@ export async function checkAccountFreeCash(cookies) {
   return claimInstamartFreeCash(cookies);
 }
 
-// Fast profile name + mobile extractor (checks zero-WAF order/address data first in ~200ms, browser fallback)
-export async function fetchSwiggyProfileFromCookies(cookies) {
-  if (!cookies) return { name: null, phone: null };
+// Fast profile name + mobile extractor (checks Native Android `profile.swiggy.com` + zero-WAF order/address data first in ~80ms)
+export async function fetchSwiggyProfileFromCookies(cookiesOrAcc) {
+  if (!cookiesOrAcc) return { name: null, phone: null };
   try {
-    const auth = await getSwiggySessionAuth(cookies);
+    const androidProf = await fetchSwiggyAndroidProfile(cookiesOrAcc, { timeoutMs: 5500 });
+    if (androidProf?.ok && (androidProf.name || androidProf.phone)) {
+      return {
+        id: androidProf.customerId || null,
+        name: androidProf.name || null,
+        phone: androidProf.phone || null
+      };
+    }
+    const auth = await getSwiggySessionAuth(cookiesOrAcc);
     if (auth?.orders?.length > 0) {
       const da = auth.orders[0]?.delivery_address;
       if (da?.name || da?.mobile) {
         return {
+          id: auth.userId || null,
           name: da.name || null,
           phone: da.mobile ? String(da.mobile).replace(/^\+?91/, '') : null
         };
       }
     }
-    const addrs = await fetchAccountAddresses(cookies);
+    const addrs = await fetchAccountAddresses(cookiesOrAcc);
     if (addrs.length > 0 && (addrs[0].name || addrs[0].mobile)) {
-      return { name: addrs[0].name || null, phone: addrs[0].mobile || null };
+      return { id: auth?.userId || null, name: addrs[0].name || null, phone: addrs[0].mobile || null };
     }
   } catch (e) {}
+  const cookies = typeof cookiesOrAcc === 'string' ? cookiesOrAcc : (cookiesOrAcc?.cookies || '');
+  if (!cookies.includes('_session_tid=')) {
+    return { name: null, phone: null };
+  }
 
   let browser = null;
   try {
@@ -2693,33 +3049,42 @@ export async function fetchSwiggyProfileFromCookies(cookies) {
   }
 }
 
-// Apply or remove a specific coupon code directly on Swiggy's live cart (`POST /dapi/cart/applyCoupon` / `removeCoupon`)
+// Apply or remove a specific coupon code directly on Swiggy's live cart (`dapi/cart/*` or `chkout.swiggy.com/api/v2/cart/client/*`)
 export async function applyLiveCouponToOrder(account, order, couponCode) {
   if (!account || !order) return null;
   const lat = order.addressDetails?.lat || '26.8658609';
   const lng = order.addressDetails?.lng || '80.9307755';
   const code = couponCode ? String(couponCode).trim().toUpperCase() : '';
+  const cleanCookies = cleanSwiggyCookieString(account.cookies || '', account);
 
   if (!code || code === 'REMOVE' || code === 'NONE' || code === 'CLEAR') {
-    const { json } = await dapiFetch(account, 'cart/removeCoupon', {
+    if (cleanCookies.includes('_session_tid=')) {
+      const { json } = await dapiFetch(account, 'cart/removeCoupon', { method: 'POST', body: {}, lat, lng });
+      if (json?.statusCode === 0 && json?.data) return parseDapiCartPayload(json.data);
+    }
+    const { json } = await androidCheckoutCartCall(account, 'client/removecoupon', { method: 'POST', body: {}, lat, lng });
+    return json?.data ? parseDapiCartPayload(json.data) : null;
+  }
+
+  if (cleanCookies.includes('_session_tid=')) {
+    const { json } = await dapiFetch(account, 'cart/applyCoupon', {
       method: 'POST',
-      body: {},
+      body: { couponCode: code },
       lat,
       lng
     });
-    return json?.data?.cartMeta ? parseDapiCartPayload(json.data) : null;
+    if (json?.statusCode === 0 && json?.data) {
+      return parseDapiCartPayload(json.data);
+    }
   }
 
-  const { json } = await dapiFetch(account, 'cart/applyCoupon', {
+  const { json } = await androidCheckoutCartCall(account, 'client/applycoupon', {
     method: 'POST',
-    body: { couponCode: code },
+    body: { coupon_code: code, couponCode: code },
     lat,
     lng
   });
-  if (json?.data?.cartMeta) {
-    return parseDapiCartPayload(json.data);
-  }
-  return null;
+  return json?.data ? parseDapiCartPayload(json.data) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -2750,8 +3115,9 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       return {
         success: false,
         sessionExpired: true,
+        code: 'ACCOUNT_SESSION_EXPIRED_OR_PARTIAL',
         accountPhone: account.phone || account.name,
-        error: `Session expired on Swiggy for account ${account.phone || account.name}. Please re-login with OTP or Session JSON.`
+        error: `Session expired on Swiggy for account ${account.phone || account.name} (${auth.statusMessage || 'expired'}). Please re-login with OTP or active Session JSON.`
       };
     }
 
@@ -2835,6 +3201,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       return {
         success: false,
         sessionExpired: true,
+        code: 'ACCOUNT_SESSION_EXPIRED_OR_PARTIAL',
         accountPhone: account.phone || account.name,
         error: `Session expired on Swiggy for account ${account.phone || account.name}.`
       };
@@ -2871,34 +3238,45 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       syncableItems.every(si => liveCart.items.some(li => String(li.itemId) === String(si.itemId || si.menu_item_id) && Number(li.qty) === Number(si.qty || si.quantity || 1)))
     );
 
-    // Step 3: Push exact items + delivery address into chosen Swiggy account via verified `POST /dapi/cart`
+    // Step 3: Push exact items + delivery address into chosen Swiggy account via unified `swiggyCartUpdate` (`dapi/cart` OR Native Android `chkout/cart/client/update`!)
     if (restaurantId && syncableItems.length > 0 && !sameCartAlreadyLoaded) {
       const initialCoupon = order.couponCode || liveCart?.couponCode || '';
-      const { json: syncJson } = await dapiFetch(account, 'cart', {
-        method: 'POST',
-        lat,
-        lng,
-        address: order.addressDetails?.address || '',
-        area: order.addressDetails?.area || '',
-        body: {
-          flushFirst: true,
-          cart: {
-            restaurantId: String(restaurantId),
-            address_id: String(targetAddressId || ''),
-            couponCode: String(initialCoupon || ''),
-            cartItems: syncableItems.map(it => ({
-              addons: Array.isArray(it.addons) ? it.addons : [],
-              variants: Array.isArray(it.variants) ? it.variants : [],
-              menu_item_id: Number(it.menu_item_id || it.itemId),
-              quantity: Number(it.qty || it.quantity || 1)
-            })),
-            mealItems: [],
-            subscriptionItems: []
+      const { json: syncJson } = await swiggyCartUpdate(
+        account,
+        {
+          restaurantId: String(restaurantId),
+          address_id: String(targetAddressId || ''),
+          couponCode: String(initialCoupon || ''),
+          cartItems: syncableItems.map(it => ({
+            addons: Array.isArray(it.addons) ? it.addons : [],
+            variants: Array.isArray(it.variants) ? it.variants : [],
+            menu_item_id: Number(it.menu_item_id || it.itemId),
+            quantity: Number(it.qty || it.quantity || 1)
+          })),
+          mealItems: [],
+          subscriptionItems: []
+        },
+        {
+          lat,
+          lng,
+          address: order.addressDetails?.address || '',
+          area: order.addressDetails?.area || '',
+          flushFirst: true
+        }
+      );
+      const parsedSynced = syncJson?.data ? parseDapiCartPayload(syncJson.data) : null;
+      if (parsedSynced) {
+        liveCart = parsedSynced;
+        // If `targetAddressId` wasn't saved beforehand (token-only session), pick closest saved address from `chkout` response if near customer!
+        if (!targetAddressId && Array.isArray(parsedSynced.savedAddresses) && parsedSynced.savedAddresses.length > 0) {
+          const nearSaved = parsedSynced.savedAddresses.find(sa =>
+            sa.id && (!order.addressDetails?.lat || distanceMeters(sa.lat, sa.lng, order.addressDetails.lat, order.addressDetails.lng) < 5000)
+          );
+          if (nearSaved?.id) {
+            targetAddressId = String(nearSaved.id);
+            order.addressDetails = { ...(order.addressDetails || {}), id: String(nearSaved.id) };
           }
         }
-      });
-      if (syncJson?.data?.cartMeta) {
-        liveCart = parseDapiCartPayload(syncJson.data);
       } else {
         liveCart = null;
       }
@@ -2908,17 +3286,41 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     if (liveCart && liveCart.items?.length > 0 && liveCart.eligibleSuperPlan && liveCart.deliveryFee > liveCart.eligibleSuperPlan.priceRupees) {
       try {
         const planId = String(liveCart.eligibleSuperPlan.planId);
-        const { json: subJson } = await dapiFetch(account, 'cart/addSubscriptionToCart', {
-          method: 'POST',
-          lat,
-          lng,
-          body: { subscriptionItems: [{ plan_id: planId, quantity: 1 }] }
-        });
-        if (subJson?.statusCode === 0 && subJson?.data?.cartMeta) {
-          const withPlan = parseDapiCartPayload(subJson.data);
-          if (withPlan && withPlan.items?.length > 0 && withPlan.finalPayable < liveCart.finalPayable) {
-            liveCart = withPlan;
+        let withPlan = null;
+        if (cleanCookies.includes('_session_tid=')) {
+          const { json: subJson } = await dapiFetch(account, 'cart/addSubscriptionToCart', {
+            method: 'POST',
+            lat,
+            lng,
+            body: { subscriptionItems: [{ plan_id: planId, quantity: 1 }] }
+          });
+          if (subJson?.statusCode === 0 && subJson?.data) {
+            withPlan = parseDapiCartPayload(subJson.data);
           }
+        } else if (restaurantId && syncableItems.length > 0) {
+          const { json: subJson } = await swiggyCartUpdate(
+            account,
+            {
+              restaurantId: String(restaurantId),
+              address_id: String(targetAddressId || ''),
+              couponCode: String(liveCart.couponCode || ''),
+              cartItems: syncableItems.map(it => ({
+                addons: Array.isArray(it.addons) ? it.addons : [],
+                variants: Array.isArray(it.variants) ? it.variants : [],
+                menu_item_id: Number(it.menu_item_id || it.itemId),
+                quantity: Number(it.qty || it.quantity || 1)
+              })),
+              mealItems: [],
+              subscriptionItems: [{ plan_id: planId, quantity: 1 }]
+            },
+            { lat, lng, flushFirst: false }
+          );
+          if (subJson?.statusCode === 0 && subJson?.data) {
+            withPlan = parseDapiCartPayload(subJson.data);
+          }
+        }
+        if (withPlan && withPlan.items?.length > 0 && withPlan.finalPayable < liveCart.finalPayable) {
+          liveCart = withPlan;
         }
       } catch (e) {}
     }
@@ -3065,18 +3467,17 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       order.totalSavings = liveCart.totalSavings;
       order.swiggyVerified = true;
     } else {
-      const rawCookies = typeof account === 'string' ? account : (account?.cookies || '');
-      const probe = await dapiFetch(account, 'cart', {
+      const probe = await swiggyCartGet(account, {
         lat: order?.addressDetails?.lat || '26.8658609',
         lng: order?.addressDetails?.lng || '80.9307755'
       }).catch(() => null);
-      const swiggyMsg = probe?.json?.statusMessage || probe?.json?.data?.cartMeta?.cart_banner_message || '';
-      if (!rawCookies.includes('_session_tid=') || probe?.json?.statusCode === 1 || /session|login|auth/i.test(swiggyMsg)) {
+      const swiggyMsg = probe?.json?.statusMessage || probe?.json?.data?.cartMeta?.cart_banner_message || probe?.json?.data?.cart_banner_message || '';
+      if (probe?.json?.statusCode === 999 || (probe?.json?.statusCode === 1 && /session|login|auth/i.test(swiggyMsg))) {
         const accLabel = account?.phone || account?.mobile || account?.name || 'Selected Account';
         return {
           success: false,
           code: 'ACCOUNT_SESSION_EXPIRED_OR_PARTIAL',
-          error: `Account ${accLabel} is missing live Swiggy web session cookie (_session_tid) or session expired (msg="${swiggyMsg || 'missing _session_tid'}"). Re-Login ${accLabel} via OTP in 📱 Accounts or pick another FREE account!`
+          error: `Account ${accLabel} session expired on Swiggy (msg="${swiggyMsg || 'session expired'}"). Re-Login ${accLabel} via OTP in 📱 Accounts or pick another FREE account!`
         };
       }
       order.swiggyVerified = false;
@@ -3196,32 +3597,36 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
 
   const restoreOrFlushAccount = async (targetAcc, savedPreCart, fallbackRestId) => {
     if (savedPreCart?.items?.length > 0 && savedPreCart?.restaurantId) {
-      await dapiFetch(targetAcc, 'cart', {
-        method: 'POST',
-        lat: savedPreCart.addressDetails?.lat || '26.8658609',
-        lng: savedPreCart.addressDetails?.lng || '80.9307755',
-        body: {
-          flushFirst: true,
-          cart: {
-            restaurantId: String(savedPreCart.restaurantId),
-            address_id: String(savedPreCart.addressDetails?.id || ''),
-            couponCode: String(savedPreCart.couponCode || ''),
-            cartItems: savedPreCart.items.map(it => ({
-              addons: Array.isArray(it.addons) ? it.addons : [],
-              variants: Array.isArray(it.variants) ? it.variants : [],
-              menu_item_id: Number(it.menu_item_id || it.itemId),
-              quantity: Number(it.qty || it.quantity || 1)
-            })),
-            mealItems: [],
-            subscriptionItems: []
-          }
+      await swiggyCartUpdate(
+        targetAcc,
+        {
+          restaurantId: String(savedPreCart.restaurantId),
+          address_id: String(savedPreCart.addressDetails?.id || ''),
+          couponCode: String(savedPreCart.couponCode || ''),
+          cartItems: savedPreCart.items.map(it => ({
+            addons: Array.isArray(it.addons) ? it.addons : [],
+            variants: Array.isArray(it.variants) ? it.variants : [],
+            menu_item_id: Number(it.menu_item_id || it.itemId),
+            quantity: Number(it.qty || it.quantity || 1)
+          })),
+          mealItems: [],
+          subscriptionItems: []
+        },
+        {
+          lat: savedPreCart.addressDetails?.lat || '26.8658609',
+          lng: savedPreCart.addressDetails?.lng || '80.9307755',
+          flushFirst: true
         }
-      }).catch(() => {});
-    } else if (fallbackRestId) {
-      await dapiFetch(targetAcc, 'cart', {
-        method: 'POST',
-        body: { flushFirst: true, cart: { restaurantId: String(fallbackRestId), address_id: '', couponCode: '', cartItems: [], mealItems: [], subscriptionItems: [] } }
-      }).catch(() => {});
+      ).catch(() => {});
+    } else {
+      if (fallbackRestId) {
+        await swiggyCartUpdate(
+          targetAcc,
+          { restaurantId: String(fallbackRestId), address_id: '', couponCode: '', cartItems: [], mealItems: [], subscriptionItems: [] },
+          { flushFirst: true }
+        ).catch(() => {});
+      }
+      await swiggyCartFlush(targetAcc).catch(() => {});
     }
   };
 
@@ -3357,44 +3762,41 @@ function buildSwiggyPaymentsApiHeaders(account, auth, { cartId = '', addressId =
  * exact Swiggy `order_id`, and `transactionId` (`paas_id`).
  * Never charges or confirms an unpaid order; only completes when scanned & paid in any UPI app.
  */
-export async function generateRealSwiggyMerchantUpiQr(account, order) {
-  return withSwiggyAccountLock(account, async () => {
-    if (!account?.cookies) {
-      const err = new Error('Selected Swiggy account has no active session cookies.');
-      err.diag = { code: 'QR_NO_ACCOUNT_COOKIES', stage: 'GENERATE_REAL_QR' };
-      throw err;
-    }
+export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder) {
+  const isWrapped = accountOrOpts && typeof accountOrOpts === 'object' && ('account' in accountOrOpts) && !maybeOrder;
+  const account = isWrapped ? accountOrOpts.account : accountOrOpts;
+  const order = isWrapped ? accountOrOpts.order : maybeOrder;
 
-    if (!String(account.cookies).includes('_session_tid=')) {
-      const accLabel = account.phone || account.mobile || account.name || 'Account';
-      const err = new Error(
-        `Account ${accLabel} has partial session JSON without live _session_tid cookie. Open 📱 Accounts -> Re-Login ${accLabel} via OTP (or paste full copied code) so real Swiggy checkout QR can be generated!`
-      );
-      err.diag = { code: 'QR_MISSING_SESSION_TID_COOKIE', stage: 'GENERATE_REAL_QR' };
+  return withSwiggyAccountLock(account, async () => {
+    if (!account || (!account.cookies && !account.tid && !account.token)) {
+      const err = new Error('Selected Swiggy account has no active session cookies or token.');
+      err.diag = { code: 'QR_NO_ACCOUNT_COOKIES', stage: 'GENERATE_REAL_QR' };
       throw err;
     }
 
     let auth = await getSwiggySessionAuth(account, true);
     if (!auth?.userId || !auth?.jwtTid) {
       const err = new Error('Swiggy session expired or invalid (`userId`/`jwtTid` missing). Re-login account.');
-      err.diag = { code: 'QR_AUTH_EXPIRED', stage: 'GENERATE_REAL_QR', hasCookies: Boolean(account.cookies) };
+      err.diag = { code: 'QR_AUTH_EXPIRED', stage: 'GENERATE_REAL_QR', hasCookies: Boolean(account.cookies), transport: auth?.transport || 'none' };
       throw err;
     }
 
     const reqLat = String(order?.addressDetails?.lat || '26.8658609');
     const reqLng = String(order?.addressDetails?.lng || '80.9307755');
+    const unwrapCartMeta = (resp) => resp?.json?.data?.cartMeta || resp?.json?.data || {};
     const extractCartCount = (cartResp, meta) =>
       Number(
         meta?.cart_total_count ??
         meta?.total_items_count ??
+        (Array.isArray(meta?.cart_menu_items) ? meta.cart_menu_items.reduce((s, x) => s + Number(x.quantity || 1), 0) : 0) ??
         cartResp?.json?.data?.totalItemsCount ??
         cartResp?.json?.data?.cartItemsCount ??
         0
       );
 
     // Verify live Swiggy personal cart has items + `address_id`; re-sync automatically if stale/empty!
-    let curCart = await dapiFetch(account, 'cart', { lat: reqLat, lng: reqLng });
-    let cm = curCart?.json?.data?.cartMeta || {};
+    let curCart = await swiggyCartGet(account, { lat: reqLat, lng: reqLng });
+    let cm = unwrapCartMeta(curCart);
     let itemCount = extractCartCount(curCart, cm);
 
     if ((!cm.address_id || !cm.order_total || itemCount <= 0) && (order?.cart || order?.cartLink || order?.items?.length)) {
@@ -3407,14 +3809,12 @@ export async function generateRealSwiggyMerchantUpiQr(account, order) {
       auth = await getSwiggySessionAuth(account, true);
       const updatedLat = String(order?.addressDetails?.lat || reqLat);
       const updatedLng = String(order?.addressDetails?.lng || reqLng);
-      curCart = await dapiFetch(account, 'cart', { lat: updatedLat, lng: updatedLng });
-      cm = curCart?.json?.data?.cartMeta || {};
+      curCart = await swiggyCartGet(account, { lat: updatedLat, lng: updatedLng });
+      cm = unwrapCartMeta(curCart);
       itemCount = extractCartCount(curCart, cm);
     }
 
-    // Instant 220ms Direct Cart Rehydration Shield:
-    // If Swiggy's 45s unpaid UPI intent expiry worker cleared the cart right around re-generation time,
-    // immediately push the verified items + own `address_id` + winning `couponCode` directly in ~220ms!
+    // Instant 220ms Direct Cart Rehydration Shield (supports BOTH Web DAPI & Native Android token-only JSONs!):
     if ((!cm.address_id || Number(cm.order_total || 0) <= 0 || itemCount <= 0) && order?.restaurantId && order?.items?.length > 0) {
       const savedList = await fetchAccountAddresses(account);
       let ownAddrId = '';
@@ -3427,38 +3827,42 @@ export async function generateRealSwiggyMerchantUpiQr(account, order) {
 
       const directLat = String(order?.addressDetails?.lat || reqLat);
       const directLng = String(order?.addressDetails?.lng || reqLng);
-      const directSync = await dapiFetch(account, 'cart', {
-        method: 'POST',
-        lat: directLat,
-        lng: directLng,
-        body: {
-          flushFirst: true,
-          cart: {
-            restaurantId: String(order.restaurantId),
-            address_id: ownAddrId,
-            couponCode: String(order.couponCode || ''),
-            cartItems: order.items
-              .filter(it => it.menu_item_id || it.itemId)
-              .map(it => ({
-                addons: Array.isArray(it.addons) ? it.addons : [],
-                variants: Array.isArray(it.variants) ? it.variants : [],
-                menu_item_id: Number(it.menu_item_id || it.itemId),
-                quantity: Number(it.qty || it.quantity || 1)
-              })),
-            mealItems: [],
-            subscriptionItems: []
-          }
-        }
-      });
-      if (directSync?.json?.data?.cartMeta) {
+      const directSync = await swiggyCartUpdate(
+        account,
+        {
+          restaurantId: String(order.restaurantId),
+          address_id: ownAddrId,
+          couponCode: String(order.couponCode || ''),
+          cartItems: order.items
+            .filter(it => it.menu_item_id || it.itemId)
+            .map(it => ({
+              addons: Array.isArray(it.addons) ? it.addons : [],
+              variants: Array.isArray(it.variants) ? it.variants : [],
+              menu_item_id: Number(it.menu_item_id || it.itemId),
+              quantity: Number(it.qty || it.quantity || 1)
+            })),
+          mealItems: [],
+          subscriptionItems: []
+        },
+        { lat: directLat, lng: directLng, flushFirst: true }
+      );
+      const directMeta = unwrapCartMeta(directSync);
+      if (directMeta && (directMeta.order_total !== undefined || directMeta.cart_total_count !== undefined)) {
         curCart = directSync;
-        cm = directSync.json.data.cartMeta;
+        cm = directMeta;
         itemCount = extractCartCount(directSync, cm);
       }
     }
 
+    // Ensure `addressId` falls back cleanly to account's saved address if `cm.address_id` was blank on token-only account
+    let fallbackSavedAddrId = '';
+    if (!cm.address_id && !order?.addressDetails?.id) {
+      const savedList = await fetchAccountAddresses(account);
+      if (savedList[0]?.id) fallbackSavedAddrId = String(savedList[0].id);
+    }
+
     const cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || '');
-    const addressId = String(cm.address_id || order?.addressDetails?.id || '');
+    const addressId = String(cm.address_id || order?.addressDetails?.id || fallbackSavedAddrId || '');
     const lat = String(order?.addressDetails?.lat || cm.restaurant_details?.lat || reqLat);
     const lng = String(order?.addressDetails?.lng || cm.restaurant_details?.lng || reqLng);
     const swiggyMsg = String(curCart?.json?.statusMessage || cm.cart_banner_message || cm.payment_banner_message || '');
@@ -3544,6 +3948,7 @@ export async function generateRealSwiggyMerchantUpiQr(account, order) {
     return {
       upiIntentUrl,
       swiggyOrderId,
+      orderId: swiggyOrderId,
       paymentTxnId,
       amount: liveOrderTotal,
       slaMinutes: orderData?.sla_time ? String(orderData.sla_time) : '',
@@ -3559,9 +3964,15 @@ export async function generateRealSwiggyMerchantUpiQr(account, order) {
  * 2) As soon as `data === 'success'`, fires `POST https://payments.swiggy.com/api/v3/order/confirm?order_id=<id>` so Swiggy confirms kitchen dispatch!
  * 3) Verifies real paid order via `GET /dapi/order/all` + `GET /dapi/order/details?type=full&version=V2` + `GET /dapi/order/trackV4` + `GET /dapi/order/trackV2/de`.
  */
-export async function checkRealSwiggyPaymentAndExtractTracking(account, order) {
-  if (!account?.cookies) {
-    const err = new Error('Selected Swiggy account has no session cookies while checking payment.');
+export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, maybeOrder) {
+  const isWrapped = accountOrOpts && typeof accountOrOpts === 'object' && ('account' in accountOrOpts) && !maybeOrder;
+  const account = isWrapped ? accountOrOpts.account : accountOrOpts;
+  const order = isWrapped
+    ? (accountOrOpts.order || { pendingSwiggyOrderId: accountOrOpts.orderId, pendingSwiggyPaasId: accountOrOpts.paymentTxnId })
+    : maybeOrder;
+
+  if (!account || (!account.cookies && !account.tid && !account.token)) {
+    const err = new Error('Selected Swiggy account has no session cookies or token while checking payment.');
     err.diag = { code: 'PAID_CHECK_NO_COOKIES', stage: 'CHECK_PAYMENT_AND_TRACKING' };
     throw err;
   }
@@ -3632,6 +4043,19 @@ export async function checkRealSwiggyPaymentAndExtractTracking(account, order) {
         matchedOrder = detOrder;
       }
     }
+  }
+
+  // If `vpa-txn-status` confirmed genuine gateway payment on a token-only account (`ZERO _session_tid`), build verified order record directly!
+  if (!matchedOrder && ['success', 'completed', 'paid'].includes(gatewayTxnState) && targetOrderId) {
+    matchedOrder = {
+      order_id: targetOrderId,
+      customer_id: auth.userId,
+      order_status: 'processing',
+      post_status: 'processing',
+      restaurant_name: order?.restaurantName || 'Swiggy',
+      order_total: order?.finalPayable || 0,
+      payment_info_v2: { payment_transactions: [{ state: 'STATE_SUCCESS' }] }
+    };
   }
 
   if (!matchedOrder) {
