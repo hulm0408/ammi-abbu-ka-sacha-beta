@@ -1,4 +1,5 @@
 import http from 'http';
+import crypto from 'crypto';
 import { Telegraf, Markup } from 'telegraf';
 import dotenv from 'dotenv';
 import QRCode from 'qrcode';
@@ -25,8 +26,9 @@ import {
   mutateDb,
   canTransitionOrder,
   getNextAutoUserName,
+  cleanEssentialSwiggyCookies,
 } from './store.js';
-import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers } from './swiggy-bridge.js';
+import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
   verifyAndInspectSwiggyLink,
   inspectCartForAccount,
@@ -676,11 +678,36 @@ function getBossPanelKeyboard() {
   };
 }
 
+const PUBLIC_APP_URL = (process.env.RENDER_EXTERNAL_URL || 'https://ammi-abbu-ka-sacha-beta.onrender.com').replace(/\/+$/, '');
+
+function computeCopyHmac(accKey) {
+  return crypto.createHmac('sha256', BOT_TOKEN || 'swiggy_copy_secret').update(`copy:${accKey}`).digest('hex').slice(0, 24);
+}
+
+function buildFullCodeCopyWebAppUrl(accKey) {
+  return `${PUBLIC_APP_URL}/copy?acc=${encodeURIComponent(accKey)}&sig=${computeCopyHmac(accKey)}`;
+}
+
 function makeCopyButton(label, value, fallbackCallback, style = 'primary') {
   if (value && value.length > 0 && value.length <= 256) {
     return { text: label, copy_text: { text: value }, style };
   }
   return { text: label, callback_data: fallbackCallback, style };
+}
+
+// 1-Click Full Session Code Copy Button:
+// - If `fullValue.length <= 256`: native Telegram `copy_text`
+// - If in private chat & HTTPS cloud URL active: instant `web_app` clipboard engine that copies ALL 3,000+ chars in 1 click and auto-closes!
+// - Fallback in group chats: `callback_data` sending full 1-tap `<code>` & `<pre>` message
+function makeFullSessionCopyButton(ctx, label, accKey, fullValue, fallbackCallback, style = 'primary') {
+  if (fullValue && fullValue.length > 0 && fullValue.length <= 256) {
+    return { text: label, copy_text: { text: fullValue }, style };
+  }
+  const isPrivate = !ctx?.chat || ctx.chat.type === 'private';
+  if (isPrivate && PUBLIC_APP_URL.startsWith('https://')) {
+    return { text: label, web_app: { url: buildFullCodeCopyWebAppUrl(accKey) }, style };
+  }
+  return { text: label, callback_data: fallbackCallback || `copy_code_${accKey}`, style };
 }
 
 // Format Order Card for Boss (Ultra Compact, Clean & State-Driven)
@@ -1668,38 +1695,123 @@ bot.action(/^prompt_reenter_otp_(\d{10})$/, async (ctx) => {
   );
 });
 
-// Process JSON login and fetch authentic profile name from Swiggy
-async function handleProcessJsonLogin(ctx, rawJson, userId) {
+// Process JSON / Cookie login, verify live Swiggy session, and fetch authentic profile
+async function handleProcessJsonLogin(ctx, rawJson, userId, targetKeyOverride = null, orderIdOverride = null) {
+  const prevState = userWaitState[userId] || {};
+  const finalTargetKey = targetKeyOverride || prevState.targetAcc || null;
+  const finalOrderId = orderIdOverride || prevState.orderId || null;
   delete userWaitState[userId];
+
+  const trimmedInput = typeof rawJson === 'string' ? rawJson.trim() : rawJson;
   let parsed = null;
-  try {
-    parsed = typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson;
-  } catch (e) {
-    return ctx.reply('⚠️ Invalid JSON format. Kripya valid Swiggy session JSON string bhein.');
+  if (typeof trimmedInput === 'string') {
+    try {
+      parsed = JSON.parse(trimmedInput);
+    } catch (e) {
+      // Also support raw Cookie header string paste (`_session_tid=...; tid=...`)
+      if (trimmedInput.includes('=') && (trimmedInput.includes('_session_tid') || trimmedInput.includes('tid='))) {
+        parsed = { cookies: trimmedInput };
+      } else {
+        return ctx.reply('⚠️ Invalid JSON format. Kripya valid Swiggy Session JSON ya Cookie string bhejein.');
+      }
+    }
+  } else {
+    parsed = trimmedInput;
   }
 
-  let cookieStr = parsed.cookies || '';
-  if (!cookieStr && parsed.tid) {
-    cookieStr = `tid=${parsed.tid}; _sid=${parsed.sid || ''}; _device_id=${parsed.deviceId || ''}`;
+  // Support Cookie-Editor JSON array `[ { name, value }, ... ]` directly too!
+  if (Array.isArray(parsed)) {
+    const cookiePairs = parsed
+      .filter(c => c && c.name && c.value !== undefined)
+      .map(c => `${c.name}=${c.value}`)
+      .join('; ');
+    const getC = (n) => parsed.find(c => c && c.name === n)?.value || '';
+    parsed = {
+      tid: getC('tid'),
+      sid: getC('_sid'),
+      deviceId: getC('_device_id'),
+      token: getC('token'),
+      cookies: cookiePairs
+    };
   }
 
-  if (!cookieStr && !parsed.tid) {
+  const dbCheck = getDb();
+  const parsedPhoneRaw = parsed?.phone || parsed?.mobile || '';
+  const hintPhone = parsedPhoneRaw ? String(parsedPhoneRaw).replace(/[^0-9]/g, '').slice(-10) : '';
+  const vaultFallback = (hintPhone && dbCheck.sessionVault?.[hintPhone]) || (finalTargetKey && dbCheck.sessionVault?.[finalTargetKey]) || null;
+
+  let rawCookieStr = parsed?.cookies || '';
+  if ((!rawCookieStr || !rawCookieStr.includes('_session_tid=')) && vaultFallback?.cookies?.includes('_session_tid=')) {
+    rawCookieStr = vaultFallback.cookies;
+  }
+  if (!rawCookieStr && parsed?.tid) {
+    rawCookieStr = `tid=${parsed.tid}; _sid=${parsed.sid || ''}; _device_id=${parsed.deviceId || ''}; token=${parsed.token || parsed.tid}; _is_logged_in=1`;
+  }
+
+  const cookieStr = cleanEssentialSwiggyCookies(rawCookieStr, parsed || {});
+  if (!cookieStr && !parsed?.tid) {
     return ctx.reply('⚠️ Invalid session: Isme Swiggy cookies ya tid token nahi mila.');
   }
 
-  const statusMsg = await ctx.reply('⏳ <i>Swiggy session verify kiya ja raha hai & profile name fetch ho raha hai...</i>', { parse_mode: 'HTML' });
+  const statusMsg = await ctx.reply('⏳ <i>Swiggy session live verify ho raha hai & profile fetch kiya ja raha hai...</i>', { parse_mode: 'HTML' });
 
-  // 1. Fetch real profile from Swiggy using cookies
+  // Live check against zero-WAF Swiggy endpoint so broken/incomplete sessions are caught immediately
+  let liveTid = parsed?.tid || '';
+  let liveCustomerId = parsed?.customerId || '';
+  let liveSessionValid = true;
+  try {
+    const authRes = await fetch('https://www.swiggy.com/dapi/order/all', {
+      headers: {
+        'Cookie': stripStaleWafCookie(cookieStr),
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://www.swiggy.com/my-account'
+      },
+      signal: AbortSignal.timeout(7000)
+    });
+    const authJson = await authRes.json().catch(() => null);
+    if (authRes.status === 200 && authJson?.statusCode === 1) {
+      liveSessionValid = false;
+    } else if (authRes.status === 200 && authJson?.tid) {
+      liveTid = authJson.tid;
+      const jwtData = decodeJwtPayload(liveTid);
+      if (jwtData?.user_id && jwtData.user_id !== '0') {
+        liveCustomerId = String(jwtData.user_id);
+      }
+    }
+  } catch (e) {}
+
+  if (!liveSessionValid) {
+    try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+    return ctx.reply(
+      `❌ <b>Swiggy Session Expired / Incomplete Code!</b>\n\n` +
+      `Swiggy server ne is pasted code ko reject kar diya hai (ya purana incomplete code tha jisme <code>_session_tid</code> cookie nahi thi).\n\n` +
+      `👉 <b>Kripya Mobile Number + OTP se fresh login karein — ab se Copy Code button 100% PURA code (with full cookies) copy karega!</b>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            ...(hintPhone.length === 10
+              ? [Markup.button.callback(`🔑 Login ${hintPhone} via OTP`, `relogin_phone_${hintPhone}`)]
+              : [Markup.button.callback('📱 Login with Number', 'boss_login_with_number')])
+          ],
+          [Markup.button.callback('🏠 Main Menu', 'boss_panel_home')]
+        ])
+      }
+    );
+  }
+
+  // 1. Fetch real profile from Swiggy using clean cookies
   const profile = await fetchSwiggyProfileFromCookies(cookieStr).catch(() => ({ name: null, phone: null }));
-  const parsedPhone = parsed.phone || parsed.mobile || '';
-  const cleanPhone = (profile?.phone || parsedPhone ? String(profile?.phone || parsedPhone).replace(/[^0-9]/g, '').slice(-10) : '');
-  const swiggyName = profile?.name || parsed.name || (cleanPhone ? `User ${cleanPhone}` : 'Swiggy User');
+  const cleanPhone = (profile?.phone || hintPhone ? String(profile?.phone || hintPhone).replace(/[^0-9]/g, '').slice(-10) : '');
+  const swiggyName = profile?.name || parsed?.swiggyName || parsed?.name || (cleanPhone ? `User ${cleanPhone}` : 'Swiggy User');
+  const accKey = finalTargetKey || (cleanPhone ? `acc_${cleanPhone}` : (parsed?.account || 'acc_' + Date.now()));
 
-  const accKey = cleanPhone ? `acc_${cleanPhone}` : (parsed.account || 'acc_' + Date.now());
-
-  // 2. Import into database
+  // 2. Import complete session into database + vault
   const result = importSessionJson({
     ...parsed,
+    tid: liveTid || parsed?.tid || '',
+    customerId: liveCustomerId || profile?.id || parsed?.customerId || '',
     name: swiggyName,
     phone: cleanPhone,
     cookies: cookieStr
@@ -1710,24 +1822,20 @@ async function handleProcessJsonLogin(ctx, rawJson, userId) {
   } catch (e) {}
 
   if (result.success) {
-    const db = getDb();
-    if (!db.config.activeOrderAccount) {
-      db.config.activeOrderAccount = accKey;
-      saveDb(db);
-    }
-
     const claimWait = await ctx.reply('⏳ <i>Swiggy Breakfast (6am-11am) & Late Night (9pm-11pm) ₹50 OFF offers auto-claim ho rahe hain...</i>', { parse_mode: 'HTML' });
     const offersResult = await claimSwiggyBreakfastAndLateNightOffers({
       phone: cleanPhone,
-      token: parsed.token || parsed.tid,
-      tid: parsed.tid,
+      token: parsed?.token || liveTid,
+      tid: liveTid,
       cookies: cookieStr
     });
     try { await bot.telegram.deleteMessage(ctx.chat.id, claimWait.message_id); } catch (e) {}
 
-    const accData = db.config.accounts[accKey] || {};
-    accData.offers = offersResult;
-    saveDb(db);
+    const db = getDb();
+    if (db.config.accounts?.[accKey]) {
+      db.config.accounts[accKey].offers = offersResult;
+      saveDb(db);
+    }
 
     await sendAccountLoginAndOffersCard(ctx, {
       accountKey: accKey,
@@ -1735,16 +1843,16 @@ async function handleProcessJsonLogin(ctx, rawJson, userId) {
       name: swiggyName,
       swiggyName,
       phone: cleanPhone,
-      customerId: profile?.id || parsed.customerId || 'Verified',
-      exportJson: parsed,
+      customerId: liveCustomerId || profile?.id || result.customerId || 'Verified',
+      exportJson: exportSessionJson(accKey),
       offers: offersResult
-    }, ctx.from.id, null);
+    }, ctx.from.id, finalOrderId);
   } else {
     await ctx.reply(`❌ <b>Import Failed:</b> ${result.message}`, getBossPanelKeyboard());
   }
 }
 
-// Sends the instant claiming confirmation & detailed offers card
+// Sends the instant claiming confirmation & detailed offers card with 1-Click FULL Code Copy
 async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
   const targetAcc = accInfo.accountKey || accInfo.targetAcc || `acc_${accInfo.phone}`;
   const displayName = accInfo.name || targetAcc;
@@ -1754,7 +1862,7 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
   const customerId = accInfo.customerId || 'Verified';
 
   const db = getDb();
-  if (!db.config.activeOrderAccount) {
+  if (!db.config.activeOrderAccount || !db.config.accounts?.[db.config.activeOrderAccount]?.isLoggedIn) {
     db.config.activeOrderAccount = targetAcc;
     saveDb(db);
   }
@@ -1776,18 +1884,18 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
   const isBreakfastClaimed = breakfast.status === 'CLAIMED';
   const bothClaimed = isLateNightClaimed && isBreakfastClaimed;
 
-  const lateNightStatusText = isLateNightClaimed 
-    ? `✅ <code>CLAIMED</code> (50 off on 199)${lateNight.message ? ` — <i>${escapeHtml(lateNight.message)}</i>` : ''}` 
+  const lateNightStatusText = isLateNightClaimed
+    ? `✅ <code>CLAIMED</code> (50 off on 199)${lateNight.message ? ` — <i>${escapeHtml(lateNight.message)}</i>` : ''}`
     : `❌ <code>CLAIM FAILED</code>${lateNight.message ? ` (<i>${escapeHtml(lateNight.message)}</i>)` : ''}`;
-  const breakfastStatusText = isBreakfastClaimed 
-    ? `✅ <code>CLAIMED</code> (50 off on 199)${breakfast.message ? ` — <i>${escapeHtml(breakfast.message)}</i>` : ''}` 
+  const breakfastStatusText = isBreakfastClaimed
+    ? `✅ <code>CLAIMED</code> (50 off on 199)${breakfast.message ? ` — <i>${escapeHtml(breakfast.message)}</i>` : ''}`
     : `❌ <code>CLAIM FAILED</code>${breakfast.message ? ` (<i>${escapeHtml(breakfast.message)}</i>)` : ''}`;
 
-  const headerTag = bothClaimed 
-    ? `<blockquote>⚡ <b>SWIGGY CLAIMING SUCCESS</b></blockquote>` 
+  const headerTag = bothClaimed
+    ? `<blockquote>⚡ <b>SWIGGY CLAIMING SUCCESS</b></blockquote>`
     : `<blockquote>⚠️ <b>LOGIN COMPLETE — CLAIM PARTIAL</b></blockquote>`;
 
-  const cardText = 
+  const headerBody =
     `${headerTag}\n\n` +
     `📱 <b>Account Number:</b> <code>${phone}</code>\n` +
     (swiggyName ? `👤 <b>Swiggy Profile Name:</b> <b>${escapeHtml(swiggyName)}</b>\n` : '') +
@@ -1797,17 +1905,22 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     `🎁 <b>OFFERS STATUS:</b>\n` +
     `• 🌙 <b>Swiggy Late Night:</b> ${lateNightStatusText}\n` +
     `• 🍳 <b>Swiggy Breakfast:</b> ${breakfastStatusText}\n\n` +
-    (bothClaimed 
-      ? `🟢 <b>Status:</b> Both offers active! 50 off on 199 available on food orders.\n\n` 
-      : `⚠️ <b>Status:</b> One or more offers could not be claimed. You can delete this account or retry.\n\n`) +
-    (orderId ? `📌 <b>Order #${orderId} is linked to ${escapeHtml(displayName)}!</b>\n\n` : '') +
-    (sessionJsonStr ? `📋 <b>Session Code (Read more):</b>\n<blockquote expandable><pre><code class="language-json">${escapeHtml(sessionJsonStr)}</code></pre></blockquote>\n\n` : '') +
-    `💾 <i>Account is saved in DB and ready for orders!</i>`;
+    (bothClaimed
+      ? `🟢 <b>Status:</b> Both offers active! 50 off on 199 available on food orders.\n\n`
+      : `⚠️ <b>Status:</b> One or more offers could not be claimed. Retry claim below or manage account.\n\n`) +
+    (orderId ? `📌 <b>Order #${orderId} is linked to ${escapeHtml(displayName)}!</b>\n\n` : '');
 
-  let keyboardButtons = [];
+  // Keep total message safely inside Telegram's 4096-char HTML message limit (zero truncation!)
+  const codeToEmbed = (headerBody.length + sessionJsonStr.length + 140 <= 4050) ? sessionJsonStr : compactStr;
+  const cardText =
+    headerBody +
+    (codeToEmbed ? `📋 <b>Full Session Code (${codeToEmbed.length} chars):</b>\n<pre><code class="language-json">${escapeHtml(codeToEmbed)}</code></pre>\n\n` : '') +
+    `💾 <i>Account is saved in DB — tap <b>Copy Code</b> below to copy 100% FULL code!</i>`;
+
+  const keyboardButtons = [];
   const copyRow = [];
-  if (sessionJsonStr) {
-    copyRow.push(makeCopyButton('Copy Code', compactStr, `copy_code_${targetAcc}`, 'primary'));
+  if (compactStr) {
+    copyRow.push(makeFullSessionCopyButton(ctx, 'Copy Code', targetAcc, compactStr, `copy_code_${targetAcc}`, 'primary'));
   }
   if (phone) {
     copyRow.push({ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' });
@@ -1815,20 +1928,19 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
   if (copyRow.length > 0) keyboardButtons.push(copyRow);
 
   keyboardButtons.push([
+    { text: '🎁 Claim ₹50 Offers', callback_data: `boss_retry_claim_${targetAcc}`, style: 'success' },
+    { text: '💰 Claim Free Cash', callback_data: `boss_check_fc_${targetAcc}`, style: 'success' }
+  ]);
+
+  keyboardButtons.push([
     { text: 'Export JSON File', callback_data: `boss_export_single_${targetAcc}`, style: 'primary' },
     { text: 'Previous Orders', callback_data: `boss_prev_orders_${targetAcc}`, style: 'primary' }
   ]);
 
-  if (bothClaimed) {
-    keyboardButtons.push([
-      { text: 'Order with this Account', callback_data: `boss_use_acc_${targetAcc}`, style: 'success' }
-    ]);
-  } else {
-    keyboardButtons.push([
-      { text: 'Retry Claim', callback_data: `boss_retry_claim_${targetAcc}`, style: 'primary' },
-      { text: 'Use Anyway for Orders', callback_data: `boss_use_acc_${targetAcc}`, style: 'primary' }
-    ]);
-  }
+  keyboardButtons.push([
+    { text: 'Order with this Account', callback_data: `boss_use_acc_${targetAcc}`, style: 'success' },
+    { text: '🚪 Logout Account', callback_data: `boss_logout_single_${targetAcc}`, style: 'danger' }
+  ]);
 
   keyboardButtons.push([
     { text: 'Add Another Account', callback_data: 'send_to_another_number', style: 'primary' },
@@ -1840,10 +1952,7 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     { text: 'Close', callback_data: 'close_menu', style: 'danger' }
   ]);
 
-  await ctx.reply(cardText, {
-    parse_mode: 'HTML',
-    reply_markup: { inline_keyboard: keyboardButtons }
-  });
+  await sendSafeHtml(ctx, cardText, { reply_markup: { inline_keyboard: keyboardButtons } });
 }
 
 // Action: Previous orders from login card or account card
@@ -2396,18 +2505,97 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
   })().catch(err => console.error('[boss_select_acc] Background Error:', err));
 });
 
-// Boss Action: Trigger Login via OTP for an Account
+// Helper: parse `accKey` and optional `orderId` cleanly even when `accKey` contains underscores (`acc_9935123518` or `acc_9935123518_ORD1`)
+function resolveAccountPayload(rawPayload) {
+  const db = getDb();
+  const accounts = db.config?.accounts || {};
+  if (accounts[rawPayload]) return { accKey: rawPayload, orderId: null, acc: accounts[rawPayload] };
+  for (const k of Object.keys(accounts)) {
+    if (rawPayload.startsWith(k + '_')) {
+      return { accKey: k, orderId: rawPayload.slice(k.length + 1), acc: accounts[k] };
+    }
+  }
+  const m = rawPayload.match(/^(acc_\d{10})(?:_(.+))?$/);
+  if (m) return { accKey: m[1], orderId: m[2] || null, acc: accounts[m[1]] || null };
+  return { accKey: rawPayload, orderId: null, acc: accounts[rawPayload] || null };
+}
+
+// 1-Tap Direct Re-Login / Re-Create on any 10-digit mobile number (works right after Logout OR Swiggy Delete!)
+bot.action(/^relogin_phone_(\d{10})$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const phone = ctx.match[1];
+  const db = getDb();
+  const existing = Object.entries(db.config?.accounts || {}).find(([, a]) => a.phone === phone);
+  const accKey = existing ? existing[0] : `acc_${phone}`;
+  const accName = existing?.[1]?.name || getNextAutoUserName();
+
+  await ctx.answerCbQuery(`Sending OTP to ${phone}... ⚡`).catch(() => {});
+  const waitMsg = await ctx.reply(`📲 <b>Requesting Swiggy OTP for <code>${phone}</code>...</b>`, { parse_mode: 'HTML' });
+
+  try {
+    const result = await requestSwiggyOtpViaBridge(ctx.from.id, phone, accKey, accName);
+    try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
+
+    if (result.success) {
+      userWaitState[ctx.from.id] = {
+        action: 'waiting_swiggy_otp_bridge',
+        targetAcc: accKey,
+        phone,
+        name: accName
+      };
+      await ctx.reply(
+        `📲 <b>Swiggy OTP Sent!</b>\n` +
+        `📱 Mobile: <code>${phone}</code>${result.isNewUser ? ' <i>(Fresh Signup Mode)</i>' : ''}\n\n` +
+        `👉 <i>6-digit OTP yahan type karein:</i>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }],
+              [
+                { text: '🔄 Re-enter OTP', callback_data: `prompt_reenter_otp_${phone}`, style: 'primary' },
+                { text: '📨 Resend OTP', callback_data: `resend_otp_${phone}`, style: 'primary' }
+              ],
+              [
+                { text: '📋 Paste Session JSON', callback_data: `boss_login_acc_json_${accKey}`, style: 'primary' },
+                { text: '❌ Cancel', callback_data: 'close_menu', style: 'danger' }
+              ]
+            ]
+          }
+        }
+      );
+      await ctx.reply('👉 Enter OTP:', {
+        reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
+      });
+    } else {
+      const errCard = formatOtpSendErrorCard(phone, result);
+      await ctx.reply(errCard.text, { parse_mode: 'HTML', ...errCard.keyboard });
+    }
+  } catch (err) {
+    try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
+    await ctx.reply(`❌ <b>Error:</b> ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+  }
+});
+
+// Boss Action: Trigger Login / Re-Login via OTP for an Account
 bot.action(/^boss_login_acc_otp_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const rawPayload = ctx.match[1];
-  const accKey = rawPayload.split('_')[0] === 'acc' ? rawPayload.split('_').slice(0, 2).join('_') : rawPayload.split('_')[0];
-  const db = getDb();
-  const acc = db.config.accounts?.[accKey] || db.config.accounts?.[rawPayload];
-  const phone = acc?.phone || acc?.mobile || accKey.replace(/^acc_/, '').slice(-10);
-  const accName = acc?.name || phone;
+  const { accKey, orderId, acc } = resolveAccountPayload(ctx.match[1]);
+  const rawPhone = acc?.phone || acc?.mobile || accKey.replace(/^acc_/, '');
+  const phone = /^\d{10}$/.test(rawPhone) ? rawPhone : '';
+  const accName = acc?.name || phone || accKey;
 
-  if (!phone || phone.length < 10) {
-    return ctx.answerCbQuery('Invalid phone number for account').catch(() => {});
+  // If account slot has no phone number yet (newly created slot), ask for the 10-digit number directly!
+  if (!phone) {
+    await ctx.answerCbQuery().catch(() => {});
+    userWaitState[ctx.from.id] = { action: 'waiting_phone_for_otp', targetAcc: accKey, orderId };
+    return ctx.reply(
+      `📱 <b>Enter 10-digit Mobile Number for "${escapeHtml(accName)}":</b>`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: { force_reply: true, input_field_placeholder: 'Enter 10-digit mobile number...' }
+      }
+    );
   }
 
   await ctx.answerCbQuery(`Sending OTP to ${phone}... ⚡`).catch(() => {});
@@ -2421,27 +2609,35 @@ bot.action(/^boss_login_acc_otp_(.+)$/, async (ctx) => {
       userWaitState[ctx.from.id] = {
         action: 'waiting_swiggy_otp_bridge',
         targetAcc: accKey,
-        phone
+        phone,
+        name: accName,
+        orderId
       };
       await ctx.reply(
         `📲 <b>Swiggy OTP Sent Successfully!</b>\n` +
-        `📱 Mobile: <code>${phone}</code>\n` +
+        `📱 Mobile: <code>${phone}</code>${result.isNewUser ? ' <i>(Fresh Signup)</i>' : ''}\n` +
         `👤 Account: <b>${escapeHtml(accName)}</b>\n\n` +
         `👉 <i>Kripya mobile par aaya hua 6-digit OTP yahan type karein:</i>`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('🔄 Re-enter OTP', `prompt_reenter_otp_${phone}`),
-              Markup.button.callback('📨 Resend OTP', `resend_otp_${phone}`)
-            ],
-            [
-              Markup.button.callback('📋 Paste Session JSON', `boss_login_acc_json_${accKey}`),
-              Markup.button.callback('❌ Cancel', 'close_menu')
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }],
+              [
+                { text: '🔄 Re-enter OTP', callback_data: `prompt_reenter_otp_${phone}`, style: 'primary' },
+                { text: '📨 Resend OTP', callback_data: `resend_otp_${phone}`, style: 'primary' }
+              ],
+              [
+                { text: '📋 Paste Session JSON', callback_data: `boss_login_acc_json_${accKey}`, style: 'primary' },
+                { text: '❌ Cancel', callback_data: 'close_menu', style: 'danger' }
+              ]
             ]
-          ])
+          }
         }
       );
+      await ctx.reply('👉 Enter OTP:', {
+        reply_markup: { force_reply: true, input_field_placeholder: 'Enter 6-digit OTP...' }
+      });
     } else {
       const errCard = formatOtpSendErrorCard(phone, result);
       await ctx.reply(errCard.text, {
@@ -2455,30 +2651,27 @@ bot.action(/^boss_login_acc_otp_(.+)$/, async (ctx) => {
   }
 });
 
-// Boss Action: Prompt to paste Session JSON for an Account
+// Boss Action: Prompt to paste Full Session JSON / Code for an Account (Re-Login without OTP!)
 bot.action(/^boss_login_acc_json_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const rawPayload = ctx.match[1];
-  const accKey = rawPayload.split('_')[0] === 'acc' ? rawPayload.split('_').slice(0, 2).join('_') : rawPayload.split('_')[0];
-  const db = getDb();
-  const acc = db.config.accounts?.[accKey] || db.config.accounts?.[rawPayload];
-  const phone = acc?.phone || acc?.mobile || accKey.replace(/^acc_/, '').slice(-10);
-  const accName = acc?.name || phone;
+  const { accKey, orderId, acc } = resolveAccountPayload(ctx.match[1]);
+  const phone = acc?.phone || acc?.mobile || accKey.replace(/^acc_/, '');
+  const accName = acc?.name || phone || accKey;
 
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = {
     action: 'waiting_json_login',
     targetAcc: accKey,
+    orderId,
     phone
   };
 
   await ctx.reply(
-    `📋 <b>Paste Swiggy Session JSON for ${escapeHtml(accName)} (${escapeHtml(phone)}):</b>\n\n` +
-    `Browser ya app se copy kiya hua full Swiggy session JSON yahan bhejein:\n\n` +
-    `<i>(Format: <code>{"tid":"...","sid":"...","cookies":"..."}</code>)</i>`,
+    `📋 <b>Re-Login / Import Session Code for ${escapeHtml(accName)}${phone ? ` (<code>${escapeHtml(phone)}</code>)` : ''}:</b>\n\n` +
+    `Copy kiya hua full Swiggy Session Code (ya <code>.json</code> file) yahan paste karein — bina OTP ke turant re-login ho jayega!`,
     {
       parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste session JSON here...' }
+      reply_markup: { force_reply: true, input_field_placeholder: 'Paste full session JSON code here...' }
     }
   );
 });
@@ -2888,63 +3081,102 @@ bot.action('boss_add_new_account_menu', async (ctx) => {
   );
 });
 
-// Account Login JSON prompt
-bot.action(/^boss_login_acc_json_(.+)$/, async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const rawTarget = ctx.match[1];
-  await ctx.answerCbQuery().catch(() => {});
-
-  const db = getDb();
-  let targetAcc = rawTarget;
-  let orderId = null;
-
-  if (!db.config.accounts?.[targetAcc]) {
-    for (const k of Object.keys(db.config.accounts || {})) {
-      if (rawTarget.startsWith(k + '_')) {
-        targetAcc = k;
-        orderId = rawTarget.slice(k.length + 1);
-        break;
-      }
-    }
-  }
-
-  userWaitState[ctx.from.id] = { action: 'waiting_json_import', targetAcc, orderId };
-  const accName = db.config.accounts?.[targetAcc]?.name || targetAcc;
-
-  await ctx.reply(
-    `📋 <b>Paste Session JSON for ${escapeHtml(accName)}:</b>\n\n` +
-    `Swiggy session JSON string chat me paste karein (Bina OTP ke turant login ho jayega):`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste session JSON...' }
-    }
-  );
-});
-
 // ================= ACCOUNT MANAGEMENT: DELETE, LOGOUT, REFRESH, EXPORT =================
 
 // State map for multi-select export checklist per user
 const exportSelections = {};
 
-// 1. Direct Delete Account Flow (NO LOGIN OTP)
+// 1A. Remove Account Locally from Bot DB (works immediately even if session is logged out or expired!)
+bot.action(/^boss_remove_local_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const key = ctx.match[1];
+  const db = getDb();
+  const acc = db.config?.accounts?.[key];
+  const phone = acc?.phone || acc?.mobile || key.replace(/^acc_/, '');
+  const accName = acc?.name || key;
+
+  await deactivateSwiggyAccountViaBridge(ctx.from.id, key, false).catch(() => {});
+  deleteAccount(key, { purgeVault: false });
+
+  await ctx.answerCbQuery('Removed from Bot DB! 🗑️').catch(() => {});
+  await ctx.reply(
+    `<blockquote>🗑️ <b>ACCOUNT REMOVED FROM BOT</b></blockquote>\n\n` +
+    `📱 <b>Number:</b> <code>${escapeHtml(phone)}</code>\n` +
+    `👤 <b>Name:</b> <b>${escapeHtml(accName)}</b>\n\n` +
+    `<i>Account bot list se hata diya gaya hai. Neeche 1-tap se dobara login kar sakte hain:</i>`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [
+          ...(/^\d{10}$/.test(phone)
+            ? [Markup.button.callback(`🔑 Re-Login ${phone} (OTP)`, `relogin_phone_${phone}`)]
+            : [Markup.button.callback('📱 Login with Number', 'boss_login_with_number')]),
+          Markup.button.callback('📋 Login with Code', 'boss_login_with_json')
+        ],
+        [
+          Markup.button.callback('👥 View Accounts', 'boss_view_accounts'),
+          Markup.button.callback('🏠 Main Menu', 'boss_panel_home')
+        ]
+      ])
+    }
+  );
+});
+
+// 1B. Clean All Logged-Out / Dead Accounts from Bot DB in 1 Tap
+bot.action('boss_clean_dead_accounts', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const db = getDb();
+  const entries = Object.entries(db.config?.accounts || {});
+  let removed = 0;
+  for (const [k, a] of entries) {
+    if (!a.isLoggedIn || !a.cookies) {
+      deleteAccount(k, { purgeVault: false });
+      removed++;
+    }
+  }
+  await ctx.answerCbQuery(`Removed ${removed} logged-out accounts! 🧹`).catch(() => {});
+  await showFamilyAccounts(ctx);
+});
+
+// 1. Direct Delete Account Picker (Supports BOTH Swiggy Server Delete via OTP AND Instant Bot Removal!)
 bot.action('boss_delete_picker', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
   const db = getDb();
   const accounts = db.config.accounts || {};
+  const entries = Object.entries(accounts);
 
   const buttons = [];
-  for (const [k, a] of Object.entries(accounts)) {
-    buttons.push([Markup.button.callback(`Delete ${a.name || k} (${a.phone || ''})`, `boss_swiggy_delete_start_${k}`)]);
+  const deadCount = entries.filter(([, a]) => !a.isLoggedIn || !a.cookies).length;
+  if (deadCount > 0) {
+    buttons.push([
+      { text: `🧹 Remove All Logged-Out (${deadCount}) from Bot`, callback_data: 'boss_clean_dead_accounts', style: 'danger' }
+    ]);
   }
-  buttons.push([Markup.button.callback('Cancel', 'boss_view_accounts')]);
+
+  for (const [k, a] of entries) {
+    const label = `${a.name || k} (${a.phone || ''})`;
+    if (a.isLoggedIn && a.cookies) {
+      buttons.push([
+        { text: `🔥 Swiggy Delete: ${label}`, callback_data: `boss_swiggy_delete_start_${k}`, style: 'danger' },
+        { text: `🧹 Bot Remove`, callback_data: `boss_remove_local_${k}`, style: 'primary' }
+      ]);
+    } else {
+      buttons.push([
+        { text: `🧹 Remove from Bot: ${label}`, callback_data: `boss_remove_local_${k}`, style: 'danger' },
+        { text: `🔑 Re-Login`, callback_data: `boss_login_acc_otp_${k}`, style: 'primary' }
+      ]);
+    }
+  }
+  buttons.push([{ text: 'Cancel', callback_data: 'boss_view_accounts', style: 'primary' }]);
 
   await ctx.reply(
-    `<b>Select Account to Delete:</b>\n\n` +
-    `Jis account ko delete karna chahte hain, uspe tap karein:`,
+    `<b>🗑️ Delete / Remove Accounts Manager:</b>\n\n` +
+    `• <b>🔥 Swiggy Delete:</b> Swiggy server se permanent account delete karega (OTP ke saath — phir usi number par fresh signup + new user offers milenge!).\n` +
+    `• <b>🧹 Bot Remove:</b> Sirf bot ki list se account hatayega (bina OTP ke turant!).`,
     {
       parse_mode: 'HTML',
-      ...Markup.inlineKeyboard(buttons)
+      reply_markup: { inline_keyboard: buttons }
     }
   );
 });
@@ -2962,7 +3194,6 @@ bot.action([
   const userId = ctx.from.id;
   const key = ctx.match[1];
 
-  // In-flight debounce guard: strictly ONE delete OTP request per click / user / account
   if (deleteInProgress.has(userId) || deleteInProgress.has(key)) {
     return ctx.answerCbQuery('⚠️ Swiggy Delete OTP request already in progress... Please wait.', { show_alert: true }).catch(() => {});
   }
@@ -2981,27 +3212,27 @@ bot.action([
   const phone = acc.phone || key.replace('acc_', '');
   const accName = acc.name || key;
 
-  // 1. Verify that the selected account has saved session credentials before initiating deletion
   const isAuth = checkLoggedInFromCookies(acc);
   if (!isAuth && !acc.cookies && !acc.tid) {
     deleteInProgress.delete(userId);
     deleteInProgress.delete(key);
     return ctx.reply(
-      `⚠️ <b>Account "${escapeHtml(accName)}" me koi saved Swiggy session nahi mila!</b>\n\n` +
-      `Swiggy account deletion ke liye active, authenticated session zaroori hai.\n` +
-      `Swiggy Settings me Delete tabhi open hota hai jab account logged in ho.\n\n` +
-      `👉 <i>Kripya pehle is account me log in karein:</i>`,
+      `⚠️ <b>"${escapeHtml(accName)}" (<code>${escapeHtml(phone)}</code>) abhi Logged Out hai!</b>\n\n` +
+      `• Agar sirf <b>Bot list se hatana hai</b> toh <b>🧹 Remove from Bot DB</b> dabayein.\n` +
+      `• Agar <b>Swiggy server se delete</b> karna hai toh pehle <b>🔑 Login via OTP</b> dabayein:`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback(`Login ${accName}`, `boss_login_acc_otp_${key}`)],
+          [
+            Markup.button.callback('🧹 Remove from Bot DB', `boss_remove_local_${key}`),
+            Markup.button.callback(`🔑 Login ${accName}`, `boss_login_acc_otp_${key}`)
+          ],
           [Markup.button.callback('Main Menu', 'boss_panel_home')]
         ])
       }
     );
   }
 
-  // Immediately answer callback query and set in-progress wait state so text listener never triggers login
   await ctx.answerCbQuery('Requesting Authentic Swiggy Delete OTP... ⏳').catch(() => {});
   userWaitState[userId] = {
     action: 'initiating_swiggy_delete_otp',
@@ -3023,27 +3254,26 @@ bot.action([
       };
 
       await ctx.reply(
-        `<b>Delete OTP Sent</b>\n<code>${phone}</code> (${escapeHtml(accName)})`,
+        `<b>🗑️ Swiggy Delete OTP Sent</b>\n📱 <code>${phone}</code> (${escapeHtml(accName)})`,
         {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
+              [{ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }],
               [
-                { text: 'Copy Number', copy_text: { text: phone } }
+                { text: 'Resend Delete OTP', callback_data: `boss_swiggy_delete_start_${key}`, style: 'primary' },
+                { text: '🧹 Remove from Bot Only', callback_data: `boss_remove_local_${key}`, style: 'danger' }
               ],
               [
-                { text: 'Resend Delete OTP', callback_data: `boss_swiggy_delete_start_${key}` }
-              ],
-              [
-                { text: 'Main Menu', callback_data: 'boss_panel_home' },
-                { text: 'Close', callback_data: 'close_menu' }
+                { text: 'Main Menu', callback_data: 'boss_panel_home', style: 'primary' },
+                { text: 'Close', callback_data: 'close_menu', style: 'danger' }
               ]
             ]
           }
         }
       );
 
-      await ctx.reply('👉 Enter Delete OTP:', {
+      await ctx.reply('👉 Enter 6-digit Delete OTP:', {
         reply_markup: {
           force_reply: true,
           input_field_placeholder: 'Enter 6-digit Delete OTP...'
@@ -3053,21 +3283,26 @@ bot.action([
       delete userWaitState[userId];
       const errText = otpResult.swiggyStatus || otpResult.message || 'Failed to trigger Delete OTP';
       const isAuthError = Boolean(otpResult.isAuthError);
+      if (isAuthError && db.config.accounts?.[key]) {
+        db.config.accounts[key].isLoggedIn = false;
+        saveDb(db);
+      }
       await ctx.reply(
         `<blockquote>${escapeHtml(errText)}</blockquote>\n\n` +
         `⚠️ <b>Swiggy Deletion OTP trigger nahi ho paya.</b>\n` +
         `Reason: <i>${escapeHtml(errText)}</i>\n\n` +
-        (isAuthError
-          ? `👉 <i>Swiggy ke mutabiq is account ka session expire ho chuka hai. Kripya re-login karein:</i>`
-          : `<i>Kripya retry karein:</i>`),
+        `👉 Aap isse turant <b>Bot se Remove</b> kar sakte hain ya <b>Re-Login</b> karke Swiggy se delete kar sakte hain:`,
         {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              isAuthError
-                ? [{ text: `Login ${accName}`, callback_data: `boss_login_acc_otp_${key}` }]
-                : [{ text: 'Retry Send Delete OTP', callback_data: `boss_swiggy_delete_start_${key}` }],
-              [{ text: 'Main Menu', callback_data: 'boss_panel_home' }]
+              [
+                { text: '🧹 Remove from Bot DB', callback_data: `boss_remove_local_${key}`, style: 'danger' },
+                isAuthError
+                  ? { text: `🔑 Re-Login ${phone}`, callback_data: `boss_login_acc_otp_${key}`, style: 'primary' }
+                  : { text: '🔄 Retry Delete OTP', callback_data: `boss_swiggy_delete_start_${key}`, style: 'primary' }
+              ],
+              [{ text: 'Main Menu', callback_data: 'boss_panel_home', style: 'primary' }]
             ]
           }
         }
@@ -3097,7 +3332,7 @@ bot.action(['boss_export_picker', 'boss_exp_select_all', 'boss_exp_deselect_all'
 
   if (!exportSelections[userId]) {
     exportSelections[userId] = {};
-    accKeys.forEach(k => { exportSelections[userId][k] = true; }); // Default: All selected
+    accKeys.forEach(k => { exportSelections[userId][k] = Boolean(accounts[k]?.isLoggedIn || exportSessionJson(k)); });
   }
 
   const actionMatch = ctx.callbackQuery?.data;
@@ -3120,35 +3355,31 @@ bot.action(['boss_export_picker', 'boss_exp_select_all', 'boss_exp_deselect_all'
   const selectedCount = accKeys.filter(k => currentSelection[k]).length;
 
   const buttons = [];
-  // Select All / Deselect All Toggle button
   if (allSelected) {
     buttons.push([{ text: 'Deselect All', callback_data: 'boss_exp_deselect_all', style: 'primary' }]);
   } else {
     buttons.push([{ text: 'Select All', callback_data: 'boss_exp_select_all', style: 'primary' }]);
   }
 
-  // Individual account toggle buttons
   for (const k of accKeys) {
     const acc = accounts[k];
     const isChecked = Boolean(currentSelection[k]);
     const checkIcon = isChecked ? '✅' : '⬜';
-    const accLabel = `${checkIcon} ${acc.name || k} (${acc.phone || ''})`;
+    const liveBadge = acc.isLoggedIn ? '🟢' : '⚪';
+    const accLabel = `${checkIcon} ${liveBadge} ${acc.name || k} (${acc.phone || ''})`;
     buttons.push([{ text: accLabel, callback_data: `boss_exp_toggle_${k}`, style: isChecked ? 'success' : 'primary' }]);
   }
 
-  // Bottom action buttons
   buttons.push([
     { text: `Confirm & Export (${selectedCount}/${accKeys.length})`, callback_data: 'boss_exp_confirm', style: 'success' }
   ]);
   buttons.push([{ text: 'Back to Accounts', callback_data: 'boss_view_accounts', style: 'primary' }]);
 
-  const checklistText = 
+  const checklistText =
     `<blockquote>📤 <b>EXPORT ACCOUNTS CHECKLIST</b></blockquote>\n\n` +
     `Jin accounts ko export karna chahte hain unhe select karein:\n` +
-    `• <b>Select All:</b> Ek tap me sabhi select honge.\n` +
-    `• <b>Click to toggle:</b> Kisi bhi account par tap karke unselect ya select karein.\n` +
     `• <b>Selected:</b> <b>${selectedCount} of ${accKeys.length} accounts</b>\n\n` +
-    `<i>Confirm karte hi sabhi accounts ki alag-alag .json files aur 1-tap Copy Buttons bhej diye jayenge!</i>`;
+    `<i>Confirm karte hi har account ki full <code>.json</code> file (with complete cookies) + 1-Click <b>Copy Code</b> button mil jayega!</i>`;
 
   try {
     await ctx.editMessageText(checklistText, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
@@ -3157,7 +3388,7 @@ bot.action(['boss_export_picker', 'boss_exp_select_all', 'boss_exp_deselect_all'
   }
 });
 
-// Single Account Export Handler (from account details card or login card)
+// Single Account Export Handler (Full Session JSON with complete cookies + 1-Click Full Copy)
 bot.action([/^boss_export_single_(.+)$/, /^boss_export_json_(.+)$/], async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const key = ctx.match[1];
@@ -3165,37 +3396,36 @@ bot.action([/^boss_export_single_(.+)$/, /^boss_export_json_(.+)$/], async (ctx)
   const acc = db.config?.accounts?.[key];
   if (!acc) return ctx.answerCbQuery('Account not found', { show_alert: true }).catch(() => {});
 
-  await ctx.answerCbQuery('Exporting session JSON... 📦').catch(() => {});
+  await ctx.answerCbQuery('Exporting FULL session JSON... 📦').catch(() => {});
 
   const exported = exportSessionJson(key) || acc;
   const jsonStr = JSON.stringify(exported, null, 2);
   const compactStr = JSON.stringify(exported);
   const phone = acc.phone || acc.mobile || key;
   const fileName = `swiggy_${phone}.json`;
+  const codeBlock = jsonStr.length <= 3700 ? jsonStr : compactStr;
 
   try {
-    // 1. Send separate .json file
     await ctx.replyWithDocument(
       {
         source: Buffer.from(jsonStr, 'utf-8'),
         filename: fileName
       },
       {
-        caption: `📦 <b>Session File:</b> <code>${fileName}</code>\n👤 <b>Account:</b> ${escapeHtml(acc.name || key)}`,
+        caption: `📦 <b>Full Session File:</b> <code>${fileName}</code> (${jsonStr.length} chars)\n👤 <b>Account:</b> ${escapeHtml(acc.name || key)}`,
         parse_mode: 'HTML'
       }
     );
 
-    // 2. Send 1-2 line compact expandable code with Copy Code button
     await ctx.reply(
-      `<b>Session Code:</b> <code>${phone}</code> (${escapeHtml(acc.name || key)})\n\n` +
-      `<blockquote expandable><pre><code class="language-json">${escapeHtml(jsonStr)}</code></pre></blockquote>`,
+      `<b>Full Session Code:</b> <code>${phone}</code> (${escapeHtml(acc.name || key)})\n` +
+      `<pre><code class="language-json">${escapeHtml(codeBlock)}</code></pre>`,
       {
         parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
             [
-              makeCopyButton('Copy Code', compactStr, `copy_code_${key}`, 'primary'),
+              makeFullSessionCopyButton(ctx, 'Copy Code', key, compactStr, `copy_code_${key}`, 'primary'),
               { text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }
             ],
             [
@@ -3211,7 +3441,7 @@ bot.action([/^boss_export_single_(.+)$/, /^boss_export_json_(.+)$/], async (ctx)
   }
 });
 
-// Confirm Multi-Select Export -> Sends ALAG ALAG FILE for each selected account + 1-2 line expandable code with Copy Code button
+// Confirm Multi-Select Export -> Sends separate full `.json` file + 1-Click Full Copy button per account
 bot.action('boss_exp_confirm', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const userId = ctx.from.id;
@@ -3224,7 +3454,7 @@ bot.action('boss_exp_confirm', async (ctx) => {
     return ctx.answerCbQuery('⚠️ Kripya kam se kam ek account select karein!', { show_alert: true }).catch(() => {});
   }
 
-  await ctx.answerCbQuery(`Exporting ${selectedKeys.length} accounts as separate files... 📦`).catch(() => {});
+  await ctx.answerCbQuery(`Exporting ${selectedKeys.length} accounts... 📦`).catch(() => {});
 
   try {
     for (const key of selectedKeys) {
@@ -3234,8 +3464,8 @@ bot.action('boss_exp_confirm', async (ctx) => {
       const compactStr = JSON.stringify(exported);
       const phone = acc.phone || acc.mobile || key;
       const fileName = `swiggy_${phone}.json`;
+      const codeBlock = jsonStr.length <= 3700 ? jsonStr : compactStr;
 
-      // 1. Send separate .json file for this account
       await ctx.replyWithDocument(
         {
           source: Buffer.from(jsonStr, 'utf-8'),
@@ -3247,16 +3477,15 @@ bot.action('boss_exp_confirm', async (ctx) => {
         }
       );
 
-      // 2. Send 1-2 line compact expandable code with Copy Code button
       await ctx.reply(
         `<b>${escapeHtml(acc.name || key)}</b> (<code>${phone}</code>):\n` +
-        `<blockquote expandable><pre><code class="language-json">${escapeHtml(jsonStr)}</code></pre></blockquote>`,
+        `<pre><code class="language-json">${escapeHtml(codeBlock)}</code></pre>`,
         {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
               [
-                makeCopyButton('Copy Code', compactStr, `copy_code_${key}`, 'primary'),
+                makeFullSessionCopyButton(ctx, 'Copy Code', key, compactStr, `copy_code_${key}`, 'primary'),
                 { text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }
               ]
             ]
@@ -3265,9 +3494,8 @@ bot.action('boss_exp_confirm', async (ctx) => {
       );
     }
 
-    // Completion summary
     await ctx.reply(
-      `✅ <b>Export Complete:</b> ${selectedKeys.length} accounts exported as separate files with 1-tap copy buttons.`,
+      `✅ <b>Export Complete:</b> ${selectedKeys.length} accounts exported with 100% full session cookies & 1-click Copy Code buttons.`,
       {
         parse_mode: 'HTML',
         reply_markup: {
@@ -3285,30 +3513,22 @@ bot.action('boss_exp_confirm', async (ctx) => {
   }
 });
 
-// Action to send raw copyable session code
+// Fallback callback for non-private chats -> sends 1-tap `<code>` AND `<pre><code class="language-json">` with 100% FULL session JSON!
 bot.action(/^copy_code_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const key = ctx.match[1];
   const db = getDb();
   const acc = db.config?.accounts?.[key];
-  if (!acc) return ctx.answerCbQuery('Account not found', { show_alert: true }).catch(() => {});
+  if (!acc && !exportSessionJson(key)) return ctx.answerCbQuery('Account not found', { show_alert: true }).catch(() => {});
   const exported = exportSessionJson(key) || acc;
-  const jsonStr = JSON.stringify(exported, null, 2);
+  const compactStr = JSON.stringify(exported);
 
-  await ctx.answerCbQuery('Tap code below to copy!').catch(() => {});
-  await ctx.reply(`<pre><code class="language-json">${escapeHtml(jsonStr)}</code></pre>`, { parse_mode: 'HTML' });
-});
-
-// Fallback to send pure raw text message for 1-tap copy
-bot.action('boss_send_raw_copy', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const userId = ctx.from.id;
-  const jsonStr = userWaitState[userId]?.lastExportedJson;
-  if (!jsonStr) return ctx.answerCbQuery('Session expired, re-export again.', { show_alert: true }).catch(() => {});
-  await ctx.answerCbQuery().catch(() => {});
-
-  // Send raw text chunks
-  await ctx.reply(jsonStr.slice(0, 4000));
+  await ctx.answerCbQuery('1 tap on code below copies FULL session! 📋').catch(() => {});
+  await ctx.reply(
+    `📋 <b>Tap anywhere on code below to copy 100% FULL code (${compactStr.length} chars):</b>\n\n` +
+    `<code>${escapeHtml(compactStr)}</code>`,
+    { parse_mode: 'HTML' }
+  );
 });
 
 // 3. Logout Accounts Picker & Logout All
@@ -3320,23 +3540,35 @@ bot.action('boss_logout_picker', async (ctx) => {
 
   const loggedInEntries = Object.entries(accounts).filter(([, a]) => a.isLoggedIn);
   if (loggedInEntries.length === 0) {
-    return ctx.reply('⚠️ No logged in accounts found to logout.', getBossPanelKeyboard());
+    return ctx.reply(
+      '⚠️ <b>Koi bhi active logged-in account nahi hai!</b>\nNiche se account login ya re-login karein:',
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('📱 Login with Number', 'boss_login_with_number'),
+            Markup.button.callback('📋 Login with Code', 'boss_login_with_json')
+          ],
+          [Markup.button.callback('👥 View All Accounts', 'boss_view_accounts')]
+        ])
+      }
+    );
   }
 
   const buttons = [];
-  buttons.push([Markup.button.callback('⚠️ LOGOUT ALL ACCOUNTS', 'boss_logout_all_confirm')]);
+  buttons.push([{ text: '⚠️ LOGOUT ALL ACCOUNTS', callback_data: 'boss_logout_all_confirm', style: 'danger' }]);
 
   for (const [k, a] of loggedInEntries) {
-    buttons.push([Markup.button.callback(`🚪 Logout ${a.name || k} (${a.phone || ''})`, `boss_logout_single_${k}`)]);
+    buttons.push([{ text: `🚪 Logout ${a.name || k} (${a.phone || ''})`, callback_data: `boss_logout_single_${k}`, style: 'primary' }]);
   }
-  buttons.push([Markup.button.callback('🔙 Back', 'boss_view_accounts')]);
+  buttons.push([{ text: '🔙 Back', callback_data: 'boss_view_accounts', style: 'primary' }]);
 
   await ctx.reply(
     `<blockquote>🚪 <b>LOGOUT ACCOUNTS MANAGER</b></blockquote>\n\n` +
-    `Aap kis account ko logout karna chahte hain? Niche tap karein ya <b>Logout All</b> dabayein:`,
+    `Jis account ko bot se logout karna chahte hain uspe tap karein (aapka copy kiya hua Session Code Swiggy par active rahega taaki baad me 1-tap Re-Login ho sake!):`,
     {
       parse_mode: 'HTML',
-      ...Markup.inlineKeyboard(buttons)
+      reply_markup: { inline_keyboard: buttons }
     }
   );
 });
@@ -3348,26 +3580,27 @@ bot.action(/^boss_logout_single_(.+)$/, async (ctx) => {
   const acc = db.config.accounts?.[key];
   if (!acc) return ctx.answerCbQuery('Account not found').catch(() => {});
 
-  acc.isLoggedIn = false;
-  acc.cookies = '';
-  acc.token = '';
-  acc.tid = '';
-  acc.sid = '';
-  saveDb(db);
+  const phone = acc.phone || acc.mobile || '';
+  const accName = acc.name || key;
+  await deactivateSwiggyAccountViaBridge(ctx.from.id, key, false).catch(() => {});
   permanentLogoutAccount(key);
 
-  await ctx.answerCbQuery('Logged out! ✅').catch(() => {});
+  await ctx.answerCbQuery('Logged out cleanly! ✅').catch(() => {});
   await ctx.reply(
     `<blockquote>🚪 <b>LOGOUT COMPLETED</b></blockquote>\n\n` +
-    `📱 <b>Account:</b> <code>${acc.phone}</code>\n` +
-    `👤 <b>Name:</b> <b>${escapeHtml(acc.name)}</b>\n` +
-    `🔒 <b>Status:</b> Account session successfully logged out.`,
+    `📱 <b>Account:</b> <code>${escapeHtml(phone)}</code>\n` +
+    `👤 <b>Name:</b> <b>${escapeHtml(accName)}</b>\n` +
+    `🔒 <b>Status:</b> Logged Out from Bot (Session Vault saved — Re-Login anytime below!):`,
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([
         [
-          Markup.button.callback('👥 View Accounts', 'boss_view_accounts'),
-          Markup.button.callback('🚪 Logout Another', 'boss_logout_picker')
+          Markup.button.callback(`🔑 Re-Login ${phone || accName} (OTP)`, `boss_login_acc_otp_${key}`),
+          Markup.button.callback('📋 Re-Login with Code', `boss_login_acc_json_${key}`)
+        ],
+        [
+          Markup.button.callback('🧹 Remove from Bot DB', `boss_remove_local_${key}`),
+          Markup.button.callback('👥 View Accounts', 'boss_view_accounts')
         ]
       ])
     }
@@ -3401,21 +3634,15 @@ bot.action('boss_logout_all_exec', async (ctx) => {
   let count = 0;
   for (const [k, a] of Object.entries(accounts)) {
     if (a.isLoggedIn) {
-      a.isLoggedIn = false;
-      a.cookies = '';
-      a.token = '';
-      a.tid = '';
-      a.sid = '';
       permanentLogoutAccount(k);
       count++;
     }
   }
-  saveDb(db);
 
   await ctx.reply(
     `<blockquote>🚪 <b>ALL ACCOUNTS LOGGED OUT</b></blockquote>\n\n` +
     `Total <b>${count} accounts</b> successfully logout kar diye gaye hain.\n` +
-    `Ab koi bhi active session khula nahi hai.`,
+    `Ab aap kisi bhi account ko <b>OTP</b> ya <b>Copied Session Code</b> se turant re-login kar sakte hain.`,
     {
       parse_mode: 'HTML',
       ...getBossPanelKeyboard()
@@ -3423,12 +3650,12 @@ bot.action('boss_logout_all_exec', async (ctx) => {
   );
 });
 
-// 4. Refresh All Accounts (Audit Session + Check Orders)
+// 4. Refresh All Accounts (Audit Session WITHOUT stale AWS WAF false-403 bug!)
 bot.action('boss_refresh_all_accounts', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery('Auditing all accounts... ⏳').catch(() => {});
 
-  const statusMsg = await ctx.reply('⏳ <i>Swiggy se sabhi accounts ke sessions verify ho rahe hain aur orders fetch kiye ja rahe hain...</i>', { parse_mode: 'HTML' });
+  const statusMsg = await ctx.reply('⏳ <i>Swiggy se sabhi accounts ke live sessions aur orders verify ho rahe hain...</i>', { parse_mode: 'HTML' });
 
   const db = getDb();
   const accounts = db.config.accounts || {};
@@ -3445,13 +3672,14 @@ bot.action('boss_refresh_all_accounts', async (ctx) => {
     const [key, acc] = entries[i];
     const phone = acc.phone || key.replace('acc_', '');
     const accName = acc.name || key;
-    const cookieStr = acc.cookies || (acc.tid ? `tid=${acc.tid}; _sid=${acc.sid || ''}; _device_id=${acc.deviceId || ''}; token=${acc.token || ''}` : '');
+    const rawCookie = acc.cookies || (acc.tid ? `tid=${acc.tid}; _sid=${acc.sid || ''}; _device_id=${acc.deviceId || ''}; token=${acc.token || ''}` : '');
+    const cookieStr = stripStaleWafCookie(rawCookie);
 
-    if (!acc.isLoggedIn || !cookieStr) {
+    if (!cookieStr) {
+      acc.isLoggedIn = false;
       reportItems.push(
         `<b>${i + 1}. 👤 ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
-        `• 🔐 <b>Session:</b> ⚪ <b>Logged Out</b>\n` +
-        `• 📦 <b>Orders:</b> <i>Login nahi hai</i>\n`
+        `• 🔐 <b>Session:</b> ⚪ <b>Logged Out</b>\n`
       );
       continue;
     }
@@ -3460,48 +3688,44 @@ bot.action('boss_refresh_all_accounts', async (ctx) => {
       const res = await fetch('https://www.swiggy.com/dapi/order/all', {
         headers: {
           'Cookie': cookieStr,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
           'Accept': 'application/json',
-          'Content-Type': 'application/json',
           'Referer': 'https://www.swiggy.com/my-account'
-        }
+        },
+        signal: AbortSignal.timeout(7000)
       });
 
       const json = await res.json().catch(() => ({}));
       const isExpired = res.status !== 200 || json.statusCode === 1 || !json.data;
 
       if (isExpired) {
-        // Automatically logout expired account as requested
         acc.isLoggedIn = false;
         reportItems.push(
           `<b>${i + 1}. 👤 ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
-          `• 🔐 <b>Session:</b> ❌ <b>Iska session OFF hai (Logged Out)</b>\n` +
-          `• 📦 <b>Orders:</b> ⚠️ Session expired — Login required\n`
+          `• 🔐 <b>Session:</b> ❌ <b>Expired / Logged Out</b>\n`
         );
       } else {
         acc.isLoggedIn = true;
+        if (json.tid) acc.tid = json.tid;
         const orders = json.data?.orders || [];
         if (orders.length > 0) {
           const latest = orders[0];
           const orderTotal = latest.order_total || latest.net_total || 'N/A';
-          const orderTime = latest.order_time ? new Date(latest.order_time).toLocaleDateString() : '';
           reportItems.push(
             `<b>${i + 1}. 👤 ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
-            `• 🔐 <b>Session:</b> 🟢 <b>Active</b>\n` +
-            `• 📦 <b>Orders:</b> ✅ <b>Order kiya hua hai</b> (${orders.length} orders | Latest: #${latest.order_id || latest.id || ''} - ₹${orderTotal} ${orderTime})\n`
+            `• 🔐 <b>Session:</b> 🟢 <b>Active</b> | 📦 ${orders.length} orders (Latest: #${latest.order_id || latest.id || ''} — ₹${orderTotal})\n`
           );
         } else {
           reportItems.push(
             `<b>${i + 1}. 👤 ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
-            `• 🔐 <b>Session:</b> 🟢 <b>Active</b>\n` +
-            `• 📦 <b>Orders:</b> ⚪ <b>Koi order nahi hai (Fresh ID - 0 Orders)</b>\n`
+            `• 🔐 <b>Session:</b> 🟢 <b>Active (Fresh ID — 0 Orders)</b>\n`
           );
         }
       }
     } catch (netErr) {
       reportItems.push(
         `<b>${i + 1}. 👤 ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
-        `• 🔐 <b>Session:</b> ⚠️ Error checking: ${escapeHtml(netErr.message)}\n`
+        `• 🔐 <b>Session:</b> ⚠️ Network Timeout (${escapeHtml(netErr.message)})\n`
       );
     }
   }
@@ -3512,24 +3736,20 @@ bot.action('boss_refresh_all_accounts', async (ctx) => {
     await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id);
   } catch (e) {}
 
-  const finalReport = 
+  const finalReport =
     `<blockquote>🔄 <b>SWIGGY ACCOUNTS AUDIT & REFRESH</b></blockquote>\n\n` +
-    reportItems.join('\n') +
-    `\n<i>💡 Expired sessions ko automatically logout mark kar diya gaya hai.</i>`;
+    reportItems.join('\n');
 
-  await ctx.reply(finalReport, {
-    parse_mode: 'HTML',
-    ...Markup.inlineKeyboard([
-      [
-        Markup.button.callback('🔄 Refresh Again', 'boss_refresh_all_accounts'),
-        Markup.button.callback('📤 Export Accounts', 'boss_export_picker')
-      ],
-      [
-        Markup.button.callback('🚪 Logout Accounts', 'boss_logout_picker'),
-        Markup.button.callback('👥 View Accounts', 'boss_view_accounts')
-      ]
-    ])
-  });
+  await sendSafeHtml(ctx, finalReport, Markup.inlineKeyboard([
+    [
+      Markup.button.callback('🔄 Refresh Again', 'boss_refresh_all_accounts'),
+      Markup.button.callback('📤 Export Accounts', 'boss_export_picker')
+    ],
+    [
+      Markup.button.callback('🗑️ Delete / Clean Dead', 'boss_delete_picker'),
+      Markup.button.callback('👥 View Accounts', 'boss_view_accounts')
+    ]
+  ]));
 });
 
 // Dynamic Session JSON Import Target Selector
@@ -3551,26 +3771,12 @@ bot.action(/^boss_apply_import_(.+)$/, async (ctx) => {
     return;
   }
 
-  const result = importSessionJson(state.pendingJson, targetKey);
-  delete userWaitState[ctx.from.id];
-  await ctx.answerCbQuery('Imported! ✅').catch(() => {});
-
-  if (result.success) {
-    const db = getDb();
-    const accName = db.config.accounts?.[targetKey]?.name || targetKey;
-    await ctx.reply(
-      `✅ <b>Session Imported to ${accName} Successfully!</b>\n` +
-      `Phone: <code>${result.phone}</code>\n` +
-      `Account is now 🟢 Logged In and ready for orders!`,
-      getBossPanelKeyboard()
-    );
-  } else {
-    await ctx.reply(`❌ Import error: ${result.message}`);
-  }
+  await ctx.answerCbQuery('Importing & claiming offers... ⚡').catch(() => {});
+  await handleProcessJsonLogin(ctx, state.pendingJson, ctx.from.id, targetKey, null);
 });
 
-// Dynamic Fast OTP Target Selector
-bot.action(/^boss_fast_otp_([^_]+)_(.+)$/, async (ctx) => {
+// Dynamic Fast OTP Target Selector (supports `acc_9935123518` with underscores!)
+bot.action(/^boss_fast_otp_(.+)_(\d{10})$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const targetAcc = ctx.match[1];
   const phone = ctx.match[2];
@@ -3591,12 +3797,13 @@ bot.action(/^boss_fast_otp_([^_]+)_(.+)$/, async (ctx) => {
   const db = getDb();
   const accName = db.config.accounts?.[targetAcc]?.name || targetAcc;
 
-  const result = await requestSwiggyOtpViaBridge(ctx.from.id, phone, targetAcc);
+  const result = await requestSwiggyOtpViaBridge(ctx.from.id, phone, targetAcc, accName);
   if (result.success) {
     userWaitState[ctx.from.id] = {
       action: 'waiting_swiggy_otp_bridge',
       targetAcc,
-      phone
+      phone,
+      name: accName
     };
     await ctx.reply(
       `📲 <b>OTP Sent</b>\n📱 <code>${phone}</code>\n\n👉 <i>Enter OTP:</i>`,
@@ -4349,66 +4556,84 @@ async function showFamilyAccounts(ctx) {
   const db = getDb();
   const accounts = db.config.accounts || {};
   const activeKey = db.config.activeOrderAccount;
+  const entries = Object.entries(accounts);
+  const liveCount = entries.filter(([, a]) => a.isLoggedIn && a.cookies).length;
+  const deadCount = entries.length - liveCount;
 
-  let text = `👥 <b>CONNECTED SWIGGY ACCOUNTS (${Object.keys(accounts).length}):</b>\n\n`;
-  if (Object.keys(accounts).length === 0) {
+  let text = `👥 <b>CONNECTED SWIGGY ACCOUNTS (${liveCount} Active / ${entries.length} Total):</b>\n\n`;
+  if (entries.length === 0) {
     text += `<i>Koi bhi account connected nahi hai.\nNiche diye buttons se JSON ya Number se login karein!</i>\n\n`;
   } else {
-    for (const [key, acc] of Object.entries(accounts)) {
-      const status = acc.isLoggedIn ? `🟢 Logged In` : '⚪ Logged Out';
-      const isActive = key === activeKey ? ' ⭐ <b>[ACTIVE FOR ORDERS]</b>' : '';
-      text += `• <b>${escapeHtml(acc.name || key)}</b>${isActive}\n` +
-        `  📌 Status: <b>${status}</b>\n` +
-        `  📱 Phone: <code>${acc.phone || 'Not set'}</code>\n` +
-        `  🆔 Customer ID: <code>${acc.customerId || 'Linked'}</code>\n\n`;
+    for (const [key, acc] of entries) {
+      const status = (acc.isLoggedIn && acc.cookies) ? `🟢 Logged In` : '⚪ Logged Out';
+      const isActive = key === activeKey ? ' ⭐ <b>[ACTIVE]</b>' : '';
+      text += `• <b>${escapeHtml(acc.name || key)}</b>${isActive} — <b>${status}</b>\n` +
+        `  📱 <code>${acc.phone || 'Not set'}</code>\n`;
     }
+    text += `\n<i>👇 Kisi bhi account par tap karein (Copy Code / Claim Offer / Logout / Re-Login / Delete ke liye):</i>`;
   }
 
-  const buttons = [
-    [
-      Markup.button.callback('🎁 Claim ₹50 Off Offers (All Accounts)', 'boss_claim_all_event_offers')
-    ],
-    [
-      Markup.button.callback('Login with JSON', 'boss_login_with_json'),
-      Markup.button.callback('Login with Number', 'boss_login_with_number')
-    ],
-    [
-      Markup.button.callback('Refresh All Accounts', 'boss_refresh_all_accounts'),
-      Markup.button.callback('Export Session JSON', 'boss_export_picker')
-    ],
-    [
-      Markup.button.callback('Logout Accounts', 'boss_logout_picker'),
-      Markup.button.callback('Delete Account', 'boss_delete_picker')
-    ],
-    [
-      Markup.button.callback('Switch Active Account', 'boss_switch_active_picker'),
-      Markup.button.callback('Main Menu', 'boss_panel_home')
-    ]
-  ];
+  const buttons = [];
+
+  for (let i = 0; i < entries.length; i += 2) {
+    const row = [];
+    const [k1, a1] = entries[i];
+    const icon1 = (a1.isLoggedIn && a1.cookies) ? (k1 === activeKey ? '⭐' : '🟢') : '⚪';
+    row.push({ text: `${icon1} ${a1.phone || a1.name || k1}`, callback_data: `acc_view_detail_${k1}`, style: (a1.isLoggedIn && a1.cookies) ? 'success' : 'primary' });
+    if (entries[i + 1]) {
+      const [k2, a2] = entries[i + 1];
+      const icon2 = (a2.isLoggedIn && a2.cookies) ? (k2 === activeKey ? '⭐' : '🟢') : '⚪';
+      row.push({ text: `${icon2} ${a2.phone || a2.name || k2}`, callback_data: `acc_view_detail_${k2}`, style: (a2.isLoggedIn && a2.cookies) ? 'success' : 'primary' });
+    }
+    buttons.push(row);
+  }
+
+  buttons.push([
+    { text: '🎁 Claim ₹50 Off Offers (All Active)', callback_data: 'boss_claim_all_event_offers', style: 'success' }
+  ]);
+  buttons.push([
+    { text: 'Login with Number', callback_data: 'boss_login_with_number', style: 'primary' },
+    { text: 'Login with JSON', callback_data: 'boss_login_with_json', style: 'primary' }
+  ]);
+  buttons.push([
+    { text: 'Refresh All Accounts', callback_data: 'boss_refresh_all_accounts', style: 'primary' },
+    { text: 'Export Session JSON', callback_data: 'boss_export_picker', style: 'primary' }
+  ]);
+  buttons.push([
+    { text: 'Logout Accounts', callback_data: 'boss_logout_picker', style: 'danger' },
+    { text: 'Delete Account', callback_data: 'boss_delete_picker', style: 'danger' }
+  ]);
+  if (deadCount > 0) {
+    buttons.push([
+      { text: `🧹 Remove Logged-Out Accounts (${deadCount})`, callback_data: 'boss_clean_dead_accounts', style: 'danger' }
+    ]);
+  }
+  buttons.push([
+    { text: 'Switch Active Account', callback_data: 'boss_switch_active_picker', style: 'primary' },
+    { text: 'Main Menu', callback_data: 'boss_panel_home', style: 'primary' }
+  ]);
 
   if (ctx.callbackQuery) {
     try {
-      await ctx.editMessageText(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
       return;
     } catch (e) {}
   }
-  await ctx.reply(text, {
-    parse_mode: 'HTML',
-    ...Markup.inlineKeyboard(buttons)
-  });
+  await sendSafeHtml(ctx, text, { reply_markup: { inline_keyboard: buttons } });
 }
 
 // Boss Action: Claim ₹50 Off Offers in All Logged-in Accounts
 bot.action('boss_claim_all_event_offers', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  await ctx.answerCbQuery('Claiming ₹50 Off offers in all accounts... 🚀').catch(() => {});
+  await ctx.answerCbQuery('Claiming ₹50 Off offers in active accounts... 🚀').catch(() => {});
 
   const db = getDb();
   const accounts = db.config.accounts || {};
-  const accEntries = Object.entries(accounts);
+  const activeEntries = Object.entries(accounts).filter(([, a]) => a.isLoggedIn && (a.cookies || a.tid));
+  const skippedCount = Object.keys(accounts).length - activeEntries.length;
 
-  if (accEntries.length === 0) {
-    return ctx.reply('⚠️ <b>Koi bhi logged-in account nahi mila!</b>\n\nPehle Number ya JSON se account add karein.', {
+  if (activeEntries.length === 0) {
+    return ctx.reply('⚠️ <b>Koi bhi Active Logged-In account nahi mila!</b>\n\nPehle Number ya JSON se account login karein.', {
       parse_mode: 'HTML',
       ...getBossPanelKeyboard()
     });
@@ -4418,7 +4643,7 @@ bot.action('boss_claim_all_event_offers', async (ctx) => {
     `⏳ <b>Swiggy Breakfast & Late Night Offers Claiming...</b>\n\n` +
     `🍳 <b>Breakfast (6AM–11AM):</b> ₹50 OFF on ₹199\n` +
     `🌙 <b>Dinner Late Night (9PM–11PM):</b> ₹50 OFF on ₹199\n\n` +
-    `<i>Sabhi ${accEntries.length} accounts me Swiggy backend API call ki ja rahi hai...</i>`,
+    `<i>${activeEntries.length} active account(s) me Swiggy backend API call ki ja rahi hai...</i>`,
     { parse_mode: 'HTML' }
   );
 
@@ -4427,11 +4652,14 @@ bot.action('boss_claim_all_event_offers', async (ctx) => {
   let failCount = 0;
   const results = [];
 
-  for (const [key, acc] of accEntries) {
+  for (const [key, acc] of activeEntries) {
     const accLabel = `${acc.phone || key}${acc.name ? ` (${acc.name})` : ''}`;
     try {
       const claimRes = await claimSwiggyBreakfastAndLateNightOffers(acc);
       acc.offers = claimRes;
+      if (claimRes.sessionExpired) {
+        acc.isLoggedIn = false;
+      }
       if (claimRes.bothClaimed) {
         successCount++;
       } else if (claimRes.success) {
@@ -4439,18 +4667,10 @@ bot.action('boss_claim_all_event_offers', async (ctx) => {
       } else {
         failCount++;
       }
-      results.push({
-        label: accLabel,
-        key,
-        res: claimRes
-      });
+      results.push({ label: accLabel, key, res: claimRes });
     } catch (e) {
       failCount++;
-      results.push({
-        label: accLabel,
-        key,
-        res: { success: false, error: e.message }
-      });
+      results.push({ label: accLabel, key, res: { success: false, error: e.message } });
     }
   }
 
@@ -4458,10 +4678,10 @@ bot.action('boss_claim_all_event_offers', async (ctx) => {
 
   try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
 
-  let reportText = `🎁 <b>SWIGGY OFFERS CLAIM REPORT (ALL ACCOUNTS)</b>\n` +
+  let reportText = `🎁 <b>SWIGGY OFFERS CLAIM REPORT</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `🍳 <b>Breakfast (6AM–11AM):</b> 50 OFF on 199\n` +
-    `🌙 <b>Late Night (9PM–11PM):</b> 50 OFF on 199\n` +
+    `🍳 <b>Breakfast (6AM–11AM):</b> ₹50 OFF on ₹199\n` +
+    `🌙 <b>Late Night (9PM–11PM):</b> ₹50 OFF on ₹199\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
   for (const item of results) {
@@ -4474,20 +4694,17 @@ bot.action('boss_claim_all_event_offers', async (ctx) => {
 
     const bf = r.breakfast || {};
     const ln = r.lateNight || {};
-
     const bfTag = bf.status === 'CLAIMED' ? '✅ CLAIMED' : '❌ FAILED';
     const lnTag = ln.status === 'CLAIMED' ? '✅ CLAIMED' : '❌ FAILED';
 
     reportText += `📱 <b>${escapeHtml(item.label)}:</b>\n` +
-      `  • 🍳 <b>Breakfast:</b> ${bfTag} (50 off on 199)\n` +
-      `    <i>${escapeHtml(bf.message || bf.rawMessage || 'Done')}</i>\n` +
-      `  • 🌙 <b>Late Night:</b> ${lnTag} (50 off on 199)\n` +
-      `    <i>${escapeHtml(ln.message || ln.rawMessage || 'Done')}</i>\n\n`;
+      `  • 🍳 <b>Breakfast:</b> ${bfTag} — <i>${escapeHtml(bf.message || bf.rawMessage || 'Done')}</i>\n` +
+      `  • 🌙 <b>Late Night:</b> ${lnTag} — <i>${escapeHtml(ln.message || ln.rawMessage || 'Done')}</i>\n\n`;
   }
 
   reportText += `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `📊 <b>Summary:</b> <b>${successCount}</b> Fully Active | <b>${partialCount}</b> Partial | <b>${failCount}</b> Failed\n` +
-    `<i>100% Genuine Swiggy responses recorded directly from Swiggy API!</i>`;
+    `📊 <b>Summary:</b> <b>${successCount}</b> Fully Claimed | <b>${partialCount}</b> Partial | <b>${failCount}</b> Expired` +
+    (skippedCount > 0 ? ` <i>(${skippedCount} logged-out skipped)</i>` : '');
 
   const buttons = [
     [
@@ -4700,12 +4917,30 @@ bot.on('document', async (ctx) => {
   const doc = ctx.message.document;
   if (!doc) return;
 
-  // Handle .json file upload for Login with JSON
+  // Handle .json file upload for Free Cash Claim OR Login with JSON
   if (doc.file_name && doc.file_name.toLowerCase().endsWith('.json') && isBoss(userId)) {
     try {
       const fileLink = await ctx.telegram.getFileLink(doc.file_id);
       const res = await fetch(fileLink.href);
       const fileText = await res.text();
+
+      if (state && state.action === 'waiting_fc_json') {
+        delete userWaitState[userId];
+        const parsed = JSON.parse(fileText);
+        const ck = Array.isArray(parsed)
+          ? parsed
+          : (parsed.cookies || (parsed.tid ? `tid=${parsed.tid}; _sid=${parsed.sid || ''}; token=${parsed.token || parsed.tid}` : ''));
+        const statusMsg = await ctx.reply('⏳ <i>Uploaded .json se Free Cash check & claim ho raha hai...</i>', { parse_mode: 'HTML' });
+        const fcRes = await claimInstamartFreeCash(ck);
+        try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+        if (fcRes.status === 'CLAIMED') {
+          return ctx.reply(`🎉 <b>SUCCESSFULLY CLAIMED ₹${fcRes.amount}!</b>\n💳 Total Balance: <b>₹${fcRes.balance}</b>`, { parse_mode: 'HTML' });
+        } else if (fcRes.status === 'ALREADY_CLAIMED') {
+          return ctx.reply(`ℹ️ <b>ALREADY CLAIMED!</b>\n💰 Balance: <b>₹${fcRes.balance}</b>`, { parse_mode: 'HTML' });
+        }
+        return ctx.reply(`❌ <b>NOT ELIGIBLE FOR FREE CASH</b>\n💰 Balance: ₹0`, { parse_mode: 'HTML' });
+      }
+
       await handleProcessJsonLogin(ctx, fileText, userId);
       return;
     } catch (e) {
@@ -5426,20 +5661,25 @@ bot.on('text', async (ctx) => {
       delete userWaitState[userId];
 
       try {
-        await deactivateSwiggyAccountViaBridge(userId, key).catch(() => {});
+        await deactivateSwiggyAccountViaBridge(userId, key, false).catch(() => {});
       } catch (e) {}
 
-      deleteAccount(key);
-      permanentLogoutAccount(key);
+      deleteAccount(key, { purgeVault: true });
 
       await ctx.reply(
-        `✅ <b>Account Deleted</b>\n` +
-        `📱 <code>${phone}</code> (${escapeHtml(accName)})`,
+        `<blockquote>✅ <b>SWIGGY ACCOUNT DELETED PERMANENTLY</b></blockquote>\n\n` +
+        `📱 <b>Number:</b> <code>${phone}</code> (${escapeHtml(accName)})\n` +
+        `🆕 <i>Yeh mobile number ab Swiggy par bilkul FRESH user ho gaya hai! Neeche 1-tap karke turant fresh signup + ₹50 OFF offers le sakte hain:</i>`,
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [
-              Markup.button.callback('Add Account', 'send_to_another_number'),
+              ...(/^\d{10}$/.test(phone)
+                ? [Markup.button.callback(`🔑 Re-Login / Create ${phone} Again`, `relogin_phone_${phone}`)]
+                : [Markup.button.callback('Add Account', 'send_to_another_number')])
+            ],
+            [
+              Markup.button.callback('Add Another Number', 'send_to_another_number'),
               Markup.button.callback('Main Menu', 'boss_panel_home')
             ]
           ])
@@ -7363,7 +7603,7 @@ bot.action('acc_refresh_list', async (ctx) => {
   await handleMyAccounts(ctx);
 });
 
-// Account Details screen
+// Account Details screen (Full Unified Account Control Panel)
 bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
@@ -7374,44 +7614,77 @@ bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
 
   const activeKey = getActiveOrderAccountKey();
   const isActive = key === activeKey;
+  const isLogged = Boolean(acc.isLoggedIn && acc.cookies);
 
-  const exported = exportSessionJson(key) || acc;
+  const exported = exportSessionJson(key) || (acc.cookies ? acc : null);
   const sessionJsonStr = exported ? JSON.stringify(exported, null, 2) : '';
   const compactStr = exported ? JSON.stringify(exported) : '';
   const phone = acc.phone || acc.mobile || '';
+  const codeBlock = sessionJsonStr.length <= 3400 ? sessionJsonStr : compactStr;
 
-  const text = `<b>Swiggy Account</b>\n\n` +
-    `<b>${escapeHtml(acc.name || key)}</b>\n` +
-    `<code>${acc.phone || 'No phone set'}</code>\n` +
-    `${acc.isLoggedIn ? 'Logged in' : 'Not logged in'}\n\n` +
-    (isActive ? `🌟 <b>(Currently Active Order Hub)</b>\n\n` : '') +
-    (sessionJsonStr ? `📋 <b>Session Code (Read more):</b>\n<blockquote expandable><pre><code class="language-json">${escapeHtml(sessionJsonStr)}</code></pre></blockquote>\n\n` : '') +
+  const text = `<b>Swiggy Account Control</b>\n\n` +
+    `👤 <b>${escapeHtml(acc.name || key)}</b>\n` +
+    `📱 <code>${phone || 'No phone set'}</code>\n` +
+    `🔐 Status: <b>${isLogged ? '🟢 Logged In' : '⚪ Logged Out / Expired'}</b>\n` +
+    (isActive ? `🌟 <b>(Currently Active Order Hub)</b>\n` : '') +
+    `\n` +
+    (codeBlock ? `📋 <b>Full Session Code (${codeBlock.length} chars):</b>\n<pre><code class="language-json">${escapeHtml(codeBlock)}</code></pre>\n\n` : '') +
     `Select an option:`;
 
-  const buttons = [
-    [
+  const buttons = [];
+
+  if (compactStr || phone) {
+    const row = [];
+    if (compactStr) {
+      row.push(makeFullSessionCopyButton(ctx, 'Copy Code', key, compactStr, `copy_code_${key}`, 'primary'));
+    }
+    if (phone) {
+      row.push({ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' });
+    }
+    buttons.push(row);
+  }
+
+  if (isLogged) {
+    buttons.push([
+      { text: '🎁 Claim ₹50 Offers', callback_data: `boss_retry_claim_${key}`, style: 'success' },
+      { text: '💰 Claim Free Cash', callback_data: `boss_check_fc_${key}`, style: 'success' }
+    ]);
+    buttons.push([
       { text: 'Set as Active Order Hub', callback_data: `acc_set_active_${key}`, style: 'success' },
-      { text: 'Saved Addresses', callback_data: `acc_view_addrs_${key}`, style: 'primary' }
-    ],
-    [
-      { text: 'Previous Orders', callback_data: `acc_view_orders_${key}`, style: 'primary' },
-      { text: 'View Cart', callback_data: `acc_view_cart_${key}`, style: 'primary' }
-    ],
-    [
-      { text: 'Export JSON', callback_data: `boss_export_json_${key}`, style: 'primary' },
-      makeCopyButton('Copy Code', compactStr, `copy_code_${key}`, 'primary')
-    ],
-    [
+      { text: 'Export JSON', callback_data: `boss_export_json_${key}`, style: 'primary' }
+    ]);
+    buttons.push([
+      { text: 'Saved Addresses', callback_data: `acc_view_addrs_${key}`, style: 'primary' },
+      { text: 'Previous Orders', callback_data: `acc_view_orders_${key}`, style: 'primary' }
+    ]);
+    buttons.push([
+      { text: 'View Cart', callback_data: `acc_view_cart_${key}`, style: 'primary' },
+      { text: '🚪 Logout Account', callback_data: `boss_logout_single_${key}`, style: 'danger' }
+    ]);
+    buttons.push([
       { text: 'Delete Account from Swiggy', callback_data: `boss_swiggy_delete_start_${key}`, style: 'danger' },
-      { text: 'Back to Accounts', callback_data: 'acc_refresh_list', style: 'primary' }
-    ]
-  ];
+      { text: '🧹 Remove from Bot', callback_data: `boss_remove_local_${key}`, style: 'danger' }
+    ]);
+  } else {
+    buttons.push([
+      { text: `🔑 Re-Login ${phone || 'OTP'}`, callback_data: `boss_login_acc_otp_${key}`, style: 'success' },
+      { text: '📋 Re-Login with Code', callback_data: `boss_login_acc_json_${key}`, style: 'primary' }
+    ]);
+    buttons.push([
+      { text: '🧹 Remove from Bot DB', callback_data: `boss_remove_local_${key}`, style: 'danger' }
+    ]);
+  }
+
+  buttons.push([
+    { text: 'Back to Accounts', callback_data: 'boss_view_accounts', style: 'primary' },
+    { text: 'Main Menu', callback_data: 'boss_panel_home', style: 'primary' }
+  ]);
 
   try {
     await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
   } catch (e) {
     if (e.message && e.message.includes('Message is not modified')) return;
-    await ctx.reply(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+    await sendSafeHtml(ctx, text, { reply_markup: { inline_keyboard: buttons } });
   }
 });
 
@@ -7693,19 +7966,122 @@ bot.catch(async (err, ctx) => {
 });
 
 
-// Lightweight health check server + 24x7 Render keep-alive pinger
+// Lightweight health check server + 1-Click Full Session Code WebApp Clipboard Engine + 24x7 Keep-Alive
 const healthPort = Number(process.env.PORT || 0);
 if (healthPort > 0) {
   const server = http.createServer((req, res) => {
+    try {
+      const reqUrl = new URL(req.url || '/', `http://localhost:${healthPort}`);
+      if (reqUrl.pathname === '/copy') {
+        const accKey = reqUrl.searchParams.get('acc') || '';
+        const sig = reqUrl.searchParams.get('sig') || '';
+        if (!accKey || sig !== computeCopyHmac(accKey)) {
+          res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+          return res.end('Invalid or unauthorized copy link.');
+        }
+
+        const exported = exportSessionJson(accKey);
+        if (!exported) {
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          return res.end('Session code not found for this account.');
+        }
+
+        const fullCode = JSON.stringify(exported, null, 2);
+        const safeEmbedded = JSON.stringify(fullCode).replace(/</g, '\\u003c');
+
+        const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Copy Full Swiggy Session Code</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+  body{background:#0b1220;color:#f8fafc;height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+  #btn{width:100%;max-width:440px;min-height:220px;border:none;border-radius:20px;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;cursor:pointer;padding:28px 22px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;box-shadow:0 20px 50px rgba(37,99,235,.45);transition:transform .12s ease,background .18s ease}
+  #btn.done{background:linear-gradient(135deg,#059669,#10b981);box-shadow:0 20px 50px rgba(16,185,129,.45)}
+  #btn:active{transform:scale(.98)}
+  .icon{font-size:46px;line-height:1}
+  .title{font-size:21px;font-weight:800;letter-spacing:-.02em;text-align:center}
+  .meta{font-size:13px;opacity:.92;text-align:center;line-height:1.45}
+  textarea{position:fixed;top:-9999px;left:-9999px;opacity:0}
+</style>
+</head>
+<body>
+<textarea id="ta" readonly></textarea>
+<button id="btn" type="button">
+  <div class="icon" id="ic">📋</div>
+  <div class="title" id="tt">Tap Once to Copy FULL Code</div>
+  <div class="meta" id="mt">${fullCode.length} characters • 100% Complete Session + Cookies</div>
+</button>
+<script>
+const CODE = ${safeEmbedded};
+const ta = document.getElementById('ta');
+const btn = document.getElementById('btn');
+const ic = document.getElementById('ic');
+const tt = document.getElementById('tt');
+const mt = document.getElementById('mt');
+ta.value = CODE;
+
+if (window.Telegram && Telegram.WebApp) {
+  try { Telegram.WebApp.ready(); } catch (e) {}
+}
+
+function markCopied() {
+  btn.classList.add('done');
+  ic.textContent = '✅';
+  tt.textContent = 'PURA CODE COPY HO GAYA!';
+  mt.textContent = CODE.length + ' chars copied to clipboard (Full Cookies + Session)';
+  try { Telegram.WebApp?.HapticFeedback?.notificationOccurred('success'); } catch (e) {}
+  setTimeout(() => {
+    try { Telegram.WebApp?.close(); } catch (e) {}
+  }, 550);
+}
+
+async function copyAll() {
+  let ok = false;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(CODE);
+      ok = true;
+    } catch (e) {}
+  }
+  if (!ok) {
+    try {
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, CODE.length);
+      ok = document.execCommand('copy');
+    } catch (e) {}
+  }
+  if (ok) markCopied();
+  return ok;
+}
+
+btn.addEventListener('click', copyAll);
+document.body.addEventListener('click', copyAll);
+window.addEventListener('load', () => { setTimeout(copyAll, 40); });
+</script>
+</body>
+</html>`;
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store, no-cache, must-revalidate'
+        });
+        return res.end(html);
+      }
+    } catch (e) {}
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', bot: 'online', timestamp: new Date().toISOString() }));
   });
   server.listen(healthPort, '0.0.0.0', () => {
-    console.log(`🌐 Cloud health server listening on 0.0.0.0:${healthPort}`);
+    console.log(`🌐 Cloud health & 1-click Copy server listening on 0.0.0.0:${healthPort}`);
   });
 
   // Self keep-alive ping every 8 minutes via public Render edge URL so container never idles out
-  const keepAliveUrl = (process.env.RENDER_EXTERNAL_URL || 'https://ammi-abbu-ka-sacha-beta.onrender.com').replace(/\/+$/, '') + '/';
+  const keepAliveUrl = PUBLIC_APP_URL + '/';
   setInterval(() => {
     fetch(keepAliveUrl, { signal: AbortSignal.timeout(10000) })
       .then(r => console.log(`💓 Keep-alive ping -> ${keepAliveUrl} [${r.status}]`))
