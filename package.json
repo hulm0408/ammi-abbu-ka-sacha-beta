@@ -1,11 +1,13 @@
 {
-  "name": "telegram-slot-bot",
-  "version": "1.0.0",
-  "description": "Telegram Bot for Slot Management and Order Processing",
+  "name": "ammi-abbu-ka-sacha-beta",
+  "version": "2.0.0",
+  "description": "Ammi Abbu Ka Sacha Beta — Live Swiggy Address Fetching, Cart Sync & Slot Order Bot",
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node test_comprehensive_audit_suite.mjs",
+    "test:live": "node test_live_address_and_cart_e2e.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

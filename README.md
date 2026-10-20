@@ -1,61 +1,11 @@
-# 🤖 Telegram Slot & Order Management Bot
+# 👑 Ammi Abbu Ka Sacha Beta — Swiggy Live Order, Address & Cart Bot
 
-Built exactly according to your FigJam design specifications!
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hulm0408/ammi-abbu-ka-sacha-beta)
 
----
+Telegram bot built for seamless Swiggy food ordering with real-time **Saved Address Fetching**, **Shared/Group Cart Fetching**, **Exact Address-Bound Checkout Billing**, **Auto Coupon Engine**, and **Render Docker Cloud Deployment**.
 
-## 🌟 Features Implemented
+## 🚀 1-Click Render Deployment
 
-### 1. 👤 User Screen (`/start`)
-- **Live Dynamic Banner:** Shows current `Slots Left: X/Y` (e.g. `Slots Left: 3/9`).
-- **🟣 Address Button:**
-  - When tapped, prompts the user to paste address or map link.
-  - Updates immediately to `🟣 Address: Added ✅`.
-- **🔴 Cart Button:**
-  - When tapped, prompts the user to paste the cart link.
-  - Updates immediately to `🔴 Cart: Added ✅`.
-- **Strict Verification:**
-  - If a user attaches only one item, **nothing is sent to the Boss**.
-  - As soon as **both** items are attached, the **`🚀 Send to Boss`** button appears!
-- **Waiting State:**
-  - Once submitted, the user sees `⏳ Status: Waiting for Boss` until their order is processed.
-
----
-
-### 2. 👑 Boss Screen (`/boss`)
-- **New Order Card Notification:**
-  - Appears automatically when a user submits both items.
-  - Shows **Name of user**, `@username`, **Address link**, and **Cart link**.
-  - **`📋 Copy Address`** & **`📋 Copy Cart`** buttons for 1-tap copying.
-  - **`👤 Text User`** direct link to open user chat.
-- **`🟢 Accept the order` Action:**
-  - If slots left > 0:
-    - Decrements remaining slots by 1.
-    - User receives notification: *"🎉 Your order has been accepted!"*
-    - Boss sees: *"✅ Order Accepted! Slots remaining: X/Y"*.
-  - If slots left == 0:
-    - Boss sees alert: *"⚠️ Sorry, slot has ended!"*
-- **`💳 Send QR for payment` Action:**
-  - Boss clicks the button $\rightarrow$ Boss directly uploads or attaches the QR code image.
-  - The bot immediately delivers the QR image to the user's chat!
-- **Slot Counters Control:**
-  - **`🔢 Set Total Slots`**: Boss can enter a new number for total slots.
-  - **`📉 Set Total Left`**: Boss can set or adjust available slots left.
-
----
-
-## 🚀 How to Run
-
-1. Open PowerShell or Terminal in this directory:
-   ```bash
-   cd C:\Users\HP\.gemini\antigravity-ide\scratch\telegram-slot-bot
-   ```
-
-2. Start the bot:
-   ```bash
-   npm start
-   ```
-
-3. Open Telegram and find your bot:
-   - As a **User**: Send `/start`
-   - As the **Boss**: Send `/boss` or `/boss boss123` to claim the Boss role!
+1. Click **[Deploy to Render](https://render.com/deploy?repo=https://github.com/hulm0408/ammi-abbu-ka-sacha-beta)** above *(or open **[Render Dashboard](https://dashboard.render.com/)** -> **New +** -> **Web Service** -> select **`hulm0408/ammi-abbu-ka-sacha-beta`**)*.
+2. Enter your **`BOT_TOKEN`** (from `@BotFather`) — `BOSS_SECRET` (`boss123`) and `HEADLESS` (`true`) are already pre-configured.
+3. Click **Apply / Deploy Web Service** — health check listens automatically on `0.0.0.0:$PORT` (`GET /` -> `200 OK`).

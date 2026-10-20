@@ -1,6 +1,6 @@
 FROM node:20-bookworm-slim
 
-# Install Chromium and necessary runtime libraries on Debian 12 Bookworm
+# Install Chromium and runtime fonts on Debian 12 Bookworm
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-ipafont-gothic \
@@ -13,8 +13,11 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV NODE_ENV=production \
+    HEADLESS=true \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    NODE_OPTIONS="--max-old-space-size=384"
 
 WORKDIR /usr/src/app
 

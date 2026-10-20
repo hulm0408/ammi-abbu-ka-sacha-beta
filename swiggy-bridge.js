@@ -1,8 +1,10 @@
 import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import puppeteer from 'puppeteer-core';
 import { updateAccount, getNextAutoUserName } from './store.js';
 
-function findChromePath() {
+export function findChromePath() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
   if (process.env.CHROME_BIN) return process.env.CHROME_BIN;
   if (process.platform === 'win32') {
@@ -12,10 +14,22 @@ function findChromePath() {
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
     '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable'
+    '/usr/bin/google-chrome-stable',
+    '/opt/playwright/browsers/chromium-1247/chrome-linux64/chrome'
   ];
   for (const p of linuxPaths) {
     try { if (fs.existsSync(p)) return p; } catch (e) {}
+  }
+  for (const rootDir of ['/opt/playwright/browsers', path.join(os.homedir(), '.cache', 'puppeteer'), '/root/.cache/puppeteer']) {
+    try {
+      if (!fs.existsSync(rootDir)) continue;
+      for (const entry of fs.readdirSync(rootDir)) {
+        for (const sub of ['chrome-linux64/chrome', 'chrome-linux/chrome']) {
+          const full = path.join(rootDir, entry, sub);
+          if (fs.existsSync(full)) return full;
+        }
+      }
+    } catch (e) {}
   }
   return '/usr/bin/chromium';
 }
@@ -63,27 +77,54 @@ export function sanitizeSwiggyName(name) {
 export function checkLoggedInFromCookies(input) {
   if (!input) return false;
   let tidValue = '';
+  let sessionTid = '';
+  let tokenVal = '';
+  let isLoggedFlag = '';
 
   if (typeof input === 'object' && !Array.isArray(input)) {
-    if (input.tid) {
-      tidValue = input.tid;
-    } else if (input.cookies) {
-      input = input.cookies;
-    }
+    if (input.isLoggedIn === false) return false;
+    if (input.tid) tidValue = input.tid;
+    if (input.token) tokenVal = input.token;
+    if (input.cookies) input = input.cookies;
+    else if (!tidValue && !tokenVal) return Boolean(input.isLoggedIn);
   }
 
   if (Array.isArray(input)) {
-    const tidCookie = input.find(c => c && c.name === 'tid');
-    tidValue = tidCookie?.value || '';
+    const getC = (n) => input.find(c => c && c.name === n)?.value || '';
+    tidValue = tidValue || getC('tid');
+    sessionTid = getC('_session_tid');
+    tokenVal = tokenVal || getC('token');
+    isLoggedFlag = getC('_is_logged_in');
   } else if (typeof input === 'string') {
-    const match = input.match(/(?:^|;\s*)tid=([^;]+)/);
-    if (match) tidValue = decodeURIComponent(match[1]);
-    else if (input.includes('.') && input.length > 50) tidValue = input;
+    const getS = (re) => {
+      const m = input.match(re);
+      return m ? decodeURIComponent(m[1]).trim() : '';
+    };
+    tidValue = tidValue || getS(/(?:^|;\s*)tid=([^;]+)/);
+    sessionTid = getS(/(?:^|;\s*)_session_tid=([^;]+)/);
+    tokenVal = tokenVal || getS(/(?:^|;\s*)token=([^;]+)/);
+    isLoggedFlag = getS(/(?:^|;\s*)_is_logged_in=([^;]+)/);
+    if (!tidValue && input.includes('.') && input.length > 50 && !input.includes(';')) {
+      tidValue = input.trim();
+    }
   }
 
-  if (!tidValue) return false;
-  const payload = decodeJwtPayload(tidValue);
-  return Boolean(payload && payload.user_id && payload.user_id !== '0' && payload.user_id !== '-1');
+  if (tidValue && tidValue.includes('.')) {
+    const payload = decodeJwtPayload(tidValue);
+    if (payload && payload.user_id && payload.user_id !== '0' && payload.user_id !== '-1') {
+      return true;
+    }
+  }
+
+  // Swiggy web sessions store hex `_session_tid` + `token` + `_is_logged_in=1`
+  if (isLoggedFlag === '1' && (sessionTid.length >= 16 || tokenVal.length >= 10)) {
+    return true;
+  }
+  if (isLoggedFlag !== '0' && tokenVal.length >= 16 && sessionTid.length >= 16) {
+    return true;
+  }
+
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +138,11 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account) {
 
   let token = account.token;
   let jwtTid = account.tid;
-  let cookieStr = account.cookies || '';
+  let cookieStr = (account.cookies || '')
+    .split(';')
+    .map(s => s.trim())
+    .filter(s => s && !s.startsWith('aws-waf-token='))
+    .join('; ');
 
   if (cookieStr) {
     const tidCookie = cookieStr.split(';').map(s => s.trim()).find(s => s.startsWith('tid='));
@@ -110,6 +155,27 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account) {
         token = tokCookie.split('=')[1];
       }
     }
+  }
+
+  // If jwtTid is missing or hex instead of HS256 JWT, fetch genuine JWT from zero-WAF /dapi/order/all
+  if ((!jwtTid || !jwtTid.includes('.')) && cookieStr) {
+    try {
+      const authRes = await fetch('https://www.swiggy.com/dapi/order/all', {
+        headers: {
+          'Cookie': cookieStr,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+          'Accept': 'application/json',
+          'Referer': 'https://www.swiggy.com/my-account'
+        },
+        signal: AbortSignal.timeout(5000)
+      });
+      if (authRes.ok) {
+        const authJson = await authRes.json().catch(() => null);
+        if (authJson?.tid && authJson.tid.includes('.')) {
+          jwtTid = authJson.tid;
+        }
+      }
+    } catch (e) {}
   }
 
   if (!token && jwtTid) {
