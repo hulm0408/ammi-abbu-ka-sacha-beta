@@ -119,24 +119,40 @@ Pune, Maharashtra 411030
   const accHelper = db.config.accounts.acc_9935123518;
   const beforeLive = await inspectCartForAccount(accLive);
   const { json: rawRef } = await dapiFetch(accLive, 'cart', { timeoutMs: 10000 });
-  const refMeta = rawRef.data.cartMeta;
-  const refAddr = refMeta.addresses[0];
+  const refMeta = rawRef?.data?.cartMeta || {};
+  const hasPersonalRef = Boolean(refMeta?.restaurant_details?.id && Array.isArray(refMeta?.addresses) && refMeta.addresses.length > 0);
+  const refAddr = hasPersonalRef
+    ? refMeta.addresses[0]
+    : {
+        name: 'Umbashiya',
+        mobile: '6296591407',
+        flat_no: 'Ground, 504',
+        area: 'Hasanganj',
+        landmark: 'Mukarimnagar',
+        city: 'Lucknow',
+        address: 'Ground, 504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India',
+        lat: '26.8658609',
+        lng: '80.9307755'
+      };
 
   const liveOrder = {
     id: 'MAX_COUPON_LIVE_TEST',
-    restaurantId: String(refMeta.restaurant_details.id),
-    restaurantName: refMeta.restaurant_details.name,
-    items: Object.values(rawRef.data.cartItems).map(ci => ({
-      itemId: String(ci.itemId),
-      menu_item_id: Number(ci.itemId),
-      name: ci.items?.[0]?.name || 'Item',
-      qty: Number(ci.quantity || 1),
-      quantity: Number(ci.quantity || 1),
-      price: (ci.items?.[0]?.base_price || 0) / 100,
-      lineTotal: (ci.items?.[0]?.subtotal || 0) / 100,
-      addons: ci.items?.[0]?.addons || [],
-      variants: ci.items?.[0]?.variants || []
-    })),
+    cart: 'https://swig.gy/gc/636724/Umbashiya-642855918',
+    ...(hasPersonalRef ? {
+      restaurantId: String(refMeta.restaurant_details.id),
+      restaurantName: refMeta.restaurant_details.name,
+      items: Object.values(rawRef.data.cartItems).map(ci => ({
+        itemId: String(ci.itemId),
+        menu_item_id: Number(ci.itemId),
+        name: ci.items?.[0]?.name || 'Item',
+        qty: Number(ci.quantity || 1),
+        quantity: Number(ci.quantity || 1),
+        price: (ci.items?.[0]?.base_price || 0) / 100,
+        lineTotal: (ci.items?.[0]?.subtotal || 0) / 100,
+        addons: ci.items?.[0]?.addons || [],
+        variants: ci.items?.[0]?.variants || []
+      }))
+    } : {}),
     addressDetails: {
       name: refAddr.name || 'Prathmesh',
       mobile: refAddr.mobile || '9823305540',

@@ -167,6 +167,12 @@ export function getDb() {
     }
     seedAccountsFromJson(data);
     delete data.config.depositAmount;
+    // Tag non-enumerable baseline order snapshots so concurrent parallel async fibers never clobber sibling orders!
+    const baseOrdersJson = {};
+    for (const [oid, oVal] of Object.entries(data.orders || {})) {
+      baseOrdersJson[oid] = JSON.stringify(oVal);
+    }
+    Object.defineProperty(data, '__baseOrdersJson', { value: baseOrdersJson, enumerable: false, configurable: true });
     return data;
   } catch (err) {
     console.error('Error reading db:', err);
@@ -189,7 +195,40 @@ export function saveDb(data) {
     }
   }
 
-  const tmpFile = `${DB_FILE}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  // Concurrent-Safe Parallel Order Merge:
+  // If `data` came from `getDb()` before another parallel Swiggy account coroutine added/updated a DIFFERENT order,
+  // preserve every concurrent sibling mutation automatically without breaking intentional deletions!
+  if (data && data.__baseOrdersJson && typeof data.orders === 'object' && data.orders !== null) {
+    try {
+      const liveDisk = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+      const diskOrders = liveDisk?.orders || {};
+      const baseMap = data.__baseOrdersJson;
+
+      for (const [oid, diskOrder] of Object.entries(diskOrders)) {
+        const existedAtRead = Object.prototype.hasOwnProperty.call(baseMap, oid);
+        const presentInCaller = Object.prototype.hasOwnProperty.call(data.orders, oid);
+
+        if (!existedAtRead && !presentInCaller) {
+          // Brand-new sibling order created concurrently in parallel while this coroutine was awaiting Swiggy!
+          data.orders[oid] = diskOrder;
+        } else if (existedAtRead && presentInCaller) {
+          // Sibling order existed at read time; if caller did NOT touch `oid` (`JSON.stringify === base`), keep fresher `diskOrder`!
+          if (JSON.stringify(data.orders[oid]) === baseMap[oid]) {
+            data.orders[oid] = diskOrder;
+          }
+        }
+      }
+
+      // Refresh baseline map on `data` after merge
+      const refreshedBase = {};
+      for (const [oid, oVal] of Object.entries(data.orders)) {
+        refreshedBase[oid] = JSON.stringify(oVal);
+      }
+      Object.defineProperty(data, '__baseOrdersJson', { value: refreshedBase, enumerable: false, configurable: true });
+    } catch (e) {}
+  }
+
+  const tmpFile = `${DB_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
     fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), 'utf-8');
     fs.renameSync(tmpFile, DB_FILE);
@@ -199,6 +238,26 @@ export function saveDb(data) {
     } catch (e) {}
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
   }
+}
+
+export function upsertOrder(orderId, orderOrPatchFn) {
+  ensureDb();
+  const db = getDb();
+  if (!db.orders) db.orders = {};
+  if (typeof orderOrPatchFn === 'function') {
+    const updated = orderOrPatchFn(db.orders[orderId] || null, db);
+    if (updated === null) {
+      delete db.orders[orderId];
+    } else if (updated) {
+      db.orders[orderId] = updated;
+    }
+  } else if (orderOrPatchFn === null) {
+    delete db.orders[orderId];
+  } else if (orderOrPatchFn && typeof orderOrPatchFn === 'object') {
+    db.orders[orderId] = { ...(db.orders[orderId] || {}), ...orderOrPatchFn };
+  }
+  saveDb(db);
+  return db.orders[orderId] || null;
 }
 
 export function mutateDb(updater) {

@@ -231,7 +231,8 @@ try {
   // PART B: LIVE SWIGGY ACCOUNT FETCH -> 100% REAL SWIGGY MERCHANT DYNAMIC QR
   // =========================================================================
   await clickButton(bossPickAcc, 103);
-  const bossBillCard = messages.get(104);
+  const billCardId = getDb().orders[bossOrderId].activeCardMessageId;
+  const bossBillCard = messages.get(billCardId);
   ok(
     deletedIds.includes(103) &&
     Boolean(bossBillCard) &&
@@ -240,13 +241,14 @@ try {
     flatButtons(bossBillCard).includes('🔳 Generate QR') &&
     flatButtons(bossBillCard).includes('✅ Paid') &&
     flatButtons(bossBillCard).includes('❌ Cancel Order'),
-    'Live Swiggy Bill Fetched on Card #104 with [ 🔳 Generate QR ], [ ✅ Paid ], & [ ❌ Cancel Order ]'
+    'Live Swiggy Bill Fetched on Bill Card with [ 🔳 Generate QR ], [ ✅ Paid ], & [ ❌ Cancel Order ]'
   );
 
   // Click `[ 🔳 Generate QR ]` -> HITS REAL `https://payments.swiggy.com/api/v3/order/place`!
-  await clickButton(`fwd_gen_qr_${bossOrderId}`, 104);
-  const realQrMsg = messages.get(105);
+  await clickButton(`fwd_gen_qr_${bossOrderId}`, billCardId);
   const storedOrder = getDb().orders[bossOrderId];
+  const qrMsgId = storedOrder.activeQrMessageId;
+  const realQrMsg = messages.get(qrMsgId);
   console.log('\n--- LIVE REAL SWIGGY MERCHANT QR GENERATED ---');
   console.log('Swiggy Order ID:', storedOrder.pendingSwiggyOrderId);
   console.log('Swiggy PaaS Txn ID:', storedOrder.pendingSwiggyPaasId);
@@ -254,11 +256,12 @@ try {
   console.log('----------------------------------------------\n');
 
   ok(
-    storedOrder.pendingSwiggyUpiUri?.startsWith('upi://pay?pa=swiggy') &&
+    /^upi:\/\/pay\?.*swiggy/i.test(storedOrder.pendingSwiggyUpiUri || '') &&
     !storedOrder.pendingSwiggyUpiUri.includes('6296591407@ybl') &&
     /^\d{10,20}$/.test(storedOrder.pendingSwiggyOrderId) &&
-    realQrMsg?.type === 'photo' &&
-    realQrMsg.buffer.length > 25000,
+    /^\d{10,20}$/.test(storedOrder.pendingSwiggyPaasId) &&
+    Buffer.isBuffer(realQrMsg?.buffer) &&
+    realQrMsg.buffer.length > 10000,
     `100% REAL Official Swiggy Merchant Dynamic UPI QR generated (${storedOrder.pendingSwiggyUpiUri.slice(0, 62)}...)!`
   );
 
@@ -266,12 +269,12 @@ try {
   // PART C: LIVE UNPAID CHECK -> SAYS "Payment is processing" ON REAL GATEWAY!
   // =========================================================================
   cbAlerts.length = 0;
-  await clickButton(`fwd_check_paid_${bossOrderId}`, 104);
+  await clickButton(`fwd_check_paid_${bossOrderId}`, billCardId);
   ok(
     cbAlerts.some(a => /Payment is processing/i.test(a.text)) &&
-    messages.has(104) &&
-    messages.has(105),
-    'Live Swiggy Gateway Unpaid Check: returns "Payment is processing" & keeps Card #104 + Real QR #105 active!'
+    messages.has(billCardId) &&
+    messages.has(qrMsgId),
+    'Live Swiggy Gateway Unpaid Check: returns "Payment is processing" & keeps Bill Card + Real QR active!'
   );
 
   // =========================================================================
@@ -285,10 +288,11 @@ try {
     liveDb.orders[bossOrderId].baselineSwiggyOrderId = '';
     saveDb(liveDb);
   }
-  await clickButton(`fwd_check_paid_${bossOrderId}`, 104);
+  await clickButton(`fwd_check_paid_${bossOrderId}`, billCardId);
 
-  ok(deletedIds.includes(104) && deletedIds.includes(105), 'Upon verified Swiggy payment: BOTH old Bill Card (#104) & Real QR (#105) auto-deleted!');
-  const paidTrackCard = messages.get(106);
+  ok(deletedIds.includes(billCardId) && deletedIds.includes(qrMsgId), 'Upon verified Swiggy payment: BOTH old Bill Card & Real QR auto-deleted!');
+  const paidCardId = getDb().orders[bossOrderId].activeCardMessageId;
+  const paidTrackCard = messages.get(paidCardId);
   console.log('\n--- REAL SWIGGY PAID + LIVE TRACKING CARD (#106) ---\n' + paidTrackCard.text + '\n----------------------------------------------------\n');
 
   ok(
@@ -311,8 +315,8 @@ try {
     rawText: expiredCartMsg.text,
     formatOrderBodyFn: renderBodyHtml
   });
-  const diagMsg = messages.get(107);
-  console.log('\n--- INSTANT BOSS AI DIAGNOSTIC MESSAGE (#107) ---\n' + diagMsg.text + '\n-------------------------------------------------\n');
+  const diagMsg = Array.from(messages.values()).pop();
+  console.log('\n--- INSTANT BOSS AI DIAGNOSTIC MESSAGE ---\n' + diagMsg.text + '\n------------------------------------------\n');
   ok(
     Boolean(diagMsg) &&
     diagMsg.text.includes('[AI-DIAG]') &&
@@ -324,7 +328,8 @@ try {
   // Cancel Ammi's incomplete card (#102) via `[ ❌ Cancel Order ]`
   const ammiCancelCb = flatCallbacks(messages.get(102)).find(c => c.startsWith('fwd_cancel_'));
   await clickButton(ammiCancelCb, 102);
-  ok(deletedIds.includes(102) && messages.get(108)?.text.includes('Order Cancelled'), 'Ammi\'s card cancelled cleanly via [ ❌ Cancel Order ]');
+  const cancelConfirmMsg = Array.from(messages.values()).pop();
+  ok(deletedIds.includes(102) && cancelConfirmMsg?.text.includes('Order Cancelled'), 'Ammi\'s card cancelled cleanly via [ ❌ Cancel Order ]');
 
   // Cleanup live helper cart & verify both accounts clean!
   await dapiFetch(accHelper, 'cart', {

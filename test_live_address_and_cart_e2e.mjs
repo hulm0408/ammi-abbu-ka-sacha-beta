@@ -107,15 +107,16 @@ try {
 
   // 10. Read-only live personal cart inspection on acc_6296591407 (supports both active cart & clean empty cart)
   personalLive = await inspectCartForAccount(accLive);
+  const cartIsEmpty = Array.isArray(personalLive?.items) && personalLive.items.length === 0;
   check(
     personalLive !== null && (
-      personalLive.empty === true ||
+      cartIsEmpty ||
       (Boolean(personalLive?.restaurantName) && personalLive?.items?.length >= 1 && personalLive?.finalPayable > 0)
     ),
-    personalLive?.empty
+    cartIsEmpty
       ? 'Read-only personal cart inspection succeeded cleanly (acc_6296591407 cart currently empty)'
       : `Read-only personal cart inspection matches Swiggy app checkout ₹${personalLive?.finalPayable} to the exact rupee`,
-    personalLive?.empty ? 'Empty Cart (statusCode: 0)' : `${personalLive?.restaurantName} | Coupon: ${personalLive?.couponCode || 'None'} | Payable: ₹${personalLive?.finalPayable}`
+    cartIsEmpty ? 'Empty Cart (statusCode: 0)' : `${personalLive?.restaurantName} | Coupon: ${personalLive?.couponCode || 'None'} | Payable: ₹${personalLive?.finalPayable}`
   );
 
   // 11. Full cross-account clone + address save + cart sync on acc_9935123518

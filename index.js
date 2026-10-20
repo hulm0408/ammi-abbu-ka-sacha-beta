@@ -63,6 +63,7 @@ import {
   formatBossDiagnosticErrorMessage,
   deleteOrderBotMessages,
   buildForwardedOrderCardView,
+  dispatchAllReadyOrdersInParallel,
   handleBossForwardedOrderInput,
   registerForwardedOrderHandlers
 } from './forwarded-order-flow.js';
@@ -8500,6 +8501,40 @@ window.addEventListener('load', () => { setTimeout(copyAll, 40); });
       .catch(e => console.log(`💓 Keep-alive retry note: ${e.message}`));
   }, 8 * 60 * 1000).unref();
 }
+
+// Non-blocking Concurrent Parallel Update Dispatcher:
+// Telegraf's polling loop defaults to `await this.handleUpdate(update)` one update at a time,
+// which would block Account #2 / Order #2 behind Account #1's Swiggy API calls!
+// Dispatching concurrently lets 2..N Swiggy IDs fetch bills, generate QRs, & place orders AT THE EXACT SAME TIME!
+const rawBotHandleUpdate = bot.handleUpdate.bind(bot);
+bot.handleUpdate = (update, webhookResponse) => {
+  rawBotHandleUpdate(update, webhookResponse).catch((err) => {
+    console.error('[ConcurrentUpdateDispatcher] Unhandled error:', err);
+  });
+  return Promise.resolve();
+};
+
+bot.command('parallel', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return;
+  try {
+    const out = await dispatchAllReadyOrdersInParallel({
+      telegram: ctx.telegram,
+      chatId: ctx.chat.id,
+      formatOrderBodyFn: formatUserOrderCardText
+    });
+    if (out.dispatched === 0) {
+      return ctx.reply(`ℹ️ ${out.reason}`, { parse_mode: 'HTML' });
+    }
+    const okCount = out.settled.filter(s => s.status === 'fulfilled').length;
+    await ctx.reply(
+      `⚡ <b>Parallel Multi-ID Sync Complete:</b> <b>${okCount}/${out.dispatched}</b> ready order(s) fetched simultaneously on separate Swiggy IDs!`,
+      { parse_mode: 'HTML' }
+    );
+  } catch (err) {
+    const diag = formatBossDiagnosticErrorMessage(err, { stage: 'COMMAND_PARALLEL' });
+    await ctx.reply(diag, { parse_mode: 'HTML' });
+  }
+});
 
 // Launch bot with retry resilience for cloud container handover
 console.log('🚀 Connecting to Telegram Bot API...');

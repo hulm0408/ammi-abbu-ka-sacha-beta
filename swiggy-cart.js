@@ -2117,14 +2117,20 @@ export async function fetchAllAccountsSavedAddresses() {
 export async function saveAddressToAccount(account, addrDetails, existingAddresses = null) {
   if (!account || !addrDetails) return { addressId: '', addressDetails: addrDetails || null, createdNew: false };
 
-  const enriched = await geocodeAddressDetails(addrDetails, account);
+  // Strip any foreign `id` that belonged to a DIFFERENT Swiggy account unless confirmed in THIS account's `savedList`!
+  const candidateId = addrDetails.id ? String(addrDetails.id) : '';
+  const sanitizedInput = { ...addrDetails };
+  delete sanitizedInput.id;
+
+  const enriched = await geocodeAddressDetails(sanitizedInput, account);
+  delete enriched.id;
   const savedList = Array.isArray(existingAddresses) ? existingAddresses : await fetchAccountAddresses(account);
 
-  // 1. Reuse existing saved address on this account if ID matches or coordinates are within 80m!
+  // 1. Reuse existing saved address on THIS exact account if ID matches or coordinates are within 120m!
   if (savedList.length > 0) {
     const existing = savedList.find(sa =>
-      (enriched.id && sa.id && String(sa.id) === String(enriched.id)) ||
-      (enriched.lat && enriched.lng && sa.lat && sa.lng && distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng) < 80)
+      (candidateId && sa.id && String(sa.id) === candidateId) ||
+      (enriched.lat && enriched.lng && sa.lat && sa.lng && distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng) < 120)
     );
     if (existing && existing.id) {
       return {
@@ -3059,6 +3065,20 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       order.totalSavings = liveCart.totalSavings;
       order.swiggyVerified = true;
     } else {
+      const rawCookies = typeof account === 'string' ? account : (account?.cookies || '');
+      const probe = await dapiFetch(account, 'cart', {
+        lat: order?.addressDetails?.lat || '26.8658609',
+        lng: order?.addressDetails?.lng || '80.9307755'
+      }).catch(() => null);
+      const swiggyMsg = probe?.json?.statusMessage || probe?.json?.data?.cartMeta?.cart_banner_message || '';
+      if (!rawCookies.includes('_session_tid=') || probe?.json?.statusCode === 1 || /session|login|auth/i.test(swiggyMsg)) {
+        const accLabel = account?.phone || account?.mobile || account?.name || 'Selected Account';
+        return {
+          success: false,
+          code: 'ACCOUNT_SESSION_EXPIRED_OR_PARTIAL',
+          error: `Account ${accLabel} is missing live Swiggy web session cookie (_session_tid) or session expired (msg="${swiggyMsg || 'missing _session_tid'}"). Re-Login ${accLabel} via OTP in 📱 Accounts or pick another FREE account!`
+        };
+      }
       order.swiggyVerified = false;
       applyMaxOfferToOrder(order);
     }
@@ -3109,94 +3129,159 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
 }
 
 // ---------------------------------------------------------------------------
-// MULTI-ACCOUNT MAX COUPON FINDER (`🏆 Auto Best Account + Max Coupon`)
-// Tests ALL logged-in Swiggy accounts safely and locks in the #1 lowest `Final Total`!
+// PER-SWIGGY-ACCOUNT CONCURRENCY ENGINE
+// Different Swiggy IDs run 100% simultaneously in parallel (`Promise.all`)!
+// Only operations touching the EXACT SAME Swiggy ID serialize cleanly so two calls on one ID never corrupt its cart!
+// ---------------------------------------------------------------------------
+const swiggyAccountLocks = new Map();
+
+export function resolveAccountLockId(accountOrKey) {
+  if (!accountOrKey) return 'global_fallback';
+  if (typeof accountOrKey === 'string') return accountOrKey;
+  return String(accountOrKey.id || accountOrKey.phone || accountOrKey.mobile || accountOrKey.tid || 'unknown_acc');
+}
+
+export async function withSwiggyAccountLock(accountOrKey, fn) {
+  const lockId = resolveAccountLockId(accountOrKey);
+  const prev = swiggyAccountLocks.get(lockId) || Promise.resolve();
+  let release;
+  const next = new Promise(resolve => { release = resolve; });
+  const tail = prev.then(() => next, () => next);
+  swiggyAccountLocks.set(lockId, tail);
+
+  await prev.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (swiggyAccountLocks.get(lockId) === tail) {
+      swiggyAccountLocks.delete(lockId);
+    }
+  }
+}
+
+export function getBusySwiggyAccountsMap(db, excludeOrderId = null) {
+  const busy = new Map();
+  const orders = db?.orders || {};
+  for (const o of Object.values(orders)) {
+    if (!o || (excludeOrderId && o.id === excludeOrderId)) continue;
+    if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status)) continue;
+    if (o.selectedAccount && ['BILL_READY', 'QR_GENERATED'].includes(o.cardStage)) {
+      busy.set(o.selectedAccount, o);
+    }
+  }
+  return busy;
+}
+
+// ---------------------------------------------------------------------------
+// MULTI-ACCOUNT PARALLEL MAX COUPON FINDER (`🏆 Auto Best Account + Max Coupon`)
+// Tests ALL FREE logged-in Swiggy accounts SIMULTANEOUSLY IN PARALLEL (`Promise.all`),
+// protects busy accounts holding another customer's active cart/QR, and locks in the #1 lowest `Final Total`!
 // ---------------------------------------------------------------------------
 export async function findBestMaxCouponAccountForOrder(order, options = {}) {
-  const { captureScreenshot = true } = options;
+  const { captureScreenshot = true, excludeAccountKeys = [] } = options;
   const db = getDb();
   const accounts = db?.config?.accounts || {};
-  const liveEntries = Object.entries(accounts).filter(([, a]) => a.isLoggedIn && (a.cookies || a.tid));
+  const busyMap = getBusySwiggyAccountsMap(db, order?.id || null);
+  const excludedSet = new Set([...busyMap.keys(), ...(Array.isArray(excludeAccountKeys) ? excludeAccountKeys : [])]);
 
-  if (liveEntries.length === 0) {
+  const allLiveEntries = Object.entries(accounts).filter(([, a]) => a.isLoggedIn && (a.cookies || a.tid));
+  if (allLiveEntries.length === 0) {
     return { success: false, error: 'No logged-in Swiggy accounts available.' };
   }
 
-  let bestResult = null;
-  let bestKey = null;
-  let bestOrderSnapshot = null;
+  // Prefer FREE accounts so active orders on busy IDs are NEVER disturbed!
+  const freeEntries = allLiveEntries.filter(([k]) => !excludedSet.has(k));
+  const liveEntries = freeEntries.length > 0 ? freeEntries : allLiveEntries;
+
+  const restoreOrFlushAccount = async (targetAcc, savedPreCart, fallbackRestId) => {
+    if (savedPreCart?.items?.length > 0 && savedPreCart?.restaurantId) {
+      await dapiFetch(targetAcc, 'cart', {
+        method: 'POST',
+        lat: savedPreCart.addressDetails?.lat || '26.8658609',
+        lng: savedPreCart.addressDetails?.lng || '80.9307755',
+        body: {
+          flushFirst: true,
+          cart: {
+            restaurantId: String(savedPreCart.restaurantId),
+            address_id: String(savedPreCart.addressDetails?.id || ''),
+            couponCode: String(savedPreCart.couponCode || ''),
+            cartItems: savedPreCart.items.map(it => ({
+              addons: Array.isArray(it.addons) ? it.addons : [],
+              variants: Array.isArray(it.variants) ? it.variants : [],
+              menu_item_id: Number(it.menu_item_id || it.itemId),
+              quantity: Number(it.qty || it.quantity || 1)
+            })),
+            mealItems: [],
+            subscriptionItems: []
+          }
+        }
+      }).catch(() => {});
+    } else if (fallbackRestId) {
+      await dapiFetch(targetAcc, 'cart', {
+        method: 'POST',
+        body: { flushFirst: true, cart: { restaurantId: String(fallbackRestId), address_id: '', couponCode: '', cartItems: [], mealItems: [], subscriptionItems: [] } }
+      }).catch(() => {});
+    }
+  };
+
+  // RUN ALL SWIGGY ACCOUNTS 100% IN PARALLEL AT THE EXACT SAME TIME!
+  const parallelProbes = await Promise.all(
+    liveEntries.map(([key, acc]) =>
+      withSwiggyAccountLock(key, async () => {
+        const preCart = await inspectCartForAccount(acc).catch(() => null);
+        const hadPreExistingCart = Boolean(preCart?.items?.length > 0 && preCart?.restaurantId);
+        const probeOrder = JSON.parse(JSON.stringify(order));
+        const res = await syncGroupCartAndCheckoutForAccount(acc, probeOrder, { captureScreenshot: false });
+        return {
+          key,
+          acc,
+          res,
+          probeOrder,
+          preCart: hadPreExistingCart ? preCart : null
+        };
+      })
+    )
+  );
+
+  let bestProbe = null;
   const accountComparison = [];
 
-  for (const [key, acc] of liveEntries) {
-    const preCart = await inspectCartForAccount(acc).catch(() => null);
-    const hadPreExistingCart = Boolean(preCart?.items?.length > 0 && preCart?.restaurantId);
+  for (const probe of parallelProbes) {
+    if (!probe.res?.success) continue;
+    const { key, acc, probeOrder } = probe;
+    accountComparison.push({
+      key,
+      phone: acc.phone || key,
+      name: acc.name || key,
+      couponCode: probeOrder.couponCode || null,
+      discountAmount: probeOrder.discountAmount || 0,
+      totalSavings: probeOrder.totalSavings || 0,
+      finalPayable: probeOrder.finalPayable || 0
+    });
 
-    const probeOrder = JSON.parse(JSON.stringify(order));
-    const res = await syncGroupCartAndCheckoutForAccount(acc, probeOrder, { captureScreenshot: false });
+    const isBetter =
+      !bestProbe ||
+      (probeOrder.finalPayable > 0 && bestProbe.probeOrder.finalPayable > 0 && probeOrder.finalPayable < bestProbe.probeOrder.finalPayable) ||
+      (probeOrder.finalPayable === bestProbe.probeOrder.finalPayable && (probeOrder.totalSavings || 0) > (bestProbe.probeOrder.totalSavings || 0));
 
-    const restoreOrFlushAccount = async (targetAcc, savedPreCart, fallbackRestId) => {
-      if (savedPreCart?.items?.length > 0 && savedPreCart?.restaurantId) {
-        await dapiFetch(targetAcc, 'cart', {
-          method: 'POST',
-          lat: savedPreCart.addressDetails?.lat || '26.8658609',
-          lng: savedPreCart.addressDetails?.lng || '80.9307755',
-          body: {
-            flushFirst: true,
-            cart: {
-              restaurantId: String(savedPreCart.restaurantId),
-              address_id: String(savedPreCart.addressDetails?.id || ''),
-              couponCode: String(savedPreCart.couponCode || ''),
-              cartItems: savedPreCart.items.map(it => ({
-                addons: Array.isArray(it.addons) ? it.addons : [],
-                variants: Array.isArray(it.variants) ? it.variants : [],
-                menu_item_id: Number(it.menu_item_id || it.itemId),
-                quantity: Number(it.qty || it.quantity || 1)
-              })),
-              mealItems: [],
-              subscriptionItems: []
-            }
-          }
-        }).catch(() => {});
-      } else if (fallbackRestId) {
-        await dapiFetch(targetAcc, 'cart', {
-          method: 'POST',
-          body: { flushFirst: true, cart: { restaurantId: String(fallbackRestId), address_id: '', couponCode: '', cartItems: [], mealItems: [], subscriptionItems: [] } }
-        }).catch(() => {});
-      }
-    };
-
-    if (res?.success) {
-      accountComparison.push({
-        key,
-        phone: acc.phone || key,
-        name: acc.name || key,
-        couponCode: probeOrder.couponCode || null,
-        discountAmount: probeOrder.discountAmount || 0,
-        totalSavings: probeOrder.totalSavings || 0,
-        finalPayable: probeOrder.finalPayable || 0
-      });
-
-      const isBetter =
-        !bestOrderSnapshot ||
-        (probeOrder.finalPayable > 0 && bestOrderSnapshot.finalPayable > 0 && probeOrder.finalPayable < bestOrderSnapshot.finalPayable) ||
-        (probeOrder.finalPayable === bestOrderSnapshot.finalPayable && (probeOrder.totalSavings || 0) > (bestOrderSnapshot.totalSavings || 0));
-
-      if (isBetter) {
-        if (bestKey && bestKey !== key && bestResult) {
-          await restoreOrFlushAccount(accounts[bestKey], bestResult._preCart, bestOrderSnapshot?.restaurantId);
-        }
-        bestKey = key;
-        bestResult = { ...res, _preCart: hadPreExistingCart ? preCart : null };
-        bestOrderSnapshot = probeOrder;
-      } else {
-        await restoreOrFlushAccount(acc, hadPreExistingCart ? preCart : null, probeOrder.restaurantId);
-      }
-    }
+    if (isBetter) bestProbe = probe;
   }
 
-  if (!bestKey || !bestOrderSnapshot || !bestResult) {
-    return { success: false, error: 'Could not sync cart on any active account.', accountComparison };
+  // Restore or flush ALL non-winning accounts IN PARALLEL immediately!
+  await Promise.all(
+    parallelProbes
+      .filter(p => p.res?.success && (!bestProbe || p.key !== bestProbe.key))
+      .map(p => withSwiggyAccountLock(p.key, () => restoreOrFlushAccount(p.acc, p.preCart, p.probeOrder.restaurantId)))
+  );
+
+  if (!bestProbe) {
+    return { success: false, error: 'Could not sync cart on any active account.', accountComparison, skippedBusyCount: excludedSet.size };
   }
+
+  const bestKey = bestProbe.key;
+  const bestOrderSnapshot = bestProbe.probeOrder;
+  const bestResult = { ...bestProbe.res, _preCart: bestProbe.preCart };
 
   Object.assign(order, bestOrderSnapshot);
   order.selectedAccount = bestKey;
@@ -3273,124 +3358,199 @@ function buildSwiggyPaymentsApiHeaders(account, auth, { cartId = '', addressId =
  * Never charges or confirms an unpaid order; only completes when scanned & paid in any UPI app.
  */
 export async function generateRealSwiggyMerchantUpiQr(account, order) {
-  if (!account?.cookies) {
-    const err = new Error('Selected Swiggy account has no active session cookies.');
-    err.diag = { code: 'QR_NO_ACCOUNT_COOKIES', stage: 'GENERATE_REAL_QR' };
-    throw err;
-  }
+  return withSwiggyAccountLock(account, async () => {
+    if (!account?.cookies) {
+      const err = new Error('Selected Swiggy account has no active session cookies.');
+      err.diag = { code: 'QR_NO_ACCOUNT_COOKIES', stage: 'GENERATE_REAL_QR' };
+      throw err;
+    }
 
-  let auth = await getSwiggySessionAuth(account, true);
-  if (!auth?.userId || !auth?.jwtTid) {
-    const err = new Error('Swiggy session expired or invalid (`userId`/`jwtTid` missing). Re-login account.');
-    err.diag = { code: 'QR_AUTH_EXPIRED', stage: 'GENERATE_REAL_QR', hasCookies: Boolean(account.cookies) };
-    throw err;
-  }
+    if (!String(account.cookies).includes('_session_tid=')) {
+      const accLabel = account.phone || account.mobile || account.name || 'Account';
+      const err = new Error(
+        `Account ${accLabel} has partial session JSON without live _session_tid cookie. Open 📱 Accounts -> Re-Login ${accLabel} via OTP (or paste full copied code) so real Swiggy checkout QR can be generated!`
+      );
+      err.diag = { code: 'QR_MISSING_SESSION_TID_COOKIE', stage: 'GENERATE_REAL_QR' };
+      throw err;
+    }
 
-  // Verify live Swiggy personal cart has items + `address_id`; re-sync automatically if stale/empty!
-  let curCart = await dapiFetch(account, 'cart');
-  let cm = curCart?.json?.data?.cartMeta || {};
-  let itemCount = Number(curCart?.json?.data?.totalItemsCount || curCart?.json?.data?.cartItemsCount || 0);
+    let auth = await getSwiggySessionAuth(account, true);
+    if (!auth?.userId || !auth?.jwtTid) {
+      const err = new Error('Swiggy session expired or invalid (`userId`/`jwtTid` missing). Re-login account.');
+      err.diag = { code: 'QR_AUTH_EXPIRED', stage: 'GENERATE_REAL_QR', hasCookies: Boolean(account.cookies) };
+      throw err;
+    }
 
-  if ((!cm.address_id || !cm.order_total || itemCount <= 0) && (order?.cart || order?.cartLink || order?.items?.length)) {
-    await syncGroupCartAndCheckoutForAccount(account, order, { captureScreenshot: false });
-    auth = await getSwiggySessionAuth(account, true);
-    curCart = await dapiFetch(account, 'cart');
-    cm = curCart?.json?.data?.cartMeta || {};
-    itemCount = Number(curCart?.json?.data?.totalItemsCount || curCart?.json?.data?.cartItemsCount || 0);
-  }
+    const reqLat = String(order?.addressDetails?.lat || '26.8658609');
+    const reqLng = String(order?.addressDetails?.lng || '80.9307755');
+    const extractCartCount = (cartResp, meta) =>
+      Number(
+        meta?.cart_total_count ??
+        meta?.total_items_count ??
+        cartResp?.json?.data?.totalItemsCount ??
+        cartResp?.json?.data?.cartItemsCount ??
+        0
+      );
 
-  const cartId = String(cm.originalCartId || cm.cart_id || '');
-  const addressId = String(cm.address_id || order?.addressDetails?.id || '');
-  const lat = String(order?.addressDetails?.lat || cm.restaurant_details?.lat || '26.8467');
-  const lng = String(order?.addressDetails?.lng || cm.restaurant_details?.lng || '80.9462');
+    // Verify live Swiggy personal cart has items + `address_id`; re-sync automatically if stale/empty!
+    let curCart = await dapiFetch(account, 'cart', { lat: reqLat, lng: reqLng });
+    let cm = curCart?.json?.data?.cartMeta || {};
+    let itemCount = extractCartCount(curCart, cm);
 
-  if (!addressId || Number(cm.order_total || 0) <= 0) {
-    const err = new Error(
-      `Swiggy checkout cart is empty or missing delivery address_id (items=${itemCount}, order_total=${cm.order_total || 0}, address_id="${addressId}", msg="${cm.statusMessage || ''}").`
-    );
-    err.diag = {
-      code: 'QR_CART_NOT_READY',
-      stage: 'GENERATE_REAL_QR',
-      itemCount,
-      cartOrderTotal: cm.order_total || 0,
-      addressId,
-      cartMessage: cm.statusMessage || cm.ctaText || ''
-    };
-    throw err;
-  }
-
-  const headers = buildSwiggyPaymentsApiHeaders(account, auth, { cartId, addressId, lat, lng });
-
-  const placeRes = await fetch('https://payments.swiggy.com/api/v3/order/place', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      address_id: addressId,
-      lat,
-      lng,
-      payment_cod_method: 'UPIIntent',
-      order_comments: '',
-      force_validate_coupon: false,
-      upi_transaction_info: {
-        intent_app: 'com.google.android.apps.nbu.paisa.user',
-        intent_app_display_name: 'Google Pay'
+    if ((!cm.address_id || !cm.order_total || itemCount <= 0) && (order?.cart || order?.cartLink || order?.items?.length)) {
+      const syncCheck = await syncGroupCartAndCheckoutForAccount(account, order, { captureScreenshot: false });
+      if (!syncCheck?.success) {
+        const err = new Error(syncCheck?.error || 'Failed to sync cart onto selected Swiggy account before QR generation.');
+        err.diag = { code: syncCheck?.code || 'QR_RESYNC_FAILED', stage: 'GENERATE_REAL_QR' };
+        throw err;
       }
-    })
-  });
+      auth = await getSwiggySessionAuth(account, true);
+      const updatedLat = String(order?.addressDetails?.lat || reqLat);
+      const updatedLng = String(order?.addressDetails?.lng || reqLng);
+      curCart = await dapiFetch(account, 'cart', { lat: updatedLat, lng: updatedLng });
+      cm = curCart?.json?.data?.cartMeta || {};
+      itemCount = extractCartCount(curCart, cm);
+    }
 
-  const rawText = await placeRes.text();
-  let json = null;
-  try { json = JSON.parse(rawText); } catch (e) {}
+    // Instant 220ms Direct Cart Rehydration Shield:
+    // If Swiggy's 45s unpaid UPI intent expiry worker cleared the cart right around re-generation time,
+    // immediately push the verified items + own `address_id` + winning `couponCode` directly in ~220ms!
+    if ((!cm.address_id || Number(cm.order_total || 0) <= 0 || itemCount <= 0) && order?.restaurantId && order?.items?.length > 0) {
+      const savedList = await fetchAccountAddresses(account);
+      let ownAddrId = '';
+      if (order.addressDetails) {
+        const savedRes = await saveAddressToAccount(account, order.addressDetails, savedList);
+        ownAddrId = String(savedRes.addressId || '');
+        if (savedRes.addressDetails) order.addressDetails = savedRes.addressDetails;
+      }
+      if (!ownAddrId && savedList[0]?.id) ownAddrId = String(savedList[0].id);
 
-  const orderData = json?.data?.order_data || json?.data?.orderData || null;
-  let redir = orderData?.app_redirection_info ?? orderData?.appRedirectionInfo ?? null;
-  if (typeof redir === 'string') {
-    try { redir = JSON.parse(redir); } catch (e) { redir = null; }
-  }
+      const directLat = String(order?.addressDetails?.lat || reqLat);
+      const directLng = String(order?.addressDetails?.lng || reqLng);
+      const directSync = await dapiFetch(account, 'cart', {
+        method: 'POST',
+        lat: directLat,
+        lng: directLng,
+        body: {
+          flushFirst: true,
+          cart: {
+            restaurantId: String(order.restaurantId),
+            address_id: ownAddrId,
+            couponCode: String(order.couponCode || ''),
+            cartItems: order.items
+              .filter(it => it.menu_item_id || it.itemId)
+              .map(it => ({
+                addons: Array.isArray(it.addons) ? it.addons : [],
+                variants: Array.isArray(it.variants) ? it.variants : [],
+                menu_item_id: Number(it.menu_item_id || it.itemId),
+                quantity: Number(it.qty || it.quantity || 1)
+              })),
+            mealItems: [],
+            subscriptionItems: []
+          }
+        }
+      });
+      if (directSync?.json?.data?.cartMeta) {
+        curCart = directSync;
+        cm = directSync.json.data.cartMeta;
+        itemCount = extractCartCount(directSync, cm);
+      }
+    }
 
-  const upiIntentUrl =
-    redir?.upiRedirect?.upiIntentRedirect?.upiIntentUrl ||
-    redir?.upi_intent_url ||
-    orderData?.upiIntentUrl ||
-    orderData?.upi_intent_url ||
-    '';
+    const cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || '');
+    const addressId = String(cm.address_id || order?.addressDetails?.id || '');
+    const lat = String(order?.addressDetails?.lat || cm.restaurant_details?.lat || reqLat);
+    const lng = String(order?.addressDetails?.lng || cm.restaurant_details?.lng || reqLng);
+    const swiggyMsg = String(curCart?.json?.statusMessage || cm.cart_banner_message || cm.payment_banner_message || '');
 
-  const swiggyOrderId = String(orderData?.order_id || orderData?.orderId || '');
-  const paymentTxnId = String(
-    redir?.upiRedirect?.upiIntentRedirect?.transactionId ||
-    orderData?.targeted_marketplace_payment_reference_id ||
-    orderData?.payment_info_v2?.payment_transactions?.[0]?.marketplace_reference_id ||
-    ''
-  );
-  const liveOrderTotal = Number(orderData?.order_total ?? cm.order_total ?? order?.finalPayable ?? 0);
+    if (!addressId || Number(cm.order_total || 0) <= 0) {
+      const err = new Error(
+        `Swiggy checkout cart is empty or missing delivery address_id (items=${itemCount}, order_total=${cm.order_total || 0}, address_id="${addressId}", statusCode=${curCart?.json?.statusCode ?? 'null'}, msg="${swiggyMsg}").`
+      );
+      err.diag = {
+        code: 'QR_CART_NOT_READY',
+        stage: 'GENERATE_REAL_QR',
+        itemCount,
+        cartOrderTotal: cm.order_total || 0,
+        addressId,
+        cartMessage: swiggyMsg
+      };
+      throw err;
+    }
 
-  if (!placeRes.ok || json?.statusCode !== 0 || !upiIntentUrl || !upiIntentUrl.startsWith('upi://')) {
-    const err = new Error(
-      `Swiggy payment gateway rejected QR creation: HTTP ${placeRes.status}, statusCode=${json?.statusCode}, msg="${json?.statusMessage || 'Unknown'}"`
+    const headers = buildSwiggyPaymentsApiHeaders(account, auth, { cartId, addressId, lat, lng });
+
+    const placeRes = await fetch('https://payments.swiggy.com/api/v3/order/place', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        address_id: addressId,
+        lat,
+        lng,
+        payment_cod_method: 'UPIIntent',
+        order_comments: '',
+        force_validate_coupon: false,
+        upi_transaction_info: {
+          intent_app: 'com.google.android.apps.nbu.paisa.user',
+          intent_app_display_name: 'Google Pay'
+        }
+      })
+    });
+
+    const rawText = await placeRes.text();
+    let json = null;
+    try { json = JSON.parse(rawText); } catch (e) {}
+
+    const orderData = json?.data?.order_data || json?.data?.orderData || null;
+    let redir = orderData?.app_redirection_info ?? orderData?.appRedirectionInfo ?? null;
+    if (typeof redir === 'string') {
+      try { redir = JSON.parse(redir); } catch (e) { redir = null; }
+    }
+
+    const upiIntentUrl =
+      redir?.upiRedirect?.upiIntentRedirect?.upiIntentUrl ||
+      redir?.upi_intent_url ||
+      orderData?.upiIntentUrl ||
+      orderData?.upi_intent_url ||
+      '';
+
+    const swiggyOrderId = String(orderData?.order_id || orderData?.orderId || '');
+    const paymentTxnId = String(
+      orderData?.targeted_marketplace_payment_reference_id ||
+      orderData?.payment_info_v2?.payment_transactions?.[0]?.marketplace_reference_id ||
+      redir?.upiRedirect?.upiIntentRedirect?.transactionId ||
+      ''
     );
-    err.diag = {
-      code: 'SWIGGY_PLACE_ORDER_QR_FAILED',
-      stage: 'POST_PAYMENTS_ORDER_PLACE',
-      httpStatus: placeRes.status,
-      swiggyStatusCode: json?.statusCode ?? null,
-      swiggyMessage: json?.statusMessage || '',
-      cartId,
-      addressId,
-      cartTotal: cm.order_total,
-      rawSnippet: rawText.slice(0, 500)
-    };
-    throw err;
-  }
+    const liveOrderTotal = Number(orderData?.order_total ?? cm.order_total ?? order?.finalPayable ?? 0);
 
-  return {
-    upiIntentUrl,
-    swiggyOrderId,
-    paymentTxnId,
-    amount: liveOrderTotal,
-    slaMinutes: orderData?.sla_time ? String(orderData.sla_time) : '',
-    restaurantName: orderData?.restaurant_name || cm.restaurant_details?.name || order?.restaurantName || '',
-    confirmWindowMs: Number(redir?.upiRedirect?.upiIntentRedirect?.upiIntentConfirmTimeInMs || 45000)
-  };
+    if (!placeRes.ok || json?.statusCode !== 0 || !upiIntentUrl || !upiIntentUrl.startsWith('upi://')) {
+      const err = new Error(
+        `Swiggy payment gateway rejected QR creation: HTTP ${placeRes.status}, statusCode=${json?.statusCode}, msg="${json?.statusMessage || 'Unknown'}"`
+      );
+      err.diag = {
+        code: 'SWIGGY_PLACE_ORDER_QR_FAILED',
+        stage: 'POST_PAYMENTS_ORDER_PLACE',
+        httpStatus: placeRes.status,
+        swiggyStatusCode: json?.statusCode ?? null,
+        swiggyMessage: json?.statusMessage || '',
+        cartId,
+        addressId,
+        cartTotal: cm.order_total,
+        rawSnippet: rawText.slice(0, 500)
+      };
+      throw err;
+    }
+
+    return {
+      upiIntentUrl,
+      swiggyOrderId,
+      paymentTxnId,
+      amount: liveOrderTotal,
+      slaMinutes: orderData?.sla_time ? String(orderData.sla_time) : '',
+      restaurantName: orderData?.restaurant_name || cm.restaurant_details?.name || order?.restaurantName || '',
+      confirmWindowMs: Number(redir?.upiRedirect?.upiIntentRedirect?.upiIntentConfirmTimeInMs || 45000)
+    };
+  });
 }
 
 /**
