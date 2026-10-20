@@ -123,16 +123,16 @@ try {
     throw new Error(`Unmatched callback: ${cbData}`);
   }
 
-  const cartLink = 'https://swig.gy/gc/636724/Umbashiya-642855918';
-  const addr1 = 'Hey! Save my address on Swiggy using the link:https://swiggy.onelink.me/JgkQ/j37ai838.\n\nAddress: Ground, 504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India';
-  const addr2 = 'Hey! Save my address on Swiggy using the link:https://swiggy.onelink.me/JgkQ/j37ai838.\n\nAddress: Misbha, 504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India';
+  const cartLink = 'https://swig.gy/gc/622166/Adithya-312184336';
+  const addr1 = 'Hey! Save my address on Swiggy using the link:https://swiggy.onelink.me/JgkQ/j37ai838.\n\nAddress: Svr arcade plot no 628, IPM Blood Bank Colony, Hayathnagar_Khalsa, Hyderabad, Telangana 501505, India';
+  const addr2 = 'Hey! Save my address on Swiggy using the link:https://swiggy.onelink.me/JgkQ/j37ai838.\n\nAddress: House 14, Lecturers Colony, Hayathnagar_Khalsa, Hyderabad, Telangana 501505, India';
 
   // 1. Fire FOUR incoming messages across 2 different senders AT THE EXACT SAME MILLISECOND (`Promise.all`)!
   await Promise.all([
-    handleBossForwardedOrderInput(makeCtx({ message: { text: addr1 } }), { rawText: addr1, formatOrderBodyFn: renderBodyHtml }),
-    handleBossForwardedOrderInput(makeCtx({ message: { text: cartLink } }), { rawText: cartLink, formatOrderBodyFn: renderBodyHtml }),
-    handleBossForwardedOrderInput(makeCtx({ message: { text: addr2, forward_origin: { type: 'user', sender_user: { id: 888001, first_name: 'Ammi' } } } }), { rawText: addr2, formatOrderBodyFn: renderBodyHtml }),
-    handleBossForwardedOrderInput(makeCtx({ message: { text: cartLink, forward_origin: { type: 'user', sender_user: { id: 888001, first_name: 'Ammi' } } } }), { rawText: cartLink, formatOrderBodyFn: renderBodyHtml })
+    handleBossForwardedOrderInput(makeCtx({ message: { text: addr1 } }), { rawText: addr1, formatOrderBodyFn: renderBodyHtml, autoSelectAccount: false }),
+    handleBossForwardedOrderInput(makeCtx({ message: { text: cartLink } }), { rawText: cartLink, formatOrderBodyFn: renderBodyHtml, autoSelectAccount: false }),
+    handleBossForwardedOrderInput(makeCtx({ message: { text: addr2, forward_origin: { type: 'user', sender_user: { id: 888001, first_name: 'Ammi' } } } }), { rawText: addr2, formatOrderBodyFn: renderBodyHtml, autoSelectAccount: false }),
+    handleBossForwardedOrderInput(makeCtx({ message: { text: cartLink, forward_origin: { type: 'user', sender_user: { id: 888001, first_name: 'Ammi' } } } }), { rawText: cartLink, formatOrderBodyFn: renderBodyHtml, autoSelectAccount: false })
   ]);
 
   const readyOrders = Object.values(getDb().orders).filter(o => o.cardStage === 'NEED_ACCOUNT');

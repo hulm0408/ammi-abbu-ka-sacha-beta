@@ -5126,10 +5126,11 @@ bot.on('photo', async (ctx) => {
     (extractForwardSenderInfo(ctx.message) || looksLikeBossOrderInput(ctx.message.caption))
   ) {
     delete userWaitState[userId];
-    await handleBossForwardedOrderInput(ctx, {
+    void handleBossForwardedOrderInput(ctx, {
       rawText: ctx.message.caption.trim(),
-      formatOrderBodyFn: formatUserOrderCardText
-    });
+      formatOrderBodyFn: formatUserOrderCardText,
+      nonBlockingAutoSync: true
+    }).catch(e => console.error('[BossPhotoOrderIntake]', e));
     return;
   }
 
@@ -5892,10 +5893,30 @@ bot.hears('🔢 Set Total Slots', async (ctx) => {
   });
 });
 
-// Register complete Forwarded IB Order Workflow (`fwd_*` actions)
+// Register complete Forwarded IB + 10x Parallel Zero-Order Auto-Account Order Workflow (`fwd_*` actions)
 registerForwardedOrderHandlers(bot, {
   isBoss,
   formatOrderBodyFn: formatUserOrderCardText
+});
+
+// Optional instant QR push toggle (`/autoqr on` | `/autoqr off` | `/autoqr`) for 10x zero-tap QR generation
+bot.command('autoqr', async (ctx) => {
+  if (!isBoss(ctx.from?.id)) return;
+  const arg = String(ctx.message?.text || '').split(/\s+/)[1]?.toLowerCase() || '';
+  const db = getDb();
+  if (!db.config) db.config = {};
+  if (arg === 'on' || arg === '1' || arg === 'true') {
+    db.config.autoGenerateQr = true;
+  } else if (arg === 'off' || arg === '0' || arg === 'false') {
+    db.config.autoGenerateQr = false;
+  } else {
+    db.config.autoGenerateQr = !Boolean(db.config.autoGenerateQr);
+  }
+  saveDb(db);
+  await ctx.reply(
+    `⚡ <b>Auto-QR Mode is now: ${db.config.autoGenerateQr ? '🟢 ON (Instant QR after Auto-Bill Sync)' : '🟡 SMART MANUAL (Auto-Account + Max Offer ON, 1-Click QR button)'}</b>`,
+    { parse_mode: 'HTML' }
+  );
 });
 
 // Text message handler
@@ -5904,15 +5925,16 @@ bot.on('text', async (ctx) => {
   const state = userWaitState[userId];
   const rawText = ctx.message.text.trim();
 
-  // Boss Forwarded Customer DM Workflow:
-  // Whenever Boss forwards ANY customer message from personal IB into the bot,
-  // auto-extract sender Name/ID, delete any previous incomplete card for that sender, update Cart/Address, & render single clean card!
+  // Boss Forwarded Customer DM Workflow (Non-Blocking 10x Parallel Dispatch!):
+  // Returns immediately (`<1ms` on Telegraf update loop) while preserving deterministic FIFO per-sender pairing,
+  // auto-selecting 10 distinct `0-Order` Swiggy IDs with Max Offer in parallel!
   if (isBoss(userId) && extractForwardSenderInfo(ctx.message)) {
     delete userWaitState[userId];
-    await handleBossForwardedOrderInput(ctx, {
+    void handleBossForwardedOrderInput(ctx, {
       rawText,
-      formatOrderBodyFn: formatUserOrderCardText
-    });
+      formatOrderBodyFn: formatUserOrderCardText,
+      nonBlockingAutoSync: true
+    }).catch(e => console.error('[BossFwdOrderIntake]', e));
     return;
   }
 
@@ -6877,15 +6899,15 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Unified Direct Boss Card Workflow:
-  // When Boss directly sends any Cart link, Address link, or Address block from his Boss account (not forwarded),
-  // create/update the clean card under BOSS'S OWN NAME (`isForwarded: false`), generate 100% REAL Swiggy QR, & extract REAL tracking!
+  // Unified Direct Boss Card Workflow (Non-Blocking 10x Parallel Dispatch!):
+  // Supports sharing 10+ different Cart + Address orders rapidly without waiting or overwriting previous orders!
   if (isBoss(userId) && (looksLikeBossOrderInput(rawText) || (state && ['waiting_cart', 'waiting_address'].includes(state.action)))) {
     delete userWaitState[userId];
-    await handleBossForwardedOrderInput(ctx, {
+    void handleBossForwardedOrderInput(ctx, {
       rawText,
-      formatOrderBodyFn: formatUserOrderCardText
-    });
+      formatOrderBodyFn: formatUserOrderCardText,
+      nonBlockingAutoSync: true
+    }).catch(e => console.error('[BossDirectOrderIntake]', e));
     return;
   }
 
@@ -7297,10 +7319,11 @@ async function handleIncomingTelegramLocation(ctx, loc) {
 bot.on('location', async (ctx) => {
   if (ctx.from?.id && isBoss(ctx.from.id)) {
     delete userWaitState[ctx.from.id];
-    await handleBossForwardedOrderInput(ctx, {
+    void handleBossForwardedOrderInput(ctx, {
       location: ctx.message?.location,
-      formatOrderBodyFn: formatUserOrderCardText
-    });
+      formatOrderBodyFn: formatUserOrderCardText,
+      nonBlockingAutoSync: true
+    }).catch(e => console.error('[BossLocOrderIntake]', e));
     return;
   }
   await handleIncomingTelegramLocation(ctx, ctx.message?.location);
@@ -8629,9 +8652,10 @@ window.addEventListener('load', () => { setTimeout(copyAll, 40); });
     res.end(JSON.stringify({
       status: 'ok',
       bot: 'online',
-      build: 'v13-free-delivery-offer-ids-super-sync',
+      build: 'v14-10x-parallel-zero-order-max-offer',
       ipv4Shield: true,
       zeroChromiumOrderFlow: true,
+      tenOrderParallelAutoDispatch: true,
       timestamp: new Date().toISOString()
     }));
   });

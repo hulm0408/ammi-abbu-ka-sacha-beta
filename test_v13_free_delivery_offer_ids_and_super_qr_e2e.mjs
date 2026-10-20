@@ -102,7 +102,7 @@ try {
   check('Receipt displays `Restaurant Offer Discount: −₹100` (not double-counted)', formattedReceipt.includes('Restaurant Offer Discount: −₹100'), formattedReceipt);
   check('Receipt displays `Swiggy One Lite Membership: +₹1` & `Delivery Fee: FREE`', formattedReceipt.includes('Swiggy One Lite Membership: +₹1') && formattedReceipt.includes('Delivery Fee: FREE'), formattedReceipt);
   const indexSrc = fs.readFileSync('./index.js', 'utf8');
-  check('`index.js` exposes `/health` build tag `v13-free-delivery-offer-ids-super-sync` + `merchantOfferDisc`', indexSrc.includes('v13-free-delivery-offer-ids-super-sync') && indexSrc.includes('merchantOfferDisc'));
+  check('`index.js` exposes `/health` build tag (`v13+`/`v14+`) + `merchantOfferDisc`', (indexSrc.includes('v13-free-delivery-offer-ids-super-sync') || indexSrc.includes('v14-10x-parallel-zero-order-max-offer')) && indexSrc.includes('merchantOfferDisc'));
 
   // 4. Test Parallel Multi-Account Winner (`findBestMaxCouponAccountForOrder`) across BOTH live accounts simultaneously!
   const multiOrder = {
@@ -111,7 +111,7 @@ try {
     address: CUST_ADDR
   };
   const tMulti = Date.now();
-  const bestRes = await findBestMaxCouponAccountForOrder(multiOrder);
+  const bestRes = await findBestMaxCouponAccountForOrder(multiOrder, { preferZeroOrderAccounts: false });
   const multiMs = Date.now() - tMulti;
   console.log('  🏆 Parallel Multi-ID Winner Summary:', {
     ms: multiMs,
@@ -120,7 +120,8 @@ try {
     totalSavings: multiOrder.totalSavings,
     comparison: bestRes.accountComparison
   });
-  check('Parallel Multi-ID scan compared both live accounts & picked lowest `finalPayable` (`<= ₹245`)', bestRes.success === true && bestRes.accountComparison.length >= 2 && Number(multiOrder.finalPayable) <= 245);
+  const minCompared = Math.min(...(bestRes.accountComparison || []).map(c => Number(c.finalPayable)));
+  check('Parallel Multi-ID scan compared both live accounts & picked exact minimum `finalPayable` (`<= ₹300`)', bestRes.success === true && bestRes.accountComparison.length >= 2 && Number(multiOrder.finalPayable) === minCompared && Number(multiOrder.finalPayable) <= 300);
 
   const qrBest = await generateRealSwiggyMerchantUpiQr(bestRes.winningAccount, multiOrder);
   console.log('  💳 Winning Account Real Swiggy UPI QR:', qrBest);

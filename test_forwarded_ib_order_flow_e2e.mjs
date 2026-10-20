@@ -175,8 +175,8 @@ try {
   // =========================================================================
   // PART A: BOSS SENDS NORMALLY FROM HIS OWN ACCOUNT (NOT FORWARDED!)
   // =========================================================================
-  const bossDirectAddr = 'Hey! Save my address on Swiggy using the link:https://swiggy.onelink.me/JgkQ/j37ai838.\n\nAddress: Ground, 504, 54-106, Mukarimnagar, Hasanganj, Lucknow, Uttar Pradesh 226007, India';
-  const bossDirectCart = 'https://swig.gy/gc/67272/Umbashiya-642855918';
+  const bossDirectAddr = 'Hey! Save my address on Swiggy using the link:https://swiggy.onelink.me/JgkQ/j37ai838.\n\nAddress: Svr arcade plot no 628, IPM Blood Bank Colony, Hayathnagar_Khalsa, Hyderabad, Telangana 501505, India';
+  const bossDirectCart = 'https://swig.gy/gc/622166/Adithya-312184336';
 
   ok(looksLikeBossOrderInput(bossDirectAddr) && looksLikeBossOrderInput(bossDirectCart), 'Direct Boss detector recognizes both Address share & Group Cart link');
   ok(!looksLikeBossOrderInput('/start') && !looksLikeBossOrderInput('Order Screen'), 'Direct Boss detector ignores normal bot commands & admin buttons');
@@ -214,10 +214,11 @@ try {
     'Forwarded IB Send: Card #102 created under "Ammi" while keeping Boss\'s personal Card #101 untouched!'
   );
 
-  // 3. Boss now sends his Cart link NORMALLY -> ONLY Boss's old Card #101 is deleted & replaced by Boss Account Chooser Card #103!
+  // 3. Boss now sends his Cart link NORMALLY -> ONLY Boss's old Card #101 is deleted & upgraded to Choose Account Card #103 (explicit manual picker check)!
   await handleBossForwardedOrderInput(makeCtx({ message: { text: bossDirectCart } }), {
     rawText: bossDirectCart,
-    formatOrderBodyFn: renderBodyHtml
+    formatOrderBodyFn: renderBodyHtml,
+    autoSelectAccount: false
   });
   ok(
     deletedIds.includes(101) && !messages.has(101) && messages.has(102) && messages.has(103),
