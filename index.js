@@ -54,6 +54,13 @@ import {
   fetchAllAccountsSavedAddresses,
   applyLiveCouponToOrder
 } from './swiggy-cart.js';
+import {
+  extractForwardSenderInfo,
+  deleteOrderBotMessages,
+  buildForwardedOrderCardView,
+  handleBossForwardedOrderInput,
+  registerForwardedOrderHandlers
+} from './forwarded-order-flow.js';
 
 dotenv.config();
 
@@ -3052,6 +3059,21 @@ bot.action(/^boss_apply_coupon_(.+)$/, async (ctx) => {
 
   await ctx.answerCbQuery(`Applied coupon ${order.couponCode || code}! 🎉`).catch(() => {});
 
+  if (order.isForwardedOrder) {
+    await deleteOrderBotMessages(ctx.telegram, order, { deleteCard: true });
+    try { await ctx.deleteMessage(); } catch (e) {}
+    const fwdView = buildForwardedOrderCardView(order, formatUserOrderCardText);
+    const sent = await ctx.reply(fwdView.text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...fwdView.keyboard
+    });
+    order.bossCardChatId = sent.chat?.id ?? ctx.chat?.id;
+    order.bossCardMsgId = sent.message_id;
+    saveDb(db);
+    return;
+  }
+
   const reviewCard = formatBossAccountReviewCard(order);
   try {
     await ctx.editMessageText(reviewCard.text, {
@@ -4984,6 +5006,15 @@ bot.on('photo', async (ctx) => {
   const userId = ctx.from.id;
   const state = userWaitState[userId];
 
+  // If Boss forwards a photo message with caption from IB (e.g. screenshot + link/address), handle as Forwarded Order!
+  if (isBoss(userId) && ctx.message?.caption && extractForwardSenderInfo(ctx.message)) {
+    await handleBossForwardedOrderInput(ctx, {
+      rawText: ctx.message.caption.trim(),
+      formatOrderBodyFn: formatUserOrderCardText
+    });
+    return;
+  }
+
   if (state && (state.action === 'waiting_qr' || state.action === 'waiting_custom_qr_photo')) {
     const orderId = state.orderId;
     delete userWaitState[userId];
@@ -5742,11 +5773,29 @@ bot.hears('🔢 Set Total Slots', async (ctx) => {
   });
 });
 
+// Register complete Forwarded IB Order Workflow (`fwd_*` actions)
+registerForwardedOrderHandlers(bot, {
+  isBoss,
+  formatOrderBodyFn: formatUserOrderCardText
+});
+
 // Text message handler
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const state = userWaitState[userId];
   const rawText = ctx.message.text.trim();
+
+  // Boss Forwarded Customer DM Workflow:
+  // Whenever Boss forwards ANY customer message from personal IB into the bot,
+  // auto-extract sender Name/ID, delete any previous incomplete card for that sender, update Cart/Address, & render single clean card!
+  if (isBoss(userId) && extractForwardSenderInfo(ctx.message)) {
+    delete userWaitState[userId];
+    await handleBossForwardedOrderInput(ctx, {
+      rawText,
+      formatOrderBodyFn: formatUserOrderCardText
+    });
+    return;
+  }
 
   // Intercept any menu button, slash command, or cancel keyword to free user from wait state
   const isMenuOrCancel = rawText.startsWith('/') || [
@@ -7083,6 +7132,14 @@ async function handleIncomingTelegramLocation(ctx, loc) {
 }
 
 bot.on('location', async (ctx) => {
+  if (ctx.from?.id && isBoss(ctx.from.id) && extractForwardSenderInfo(ctx.message)) {
+    delete userWaitState[ctx.from.id];
+    await handleBossForwardedOrderInput(ctx, {
+      location: ctx.message?.location,
+      formatOrderBodyFn: formatUserOrderCardText
+    });
+    return;
+  }
   await handleIncomingTelegramLocation(ctx, ctx.message?.location);
 });
 
