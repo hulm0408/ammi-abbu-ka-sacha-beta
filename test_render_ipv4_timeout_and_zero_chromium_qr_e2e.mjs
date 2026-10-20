@@ -157,7 +157,7 @@ It is`;
     items: []
   };
   await ingestForwardedContentIntoOrder(ord2163, {
-    rawText: 'https://swig.gy/gc/636724/Umbashiya-642855918\n\nHouse 14B, Nirala Nagar IT Crossing, Daliganj, Lucknow, Uttar Pradesh 226020, India'
+    rawText: 'https://swig.gy/gc/622166/Adithya-312184336\n\nSvr arcade plot no 628, IPM Blood Bank Colony, Hayathnagar_Khalsa, Hyderabad, Telangana 501505, India'
   });
 
   const tSync = Date.now();

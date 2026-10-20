@@ -16,6 +16,7 @@ import {
   syncGroupCartAndCheckoutForAccount,
   generateRealSwiggyMerchantUpiQr,
   checkRealSwiggyPaymentAndExtractTracking,
+  callSwiggyFoodMcpTool,
   swiggyCartFlush
 } from './swiggy-cart.js';
 import {
@@ -139,7 +140,44 @@ try {
       assert.strictEqual(mockOrder.swiggyVerified, true, 'Cart bill must be 100% Swiggy verified');
       assert(mockOrder.finalPayable > 0, 'Final payable must be positive');
 
-      const realQr = await generateRealSwiggyMerchantUpiQr({ account: tokenOnlyAcc, order: mockOrder });
+      let realQr = null;
+      try {
+        realQr = await generateRealSwiggyMerchantUpiQr({ account: tokenOnlyAcc, order: mockOrder });
+      } catch (closedErr) {
+        if (!/closed|out of stock|unserviceable|not ready/i.test(String(closedErr?.message || ''))) throw closedErr;
+        // 24x7 Night Fallback: `Big Bowl (636724)` closes at 2:30 AM IST — discover a currently-open 24x7 restaurant on `addrs[0]`!
+        const sRes = await callSwiggyFoodMcpTool(tokenOnlyAcc, 'search_restaurants', { addressId: String(addrs[0].id), query: 'pizza' });
+        for (const r of (sRes.structured?.restaurants || []).slice(0, 6)) {
+          const rId = String(r.id || r.restaurantId || '');
+          if (!rId) continue;
+          const mRes = await callSwiggyFoodMcpTool(tokenOnlyAcc, 'get_restaurant_menu', { restaurantId: rId, addressId: String(addrs[0].id), page: 1, pageSize: 5 });
+          let openItem = null;
+          const walk = (n) => {
+            if (!n || typeof n !== 'object' || openItem) return;
+            const id = n.id || n.item_id;
+            const hasVar = Boolean(n.variantsV2?.variantGroups?.length || n.variant_groups?.length || n.has_variants);
+            const pr = Number(n.price ?? n.final_price ?? n.default_price ?? 0);
+            if (id && n.name && n.inStock !== 0 && n.in_stock !== false && !hasVar && pr > 0) {
+              openItem = { menu_item_id: Number(id), itemId: String(id), name: String(n.name), qty: 1, quantity: 1, price: pr > 2000 ? Math.round(pr / 100) : pr };
+              return;
+            }
+            for (const v of Object.values(n)) {
+              if (Array.isArray(v)) v.forEach(walk);
+              else if (v && typeof v === 'object') walk(v);
+            }
+          };
+          walk(mRes.structured);
+          if (openItem) {
+            mockOrder.restaurantId = rId;
+            mockOrder.restaurantName = r.name || 'Open Restaurant';
+            mockOrder.items = [openItem];
+            break;
+          }
+        }
+        const retrySync = await syncGroupCartAndCheckoutForAccount(tokenOnlyAcc, mockOrder, { captureScreenshot: false });
+        assert.strictEqual(retrySync.success, true, `24x7 open-restaurant sync failed: ${JSON.stringify(retrySync)}`);
+        realQr = await generateRealSwiggyMerchantUpiQr({ account: tokenOnlyAcc, order: mockOrder });
+      }
       assert(realQr?.upiIntentUrl && /^upi:\/\/pay\?.*swiggy/i.test(realQr.upiIntentUrl), `Expected real Swiggy merchant UPI QR, got: ${realQr?.upiIntentUrl}`);
       assert(realQr.swiggyOrderId && realQr.orderId, 'Must have real Swiggy checkout orderId');
       assert(realQr.paymentTxnId, 'Must have real Swiggy paas_id transaction reference');

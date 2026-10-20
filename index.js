@@ -353,8 +353,11 @@ export function formatUserOrderCardText(order, isBossView = false) {
   if (order.finalPayable || order.subtotal) {
     billSection = `<b>Final Bill</b>\n`;
     if (order.subtotal) billSection += `Items Total: ₹${order.subtotal}\n`;
-    if (order.tradeDiscountTotal > 0) {
-      billSection += `Restaurant Offer Discount: −₹${order.tradeDiscountTotal}\n`;
+    const merchantOfferDisc = order.merchantTradeDiscount !== undefined
+      ? Number(order.merchantTradeDiscount || 0)
+      : Math.max(0, Math.round((Number(order.tradeDiscountTotal || 0) - Number(order.campaignFreeCash || 0)) * 100) / 100);
+    if (merchantOfferDisc > 0) {
+      billSection += `Restaurant Offer Discount: −₹${merchantOfferDisc}\n`;
     }
     if (order.couponCode && order.discountAmount > 0) {
       billSection += `Coupon ${escapeHtml(order.couponCode)}: −₹${order.discountAmount}\n`;
@@ -8626,7 +8629,7 @@ window.addEventListener('load', () => { setTimeout(copyAll, 40); });
     res.end(JSON.stringify({
       status: 'ok',
       bot: 'online',
-      build: 'v10-ipv4-zero-chromium',
+      build: 'v13-free-delivery-offer-ids-super-sync',
       ipv4Shield: true,
       zeroChromiumOrderFlow: true,
       timestamp: new Date().toISOString()
