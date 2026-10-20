@@ -1,6 +1,6 @@
 {
   "version": 15,
-  "updatedAt": "2026-10-20T23:36:24.919Z",
+  "updatedAt": "2026-10-20T23:37:07.669Z",
   "accounts": {
     "acc_9935123518": {
       "name": "prithvi",
@@ -132,32 +132,6 @@
       "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI1Mjk0MDEsInNpZCI6InVhcDI3MDMzMDdmLWJjZDEtNDE0Ny1iY2ZiLTcwMmYxNTM5ZSIsInNlc3Npb25fZGF0YSI6IlZDVzJBa0hXeWZRQ0o3ak5uT251YzgzVEdPLzdzMEVMaVgveHdCZFVycEJGNzNLY0YrTEhGZkNCTG11cS9uOTBkWWZxb2tZaUV4d0VDUUdLaDRoVE4xNVAvYzJsVytMa0tpNUdvcFdNUFlsZWUrbDlsb1NicG51aEkva1RPclNFZnQ0bFJ4NXJyS0VpRnVybmM4NFpoRDJ2ZEtWY0lRc2twM0p6SmJ0UTFPblNwei9KVjZpNkRYRlJEODlURHB3QkRhdmtobEd2ME03LytLSkw1WHllN20vdDBVdExiL29zZ3RadzJtbWdrNlpsTk1RNlczMmJUVVJIa0RMOHVubVVWeExsdUNsVkd1Njl1Zz09IiwiaXNzIjoiaGFwIiwic3ViIjoiYmIwNjRmMDktMWEzMy00MjY0LWFkNjEtNDYyNWY3MTkwZDA0IiwidXNlcl9pZCI6IjI4NTU5MTg2NCIsImV4cCI6MTc5NTEyMTQwMX0.q_jXOCRkoD1N0_fix3W8kV-cG6swyISdftsEMYmLOZE",
       "totalOrdersCount": 0,
       "isZeroOrderAccount": true
-    },
-    "acc_9700000001": {
-      "id": "acc_9700000001",
-      "name": "Expired Primary",
-      "phone": "9700000001",
-      "mobile": "9700000001",
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNTUwMDEiLCJleHAiOjE3OTI2MjUzNDh9.sig",
-      "tid": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNTUwMDEiLCJleHAiOjE3OTI2MjUzNDh9.sig",
-      "sid": "",
-      "deviceId": "",
-      "cookies": "_session_tid=dead; _is_logged_in=1; tid=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNTUwMDEiLCJleHAiOjE3OTI2MjUzNDh9.sig",
-      "isLoggedIn": true,
-      "savedAt": "2026-10-20T23:29:15.059Z"
-    },
-    "acc_9700000002": {
-      "id": "acc_9700000002",
-      "name": "Fresh Vault Backup",
-      "phone": "9700000002",
-      "mobile": "9700000002",
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNTUwMDIiLCJleHAiOjE3OTI2MjUzNDh9.sig",
-      "tid": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNTUwMDIiLCJleHAiOjE3OTI2MjUzNDh9.sig",
-      "sid": "",
-      "deviceId": "",
-      "cookies": "_session_tid=alive; _is_logged_in=1; tid=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiNTUwMDIiLCJleHAiOjE3OTI2MjUzNDh9.sig",
-      "isLoggedIn": true,
-      "savedAt": "2026-10-20T23:29:15.059Z"
     }
   },
   "deletedAccounts": {},
