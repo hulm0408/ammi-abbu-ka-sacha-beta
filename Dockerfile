@@ -1,14 +1,9 @@
 FROM node:20-bookworm-slim
 
-# Install Chromium and runtime fonts on Debian 12 Bookworm
+# Lightweight Chromium + certificates only (skips 180MB CJK font bloat for ultra-fast Render deploys!)
 RUN apt-get update && apt-get install -y \
     chromium \
-    fonts-ipafont-gothic \
-    fonts-wqy-zenhei \
-    fonts-thai-tlwg \
-    fonts-kacst \
     fonts-freefont-ttf \
-    libxss1 \
     ca-certificates \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
