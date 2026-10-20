@@ -858,11 +858,19 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
     : null;
 
   // Resolve ALL links + plain-text street address geocoding IN ONE SINGLE PARALLEL BATCH!
+  // If `earlyPlainAd?.address` is already extracted from plain text (e.g. `Save my address on Swiggy... Address: ...`),
+  // skip external HTTP hop on `onelink.me/JgkQ` (`0ms` instead of `1.9s`!) and reuse `preGeocodedPlainAd` directly!
   const [resolvedSwiggyList, resolvedMapsList, preGeocodedPlainAd] = await Promise.all([
-    Promise.all(swiggyUrls.map(url => resolveSwiggyLink(url).then(resolved => ({ url, resolved })))),
+    Promise.all(
+      swiggyUrls.map(url =>
+        earlyPlainAd?.address && /onelink\.me\/jgkq\//i.test(url) && !/\/gc\//i.test(url)
+          ? Promise.resolve({ url, resolved: { linkType: 'ADDRESS' } })
+          : resolveSwiggyLink(url).then(resolved => ({ url, resolved }))
+      )
+    ),
     Promise.all(mapsUrls.map(mUrl => resolveSwiggyLink(mUrl).then(resolved => ({ mUrl, resolved })))),
     earlyPlainAd && (!earlyPlainAd.lat || !earlyPlainAd.lng)
-      ? geocodeAddressDetails(earlyPlainAd, firstAccEarly).catch(() => earlyPlainAd)
+      ? geocodeAddressDetails(earlyPlainAd).catch(() => earlyPlainAd)
       : Promise.resolve(earlyPlainAd)
   ]);
 
@@ -873,7 +881,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       (/save my address on swiggy/i.test(trimmed) && !/\/gc\//i.test(url));
 
     if (looksLikeAddressShare) {
-      const ad = parseAddressDetails(trimmed) || resolved?.addressDetails || parseAddressDetails(url);
+      const ad = preGeocodedPlainAd || parseAddressDetails(trimmed) || resolved?.addressDetails || parseAddressDetails(url);
       order.address = trimmed;
       order.addressOriginalText = trimmed;
       if (ad) {

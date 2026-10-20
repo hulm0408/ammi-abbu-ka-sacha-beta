@@ -17,7 +17,7 @@ ENV NODE_ENV=production \
     HEADLESS=true \
     PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
-    NODE_OPTIONS="--max-old-space-size=384"
+    NODE_OPTIONS="--dns-result-order=ipv4first --max-old-space-size=320"
 
 WORKDIR /usr/src/app
 

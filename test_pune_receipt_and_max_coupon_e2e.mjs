@@ -177,8 +177,9 @@ Pune, Maharashtra 411030
   const minSeen = Math.min(...bestRes.accountComparison.map(c => c.finalPayable));
   ok(liveOrder.finalPayable === minSeen && liveOrder.finalPayable <= maxSeen, `Automatically picked STRICT LOWEST Final Total: ₹${liveOrder.finalPayable} (saved ₹${maxSeen - minSeen} vs ₹${maxSeen} account!)`);
 
-  // Cleanly empty acc_9935123518 cart & verify acc_6296591407 remained 100% untouched!
-  await dapiFetch(accHelper, 'cart', {
+  // Cleanly flush the winning account back to its exact pre-test state & verify both accounts remain completely intact!
+  const winnerAcc = bestRes.winningKey === 'acc_6296591407' ? accLive : accHelper;
+  await dapiFetch(winnerAcc, 'cart', {
     method: 'POST',
     body: { flushFirst: true, cart: { restaurantId: liveOrder.restaurantId, address_id: '', couponCode: '', cartItems: [], mealItems: [], subscriptionItems: [] } }
   });

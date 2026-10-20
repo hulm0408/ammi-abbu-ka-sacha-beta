@@ -1,3 +1,5 @@
+import './network-shield.js';
+import { createIpv4TelegramAgent, installBulletproofTelegramTransport } from './network-shield.js';
 import http from 'http';
 import crypto from 'crypto';
 import { Telegraf, Markup } from 'telegraf';
@@ -86,7 +88,14 @@ if (!BOT_TOKEN) {
   process.exit(1);
 }
 
-const bot = new Telegraf(BOT_TOKEN);
+const bot = installBulletproofTelegramTransport(
+  new Telegraf(BOT_TOKEN, {
+    handlerTimeout: 240_000,
+    telegram: {
+      agent: createIpv4TelegramAgent()
+    }
+  })
+);
 
 const userWaitState = {};
 const splitJsonChunks = {};
@@ -8581,7 +8590,14 @@ window.addEventListener('load', () => { setTimeout(copyAll, 40); });
     } catch (e) {}
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', bot: 'online', timestamp: new Date().toISOString() }));
+    res.end(JSON.stringify({
+      status: 'ok',
+      bot: 'online',
+      build: 'v10-ipv4-zero-chromium',
+      ipv4Shield: true,
+      zeroChromiumOrderFlow: true,
+      timestamp: new Date().toISOString()
+    }));
   });
   server.listen(healthPort, '0.0.0.0', () => {
     console.log(`🌐 Cloud health & 1-click Copy server listening on 0.0.0.0:${healthPort}`);

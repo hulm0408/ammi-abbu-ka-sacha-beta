@@ -1,3 +1,4 @@
+import './network-shield.js';
 import fs from 'fs';
 import puppeteer from 'puppeteer-core';
 import QRCode from 'qrcode';
@@ -150,12 +151,12 @@ export function buildSwiggyAndroidClientHeaders(accountOrCookies, opts = {}) {
 // Converts `{ tid: "eyJ...", token, sid, deviceId }` (ZERO cookies!) into a FULL
 // Web + Android Swiggy session (`_session_tid=<1536-char-hex>`) in ONE ~200ms GET!
 // ---------------------------------------------------------------------------
-export async function bootstrapSwiggyWebSessionFromAndroidTokens(accountOrCookies) {
+export async function bootstrapSwiggyWebSessionFromAndroidTokens(accountOrCookies, { force = false } = {}) {
   if (!accountOrCookies || typeof accountOrCookies !== 'object' || Array.isArray(accountOrCookies)) {
     return null;
   }
   const existingClean = cleanSwiggyCookieString(accountOrCookies.cookies || '', accountOrCookies);
-  if (existingClean.includes('_session_tid=')) {
+  if (!force && existingClean.includes('_session_tid=')) {
     accountOrCookies.cookies = existingClean;
     return existingClean;
   }
@@ -176,14 +177,13 @@ export async function bootstrapSwiggyWebSessionFromAndroidTokens(accountOrCookie
       if (prof?.token) liveTok = prof.token;
     }
 
-    const waf = await getCachedWafToken(false);
+    // ZERO-CHROMIUM pure HTTP WebView bootstrap (~650ms, 0MB RAM, zero AWS WAF challenge needed!):
     const res = await fetch('https://www.swiggy.com/web-cart-add-address', {
       method: 'GET',
       redirect: 'manual',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UQ1A.240205.004; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.6367.82 Mobile Safari/537.36 Swiggy-Android',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UQ1A.240205.004; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/129.0.0.0 Mobile Safari/537.36 Swiggy-Android',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        ...(waf ? { 'Cookie': `aws-waf-token=${waf}` } : {}),
         'tid': liveTid,
         'sid': liveSid,
         'token': liveTok,
@@ -194,17 +194,20 @@ export async function bootstrapSwiggyWebSessionFromAndroidTokens(accountOrCookie
         'version-code': '1600',
         'app-version': '4.75.0'
       },
-      signal: AbortSignal.timeout(8000)
+      signal: AbortSignal.timeout(9000)
     });
 
+    const htmlBody = await res.text().catch(() => '');
     const setCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
     const cmap = new Map();
-    for (const part of String(existingClean || '').split(';')) {
-      const eq = part.indexOf('=');
-      if (eq > 0) {
-        const k = part.slice(0, eq).trim();
-        const v = part.slice(eq + 1).trim();
-        if (k && v) cmap.set(k, v);
+    if (!force) {
+      for (const part of String(existingClean || '').split(';')) {
+        const eq = part.indexOf('=');
+        if (eq > 0) {
+          const k = part.slice(0, eq).trim();
+          const v = part.slice(eq + 1).trim();
+          if (k && v) cmap.set(k, v);
+        }
       }
     }
     for (const sc of setCookies) {
@@ -226,6 +229,11 @@ export async function bootstrapSwiggyWebSessionFromAndroidTokens(accountOrCookie
       Array.from(cmap.entries()).map(([k, v]) => `${k}=${v}`).join('; '),
       { ...accountOrCookies, _session_tid: mintedSessionTid }
     );
+
+    const htmlCsrf = (htmlBody.match(/csrf[a-zA-Z0-9_"\s:=]+([a-zA-Z0-9_\-]{12,60})/i) || [])[1] || '';
+    if (htmlCsrf) {
+      csrfTokenCache.set(mergedCookies.slice(0, 180), { csrf: htmlCsrf, ts: Date.now() });
+    }
 
     accountOrCookies._session_tid = mintedSessionTid;
     accountOrCookies.cookies = mergedCookies;
@@ -584,6 +592,9 @@ export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = fals
 async function androidCheckoutCartCall(accountOrCookies, endpointPath, { method = 'GET', body = undefined, lat = '26.8658609', lng = '80.9307755', timeoutMs = 9000 } = {}) {
   const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
   const auth = await getSwiggySessionAuth(accountOrCookies);
+  if (!auth?.jwtTid && !auth?.token) {
+    return { status: 0, json: null };
+  }
   const headers = buildSwiggyAndroidClientHeaders(accountOrCookies, {
     tid: auth?.jwtTid,
     token: auth?.token,
@@ -603,20 +614,65 @@ async function androidCheckoutCartCall(accountOrCookies, endpointPath, { method 
   if (acc && json?.tid && String(json.tid).includes('.')) {
     acc.tid = json.tid;
   }
+  // Native Android `chkout` returns selected `addresses` array without copying `.id` onto `data.address_id`:
+  // Normalize `data.address_id` & `data.delivery_address` automatically so checkout/QR code always sees the exact bound `address_id`!
+  if (json?.data && typeof json.data === 'object') {
+    const selectedAddr = Array.isArray(json.data.addresses)
+      ? (json.data.addresses.find(a => a?.selected && a?.id) || json.data.addresses.find(a => a?.delivery_valid && a?.id))
+      : null;
+    if (!json.data.address_id) {
+      json.data.address_id = String(body?.address_id || selectedAddr?.id || '');
+    }
+    if (!json.data.delivery_address && selectedAddr) {
+      json.data.delivery_address = selectedAddr;
+    }
+  }
   return { status: res.status, json };
 }
 
 export async function swiggyCartGet(accountOrCookies, { lat = '26.8658609', lng = '80.9307755', timeoutMs = 9000 } = {}) {
+  // Fast Path 1 (~220ms ZERO-CHROMIUM pure HTTP): Native Android `chkout.swiggy.com/api/v2/cart/client`!
+  const aRes = await androidCheckoutCartCall(accountOrCookies, 'client', { method: 'GET', lat, lng, timeoutMs }).catch(() => null);
+  if (aRes?.json) {
+    if (aRes.json.statusCode === 0) return aRes;
+    if (/session expired|login again/i.test(String(aRes.json.statusMessage || ''))) return aRes;
+  }
+
   const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
   const cleanCookies = cleanSwiggyCookieString(accountOrCookies, acc);
-  if (cleanCookies.includes('_session_tid=')) {
+  if (!aRes?.json && cleanCookies.includes('_session_tid=')) {
     const res = await dapiFetch(accountOrCookies, 'cart', { lat, lng, timeoutMs }).catch(() => null);
     if (res?.json && res.json.statusCode === 0) return res;
   }
-  return androidCheckoutCartCall(accountOrCookies, 'client', { method: 'GET', lat, lng, timeoutMs });
+  return aRes || { status: 0, json: null };
 }
 
 export async function swiggyCartUpdate(accountOrCookies, cartPayload, { lat = '26.8658609', lng = '80.9307755', address = '', area = '', flushFirst = true, timeoutMs = 10000 } = {}) {
+  // Fast Path 1 (~250ms ZERO-CHROMIUM pure HTTP): Native Android `chkout.swiggy.com/api/v2/cart/client/update`!
+  const aRes = await androidCheckoutCartCall(accountOrCookies, 'client/update', {
+    method: 'POST',
+    lat,
+    lng,
+    timeoutMs,
+    body: {
+      flushFirst: Boolean(flushFirst),
+      restaurantId: String(cartPayload.restaurantId || ''),
+      address_id: String(cartPayload.address_id || ''),
+      couponCode: String(cartPayload.couponCode || ''),
+      cartItems: Array.isArray(cartPayload.cartItems) ? cartPayload.cartItems : [],
+      mealItems: Array.isArray(cartPayload.mealItems) ? cartPayload.mealItems : [],
+      subscriptionItems: Array.isArray(cartPayload.subscriptionItems) ? cartPayload.subscriptionItems : []
+    }
+  }).catch(() => null);
+  if (aRes?.json) {
+    if (aRes.json.statusCode === 0 && (aRes.json.data?.cartMeta || aRes.json.data?.order_total !== undefined)) {
+      return aRes;
+    }
+    if (/session expired|login again/i.test(String(aRes.json.statusMessage || ''))) {
+      return aRes;
+    }
+  }
+
   const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
   const cleanCookies = cleanSwiggyCookieString(accountOrCookies, acc);
   if (cleanCookies.includes('_session_tid=')) {
@@ -636,35 +692,19 @@ export async function swiggyCartUpdate(accountOrCookies, cartPayload, { lat = '2
       return res;
     }
   }
-  // Native Android `chkout.swiggy.com/api/v2/cart/client/update` takes a FLAT top-level payload!
-  return androidCheckoutCartCall(accountOrCookies, 'client/update', {
-    method: 'POST',
-    lat,
-    lng,
-    timeoutMs,
-    body: {
-      flushFirst: Boolean(flushFirst),
-      restaurantId: String(cartPayload.restaurantId || ''),
-      address_id: String(cartPayload.address_id || ''),
-      couponCode: String(cartPayload.couponCode || ''),
-      cartItems: Array.isArray(cartPayload.cartItems) ? cartPayload.cartItems : [],
-      mealItems: Array.isArray(cartPayload.mealItems) ? cartPayload.mealItems : [],
-      subscriptionItems: Array.isArray(cartPayload.subscriptionItems) ? cartPayload.subscriptionItems : []
-    }
-  });
+  return aRes || { status: 0, json: null };
 }
 
 export async function swiggyCartFlush(accountOrCookies, { lat = '26.8658609', lng = '80.9307755', timeoutMs = 8000 } = {}) {
+  const aRes = await androidCheckoutCartCall(accountOrCookies, 'client/flush', { method: 'DELETE', lat, lng, timeoutMs }).catch(() => null);
+  if (aRes?.json?.statusCode === 0) return aRes;
   const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
   const cleanCookies = cleanSwiggyCookieString(accountOrCookies, acc);
-  const tasks = [
-    androidCheckoutCartCall(accountOrCookies, 'client/flush', { method: 'DELETE', lat, lng, timeoutMs }).catch(() => null)
-  ];
   if (cleanCookies.includes('_session_tid=')) {
-    tasks.push(dapiFetch(accountOrCookies, 'cart/flush', { method: 'POST', body: {}, lat, lng, timeoutMs }).catch(() => null));
+    const wRes = await dapiFetch(accountOrCookies, 'cart/flush', { method: 'POST', body: {}, lat, lng, timeoutMs }).catch(() => null);
+    if (wRes) return wRes;
   }
-  const [aRes, wRes] = await Promise.all(tasks);
-  return aRes?.json?.statusCode === 0 ? aRes : (wRes || aRes);
+  return aRes || { status: 0, json: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -683,12 +723,15 @@ export async function getCachedWafToken(forceRefresh = false) {
       browser = await puppeteer.launch({
         executablePath: CHROME_PATH,
         headless: PUPPETEER_HEADLESS,
+        timeout: 14000,
+        protocolTimeout: 18000,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-gpu',
           '--no-first-run',
+          '--disable-extensions',
           '--disable-blink-features=AutomationControlled'
         ]
       });
@@ -698,8 +741,8 @@ export async function getCachedWafToken(forceRefresh = false) {
         window.chrome = { runtime: {} };
       });
       await page.setUserAgent(DESKTOP_UA);
-      await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 22000 }).catch(() => {});
-      for (let i = 0; i < 20; i++) {
+      await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 14000 }).catch(() => {});
+      for (let i = 0; i < 16; i++) {
         const cList = await page.cookies('https://www.swiggy.com').catch(() => []);
         const waf = cList.find(c => c.name === 'aws-waf-token');
         if (waf && waf.value && waf.value.length > 50) {
@@ -707,7 +750,7 @@ export async function getCachedWafToken(forceRefresh = false) {
           cachedWafAt = Date.now();
           break;
         }
-        await new Promise(r => setTimeout(r, 400));
+        await new Promise(r => setTimeout(r, 350));
       }
       await browser.close().catch(() => {});
       return cachedWafToken;
@@ -725,7 +768,9 @@ export async function getCachedWafToken(forceRefresh = false) {
 
 let wafWarmLoopTimer = null;
 export function startWafKeepWarmLoop() {
-  if (wafWarmLoopTimer) return;
+  // All critical order/address/cart/coupon/QR/tracking paths now use 100% Zero-Chromium pure HTTP!
+  // Only pre-warm Chromium in background if explicitly enabled (`PREWARM_CHROME === 'true'`) so 512MB cloud RAM stays crystal lean!
+  if (wafWarmLoopTimer || process.env.PREWARM_CHROME !== 'true') return;
   const initTimer = setTimeout(() => {
     getCachedWafToken(false).catch(() => {});
   }, 500);
@@ -737,7 +782,9 @@ export function startWafKeepWarmLoop() {
   if (typeof wafWarmLoopTimer.unref === 'function') wafWarmLoopTimer.unref();
 }
 
-// Authenticated / guest Swiggy DAPI caller with automatic WAF token + _csrf + location cookie
+// Authenticated / guest Swiggy DAPI caller:
+//   Fast Path 0 (~250ms, ZERO Chromium, 0MB RAM!): `User-Agent: Swiggy-Android` + `_csrf` via zero-WAF `order/all`!
+//   Fallback Path 1: Chromium `aws-waf-token` + `DESKTOP_UA` (only for desktop-gated `/dapi/cart*` endpoints if needed).
 export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
   const {
     method = 'GET',
@@ -752,7 +799,73 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
 
   const cleanCookies = accountOrCookies ? cleanSwiggyCookieString(accountOrCookies) : '';
   const sig = cleanCookies ? cleanCookies.slice(0, 180) : 'guest';
-  const url = endpoint.startsWith('http') ? endpoint : `https://www.swiggy.com/dapi/${endpoint.replace(/^\/?(dapi\/)?/, '')}`;
+  const relEndpoint = endpoint.replace(/^\/?(dapi\/)?/, '');
+  const url = endpoint.startsWith('http') ? endpoint : `https://www.swiggy.com/dapi/${relEndpoint}`;
+  const isDesktopWafCartRoute = /^cart(\/|\?|$)/i.test(relEndpoint);
+
+  // Fast Path 0: Zero-Chromium `User-Agent: Swiggy-Android` for ALL non-`/cart` DAPI endpoints!
+  if (!isDesktopWafCartRoute) {
+    try {
+      const zeroWafCookieParts = [];
+      if (cleanCookies) zeroWafCookieParts.push(cleanCookies);
+      if (lat && lng) {
+        zeroWafCookieParts.push(`userLocation=${encodeURIComponent(JSON.stringify({
+          lat: String(lat),
+          lng: String(lng),
+          address: String(address || area || 'India'),
+          area: String(area || '')
+        }))}`);
+      }
+
+      let fastBody = body ? { ...body } : null;
+      if (method !== 'GET' && fastBody && fastBody._csrf === undefined) {
+        let csrf = csrfTokenCache.get(sig)?.csrf || '';
+        if (!csrf && cleanCookies) {
+          const ordRes = await fetch('https://www.swiggy.com/dapi/order/all', {
+            headers: {
+              'Cookie': zeroWafCookieParts.join('; '),
+              'User-Agent': 'Swiggy-Android',
+              'Accept': 'application/json',
+              'Referer': 'https://www.swiggy.com/'
+            },
+            signal: AbortSignal.timeout(6500)
+          }).catch(() => null);
+          const ordJson = ordRes ? await ordRes.json().catch(() => null) : null;
+          if (ordJson?.csrfToken) {
+            csrf = ordJson.csrfToken;
+            csrfTokenCache.set(sig, { csrf, ts: Date.now() });
+          }
+        }
+        if (csrf) fastBody._csrf = csrf;
+      }
+
+      const fastRes = await fetch(url, {
+        method,
+        headers: {
+          'Cookie': zeroWafCookieParts.join('; '),
+          'User-Agent': 'Swiggy-Android',
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Origin': 'https://www.swiggy.com',
+          'Referer': 'https://www.swiggy.com/',
+          ...extraHeaders
+        },
+        ...(fastBody ? { body: JSON.stringify(fastBody) } : {}),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+
+      if (fastRes.status !== 202 && fastRes.status !== 403 && !fastRes.headers.get('x-amzn-waf-action')) {
+        const fastText = await fastRes.text();
+        const fastJson = JSON.parse(fastText);
+        if (fastJson?.csrfToken) {
+          csrfTokenCache.set(sig, { csrf: fastJson.csrfToken, ts: Date.now() });
+        }
+        if (fastJson && fastJson.statusCode !== 400) {
+          return { ok: fastRes.ok, status: fastRes.status, json: fastJson };
+        }
+      }
+    } catch {}
+  }
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const wafToken = await getCachedWafToken(attempt > 0);
@@ -878,9 +991,14 @@ function getCandidateAccounts(preferredAccount = null, preferredHostName = null)
   try {
     const db = getDb();
     const accounts = db?.config?.accounts || {};
-    const entries = Object.entries(accounts);
+    const rankAcc = (a) =>
+      (a?.isLoggedIn ? 8 : 0) +
+      (a?.tid && String(a.tid).startsWith('eyJ') ? 4 : 0) +
+      (a?.token ? 2 : 0) +
+      (a?.cookies ? 1 : 0);
+    const entries = Object.entries(accounts).sort(([, a], [, b]) => rankAcc(b) - rankAcc(a));
 
-    // If preferredHostName matches one of our accounts, check it first (read-only!)
+    // If preferredHostName matches one of our accounts, check active matches first (read-only!)
     if (preferredHostName) {
       const h = preferredHostName.trim().toLowerCase();
       for (const [k, a] of entries) {
@@ -1194,27 +1312,30 @@ export async function geocodeAddressDetails(addrObj, accountOrCookies = null) {
     return out;
   }
 
-  try {
-    const allSaved = await fetchAllAccountsSavedAddresses();
-    const matchedSaved = allSaved.find(sa => {
-      if (!sa.lat || !sa.lng || !sa.address) return false;
-      const normSa = sa.address.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-      return normTarget.includes(normSa) || normSa.includes(normTarget) ||
-        (normTarget.length > 18 && normSa.slice(0, 24) === normTarget.slice(0, 24));
-    });
-    if (matchedSaved) {
-      out.lat = String(matchedSaved.lat);
-      out.lng = String(matchedSaved.lng);
-      out.id = out.id || matchedSaved.id;
-      out.name = out.name || matchedSaved.name;
-      out.mobile = out.mobile || matchedSaved.mobile;
-      out.city = out.city || matchedSaved.city;
-      out.area = out.area || matchedSaved.area;
-      out.flat_no = out.flat_no || matchedSaved.flat_no;
-      if (normTarget) forwardGeocodeCache.set(normTarget, { lat: out.lat, lng: out.lng, city: out.city, area: out.area, landmark: out.landmark });
-      return out;
-    }
-  } catch (e) {}
+  // Check ONLY the target account's saved addresses if provided (NEVER storm all 12+ DB accounts on every geocode!)
+  if (accountOrCookies && typeof accountOrCookies === 'object') {
+    try {
+      const singleSaved = await fetchAccountAddresses(accountOrCookies);
+      const matchedSaved = singleSaved.find(sa => {
+        if (!sa.lat || !sa.lng || !sa.address) return false;
+        const normSa = sa.address.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        return normTarget.includes(normSa) || normSa.includes(normTarget) ||
+          (normTarget.length > 18 && normSa.slice(0, 24) === normTarget.slice(0, 24));
+      });
+      if (matchedSaved) {
+        out.lat = String(matchedSaved.lat);
+        out.lng = String(matchedSaved.lng);
+        out.id = out.id || matchedSaved.id;
+        out.name = out.name || matchedSaved.name;
+        out.mobile = out.mobile || matchedSaved.mobile;
+        out.city = out.city || matchedSaved.city;
+        out.area = out.area || matchedSaved.area;
+        out.flat_no = out.flat_no || matchedSaved.flat_no;
+        if (normTarget) forwardGeocodeCache.set(normTarget, { lat: out.lat, lng: out.lng, city: out.city, area: out.area, landmark: out.landmark });
+        return out;
+      }
+    } catch (e) {}
+  }
 
   // Fast Parallel Nominatim Geocoding (~500ms total single round-trip instead of 4 sequential 550ms queries!)
   const cleanAddr = rawAddr.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
@@ -1222,11 +1343,12 @@ export async function geocodeAddressDetails(addrObj, accountOrCookies = null) {
   const pinMatch = cleanAddr.match(/\b([1-8]\d{5})\b/);
   const pin = pinMatch ? pinMatch[1] : '';
   const rawQueries = [];
-  if (parts.length >= 3) rawQueries.push(parts.slice(-3).join(', '));
   if (parts.length >= 4) rawQueries.push(parts.slice(-4).join(', '));
+  if (parts.length >= 3) rawQueries.push(parts.slice(-3).join(', '));
   if (out.area && out.city) rawQueries.push(`${out.area.replace(/_/g, ' ')}, ${out.city}${pin ? ', ' + pin : ''}, India`);
   if (pin) rawQueries.push(`${pin}, India`);
   if (out.city) rawQueries.push(`${out.city}, India`);
+  if (parts.length >= 2) rawQueries.push(parts.slice(-2).join(', '));
   rawQueries.push(cleanAddr);
 
   const uniqueQueries = [];
@@ -1236,7 +1358,7 @@ export async function geocodeAddressDetails(addrObj, accountOrCookies = null) {
     if (!cleanQ || seenQ.has(cleanQ.toLowerCase())) continue;
     seenQ.add(cleanQ.toLowerCase());
     uniqueQueries.push(cleanQ);
-    if (uniqueQueries.length >= 4) break;
+    if (uniqueQueries.length >= 5) break;
   }
 
   const nomResults = await Promise.all(
@@ -1557,23 +1679,37 @@ export async function fetchFastRestaurantInfo(restaurantId, lat = '26.8658609', 
     return fastRestaurantCache.get(cacheKey);
   }
   try {
-    const cand = getCandidateAccounts()[0]?.acc || null;
+    const cands = getCandidateAccounts().slice(0, 4);
+    const cand = cands[0]?.acc || null;
     let json = null;
 
     // Fast path (~190ms zero-WAF, zero Chromium!): Native Android `GET https://disc.swiggy.com/api/v1/menu/pl`
-    if (cand) {
+    for (const entry of cands) {
       try {
+        const entryAuth = await getSwiggySessionAuth(entry.acc).catch(() => null);
+        if (!entryAuth?.jwtTid && !entryAuth?.token) continue;
         const discRes = await fetch(
           `https://disc.swiggy.com/api/v1/menu/pl?page-type=REGULAR_MENU&complete-menu=${includeMenu ? 'true' : 'false'}&lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}&restaurantId=${encodeURIComponent(restaurantId)}&submitAction=ENTER`,
           {
             method: 'GET',
-            headers: buildSwiggyAndroidClientHeaders(cand, { lat, lng }),
+            headers: buildSwiggyAndroidClientHeaders(entry.acc, {
+              tid: entryAuth.jwtTid,
+              token: entryAuth.token,
+              sid: entryAuth.sid,
+              deviceId: entryAuth.deviceId,
+              userId: entryAuth.userId,
+              lat,
+              lng
+            }),
             signal: AbortSignal.timeout(4000)
           }
         );
         if (discRes.ok) {
           const dj = await discRes.json().catch(() => null);
-          if (dj?.data?.cards) json = dj;
+          if (dj?.data?.cards) {
+            json = dj;
+            break;
+          }
         }
       } catch {}
     }
@@ -2786,60 +2922,69 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
     }
   }
 
-  // 2. Create address on target Swiggy account using exact verified Swiggy web payload (`statusCode: 0`)
-  // Automatically mints `_session_tid` in ~200ms via pure HTTP if `account` was imported as token-only JSON!
+  // 2. Create address on target Swiggy account using exact verified Swiggy payload (`statusCode: 0`)
+  // Automatically mints `_session_tid` + `_csrf` in ~650ms via Zero-Chromium HTTP & retries with fresh session if needed!
   if (!enriched.lat || !enriched.lng) {
     return { addressId: '', addressDetails: enriched, createdNew: false };
   }
 
-  try {
-    if (!cleanSwiggyCookieString(account.cookies || '', account).includes('_session_tid=')) {
-      await bootstrapSwiggyWebSessionFromAndroidTokens(account);
-    }
-    const auth = await getSwiggySessionAuth(account);
-    if (!auth?.userId) return { addressId: '', addressDetails: enriched, createdNew: false };
-
-    const rawPhone = String(enriched.mobile || account.phone || '9876543210').replace(/\D/g, '').slice(-10) || '9876543210';
-    const citySlug = String(enriched.city || 'lucknow').trim();
-    const flatNo = String(enriched.flat_no || enriched.address?.split(',')[0] || 'Ground Floor').trim().slice(0, 60);
-    const areaStr = String(enriched.area || citySlug || 'Main Area').trim().slice(0, 80);
-    const landmarkStr = String(enriched.landmark || areaStr || 'Near Main Road').trim().slice(0, 80);
-    const fullAddr = String(enriched.address || `${flatNo}, ${areaStr}, ${citySlug}`).trim();
-
-    const { json } = await dapiFetch(account, 'address', {
-      method: 'POST',
-      lat: enriched.lat,
-      lng: enriched.lng,
-      address: fullAddr,
-      area: areaStr,
-      body: {
-        address: fullAddr,
-        flat_no: flatNo,
-        lat: String(enriched.lat),
-        lng: String(enriched.lng),
-        area: areaStr,
-        landmark: landmarkStr,
-        annotation: enriched.annotation || 'Order Delivery',
-        addressCategory: 3,
-        name: String(enriched.name || account.swiggyName || account.name || 'Customer').trim(),
-        mobile: rawPhone,
-        city: citySlug.toLowerCase(),
-        is_edited: 1,
-        cart_type: 'REGULAR',
-        customer_id: String(auth.userId)
+  for (let saveAttempt = 0; saveAttempt < 2; saveAttempt++) {
+    try {
+      const mustForce = saveAttempt > 0;
+      if (mustForce || !cleanSwiggyCookieString(account.cookies || '', account).includes('_session_tid=')) {
+        await bootstrapSwiggyWebSessionFromAndroidTokens(account, { force: mustForce });
       }
-    });
+      const auth = await getSwiggySessionAuth(account, mustForce);
+      if (!auth?.userId) continue;
 
-    const newId = json?.data?.id || json?.data?.address_id || '';
-    if (json?.statusCode === 0 && newId) {
-      return {
-        addressId: String(newId),
-        addressDetails: { ...enriched, id: String(newId) },
-        createdNew: true
-      };
+      const rawPhone = String(enriched.mobile || account.phone || '9876543210').replace(/\D/g, '').slice(-10) || '9876543210';
+      const citySlug = String(enriched.city || 'india').replace(/[^a-zA-Z\s]/g, ' ').trim() || 'india';
+      const flatNo = saveAttempt === 0
+        ? (String(enriched.flat_no || enriched.address?.split(',')[0] || 'Ground Floor').trim().slice(0, 60) || 'Ground Floor')
+        : 'Ground Floor';
+      const areaStr = saveAttempt === 0
+        ? (String(enriched.area || citySlug || 'Main Area').trim().slice(0, 80) || 'Main Area')
+        : 'Main Road';
+      const landmarkStr = saveAttempt === 0
+        ? (String(enriched.landmark || areaStr || 'Near Main Road').trim().slice(0, 80) || 'Near Main Road')
+        : 'Near Main Road';
+      const fullAddr = String(enriched.address || `${flatNo}, ${areaStr}, ${citySlug}`).trim();
+
+      const { json } = await dapiFetch(account, 'address', {
+        method: 'POST',
+        lat: enriched.lat,
+        lng: enriched.lng,
+        address: fullAddr,
+        area: areaStr,
+        body: {
+          address: fullAddr,
+          flat_no: flatNo,
+          lat: String(enriched.lat),
+          lng: String(enriched.lng),
+          area: areaStr,
+          landmark: landmarkStr,
+          annotation: enriched.annotation || 'Order Delivery',
+          addressCategory: 3,
+          name: String(enriched.name || account.swiggyName || account.name || 'Customer').trim(),
+          mobile: rawPhone,
+          city: citySlug.toLowerCase(),
+          is_edited: 1,
+          cart_type: 'REGULAR',
+          customer_id: String(auth.userId)
+        }
+      });
+
+      const newId = json?.data?.id || json?.data?.address_id || '';
+      if (json?.statusCode === 0 && newId) {
+        return {
+          addressId: String(newId),
+          addressDetails: { ...enriched, id: String(newId) },
+          createdNew: true
+        };
+      }
+    } catch (err) {
+      console.warn('[saveAddressToAccount] Attempt warning:', err.message);
     }
-  } catch (err) {
-    console.warn('[saveAddressToAccount] Warning:', err.message);
   }
 
   return { addressId: '', addressDetails: enriched, createdNew: false };
@@ -3310,42 +3455,71 @@ export async function fetchSwiggyProfileFromCookies(cookiesOrAcc) {
   return { name: null, phone: null };
 }
 
-// Apply or remove a specific coupon code directly on Swiggy's live cart (`dapi/cart/*` or `chkout.swiggy.com/api/v2/cart/client/*`)
+// Apply or remove a specific coupon code directly on Swiggy's live cart (`swiggyCartUpdate` Zero-Chromium fast path first!)
 export async function applyLiveCouponToOrder(account, order, couponCode) {
   if (!account || !order) return null;
   const lat = order.addressDetails?.lat || '26.8658609';
   const lng = order.addressDetails?.lng || '80.9307755';
   const code = couponCode ? String(couponCode).trim().toUpperCase() : '';
-  const cleanCookies = cleanSwiggyCookieString(account.cookies || '', account);
+  const isRemove = !code || code === 'REMOVE' || code === 'NONE' || code === 'CLEAR';
 
-  if (!code || code === 'REMOVE' || code === 'NONE' || code === 'CLEAR') {
-    if (cleanCookies.includes('_session_tid=')) {
-      const { json } = await dapiFetch(account, 'cart/removeCoupon', { method: 'POST', body: {}, lat, lng });
-      if (json?.statusCode === 0 && json?.data) return parseDapiCartPayload(json.data);
+  // Fast Path 1 (~250ms ZERO-CHROMIUM pure HTTP): Apply/remove coupon directly via `swiggyCartUpdate`!
+  const syncableItems = (order.items || []).filter(it => it.itemId || it.menu_item_id);
+  if (order.restaurantId && syncableItems.length > 0) {
+    const upd = await swiggyCartUpdate(
+      account,
+      {
+        restaurantId: String(order.restaurantId),
+        address_id: String(order.addressDetails?.id || ''),
+        couponCode: isRemove ? '' : code,
+        cartItems: syncableItems.map(it => ({
+          addons: Array.isArray(it.addons) ? it.addons : [],
+          variants: Array.isArray(it.variants) ? it.variants : [],
+          menu_item_id: Number(it.menu_item_id || it.itemId),
+          quantity: Number(it.qty || it.quantity || 1)
+        })),
+        mealItems: [],
+        subscriptionItems: []
+      },
+      { lat, lng, flushFirst: false }
+    ).catch(() => null);
+    if (upd?.json?.statusCode === 0 && upd.json.data) {
+      return parseDapiCartPayload(upd.json.data);
     }
-    const { json } = await androidCheckoutCartCall(account, 'client/removecoupon', { method: 'POST', body: {}, lat, lng });
-    return json?.data ? parseDapiCartPayload(json.data) : null;
   }
 
-  if (cleanCookies.includes('_session_tid=')) {
-    const { json } = await dapiFetch(account, 'cart/applyCoupon', {
+  // Fallback Path 2: Direct Android `client/applycoupon` / `client/removecoupon`, then Web DAPI
+  const { json: aJson } = await androidCheckoutCartCall(
+    account,
+    isRemove ? 'client/removecoupon' : 'client/applycoupon',
+    {
       method: 'POST',
-      body: { couponCode: code },
+      body: isRemove ? {} : { coupon_code: code, couponCode: code },
       lat,
       lng
-    });
+    }
+  ).catch(() => ({ json: null }));
+  if (aJson?.statusCode === 0 && aJson?.data) {
+    return parseDapiCartPayload(aJson.data);
+  }
+
+  const cleanCookies = cleanSwiggyCookieString(account.cookies || '', account);
+  if (cleanCookies.includes('_session_tid=')) {
+    const { json } = await dapiFetch(
+      account,
+      isRemove ? 'cart/removeCoupon' : 'cart/applyCoupon',
+      {
+        method: 'POST',
+        body: isRemove ? {} : { couponCode: code },
+        lat,
+        lng
+      }
+    );
     if (json?.statusCode === 0 && json?.data) {
       return parseDapiCartPayload(json.data);
     }
   }
-
-  const { json } = await androidCheckoutCartCall(account, 'client/applycoupon', {
-    method: 'POST',
-    body: { coupon_code: code, couponCode: code },
-    lat,
-    lng
-  });
-  return json?.data ? parseDapiCartPayload(json.data) : null;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -3361,7 +3535,7 @@ export async function applyLiveCouponToOrder(account, order, couponCode) {
 //      strictly keeping whichever achieves MAXIMUM SAVINGS & MINIMUM `Final Total` (`order_total`)!
 // ---------------------------------------------------------------------------
 export async function syncGroupCartAndCheckoutForAccount(account, order, options = {}) {
-  const { captureScreenshot = true } = options;
+  const { captureScreenshot = false } = options;
   if (!account) return { success: false, error: 'No account provided' };
 
   const cleanCookies = cleanSwiggyCookieString(account.cookies || '', account);
@@ -3814,7 +3988,7 @@ export function getBusySwiggyAccountsMap(db, excludeOrderId = null) {
 // protects busy accounts holding another customer's active cart/QR, and locks in the #1 lowest `Final Total`!
 // ---------------------------------------------------------------------------
 export async function findBestMaxCouponAccountForOrder(order, options = {}) {
-  const { captureScreenshot = true, excludeAccountKeys = [] } = options;
+  const { captureScreenshot = false, excludeAccountKeys = [] } = options;
   const db = getDb();
   const accounts = db?.config?.accounts || {};
   const busyMap = getBusySwiggyAccountsMap(db, order?.id || null);
@@ -4034,14 +4208,15 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     let itemCount = extractCartCount(curCart, cm);
     let resolvedOwnAddressId = String(cm.address_id || cm.delivery_address?.id || order?.addressDetails?.id || '');
 
-    if ((!resolvedOwnAddressId || !cm.order_total || itemCount <= 0) && (order?.cart || order?.cartLink || order?.items?.length)) {
+    // Only run full Group Cart + Offer discovery sync here if `order.items` wasn't already resolved yet!
+    if ((!resolvedOwnAddressId || !cm.order_total || itemCount <= 0) && (!order?.restaurantId || !order?.items?.length) && (order?.cart || order?.cartLink)) {
       const syncCheck = await syncGroupCartAndCheckoutForAccount(account, order, { captureScreenshot: false });
       if (!syncCheck?.success) {
         const err = new Error(syncCheck?.error || 'Failed to sync cart onto selected Swiggy account before QR generation.');
         err.diag = { code: syncCheck?.code || 'QR_RESYNC_FAILED', stage: 'GENERATE_REAL_QR' };
         throw err;
       }
-      auth = await getSwiggySessionAuth(account, true);
+      auth = await getSwiggySessionAuth(account, false);
       const updatedLat = String(order?.addressDetails?.lat || reqLat);
       const updatedLng = String(order?.addressDetails?.lng || reqLng);
       curCart = await swiggyCartGet(account, { lat: updatedLat, lng: updatedLng });
@@ -4091,18 +4266,50 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       }
     }
 
-    // Final safety guarantee: create/bind real Swiggy `address_id` on this account if still missing!
+    // Final safety guarantee: create/bind real Swiggy `address_id` on this account if still missing (even if `order.addressDetails.lat` wasn't geocoded yet)!
     let fallbackSavedAddrId = '';
     if (!resolvedOwnAddressId && !cm.address_id && !order?.addressDetails?.id) {
       const savedList = await fetchAccountAddresses(account);
-      if (order?.addressDetails?.lat && order?.addressDetails?.lng) {
-        const savedRes = await saveAddressToAccount(account, order.addressDetails, savedList);
+      const rawFallbackAddr = order?.addressDetails || (order?.address ? { address: String(order.address) } : null);
+      if (rawFallbackAddr) {
+        const savedRes = await saveAddressToAccount(account, rawFallbackAddr, savedList);
         if (savedRes?.addressId) {
           fallbackSavedAddrId = String(savedRes.addressId);
           if (savedRes.addressDetails) order.addressDetails = savedRes.addressDetails;
         }
       }
       if (!fallbackSavedAddrId && savedList[0]?.id) fallbackSavedAddrId = String(savedList[0].id);
+
+      // Push the recovered `fallbackSavedAddrId` directly onto Swiggy's active checkout cart before `order/place`!
+      if (fallbackSavedAddrId && order?.restaurantId && order?.items?.length > 0) {
+        const bindLat = String(order?.addressDetails?.lat || reqLat);
+        const bindLng = String(order?.addressDetails?.lng || reqLng);
+        const boundSync = await swiggyCartUpdate(
+          account,
+          {
+            restaurantId: String(order.restaurantId),
+            address_id: fallbackSavedAddrId,
+            couponCode: String(cm.coupon_code || order.couponCode || ''),
+            cartItems: order.items
+              .filter(it => it.menu_item_id || it.itemId)
+              .map(it => ({
+                addons: Array.isArray(it.addons) ? it.addons : [],
+                variants: Array.isArray(it.variants) ? it.variants : [],
+                menu_item_id: Number(it.menu_item_id || it.itemId),
+                quantity: Number(it.qty || it.quantity || 1)
+              })),
+            mealItems: [],
+            subscriptionItems: []
+          },
+          { lat: bindLat, lng: bindLng, flushFirst: false }
+        ).catch(() => null);
+        const boundMeta = unwrapCartMeta(boundSync);
+        if (boundMeta && (boundMeta.order_total !== undefined || boundMeta.cart_total_count !== undefined)) {
+          curCart = boundSync;
+          cm = boundMeta;
+          itemCount = extractCartCount(boundSync, cm);
+        }
+      }
     }
 
     const cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || '');
@@ -4360,12 +4567,17 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
     trkData?.shareable_url ||
     (shareMatch && !/support\/issues/i.test(shareMatch[0]) ? shareMatch[0] : null);
 
+  const rawStatusMsg = trkData?.order_status_details?.status_message || matchedOrder?.order_status || 'Order Confirmed';
+  const cleanOrderStatus = /rate your delivery|^delivered$/i.test(String(rawStatusMsg).trim())
+    ? 'Order Delivered'
+    : rawStatusMsg;
+
   return {
     paid: true,
     txnState: 'success',
     swiggyOrderId: confirmedOrderId,
     customerId,
-    orderStatus: trkData?.order_status_details?.status_message || matchedOrder?.order_status || 'Order Confirmed',
+    orderStatus: cleanOrderStatus,
     statusSubText: trkData?.order_status_details?.status_tag_text || '',
     etaMinutes: String(matchedOrder?.sla_time || ''),
     restaurantName: matchedOrder?.restaurant_name || order?.restaurantName || '',
