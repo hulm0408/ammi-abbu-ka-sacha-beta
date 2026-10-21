@@ -7,6 +7,33 @@ import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from '.
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
+
+// Robust order lookup — handles stale callback IDs, case mismatch, or swiggyOrderId passed instead of bot orderId
+function lookupOrder(db, orderId) {
+  if (!db?.orders) return null;
+  const raw = String(orderId || '').trim();
+  if (!raw) return null;
+  if (db.orders[raw]) return db.orders[raw];
+  const q = raw.toLowerCase();
+  for (const o of Object.values(db.orders)) {
+    if (!o) continue;
+    const bid = String(o.id || '').toLowerCase();
+    if (bid === q) return o;
+    const sid = String(o.swiggyOrderId || '').toLowerCase();
+    if (sid && sid === q) return o;
+    const pid = String(o.pendingSwiggyOrderId || '').toLowerCase();
+    if (pid && pid === q) return o;
+  }
+  return null;
+}
+
+function orderNotFoundDiag(db, orderId) {
+  try {
+    const keys = Object.keys(db.orders || {}).slice(0, 8);
+    return 'Available IDs: ' + (keys.length ? keys.join(', ') : 'none') + ' | asked: ' + String(orderId);
+  } catch { return 'asked: ' + String(orderId); }
+}
+
 // Genuine Swiggy page used as an honest fallback (never a synthesised tracking URL).
 const SWIGGY_ORDERS_PAGE = 'https://www.swiggy.com/orders';
 
@@ -1771,8 +1798,11 @@ export async function executeOrderBillSyncOnAccount({
   formatOrderBodyFn
 }) {
   const db = getDb();
-  const order = db.orders?.[orderId];
-  if (!order) throw new Error(`Order #${orderId} not found.`);
+  let order = lookupOrder(db, orderId);
+  if (!order) {
+    console.warn('[OrderLookup] miss throw', orderNotFoundDiag(db, orderId));
+    throw new Error(`Order #${orderId} not found. ` + orderNotFoundDiag(db, orderId));
+  }
 
   let syncRes = null;
   if (accKey === 'BEST') {
@@ -1870,8 +1900,11 @@ export async function executeRealQrGenerationForOrder({
   customRealQrGenerator = null
 }) {
   const db = getDb();
-  const order = db.orders?.[orderId];
-  if (!order) throw new Error(`Order #${orderId} not found.`);
+  let order = lookupOrder(db, orderId);
+  if (!order) {
+    console.warn('[OrderLookup] miss throw', orderNotFoundDiag(db, orderId));
+    throw new Error(`Order #${orderId} not found. ` + orderNotFoundDiag(db, orderId));
+  }
   if (order.status === 'COMPLETED') {
     const err = new Error('Paid is final — never create another payment QR.');
     err.code = 'PAID_IS_FINAL_NO_NEW_QR';
@@ -2463,8 +2496,11 @@ export function registerForwardedOrderHandlers(bot, {
     const forceUse = ctx.match[3] === 'FORCE';
 
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
 
     // Protect active unpaid orders on busy IDs unless explicitly confirmed with FORCE!
     if (accKey !== 'BEST' && !forceUse) {
@@ -2532,8 +2568,11 @@ export function registerForwardedOrderHandlers(bot, {
     const orderId = ctx.match[1];
     stopOrderPaymentPoller(orderId);
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
     if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
       return ctx.answerCbQuery('Customer bill approval locks account changes.', { show_alert: true });
     }
@@ -2552,8 +2591,11 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
     if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
       return ctx.answerCbQuery('Wait for the customer to approve the bill before generating or sending payment details.', { show_alert: true });
     }
@@ -2593,8 +2635,11 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
 
     const acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
     if (!acc || !acc.isLoggedIn) {
@@ -2687,8 +2732,11 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
     if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
       return ctx.answerCbQuery('Customer bill approval locks offer and bill changes.', { show_alert: true });
     }
@@ -2718,8 +2766,11 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
     if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
       // The summary is automatic now; this button becomes an explicit resend.
       if (!order.billSummarySentAt) {
@@ -2776,8 +2827,11 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
     let acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
     // Fallback: if selected account missing/expired, try all accounts automatically
     if ((!acc || !order.swiggyOrderId) && Object.keys(db.config?.accounts || {}).length > 0) {
@@ -2841,8 +2895,11 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
     await ctx.answerCbQuery('🔍 Scanning all Swiggy IDs for tracking...').catch(()=>{});
     const scanMsg = await ctx.reply('⏳ <i>Scanning ' + Object.keys(db.config?.accounts || {}).length + ' logged-in IDs for tracking link...</i>', { parse_mode: 'HTML' }).catch(()=>null);
     try {

@@ -2677,8 +2677,10 @@ bot.action(/^(?:boss_sel_acc|boss_choose_acc)_(.+)$/, async (ctx) => {
     }
   }
 
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   order.selectedAccount = accKey;
   order.amountAccepted = false;
@@ -2740,8 +2742,9 @@ bot.action(/^boss_change_acc_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   order.selectedAccount = null;
   order.waitingConfirmation = false;
@@ -2757,8 +2760,9 @@ bot.action(/^boss_send_confirm_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   order.status = 'WAITING_CONFIRMATION';
   order.waitingConfirmation = true;
@@ -2787,8 +2791,9 @@ bot.action(/^boss_text_user_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_text_user', orderId, targetUserId: order.userId };
@@ -2810,8 +2815,9 @@ bot.action(/^boss_choose_acc_picker_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   await ctx.answerCbQuery().catch(() => {});
   const accounts = db.config.accounts || {};
@@ -2890,8 +2896,10 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
     }
   }
 
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   const acc = db.config.accounts?.[accKey];
   const accPhone = acc?.phone || acc?.mobile || acc?.name || 'Selected Account';
@@ -3081,8 +3089,9 @@ bot.action(/^boss_auto_max_coupon_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   await ctx.answerCbQuery('Scanning all accounts for MAX Coupon + Lowest Bill... ★').catch(() => {});
   const waitMsg = await ctx.reply(
@@ -3370,8 +3379,9 @@ bot.action(/^boss_back_to_order_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders?.[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   await ctx.answerCbQuery().catch(() => {});
   await updateOrderCards(order);
@@ -3382,8 +3392,9 @@ bot.action(/^boss_send_qr_to_user_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   order.paymentSentToUser = true;
   saveDb(db);
@@ -3461,8 +3472,9 @@ bot.action(/^boss_send_qr_to_user_(.+)$/, async (ctx) => {
 bot.action(/^user_confirm_get_qr_(.+)$/, async (ctx) => {
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
   if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
     return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
   }
@@ -3478,8 +3490,9 @@ bot.action(/^boss_coupon_picker_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   await ctx.answerCbQuery().catch(() => {});
 
@@ -3596,8 +3609,9 @@ bot.action(/^boss_remove_coupon_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   const acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
   const liveRemoved = acc?.cookies ? await applyLiveCouponToOrder(acc, order, 'REMOVE').catch(() => null) : null;
@@ -3635,8 +3649,9 @@ bot.action(/^boss_addr_picker_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   await ctx.answerCbQuery('Loading saved addresses... ⌖').catch(() => {});
   let addrs = order.accountAddresses || [];
@@ -3744,8 +3759,9 @@ bot.action(/^boss_view_review_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   await ctx.answerCbQuery().catch(() => {});
   const reviewCard = formatBossAccountReviewCard(order);
@@ -4907,8 +4923,9 @@ bot.action(/^boss_set_amount_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_set_amount', orderId };
@@ -4929,8 +4946,9 @@ bot.action(/^boss_set_coupon_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_set_coupon', orderId };
@@ -4951,8 +4969,9 @@ bot.action(/^boss_refresh_cart_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   await ctx.answerCbQuery('Re-fetching cart & best coupons with Swiggy... ◷').catch(() => {});
   await ctx.reply(`◷ <i>Re-inspecting Swiggy cart and checking best offers for Order #${orderId}...</i>`, { parse_mode: 'HTML' });
@@ -4963,8 +4982,9 @@ bot.action(/^boss_refresh_cart_(.+)$/, async (ctx) => {
 bot.action(/^user_accept_amount_(.+)$/, async (ctx) => {
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   // Security check: Only the customer who owns this order (or boss) can accept
   if (Number(order.userId) !== Number(ctx.from.id) && !isBoss(ctx.from.id)) {
@@ -5028,8 +5048,9 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   if (!order.finalPayable || Number(order.finalPayable) <= 0) {
     if (order.subtotal && Number(order.subtotal) > 0) {
@@ -5176,8 +5197,9 @@ bot.action(/^boss_get_qr_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   await ctx.answerCbQuery('Fetching genuine payment info... ▣').catch(() => {});
   const payable = order.finalPayable || order.subtotal || 0;
@@ -5239,8 +5261,9 @@ bot.action([/^boss_upload_custom_qr_(.+)$/, /^boss_prompt_send_qr_(.+)$/, /^boss
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   await ctx.answerCbQuery().catch(() => {});
 
@@ -5270,8 +5293,9 @@ bot.action(/^boss_live_pay_screen_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   const accKey = order.selectedAccount || getActiveOrderAccountKey(db);
   const acc = db.config?.accounts?.[accKey];
@@ -5309,8 +5333,9 @@ bot.action(/^boss_forward_live_screen_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   const accKey = order.selectedAccount || getActiveOrderAccountKey(db);
   const acc = db.config?.accounts?.[accKey];
@@ -5372,8 +5397,9 @@ bot.action(/^boss_prompt_cancel_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   if (!canTransitionOrder(order.status, 'CANCELLED')) {
     return ctx.answerCbQuery(`Cannot cancel: order is already ${order.status}`, { show_alert: true }).catch(() => {});
@@ -5406,8 +5432,9 @@ bot.action(/^boss_keep_order_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   await ctx.answerCbQuery('Order active hai ●').catch(() => {});
   const card = formatBossOrderCard(order);
@@ -5423,8 +5450,9 @@ bot.action(/^(?:boss_confirm_cancel_|boss_cancel_order_)(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   if (!canTransitionOrder(order.status, 'CANCELLED')) {
     return ctx.answerCbQuery(`Cannot cancel: order is already ${order.status}`, { show_alert: true }).catch(() => {});
@@ -5474,8 +5502,9 @@ bot.action(/^boss_remind_fee_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   await ctx.answerCbQuery('Reminder sent to parent! •').catch(() => {});
   const payable = order.finalPayable || order.subtotal || 350;
@@ -5499,8 +5528,9 @@ async function handleConfirmOrderPaid(ctx, orderId, _confirmedBy) {
 bot.action(/^user_confirm_order_(.+)$/, async (ctx) => {
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
   if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
     return ctx.answerCbQuery('Unauthorized: Not your order', { show_alert: true }).catch(() => {});
   }
@@ -5510,8 +5540,9 @@ bot.action(/^user_confirm_order_(.+)$/, async (ctx) => {
 bot.action(/^user_resend_qr_(.+)$/, async (ctx) => {
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
   if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
     return ctx.answerCbQuery('Unauthorized: Not your order', { show_alert: true }).catch(() => {});
   }
@@ -6079,8 +6110,9 @@ bot.on('document', async (ctx) => {
 bot.action(/^boss_delivery_otp_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
-  const order = getDb().orders?.[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(getDb(), orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(getDb(), orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(getDb(), orderId), { show_alert: true }).catch(() => {}); }
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_delivery_otp', orderId };
   await ctx.reply(
@@ -6096,8 +6128,9 @@ bot.action(/^boss_tracking_(.+)$/, async (ctx) => {
 
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_tracking', orderId };
@@ -6118,8 +6151,9 @@ bot.action(/^boss_reply_voice_(.+)$/, async (ctx) => {
 
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
 
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'reply_voice', orderId, targetUserId: order.userId };
@@ -6175,8 +6209,9 @@ bot.action(/^boss_action_accept_(.+)$/, async (ctx) => {
 
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   if (!canTransitionOrder(order.status, 'ACCEPTED') || order.status !== 'PENDING') {
     return ctx.answerCbQuery(`Cannot accept: order is currently ${order.status}`, { show_alert: true }).catch(() => {});
@@ -6237,8 +6272,9 @@ bot.action(/^boss_action_done_(.+)$/, async (ctx) => {
 
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   if (!canTransitionOrder(order.status, 'COMPLETED')) {
     return ctx.answerCbQuery(`Cannot complete: order is currently ${order.status}`, { show_alert: true }).catch(() => {});
@@ -6270,8 +6306,9 @@ bot.action(/^boss_qr_pay_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   await ctx.answerCbQuery('Fetching genuine payment details... !').catch(() => {});
 
@@ -6315,8 +6352,9 @@ bot.action([/^boss_prompt_send_link_(.+)$/, /^boss_send_payment_link_(.+)$/], as
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_swiggy_link', orderId };
@@ -6341,8 +6379,9 @@ bot.action(/^boss_action_sorry_(.+)$/, async (ctx) => {
 
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
 
   order.status = 'REJECTED';
   order.rejectedAt = new Date().toISOString();
@@ -8998,8 +9037,9 @@ bot.action('user_back_to_main', async (ctx) => {
 bot.action(/^user_refresh_status_(.+)$/, async (ctx) => {
   const orderId = ctx.match[1];
   const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
+  let order = lookupOrder(db, orderId);
+
+  if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
   await ctx.answerCbQuery('Status Refreshed ↻').catch(() => {});
   const card = formatUserOrderCard(order);
   try {
