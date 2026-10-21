@@ -7,6 +7,33 @@ import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from '.
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
+
+// Robust order lookup — handles stale callback IDs, case mismatch, or swiggyOrderId passed instead of bot orderId
+function lookupOrder(db, orderId) {
+  if (!db?.orders) return null;
+  const raw = String(orderId || '').trim();
+  if (!raw) return null;
+  if (db.orders[raw]) return db.orders[raw];
+  const q = raw.toLowerCase();
+  for (const o of Object.values(db.orders)) {
+    if (!o) continue;
+    const bid = String(o.id || '').toLowerCase();
+    if (bid === q) return o;
+    const sid = String(o.swiggyOrderId || '').toLowerCase();
+    if (sid && sid === q) return o;
+    const pid = String(o.pendingSwiggyOrderId || '').toLowerCase();
+    if (pid && pid === q) return o;
+  }
+  return null;
+}
+
+function orderNotFoundDiag(db, orderId) {
+  try {
+    const keys = Object.keys(db.orders || {}).slice(0, 8);
+    return 'Available IDs: ' + (keys.length ? keys.join(', ') : 'none') + ' | asked: ' + String(orderId);
+  } catch { return 'asked: ' + String(orderId); }
+}
+
 // Genuine Swiggy page used as an honest fallback (never a synthesised tracking URL).
 const SWIGGY_ORDERS_PAGE = 'https://www.swiggy.com/orders';
 
@@ -22,6 +49,7 @@ import {
   findBestMaxCouponAccountForOrder,
   generateRealSwiggyMerchantUpiQr,
   checkRealSwiggyPaymentAndExtractTracking,
+  extractTrackingViaAllAccounts,
   extractSwiggyProvidedTrackingUrl,
   extractSwiggyDeliveryOtp,
   getStoredSwiggyTrackingUrl,
@@ -55,6 +83,8 @@ function isValidAddressInput(input) {
   return false;
 }
 
+function primaryCartFallback(s){ const u=String(s).trim(); try{ new URL(u.startsWith('http')?u:'https://'+u); return u; }catch{ return ''; } }
+
 // Instant 0ms synchronous input classifier so burst multi-order intake pairs FIFO drafts cleanly without overwriting!
 export function classifyRawOrderInputFast(rawText = '', location = null) {
   if (location && location.latitude !== undefined && location.longitude !== undefined) {
@@ -79,7 +109,7 @@ export function classifyRawOrderInputFast(rawText = '', location = null) {
       hasAddress = true;
     } else if (/(swiggy\.com|swig\.gy|onelink\.me)/i.test(u)) {
       // Distinguish Swiggy address share link from cart/group-cart link if whole text has `save my address`
-      if (/\/gc\//i.test(u) || /shared_cart|menu|restaurants/i.test(u)) {
+      if (/\/gc\//i.test(u) || /shared_cart/i.test(u) || (/group[_-]?cart/i.test(u)) || (/\/cart/i.test(u)) || (/restaurant_id=/i.test(u))) {
         hasCart = true;
         if (!primaryCartUrl) primaryCartUrl = u;
       } else if (!/save my address on swiggy/i.test(s)) {
@@ -718,6 +748,55 @@ export async function deleteOrderBotMessages(telegram, chatId, order, { includeQ
   }
 }
 
+// Helper: try to edit the existing payment QR message in-place to show tracking link (per user request: payment message edit hokar usme link ajaye)
+async function tryEditForwardedPaymentMessageWithTracking(telegram, chatId, order) {
+  if (!telegram || !chatId || !order?.activeQrMessageId) return false;
+  const trackingUrl = getStoredSwiggyTrackingUrl(order);
+  const swiggyId = String(order.swiggyOrderId || order.pendingSwiggyOrderId || order.id || '').trim();
+  const restName = String(order.restaurantName || 'Swiggy Order').trim();
+  const senderName = String(order.fwdSenderName || order.userName || 'Customer').trim();
+  const otp = String(order.deliveryOtp || '').trim();
+  const amt = Number(order.finalPayable || order.finalTotal || 0);
+
+  let caption = '';
+  if (trackingUrl) {
+    caption = `\u2705 <b>PAYMENT SUCCESS \u2014 ORDER CONFIRMED (#${escapeHtml(order.id)})</b>\n` +
+      `\uD83D\uDCE6 <b>${escapeHtml(restName)}</b>\n` +
+      (senderName ? `\uD83D\uDC64 <b>For:</b> ${escapeHtml(senderName)}\n` : '') +
+      (amt ? `\uD83D\uDCB0 <b>Paid:</b> \u20B9${amt}\n` : '') +
+      `\uD83C\uDD94 <b>Swiggy ID:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
+      (order.liveOrderStatus ? `\uD83D\uDCCB <b>Status:</b> ${escapeHtml(String(order.liveOrderStatus))}\n` : '') +
+      (order.etaMinutes ? `\u23F1\uFE0F <b>ETA:</b> ${escapeHtml(String(order.etaMinutes))} min\n` : '') +
+      (otp ? `\uD83D\uDD22 <b>Delivery OTP:</b> <code>${escapeHtml(otp)}</code>\n` : '') +
+      `\n\uD83D\uDD17 <b>Tracking Link:</b>\n<a href="${escapeHtml(trackingUrl)}">${escapeHtml(trackingUrl)}</a>\n\n` +
+      `<i>Payment verified on Swiggy \u2014 tap tracking to follow rider live.</i>`;
+  } else {
+    caption = `\u2705 <b>PAYMENT SUCCESS \u2014 ORDER CONFIRMED (#${escapeHtml(order.id)})</b>\n` +
+      `\uD83D\uDCE6 <b>${escapeHtml(restName)}</b>\n` +
+      (amt ? `\uD83D\uDCB0 <b>Paid:</b> \u20B9${amt}\n` : '') +
+      `\uD83C\uDD94 <b>Swiggy ID:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
+      (order.liveOrderStatus ? `\uD83D\uDCCB <b>Status:</b> ${escapeHtml(String(order.liveOrderStatus))}\n` : '') +
+      `\n<i>\u2713 Payment verified on Swiggy. Tracking link will appear here automatically \u2014 or tap \"I have paid\" if delayed.</i>`;
+  }
+
+  const rows = [];
+  if (trackingUrl) rows.push([Markup.button.url('\uD83D\uDD17 Open Swiggy Tracking', trackingUrl)]);
+  if (otp) rows.push([Markup.button.callback(`\uD83D\uDCCB Copy OTP ${otp}`, `copy_otp_${order.id}`)]);
+  // Per user request: after auto-edit, I-have-paid / fwd_check_paid button disappears (gayab) — only tracking/OTP remain
+  const kb = rows.length ? Markup.inlineKeyboard(rows) : { reply_markup: { inline_keyboard: [] } };
+
+  try {
+    await telegram.editMessageCaption(chatId, order.activeQrMessageId, undefined, caption, { parse_mode: 'HTML', ...kb });
+    return true;
+  } catch {}
+  try {
+    await telegram.editMessageText(caption, { chat_id: chatId, message_id: order.activeQrMessageId, parse_mode: 'HTML', ...kb });
+    return true;
+  } catch {}
+  return false;
+}
+
+
 function buildSenderHeaderLine(order) {
   const senderLabel = escapeHtml(order.fwdSenderName || order.userName || 'Customer');
   const uname = order.fwdSenderUsername ? ` (@${escapeHtml(order.fwdSenderUsername)})` : '';
@@ -1011,6 +1090,7 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
 
     const buttons = [
       [Markup.button.url('↗ Open Swiggy tracking', directSwiggyUrl)],
+      [Markup.button.callback('🔗 Extract Delivery Link (All IDs)', `fwd_extract_all_${order.id}`)],
       [Markup.button.callback('⌕ Add delivery OTP', `boss_delivery_otp_${order.id}`)],
       [cancelBtn]
     ];
@@ -1044,6 +1124,7 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
       text,
       keyboard: Markup.inlineKeyboard([
         [Markup.button.callback('↻ Retry Swiggy tracking', `fwd_retry_track_${order.id}`)],
+        [Markup.button.callback('🔗 Extract Delivery Link (All IDs)', `fwd_extract_all_${order.id}`)],
         [Markup.button.callback('⌕ Add delivery OTP', `boss_delivery_otp_${order.id}`)]
       ])
     };
@@ -1425,7 +1506,9 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
 
   if (!updatedCart && !updatedAddress) {
     if (isValidCartInput(trimmed)) {
-      order.cart = trimmed;
+      // Only store the actual cart URL, not the whole message text — prevents address text leaking into cart
+      const urlsForCart = extractSharedUrls(trimmed).filter(u => isValidCartInput(u));
+      order.cart = urlsForCart[0] || primaryCartFallback(trimmed);
       updatedCart = true;
     } else if (!addressShareUrl && isValidAddressInput(trimmed)) {
       // Plain-text address (no address link in the message) — the text IS the source.
@@ -1524,7 +1607,18 @@ export async function finalizePaidOrderCard({
   order.trackingLinkSource = providerTrackingUrl ? 'SWIGGY_API' : (existingTrustedTrackingUrl ? order.trackingLinkSource : '');
   order.paidAt = new Date().toISOString();
 
-  await deleteOrderBotMessages(telegram, chatId, order, { includeQr: true });
+  // NEW: Try to edit the existing payment QR message in-place to inject tracking link/OTP (user request: payment message auto-edit)
+  // If edit succeeds, keep the edited QR visible (do not delete it) and only clear card messages.
+  let qrPaymentEdited = false;
+  try {
+    qrPaymentEdited = await tryEditForwardedPaymentMessageWithTracking(telegram, chatId, order);
+  } catch {}
+
+  if (qrPaymentEdited) {
+    await deleteOrderBotMessages(telegram, chatId, order, { includeQr: false });
+  } else {
+    await deleteOrderBotMessages(telegram, chatId, order, { includeQr: true });
+  }
   upsertOrder(order.id, order);
   const freshDb = getDb();
   const { text, keyboard } = buildForwardedOrderCardView(order, freshDb, formatOrderBodyFn);
@@ -1688,6 +1782,10 @@ export function startOrderDeliveryInfoPoller({
         if (formatOrderBodyFn && telegram?.sendMessage) {
           await postOrReplaceForwardedCard(telegram, chatId, order, getDb(), formatOrderBodyFn, { includeQrDelete: false }).catch(() => {});
         }
+        // Also re-edit the payment QR message in-place when tracking/OTP finally appears (delay auto-edit)
+        if (changed && order.activeQrMessageId) {
+          try { await tryEditForwardedPaymentMessageWithTracking(telegram, chatId, order); } catch {}
+        }
         if (changed) await sendOrderDeliveryInfoNotice(telegram, chatId, order);
       }
       if (/delivered|cancelled|canceled|rejected/i.test(String(order.liveOrderStatus || ''))) return stop();
@@ -1765,8 +1863,11 @@ export async function executeOrderBillSyncOnAccount({
   formatOrderBodyFn
 }) {
   const db = getDb();
-  const order = db.orders?.[orderId];
-  if (!order) throw new Error(`Order #${orderId} not found.`);
+  let order = lookupOrder(db, orderId);
+  if (!order) {
+    console.warn('[OrderLookup] miss throw', orderNotFoundDiag(db, orderId));
+    throw new Error(`Order #${orderId} not found. ` + orderNotFoundDiag(db, orderId));
+  }
 
   let syncRes = null;
   if (accKey === 'BEST') {
@@ -1864,8 +1965,11 @@ export async function executeRealQrGenerationForOrder({
   customRealQrGenerator = null
 }) {
   const db = getDb();
-  const order = db.orders?.[orderId];
-  if (!order) throw new Error(`Order #${orderId} not found.`);
+  let order = lookupOrder(db, orderId);
+  if (!order) {
+    console.warn('[OrderLookup] miss throw', orderNotFoundDiag(db, orderId));
+    throw new Error(`Order #${orderId} not found. ` + orderNotFoundDiag(db, orderId));
+  }
   if (order.status === 'COMPLETED') {
     const err = new Error('Paid is final — never create another payment QR.');
     err.code = 'PAID_IS_FINAL_NO_NEW_QR';
@@ -2146,10 +2250,34 @@ export async function handleBossForwardedOrderInput(
         const allUrlsCheck = extractSharedUrls(rawText);
         const isTrackingOnly = allUrlsCheck.some(u => isOfficialSwiggyTrackingUrl(u) || /r\.swiggy\.com.*\/track\//i.test(u));
         if (isTrackingOnly) {
-          // Find most recent order for this sender that needs tracking
+          // Find most recent order for this sender that needs tracking — attach directly and notify
           const recentOrders = Object.values(db.orders || {}).filter(o => o && (o.fwdSenderKey === sender.senderKey || String(o.userId) === String(sender.senderUserId)) && ['COMPLETED','ACCEPTED','PAYMENT_PENDING','APPROVAL_PENDING'].includes(o.status) && !getStoredSwiggyTrackingUrl(o));
           if (recentOrders.length > 0) {
-            // Don't create new order; tracking will be handled via boss_tracking flow
+            recentOrders.sort((a,b)=> new Date(b.createdAt||0)-new Date(a.createdAt||0));
+            const targetOrder = recentOrders[0];
+            const trackingUrl = allUrlsCheck.find(u => isOfficialSwiggyTrackingUrl(u) || /r\.swiggy\.com.*\/track\//i.test(u)) || allUrlsCheck[0];
+            if (trackingUrl) {
+              targetOrder.trackingLink = trackingUrl;
+              targetOrder.trackingLinkSource = 'BOSS_PROVIDED';
+              targetOrder.shareTrackUrl = '';
+              if (!targetOrder.swiggyOrderId && targetOrder.pendingSwiggyOrderId) targetOrder.swiggyOrderId = targetOrder.pendingSwiggyOrderId;
+              upsertOrder(targetOrder.id, targetOrder);
+              // Send SMS + Telegram to recipient immediately
+              sendParentSmsNotification(targetOrder, trackingUrl).catch(()=>{});
+              sendDirectOrderSms(targetOrder).catch(()=>{});
+              // Also try Telegram direct to recipient if telegram available
+              try {
+                const recipId = targetOrder.fwdSenderUserId || targetOrder.userId;
+                if (recipId && ctx?.telegram) {
+                  const bossNameEsc = String(sender.senderName||'Fer aex').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                  const dispId = String(targetOrder.swiggyOrderId || targetOrder.id).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+                  const trackEsc = trackingUrl.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+                  const otpLine = targetOrder.deliveryOtp ? `\n<b>Delivery OTP:</b> <code>${String(targetOrder.deliveryOtp).replace(/&/g,'&amp;')}</code>` : '';
+                  await ctx.telegram.sendMessage(recipId, `${bossNameEsc} has just placed an order (ID: ${dispId}) for you on Swiggy. Click this link to track: <a href=\"${trackEsc}\">${trackEsc}</a>${otpLine}`, { parse_mode: 'HTML' }).catch(()=>{});
+                }
+                await ctx.reply(`✓ Tracking link attached to ${targetOrder.id} and sent to recipient.`).catch(()=>{});
+              } catch(e){}
+            }
             allocatedOrderId = null;
             return;
           }
@@ -2433,8 +2561,11 @@ export function registerForwardedOrderHandlers(bot, {
     const forceUse = ctx.match[3] === 'FORCE';
 
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
 
     // Protect active unpaid orders on busy IDs unless explicitly confirmed with FORCE!
     if (accKey !== 'BEST' && !forceUse) {
@@ -2502,8 +2633,11 @@ export function registerForwardedOrderHandlers(bot, {
     const orderId = ctx.match[1];
     stopOrderPaymentPoller(orderId);
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
     if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
       return ctx.answerCbQuery('Customer bill approval locks account changes.', { show_alert: true });
     }
@@ -2522,8 +2656,11 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
     if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
       return ctx.answerCbQuery('Wait for the customer to approve the bill before generating or sending payment details.', { show_alert: true });
     }
@@ -2563,8 +2700,11 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
 
     const acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
     if (!acc || !acc.isLoggedIn) {
@@ -2576,11 +2716,38 @@ export function registerForwardedOrderHandlers(bot, {
       const liveCheck = await checker(acc, order);
 
       if (!liveCheck?.paid) {
+        // Delay rescue: try All-IDs scan before declaring pending (user clicked I have paid)
+        if (!getStoredSwiggyTrackingUrl(order)) {
+          try {
+            const rescue = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts }).catch(() => null);
+            if (rescue?.trackingUrl) {
+              await ctx.answerCbQuery('✓ Payment verified via linked Swiggy account — injecting tracking into payment message...');
+              // Build synthetic paid result from rescue
+              const syntheticPaid = {
+                paid: true,
+                swiggyOrderId: rescue.res?.swiggyOrderId || order.pendingSwiggyOrderId || '',
+                orderStatus: rescue.res?.orderStatus || 'Order Confirmed',
+                nativeShareUrl: rescue.trackingUrl,
+                swiggyWebTrackUrl: rescue.trackingUrl,
+                deliveryOtp: rescue.res?.deliveryOtp || order.deliveryOtp || '',
+                deliveryBoy: rescue.res?.deliveryBoy || null,
+                restaurantName: rescue.res?.restaurantName || order.restaurantName || ''
+              };
+              await finalizePaidOrderCard({ telegram: ctx.telegram, chatId: ctx.chat.id, order, livePaidResult: syntheticPaid, formatOrderBodyFn });
+              return;
+            }
+          } catch {}
+        }
+        const dbg = [];
+        if (liveCheck?.txnState) dbg.push('txn=' + liveCheck.txnState);
+        if (liveCheck?.payTxnState) dbg.push('pay=' + liveCheck.payTxnState);
+        if (liveCheck?.gatewayFetchError) dbg.push('gw=' + String(liveCheck.gatewayFetchError).slice(0,35));
+        if (liveCheck?.postStatusLower) dbg.push('post=' + liveCheck.postStatusLower);
         const stateLabel = liveCheck?.txnState === 'pending' || !liveCheck?.txnState
           ? 'Payment is processing'
           : `Payment status: ${liveCheck.txnState}`;
         await ctx.answerCbQuery(
-          `◷ ${stateLabel}... Order will confirm automatically as soon as UPI payment completes!`,
+          ('◷ ' + stateLabel + (dbg.length ? ' (' + dbg.join(' ') + ')' : '') + ' — wait 30s & retry, auto-detect every 5s').slice(0,190),
           { show_alert: true }
         );
         return;
@@ -2652,8 +2819,11 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
     if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
       return ctx.answerCbQuery('Customer bill approval locks offer and bill changes.', { show_alert: true });
     }
@@ -2683,8 +2853,11 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
     if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
       // The summary is automatic now; this button becomes an explicit resend.
       if (!order.billSummarySentAt) {
@@ -2741,9 +2914,29 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
-    const acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
+    let acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
+    // Fallback: if selected account missing/expired, try all accounts automatically
+    if ((!acc || !order.swiggyOrderId) && Object.keys(db.config?.accounts || {}).length > 0) {
+      const allRes = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => db.config.accounts }).catch(() => null);
+      if (allRes?.trackingUrl) {
+        order.trackingLink = allRes.trackingUrl;
+        order.trackingLinkSource = 'SWIGGY_API';
+        order.shareTrackUrl = '';
+        if (allRes.res?.deliveryOtp) order.deliveryOtp = allRes.res.deliveryOtp;
+        if (allRes.res?.orderStatus) order.liveOrderStatus = allRes.res.orderStatus;
+        if (allRes.res?.swiggyOrderId) order.swiggyOrderId = allRes.res.swiggyOrderId;
+        order.selectedAccount = allRes.accKey || order.selectedAccount;
+        upsertOrder(order.id, order);
+        await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn, { includeQrDelete: false }).catch(() => {});
+        await sendOrderDeliveryInfoNotice(ctx.telegram, ctx.chat.id, order);
+        return ctx.answerCbQuery('✓ Tracking extracted via ' + (allRes.acc?.phone || allRes.accKey) + ' (All IDs scan)', { show_alert: true });
+      }
+    }
     if (!acc || !order.swiggyOrderId) {
       return ctx.answerCbQuery('Swiggy tracking is not available for this order yet.', { show_alert: true });
     }
@@ -2782,6 +2975,49 @@ export function registerForwardedOrderHandlers(bot, {
       hasInfo ? '✓ Swiggy tracking details refreshed.' : '… Swiggy has not shared a tracking link or delivery OTP yet.',
       { show_alert: !hasInfo }
     );
+  });
+
+  // Dedicated Extract Delivery Link — scans ALL logged-in IDs, not just selectedAccount
+  bot.action(/^fwd_extract_all_([A-Za-z0-9_]+)$/, async (ctx) => {
+    if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
+    const orderId = ctx.match[1];
+    const db = getDb();
+    let order = lookupOrder(db, orderId);
+    if (!order) {
+      console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+      return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
+    await ctx.answerCbQuery('🔍 Scanning all Swiggy IDs for tracking...').catch(()=>{});
+    const scanMsg = await ctx.reply('⏳ <i>Scanning ' + Object.keys(db.config?.accounts || {}).length + ' logged-in IDs for tracking link...</i>', { parse_mode: 'HTML' }).catch(()=>null);
+    try {
+      const result = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts });
+      if (scanMsg) try { await ctx.telegram.deleteMessage(ctx.chat.id, scanMsg.message_id); } catch {}
+      if (!result?.trackingUrl) {
+        return ctx.reply('❌ <b>No tracking link found on any ID yet.</b>\n<i>Swiggy may not have published it. Try again in 1 min or paste manually via Add tracking.</i>', { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('↗ Add Swiggy tracking', `boss_tracking_${order.id}`)]]) });
+      }
+      order.trackingLink = result.trackingUrl;
+      order.trackingLinkSource = 'SWIGGY_API';
+      order.shareTrackUrl = '';
+      if (result.res?.deliveryOtp) order.deliveryOtp = result.res.deliveryOtp;
+      if (result.res?.orderStatus) order.liveOrderStatus = result.res.orderStatus;
+      if (result.res?.swiggyOrderId) order.swiggyOrderId = result.res.swiggyOrderId;
+      if (result.res?.deliveryBoy?.name) order.deliveryBoyName = result.res.deliveryBoy.name;
+      if (result.res?.deliveryBoy?.mobile) order.deliveryBoyMobile = result.res.deliveryBoy.mobile;
+      if (result.accKey) order.selectedAccount = result.accKey;
+      if (order.status !== 'COMPLETED') {
+        order.status = 'COMPLETED';
+        order.cardStage = 'PAID_CONFIRMED';
+        order.paidAt = new Date().toISOString();
+        order.completedAt = new Date().toISOString();
+      }
+      upsertOrder(order.id, order);
+      await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn, { includeQrDelete: false }).catch(()=>{});
+      await sendOrderDeliveryInfoNotice(ctx.telegram, ctx.chat.id, order, { force: true });
+      await ctx.reply('✅ <b>Tracking extracted!</b>\nFound on <b>' + (result.acc?.phone || result.accKey) + '</b>\n🔗 <a href="' + result.trackingUrl + '">Open Swiggy tracking</a>' + (result.res?.deliveryOtp ? '\n🔢 OTP: <code>' + result.res.deliveryOtp + '</code>' : ''), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard([[Markup.button.url('↗ Open tracking', result.trackingUrl)]]) });
+    } catch (e) {
+      if (scanMsg) try { await ctx.telegram.deleteMessage(ctx.chat.id, scanMsg.message_id); } catch {}
+      await ctx.reply('❌ Extract failed: ' + (e?.message || e), { parse_mode: 'HTML' });
+    }
   });
 }
 

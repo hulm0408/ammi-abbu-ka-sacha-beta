@@ -3202,14 +3202,17 @@ export function isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink = fa
     const host = url.hostname.toLowerCase();
     const isProviderShortHost = host === 'swig.gy' || host === 'swiggy.onelink.me';
     const swiggyHost = isProviderShortHost || host === 'swiggy.com' || host.endsWith('.swiggy.com');
+    const isRswiggyHost = host === 'r.swiggy.com' || host.endsWith('.r.swiggy.com');
     const pathHasTrackingContext = /track|tracking/i.test(url.pathname) ||
       (/share/i.test(url.pathname) && /order|track/i.test(url.pathname));
     const queryHasTrackingContext = /(?:^|[?&])(?:tracking_url|track_url|order_id|orderid)=/i.test(url.search) &&
       /order|track|share/i.test(url.pathname);
     const isExplicitSwiggyTrackingRoute = pathHasTrackingContext || queryHasTrackingContext;
-    const isProviderShortLink = allowProviderShortLink && isProviderShortHost && url.pathname.length > 1;
+    const isProviderShortLink = allowProviderShortLink && ((isProviderShortHost && url.pathname.length > 1) || (isRswiggyHost && url.pathname.length > 1));
+    // r.swiggy.com short links are always considered tracking when Swiggy API provides them (no track keyword required)
+    const isRswiggyTrackingShort = isRswiggyHost && url.pathname.length > 1;
     return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password && !url.port && swiggyHost &&
-      (isExplicitSwiggyTrackingRoute || isProviderShortLink) &&
+      (isExplicitSwiggyTrackingRoute || isProviderShortLink || isRswiggyTrackingShort) &&
       !/support\/issues|\/restaurant(?:s)?(?:\/|$)|\/menu(?:\/|$)|\/gc(?:\/|$)/i.test(url.pathname);
   } catch {
     return false;
@@ -3247,7 +3250,7 @@ export function extractSwiggyProvidedTrackingUrl(...sources) {
       if (typeof value === 'string' && /^https?:\/\//i.test(value.trim())) {
         const url = value.trim();
         const isTrackingContext = /track|tracking|share/i.test(nextContext);
-        const isSwiggyTrackUrl = /r\.swiggy\.com\/.*\/track\//i.test(url) || /swiggy\.com\/.*track/i.test(url);
+        const isSwiggyTrackUrl = /r\.swiggy\.com\//i.test(url) || /swiggy\.com\/.*track/i.test(url) || /swiggy\.onelink\.me/i.test(url);
         if (!seen.has(url) && (isTrackingContext || isSwiggyTrackUrl) && isOfficialSwiggyTrackingUrl(url, { allowProviderShortLink: true })) {
           seen.add(url);
           candidates.push(url);
@@ -6341,6 +6344,55 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
  * 2) As soon as `data === 'success'`, fires `POST https://payments.swiggy.com/api/v3/order/confirm?order_id=<id>` so Swiggy confirms kitchen dispatch!
  * 3) Verifies real paid order via `GET /dapi/order/all` + `GET /dapi/order/details?type=full&version=V2` + `GET /dapi/order/trackV4` + `GET /dapi/order/trackV2/de`.
  */
+
+// Dedicated All-IDs tracking extractor — brute-force across every logged-in Swiggy ID
+export async function extractTrackingViaAllAccounts(order, { getAccountsFn = null } = {}) {
+  if (!order) return null;
+  const targetOrderId = String(order.swiggyOrderId || order.pendingSwiggyOrderId || '').trim();
+  const accountsGetter = typeof getAccountsFn === 'function' ? getAccountsFn : () => ({});
+  let accountsMap = accountsGetter();
+  // Fallback: try to load via store.js getDb if available (dynamic import to avoid cycle)
+  if (!accountsMap || Object.keys(accountsMap).length === 0) {
+    try {
+      const store = await import('./store.js');
+      const db = store.getDb ? store.getDb() : null;
+      accountsMap = db?.config?.accounts || {};
+    } catch {}
+  }
+  const entries = Object.entries(accountsMap).filter(([,a]) => a && (a.isLoggedIn || a.cookies || a.tid));
+  if (entries.length === 0) return null;
+
+  // Try each account in parallel (max concurrency 3) to avoid rate-limit
+  const results = await Promise.allSettled(entries.map(async ([key, acc]) => {
+    try {
+      const res = await checkRealSwiggyPaymentAndExtractTracking(acc, order);
+      if (res?.paid && (res.nativeShareUrl || res.swiggyWebTrackUrl)) {
+        const candidate = res.nativeShareUrl || res.swiggyWebTrackUrl;
+        const verified = candidate ? getStoredSwiggyTrackingUrl({ trackingLink: candidate, trackingLinkSource: 'SWIGGY_API' }) : '';
+        if (verified) return { accKey: key, acc, res, trackingUrl: verified };
+      }
+      // Fallback: scan fetchAccountOrders for matching orderId
+      if (targetOrderId) {
+        const liveOrders = await fetchAccountOrders(acc).catch(() => []);
+        const match = liveOrders.find(o => String(o.orderId) === targetOrderId);
+        if (match?.trackingUrl) {
+          const v2 = getStoredSwiggyTrackingUrl({ trackingLink: match.trackingUrl, trackingLinkSource: 'SWIGGY_API' }) || (isOfficialSwiggyTrackingUrl(match.trackingUrl, {allowProviderShortLink:true}) ? match.trackingUrl : '');
+          if (v2) {
+            return { accKey: key, acc, res: { ...match, nativeShareUrl: match.trackingUrl, swiggyWebTrackUrl: match.trackingUrl, deliveryOtp: match.deliveryOtp || '', orderStatus: match.status || '', paid: true, swiggyOrderId: match.orderId }, trackingUrl: v2 };
+          }
+        }
+      }
+      return null;
+    } catch (e) { return null; }
+  }));
+
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value?.trackingUrl) return r.value;
+  }
+  return null;
+}
+
+
 export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, maybeOrder) {
   const isWrapped = accountOrOpts && typeof accountOrOpts === 'object' && ('account' in accountOrOpts) && !maybeOrder;
   const account = isWrapped ? accountOrOpts.account : accountOrOpts;
@@ -6367,17 +6419,26 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
   const pendingPaasId = String(order?.pendingSwiggyPaasId || '');
 
   // Step 1: Non-destructive live gateway check on the exact QR `paas_id` (`transactionId`)
-  if (pendingPaasId.startsWith('2799') && globalThis.fetch === __bootNetworkFetchRef) {
+  // Only block synthetic sandbox TXNs when actually in sandbox; live TXNs must not be blocked
+  if (pendingPaasId.startsWith('2799') && globalThis.fetch === __bootNetworkFetchRef && isZeroSmsTestSandboxActive()) {
     return { paid: false, txnState: 'pending' };
   }
+  let gatewayFetchError = '';
   if (pendingPaasId) {
     try {
       const txnRes = await fetch(
         `https://payments.swiggy.com/api/v3/vpa-txn-status?paas_id=${encodeURIComponent(pendingPaasId)}&payment_code=UPIIntent`,
         { method: 'GET', headers }
       );
+      if (!txnRes.ok) {
+        gatewayFetchError = `HTTP ${txnRes.status}`;
+      }
       const txnJson = await txnRes.json().catch(() => null);
       gatewayTxnState = String(txnJson?.data || '').toLowerCase();
+      // txnJson?.data may be wrapped as { data: 'success' } or { status: 'success' }
+      if (!gatewayTxnState && txnJson) {
+        gatewayTxnState = String(txnJson.status || txnJson.state || '').toLowerCase();
+      }
 
       // ONLY confirm order on Swiggy AFTER payment genuinely succeeded (`success` / `completed`)!
       if (['success', 'completed', 'paid'].includes(gatewayTxnState) && targetOrderId) {
@@ -6390,7 +6451,11 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
           }
         ).catch(() => {});
       }
-    } catch (e) {}
+    } catch (e) {
+      gatewayFetchError = e?.message || String(e);
+    }
+  } else {
+    gatewayFetchError = 'missing pendingSwiggyPaasId (no transaction ref — order may have been created before fix)';
   }
 
   // Step 2: Re-fetch fresh `/dapi/order/all` to detect either:
@@ -6447,33 +6512,61 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
   if (!matchedOrder) {
     return {
       paid: false,
-      txnState: gatewayTxnState || 'pending'
+      txnState: gatewayTxnState || 'pending',
+      gatewayFetchError,
+      targetOrderId,
+      pendingPaasId,
+      recentOrdersCount: recentOrders.length,
+      baselineId
     };
   }
 
   const payTxnState = String(matchedOrder?.payment_info_v2?.payment_transactions?.[0]?.state || '').toUpperCase();
   const statusStr = String(matchedOrder?.order_status || matchedOrder?.post_status || '').toLowerCase();
+  const postStatusLower = String(matchedOrder?.post_status || '').toLowerCase();
+  const gatewaySuccess = ['success', 'completed', 'paid'].includes(gatewayTxnState);
+  // If gateway explicitly says success/completed/paid, treat as paid even if Swiggy internal state is still pending/STATE_PENDING (propagation delay)
+  const isGatewayConfirmed = gatewaySuccess && targetOrderId && pendingPaasId;
   const isPaidAndValid =
-    (payTxnState === 'STATE_SUCCESS' || ['success', 'completed', 'paid'].includes(gatewayTxnState) || (!payTxnState && !/fail|cancel|pending_payment/i.test(statusStr))) &&
-    !/cancel|fail|aborted|pending/i.test(statusStr === 'pending' ? 'pending' : (/cancel|fail|aborted/i.test(statusStr) ? statusStr : ''));
+    (payTxnState === 'STATE_SUCCESS' || isGatewayConfirmed || (!payTxnState && !/fail|cancel|pending_payment/i.test(statusStr))) &&
+    !/cancel|fail|aborted/i.test(statusStr === 'pending' ? (isGatewayConfirmed ? '' : 'pending') : (/cancel|fail|aborted/i.test(statusStr) ? statusStr : ''));
 
-  // Wait: if `post_status === 'pending'` AND payment is NOT `STATE_SUCCESS`, customer hasn't paid yet!
-  if (
-    payTxnState === 'STATE_PENDING' ||
-    payTxnState === 'STATE_FAILED' ||
-    (String(matchedOrder?.post_status || '').toLowerCase() === 'pending' && payTxnState !== 'STATE_SUCCESS')
-  ) {
-    return {
-      paid: false,
-      txnState: gatewayTxnState || payTxnState.toLowerCase() || 'pending'
-    };
-  }
-
-  if (!isPaidAndValid) {
-    return {
-      paid: false,
-      txnState: gatewayTxnState || statusStr || 'pending'
-    };
+  // Wait: if `post_status === 'pending'` AND payment is NOT `STATE_SUCCESS` nor gateway-confirmed, customer hasn't paid yet!
+  if (!isGatewayConfirmed) {
+    if (
+      payTxnState === 'STATE_PENDING' ||
+      payTxnState === 'STATE_FAILED' ||
+      (postStatusLower === 'pending' && payTxnState !== 'STATE_SUCCESS')
+    ) {
+      return {
+        paid: false,
+        txnState: gatewayTxnState || payTxnState.toLowerCase() || 'pending',
+        gatewayFetchError,
+        payTxnState,
+        postStatusLower,
+        statusStr
+      };
+    }
+    if (!isPaidAndValid) {
+      return {
+        paid: false,
+        txnState: gatewayTxnState || statusStr || 'pending',
+        gatewayFetchError,
+        payTxnState,
+        statusStr
+      };
+    }
+  } else {
+    // Gateway confirmed — don't block on transient Swiggy pending state, but still block on explicit cancel/fail
+    if (/cancel|fail|aborted/i.test(statusStr)) {
+      return {
+        paid: false,
+        txnState: gatewayTxnState || statusStr || 'pending',
+        gatewayFetchError,
+        payTxnState,
+        statusStr
+      };
+    }
   }
 
   const confirmedOrderId = String(matchedOrder.order_id);
