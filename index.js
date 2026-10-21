@@ -44,6 +44,7 @@ import {
   createBulkDocumentBatchCollector,
 } from './account-vault-intake.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
+import { sendParentSmsNotification } from './sms-notify.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
   verifyAndInspectSwiggyLink,
@@ -144,6 +145,37 @@ const bot = installBulletproofTelegramTransport(
     }
   })
 );
+
+// Fix: Telegraf throws synchronously if answerCbQuery is called on a message update.
+// All existing handlers assume .catch() is enough, but assert() throws before Promise.
+// Monkey-patch to silently no-op when there's no callbackQuery (prevents UNEXPECTED_ERROR).
+try {
+  const _origAnswerCbQuery = bot.context?.answerCbQuery || null;
+  if (_origAnswerCbQuery) {
+    const patched = function(...args) {
+      if (!this.callbackQuery) return Promise.resolve(true);
+      return _origAnswerCbQuery.apply(this, args);
+    };
+    bot.context.answerCbQuery = patched;
+    // Also patch prototype for any new contexts
+    if (bot.context && bot.context.constructor && bot.context.constructor.prototype) {
+      bot.context.constructor.prototype.answerCbQuery = patched;
+    }
+  }
+  // Patch editMessageText to ignore benign "Message is not modified" races (Order Hub etc.)
+  const _origEditText = bot.telegram.editMessageText.bind(bot.telegram);
+  bot.telegram.editMessageText = async (chatId, messageId, inlineMessageId, text, extra) => {
+    try {
+      return await _origEditText(chatId, messageId, inlineMessageId, text, extra);
+    } catch (e) {
+      const msg = String(e?.message || e?.description || '');
+      if (msg.toLowerCase().includes('message is not modified') || msg.toLowerCase().includes('message_id_invalid')) {
+        return { ok: true };
+      }
+      throw e;
+    }
+  };
+} catch {}
 
 const userWaitState = {};
 
@@ -256,7 +288,7 @@ async function renderUserCard(ctx, userId, { deleteIncoming = false, notice = ''
         parse_mode: 'HTML',
         ...screen.keyboard
       });
-      if (notice && ctx.answerCbQuery) await ctx.answerCbQuery(notice).catch(() => {});
+      if (notice && ctx.callbackQuery && ctx.answerCbQuery) await ctx.answerCbQuery(notice).catch(() => {});
       return state.messageId;
     } catch {
       // Card was deleted by the customer or is too old to edit -> post a fresh one.
@@ -267,7 +299,7 @@ async function renderUserCard(ctx, userId, { deleteIncoming = false, notice = ''
   const sent = await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard }).catch(() => null);
   if (sent?.message_id) {
     state.messageId = sent.message_id;
-    if (notice && ctx.answerCbQuery) await ctx.answerCbQuery(notice).catch(() => {});
+    if (notice && ctx.callbackQuery && ctx.answerCbQuery) await ctx.answerCbQuery(notice).catch(() => {});
   }
   return sent?.message_id || null;
 }
@@ -341,6 +373,11 @@ export function isValidSwiggyCartUrl(urlStr) {
   const full = path + search;
 
   if (path === '/' || path === '') return false;
+
+  // Never treat tracking links as cart links (r.swiggy.com / ofo/track)
+  if (host === 'r.swiggy.com' || path.includes('/ofo/track') || path.includes('/track/') || full.includes('ofo/track')) {
+    return false;
+  }
 
   // IMPORTANT: Address links should NEVER be classified as cart links!
   // E.g. https://swiggy.onelink.me/JgkQ/52yat6op or ofo/address or /address
@@ -7464,6 +7501,8 @@ bot.on('text', async (ctx) => {
           ...Markup.inlineKeyboard([[Markup.button.url('Open Swiggy tracking', trackingUrl)]])
         }
       );
+      // Also trigger SMS to recipient's phone (mirrors Telegram notification)
+      sendParentSmsNotification(order, trackingUrl).catch(() => {});
       await ctx.reply(`✓ <b>Swiggy tracking link sent to ${escapeHtml(order.userName || 'customer')}.</b>`, { parse_mode: 'HTML' });
     } catch (err) {
       await ctx.reply(`! Failed to send tracking: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
@@ -8253,6 +8292,16 @@ async function handleSendToBoss(ctx) {
     } catch (e) {}
   }
 
+  // Loophole fix: block ₹0 empty orders (e.g. tracking link mis-parsed as cart)
+  const hasItems = Array.isArray(newOrder.items) && newOrder.items.length > 0;
+  const hasValue = Number(newOrder.subtotal || newOrder.itemTotal || newOrder.finalPayable || 0) > 0;
+  if (!hasItems && !hasValue) {
+    return ctx.reply(
+      `❌ <b>Cart khali hai — order nahi ban sakta</b>\n\nKripya sahi Swiggy cart link bhejein (<code>https://swig.gy/gc/...</code>) — tracking link se order nahi banta.`,
+      { parse_mode: 'HTML' }
+    );
+  }
+
   db.orders[orderId] = newOrder;
   saveDb(db);
   clearDraft(userId);
@@ -8514,7 +8563,8 @@ bot.action('user_reset', async (ctx) => {
 // 1. Saved Addresses
 async function handleSavedAddresses(ctx, targetKey = null) {
   if (!isBoss(ctx.from.id)) {
-    return ctx.answerCbQuery ? ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {}) : ctx.reply('Unauthorized: Boss only');
+    if (ctx.callbackQuery) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+    return ctx.reply('Unauthorized: Boss only');
   }
   const db = getDb();
   const activeKey = targetKey || getActiveOrderAccountKey();
@@ -8568,7 +8618,8 @@ bot.action(/^acc_view_addrs_(.+)$/, async (ctx) => {
 // 2. My Swiggy Accounts Menu
 async function handleMyAccounts(ctx) {
   if (!isBoss(ctx.from.id)) {
-    return ctx.answerCbQuery ? ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {}) : ctx.reply('Unauthorized: Boss only');
+    if (ctx.callbackQuery) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+    return ctx.reply('Unauthorized: Boss only');
   }
   const db = getDb();
   const accounts = db.config?.accounts || {};
@@ -8733,7 +8784,8 @@ bot.action(/^acc_perm_logout_(.+)$/, async (ctx) => {
 // 3. Previous Orders
 async function handlePreviousOrders(ctx, targetKey = null) {
   if (!isBoss(ctx.from.id)) {
-    return ctx.answerCbQuery ? ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {}) : ctx.reply('Unauthorized: Boss only');
+    if (ctx.callbackQuery) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+    return ctx.reply('Unauthorized: Boss only');
   }
   const db = getDb();
   const activeKey = targetKey || getActiveOrderAccountKey();
@@ -9010,7 +9062,8 @@ bot.action(['boss_view_orders_done', 'user_orders_done'], async (ctx) => {
 // 4. View Cart
 async function handleViewCart(ctx, targetKey = null) {
   if (!isBoss(ctx.from.id)) {
-    return ctx.answerCbQuery ? ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {}) : ctx.reply('Unauthorized: Boss only');
+    if (ctx.callbackQuery) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+    return ctx.reply('Unauthorized: Boss only');
   }
   const db = getDb();
   const activeKey = targetKey || getActiveOrderAccountKey();
