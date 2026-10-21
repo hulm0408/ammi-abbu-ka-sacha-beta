@@ -103,3 +103,33 @@ export function message(title, sections = [], footer = '') {
   if (footer) parts.push(divider(), sub(footer));
   return parts.join('\n');
 }
+
+// Clean OTP Sent card — matches ORDER PLACER style: bold label + value, no ━━━
+export function otpSentCard(phone, extraLines = []) {
+  const lines = [
+    `<b>📲 OTP Sent</b>`,
+    `📱 <b>Number:</b> <code>${esc(phone)}</code>`,
+    ...extraLines
+  ];
+  return section('🔐 Swiggy Login OTP', lines.join('\n'));
+}
+
+// Clean OTP error / verification failed card — matches ORDER PLACER style
+export function otpErrorCard(phone, swiggyResponse, hint = 'Sahi 6-digit OTP dubara type karein ya neeche Re-enter OTP dabayein:') {
+  return section('❌ OTP Verification Failed', [
+    `📱 <b>Number:</b> <code>${esc(phone)}</code>`,
+    '',
+    `⚠️ <b>Swiggy Response:</b>`,
+    `<blockquote>${esc(swiggyResponse)}</blockquote>`,
+    '',
+    `👉 <i>${esc(hint)}</i>`,
+  ].join('\n'));
+}
+
+// Clean Boss Panel fallback card
+export function bossPanelCard(bodyLines = []) {
+  return section('👑 Boss Panel', [
+    `👋 Boss, use the menu buttons below:`,
+    ...bodyLines,
+  ].filter(Boolean).join('\n'));
+}

@@ -120,6 +120,9 @@ import {
   divider,
   DIVIDER,
   message,
+  otpSentCard,
+  otpErrorCard,
+  bossPanelCard,
 } from './rich-text.js';
 
 dotenv.config();
@@ -650,12 +653,9 @@ function formatOtpSendErrorCard(phone, result) {
   const reason = result.message || result.swiggyStatus || 'Swiggy API dwara OTP deliver nahi ho paya.';
   const details = result.details || (result.status ? `HTTP ${result.status}` : '');
 
-  const text = `❌ <b>Swiggy OTP Send Failed!</b>\n` +
-    `📱 <b>Number:</b> <code>${phone}</code>\n\n` +
-    `⚠️ <b>Asli Wajah (Real Reason):</b>\n` +
-    `<blockquote>${escapeHtml(reason)}</blockquote>\n` +
-    (details ? `🔍 <i>Diagnostic Info: ${escapeHtml(details)}</i>\n\n` : '') +
-    `💡 <i>Agar Swiggy baar-baar block kar raha ho toh <b>Session JSON</b> paste karein (Bina OTP ke turant login ho jata hai).</i>`;
+  const text = otpErrorCard(phone, reason, `Sahi 6-digit OTP dubara type karein ya neeche <b>Re-enter OTP</b> dabayein:`)
+    + (details ? `\n🔍 <i>Diagnostic Info: ${escapeHtml(details)}</i>\n` : '')
+    + `\n💡 <i>Agar Swiggy baar-baar block kar raha ho toh <b>Session JSON</b> paste karein (Bina OTP ke turant login ho jata hai).</i>`;
 
   const keyboard = Markup.inlineKeyboard([
     [
@@ -1607,7 +1607,7 @@ bot.action(/^resend_otp_(\d{10})$/, async (ctx) => {
       name: existingName
     };
     await ctx.reply(
-      `<b>OTP Sent</b>\n<code>${phone}</code>`,
+      otpSentCard(phone, [`👉 <i>6-digit OTP yahan type karein:</i>`]),
       {
         parse_mode: 'HTML',
         reply_markup: {
@@ -3316,7 +3316,7 @@ bot.action([
       };
 
       await ctx.reply(
-        `<b>🗑️ Swiggy Delete OTP Sent</b>\n📱 <code>${phone}</code> (${escapeHtml(accName)})`,
+        otpSentCard(phone, [`🗑️ Delete OTP for account: <b>${escapeHtml(accName)}</b>`]),
         {
           parse_mode: 'HTML',
           reply_markup: {
@@ -6008,7 +6008,7 @@ bot.on('text', async (ctx) => {
     if (result.success) {
       userWaitState[userId] = { action: 'waiting_swiggy_otp_bridge', targetAcc: cleanKey, phone };
       await ctx.reply(
-        `<b>OTP Sent</b>\n<code>${phone}</code>`,
+        otpSentCard(phone, [`👉 <i>6-digit OTP yahan type karein:</i>`]),
         {
           parse_mode: 'HTML',
           reply_markup: {
@@ -6233,7 +6233,7 @@ bot.on('text', async (ctx) => {
       };
 
       await ctx.reply(
-        `<b>OTP Sent</b>\n<code>${phoneToLogin}</code>`,
+        otpSentCard(phoneToLogin, [`👉 <i>6-digit OTP yahan type karein:</i>`]),
         {
           parse_mode: 'HTML',
           reply_markup: {
@@ -6380,7 +6380,7 @@ bot.on('text', async (ctx) => {
       };
 
       await ctx.reply(
-        `<b>OTP Sent</b>\n<code>${cleanPhone}</code>`,
+        otpSentCard(cleanPhone, [`👉 <i>6-digit OTP yahan type karein:</i>`]),
         {
           parse_mode: 'HTML',
           reply_markup: {
@@ -7146,7 +7146,7 @@ bot.on('text', async (ctx) => {
 
   // Fallback for Boss
   if (isBoss(userId)) {
-    await ctx.reply(`👋 Boss, use the menu buttons below:`, getBossReplyKeyboard());
+    await ctx.reply(bossPanelCard(), { parse_mode: 'HTML', ...getBossReplyKeyboard() });
   }
 });
 

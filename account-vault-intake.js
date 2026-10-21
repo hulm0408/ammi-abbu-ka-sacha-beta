@@ -15,6 +15,7 @@ import {
   decodeJwtPayload
 } from './swiggy-bridge.js';
 import { extractSessionFilesFromZipBuffer } from './vault-sync.js';
+import { section, sub, table } from './rich-text.js';
 
 /**
  * Strict guard against false OTP / Phone Login triggers:
@@ -298,16 +299,22 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
     ? `\n\n🧹 <b>Skipped Dead/Logged-Out (${expiredList.length}):</b> ${expiredList.slice(0, 6).map(e => `<code>${e.phone || e.fileName}</code>`).join(', ')}${expiredList.length > 6 ? '...' : ''}`
     : '';
 
+  const summaryTable = [
+    ['📂 Files Processed', String(filesCount)],
+    ['🆕 Fresh 0-Order IDs', String(zeroOrderCount)],
+    ['🟢 Other Active IDs', String(usedAccountCount)],
+    ['☁️ Total Active Ready', `${totalVaultActiveCount} (${totalVaultZeroOrderCount} Zero-Order)`],
+  ];
+
   return (
-    `✅ <b>${savedAccounts.length} Swiggy Account(s) Permanently Saved to Vault!</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `📂 <b>Files Processed:</b> ${filesCount}\n` +
-    `🆕 <b>Fresh 0-Order IDs (Top Priority):</b> <b>${zeroOrderCount}</b>\n` +
-    `🟢 <b>Other Active IDs:</b> <b>${usedAccountCount}</b>\n` +
-    `☁️ <b>Total Active Accounts Ready for Orders:</b> <b>${totalVaultActiveCount}</b> (${totalVaultZeroOrderCount} Zero-Order)\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `${previewLines}${moreNote}${skippedNote}\n\n` +
-    `🚀 <i>Ab jab bhi Cart + Address aayega, bot bina OTP maange apne aap Best 0-Order + Max Offer account select karke bill nikal dega!</i>`
+    section(`✅ ${savedAccounts.length} Swiggy Account(s) Permanently Saved to Vault!`, [
+      table(summaryTable),
+      '',
+      previewLines,
+      moreNote,
+      skippedNote,
+    ].filter(Boolean).join('\n')) +
+    `\n\n${sub('🚀 Ab jab bhi Cart + Address aayega, bot bina OTP maange apne aap Best 0-Order + Max Offer account select karke bill nikal dega!')}`
   );
 }
 

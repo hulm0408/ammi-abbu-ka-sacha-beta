@@ -3454,7 +3454,7 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
       lines.push(`GST & Other Charges: ₹${gst}`);
     }
 
-    lines.push(`━━━━━━━━━━━━━━`);
+    lines.push('');
     if (Number(order.totalSavings || 0) > 0) {
       lines.push(`Total Savings: ₹${order.totalSavings}`);
     }
