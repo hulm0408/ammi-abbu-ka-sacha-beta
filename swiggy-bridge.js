@@ -54,6 +54,37 @@ let prewarmedPage = null;
 let isPrewarming = false;
 let prewarmedAt = 0;
 
+const SWIGGY_WAF_COOKIE_WAIT_MS = 8000;
+const SWIGGY_WAF_COOKIE_POLL_MS = 250;
+const AUTH_PAGE_EVALUATE_TIMEOUT_MS = 9000;
+
+async function waitForSwiggyWafCookie(page, timeoutMs = SWIGGY_WAF_COOKIE_WAIT_MS) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  while (Date.now() < deadline) {
+    const cookies = await page.cookies().catch(() => []);
+    const wafCookie = cookies.find(cookie => cookie.name === 'aws-waf-token' && String(cookie.value || '').length > 50);
+    if (wafCookie) return wafCookie.value;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, Math.min(SWIGGY_WAF_COOKIE_POLL_MS, remainingMs)));
+    }
+  }
+  return '';
+}
+
+async function waitForSwiggyLoginCookies(page, timeoutMs = 800) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  let cookies = [];
+  do {
+    cookies = await page.cookies().catch(() => []);
+    if (checkLoggedInFromCookies(cookies)) return cookies;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await new Promise(resolve => setTimeout(resolve, Math.min(100, remainingMs)));
+  } while (Date.now() < deadline);
+  return cookies;
+}
+
 export function stripStaleWafCookie(cookieStr = '') {
   if (!cookieStr || typeof cookieStr !== 'string') return '';
   return cookieStr
@@ -665,26 +696,14 @@ export async function prewarmBrowser() {
     }
 
     const { browser, page } = await launchStealthSwiggyBrowser();
-    await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
 
-    let wafFound = false;
-    for (let i = 0; i < 25; i++) {
-      const cookies = await page.cookies();
-      const waf = cookies.find(c => c.name === 'aws-waf-token');
-      if (waf && waf.value.length > 50) {
-        wafFound = true;
-        break;
-      }
-      await new Promise(r => setTimeout(r, 800));
-    }
-
-    if (!wafFound) {
-      console.warn('! [SwiggyBridge] Prewarm: AWS WAF token not acquired within 20s. Discarding session.');
+    const wafToken = await waitForSwiggyWafCookie(page, SWIGGY_WAF_COOKIE_WAIT_MS);
+    if (!wafToken) {
+      console.warn('! [SwiggyBridge] Prewarm: Swiggy did not issue its WAF cookie within 8s; stopping prewarm without bypassing the check.');
       await browser.close().catch(() => {});
       return;
     }
-
-    await new Promise(r => setTimeout(r, 1500));
 
     prewarmedBrowser = browser;
     prewarmedPage = page;
@@ -702,30 +721,22 @@ export async function prewarmBrowser() {
   }
 }
 
-async function safeEvaluate(page, fn, ...args) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const evalPromise = page.evaluate(fn, ...args);
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('CDP evaluate timeout after 12s')), 12000)
-      );
-      return await Promise.race([evalPromise, timeoutPromise]);
-    } catch (err) {
-      if (
-        err.message.includes('Execution context was destroyed') ||
-        err.message.includes('Cannot find context') ||
-        err.message.includes('target closed') ||
-        err.message.includes('timed out') ||
-        err.message.includes('timeout')
-      ) {
-        console.log(`[SwiggyBridge] Context navigating/reloaded or slow (attempt ${attempt + 1}/3)...`);
-        await new Promise(r => setTimeout(r, 1500));
-      } else {
-        throw err;
-      }
-    }
+export async function safeEvaluateAuthOnce(page, fn, ...args) {
+  let timeoutId;
+  try {
+    // Auth POSTs must execute once only: retrying after a CDP timeout can send a duplicate OTP.
+    return await Promise.race([
+      page.evaluate(fn, ...args),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error(`Auth browser request timed out after ${AUTH_PAGE_EVALUATE_TIMEOUT_MS}ms; no automatic retry was attempted.`)),
+          AUTH_PAGE_EVALUATE_TIMEOUT_MS
+        );
+      })
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
-  throw new Error('Browser evaluate timed out. Please retry.');
 }
 
 export function parseSwiggyOtpError(otpResult) {
@@ -875,15 +886,11 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       const launched = await launchStealthSwiggyBrowser();
       browser = launched.browser;
       page = launched.page;
-      await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-
-      for (let i = 0; i < 25; i++) {
-        const cookies = await page.cookies();
-        const waf = cookies.find(c => c.name === 'aws-waf-token');
-        if (waf && waf.value.length > 50) break;
-        await new Promise(r => setTimeout(r, 600));
+      await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      const wafToken = await waitForSwiggyWafCookie(page, SWIGGY_WAF_COOKIE_WAIT_MS);
+      if (!wafToken) {
+        console.warn('[SwiggyBridge] No WAF cookie was issued in the normal browser session; the OTP endpoint will be tried once, and any challenge will be honored.');
       }
-      await new Promise(r => setTimeout(r, 1500));
     }
   }
 
@@ -903,7 +910,7 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
     if (isReused && targetAccName) {
       otpResult = { status: 200, data: { statusCode: 1, statusMessage: 'not registered' } };
     } else {
-      otpResult = await safeEvaluate(page, async (mobileNumber, waf) => {
+      otpResult = await safeEvaluateAuthOnce(page, async (mobileNumber, waf) => {
         try {
           const headers = {
             'Content-Type': 'application/json',
@@ -972,7 +979,7 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       const signupEmail = generateUniqueSwiggyEmail(cleanPhone, signupName);
       console.log(`[SwiggyBridge] Number ${cleanPhone} unregistered/fresh on Swiggy. Triggering signup OTP as "${signupName}" (${signupEmail})...`);
 
-      const signupInitResult = await safeEvaluate(page, async (mobileNumber, name, email, waf) => {
+      const signupInitResult = await safeEvaluateAuthOnce(page, async (mobileNumber, name, email, waf) => {
         try {
           const headers = {
             'Content-Type': 'application/json',
@@ -1403,7 +1410,7 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
 
     if (!session.isNewUser) {
       try {
-        verifyResult = await safeEvaluate(page, async (mobileNumber, otpCode, waf) => {
+        verifyResult = await safeEvaluateAuthOnce(page, async (mobileNumber, otpCode, waf) => {
           try {
             const headers = {
               'Content-Type': 'application/json',
@@ -1427,6 +1434,7 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
         }, phone, cleanOtp, wafToken);
       } catch (evalErr) {
         console.log('[SwiggyBridge] Evaluation error during verify:', evalErr.message);
+        verifyResult = { status: 500, error: evalErr.message };
       }
 
       console.log(`[SwiggyBridge] Verify raw result for ${phone}:`, JSON.stringify(verifyResult));
@@ -1483,7 +1491,7 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
 
       let signupResult = null;
       try {
-        signupResult = await safeEvaluate(page, async (mobileNumber, otpCode, name, email, waf) => {
+        signupResult = await safeEvaluateAuthOnce(page, async (mobileNumber, otpCode, name, email, waf) => {
           try {
             const headers = {
               'Content-Type': 'application/json',
@@ -1512,6 +1520,7 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
         }, phone, cleanOtp, signupName, signupEmail, wafToken);
       } catch (signupErr) {
         console.log('[SwiggyBridge] Signup evaluation error:', signupErr.message);
+        signupResult = { status: 500, error: signupErr.message };
       }
 
       console.log('[SwiggyBridge] Signup raw result:', JSON.stringify(signupResult));
@@ -1521,7 +1530,7 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
         statusMsg = 'done successfully';
         isSuccess = true;
       } else {
-        const errMessage = signupResult?.data?.statusMessage || 'Invalid or expired Signup OTP';
+        const errMessage = signupResult?.data?.statusMessage || signupResult?.error || 'Invalid or expired Signup OTP';
         const diagnostic = signupResult ? parseSwiggyOtpError(signupResult) : null;
         if (diagnostic && ['SWIGGY_SECURITY_CHALLENGE', 'SWIGGY_RATE_LIMIT'].includes(diagnostic.code)) {
           if (session.safetyTimer) clearTimeout(session.safetyTimer);
@@ -1543,8 +1552,7 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
       }
     }
 
-    await new Promise(r => setTimeout(r, 700));
-    const cookies = await page.cookies();
+    const cookies = await waitForSwiggyLoginCookies(page, 800);
     const isReallyLoggedIn = checkLoggedInFromCookies(cookies);
 
     if (!isSuccess && !isReallyLoggedIn) {
@@ -1682,7 +1690,7 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
     const wafCookie = pageCookies.find(c => c.name === 'aws-waf-token');
     const wafToken = wafCookie?.value || '';
 
-    const signupResult = await safeEvaluate(page, async (mobileNumber, otpCode, name, email, waf) => {
+    const signupResult = await safeEvaluateAuthOnce(page, async (mobileNumber, otpCode, name, email, waf) => {
       try {
         const headers = {
           'Content-Type': 'application/json',
@@ -1698,7 +1706,8 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
             name,
             email
           }),
-          credentials: 'include'
+          credentials: 'include',
+          signal: AbortSignal.timeout(8000)
         });
         const rawText = await res.text().catch(() => '');
         let data = {};
@@ -1709,9 +1718,7 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
       }
     }, phone, otp, cleanName, signupEmail, wafToken);
 
-    await new Promise(r => setTimeout(r, 1500));
-
-    const cookies = await page.cookies();
+    const cookies = await waitForSwiggyLoginCookies(page, 800);
     const isReallyLoggedIn = checkLoggedInFromCookies(cookies);
 
     if (

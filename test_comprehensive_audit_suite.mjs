@@ -50,7 +50,7 @@ import {
 } from './forwarded-order-flow.js';
 import { table } from './rich-text.js';
 import { extractStandaloneMobileNumber, prepareNewSwiggyAccountIdentity } from './account-vault-intake.js';
-import { parseSwiggyOtpError, sanitizeSwiggyName } from './swiggy-bridge.js';
+import { parseSwiggyOtpError, sanitizeSwiggyName, safeEvaluateAuthOnce } from './swiggy-bridge.js';
 
 console.log('================================================================');
 console.log('🛡️ COMPREHENSIVE 20-SCENARIO AUDIT & VERIFICATION TEST SUITE');
@@ -91,6 +91,9 @@ try {
   assert(securityChallenge.code === 'SWIGGY_SECURITY_CHALLENGE' && securityChallenge.retryable === false && /will not retry or bypass/i.test(securityChallenge.message), 'Swiggy challenge is diagnosed without retry/bypass guidance');
   const otpRateLimit = parseSwiggyOtpError({ status: 429 });
   assert(otpRateLimit.code === 'SWIGGY_RATE_LIMIT' && otpRateLimit.retryable === false, 'Swiggy rate limit is distinguished from OTP/auth failures');
+  let authEvalCalls = 0;
+  await safeEvaluateAuthOnce({ evaluate: async () => { authEvalCalls++; throw new Error('Execution context was destroyed'); } }, async () => {}).catch(() => null);
+  assert(authEvalCalls === 1, 'A browser evaluation failure cannot automatically resend an OTP request');
   const verifiedCouponCart = parseDapiCartPayload({
     cartMeta: {
       cartId: 'cart-coupon-check',
