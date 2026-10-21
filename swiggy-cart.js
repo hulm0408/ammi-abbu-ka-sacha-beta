@@ -3130,7 +3130,7 @@ export function isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink = fa
       /order|track|share/i.test(url.pathname);
     const isExplicitSwiggyTrackingRoute = pathHasTrackingContext || queryHasTrackingContext;
     const isProviderShortLink = allowProviderShortLink && isProviderShortHost && url.pathname.length > 1;
-    return url.protocol === 'https:' && !url.username && !url.password && !url.port && swiggyHost &&
+    return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password && !url.port && swiggyHost &&
       (isExplicitSwiggyTrackingRoute || isProviderShortLink) &&
       !/support\/issues|\/restaurant(?:s)?(?:\/|$)|\/menu(?:\/|$)|\/gc(?:\/|$)/i.test(url.pathname);
   } catch {
@@ -3166,13 +3166,16 @@ export function extractSwiggyProvidedTrackingUrl(...sources) {
     const localContext = `${context} ${labelContext}`.toLowerCase();
     for (const [key, value] of Object.entries(node)) {
       const nextContext = `${localContext} ${key}`.toLowerCase();
-      if (typeof value === 'string' && /^https:\/\//i.test(value.trim()) && /track|tracking|share/i.test(nextContext)) {
+      if (typeof value === 'string' && /^https?:\/\//i.test(value.trim())) {
         const url = value.trim();
-        if (!seen.has(url) && isOfficialSwiggyTrackingUrl(url, { allowProviderShortLink: true })) {
+        const isTrackingContext = /track|tracking|share/i.test(nextContext);
+        const isSwiggyTrackUrl = /r\.swiggy\.com\/.*\/track\//i.test(url) || /swiggy\.com\/.*track/i.test(url);
+        if (!seen.has(url) && (isTrackingContext || isSwiggyTrackUrl) && isOfficialSwiggyTrackingUrl(url, { allowProviderShortLink: true })) {
           seen.add(url);
           candidates.push(url);
         }
-      } else if (value && typeof value === 'object') {
+      }
+      if (value && typeof value === 'object') {
         walk(value, nextContext, depth + 1);
       }
     }

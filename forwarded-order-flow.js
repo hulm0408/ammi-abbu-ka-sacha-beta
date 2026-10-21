@@ -1543,25 +1543,30 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
     : {};
   if (!force && notices[recipientId] === noticeKey) return false;
 
-  const lines = [
-    order.status === 'COMPLETED'
-      ? `✓ <b>Payment received — Swiggy order confirmed</b>`
-      : `✓ <b>Swiggy order update</b>`,
-    `Order reference: <code>#${escapeHtml(String(order.id))}</code>`
-  ];
-  if (order.swiggyOrderId) lines.push(`Swiggy order no.: <code>${escapeHtml(String(order.swiggyOrderId))}</code>`);
-  if (order.liveOrderStatus) lines.push(`Status: ${escapeHtml(String(order.liveOrderStatus))}`);
-  // Only a link Swiggy itself returned is presented as tracking. The order number
-  // or a bot-side /track/<orderId> URL is never passed off as a tracking link.
-  if (trackingUrl) {
-    lines.push(`↗ <b>Live tracking (Swiggy link):</b> <a href="${escapeHtml(trackingUrl)}">Open Swiggy tracking</a>`);
+  // User-requested format: "Fer aex has just placed an order (ID: 251144921143559) for you on Swiggy. Click this link to track: http://r.swiggy.com/..."
+  const bossName = String(order.bossName || order.placedByName || order.confirmedByName || 'Fer aex').trim() || 'Fer aex';
+  const displayOrderId = String(order.swiggyOrderId || order.pendingSwiggyOrderId || order.id || '').trim();
+  const trackDisplay = trackingUrl ? escapeHtml(trackingUrl) : '';
+  const trackLinkHtml = trackingUrl ? `<a href="${escapeHtml(trackingUrl)}">${trackDisplay}</a>` : '';
+  const lines = [];
+  if (order.status === 'COMPLETED' && trackingUrl) {
+    lines.push(`${escapeHtml(bossName)} has just placed an order (ID: ${escapeHtml(displayOrderId)}) for you on Swiggy. Click this link to track: ${trackLinkHtml}`);
+    lines.push(`✓ <b>Payment received — Swiggy order confirmed</b>`);
+  } else if (trackingUrl) {
+    lines.push(`${escapeHtml(bossName)} has just placed an order (ID: ${escapeHtml(displayOrderId)}) for you on Swiggy. Click this link to track: ${trackLinkHtml}`);
+    lines.push(`✓ <b>Payment received — Swiggy order confirmed</b>`);
+    if (order.liveOrderStatus) lines.push(`Status: ${escapeHtml(String(order.liveOrderStatus))}`);
   } else {
+    lines.push(`✓ <b>Swiggy order update</b>`);
+    lines.push(`Order reference: <code>#${escapeHtml(String(order.id))}</code>`);
+    if (order.swiggyOrderId) lines.push(`Swiggy order no.: <code>${escapeHtml(String(order.swiggyOrderId))}</code>`);
+    if (order.liveOrderStatus) lines.push(`Status: ${escapeHtml(String(order.liveOrderStatus))}`);
     lines.push(`↗ <b>Live tracking:</b> <a href="${SWIGGY_ORDERS_PAGE}">Swiggy app → Orders</a>`);
     lines.push('… Swiggy has not shared a tracking link yet. I will send the exact link here as soon as it is published.');
   }
   if (deliveryOtp) {
     lines.push(`⌕ <b>Delivery OTP:</b> <code>${escapeHtml(deliveryOtp)}</code>`);
-  } else {
+  } else if (!trackingUrl) {
     lines.push('Delivery OTP is not available yet. If Swiggy provides one, I will send it here.');
   }
 

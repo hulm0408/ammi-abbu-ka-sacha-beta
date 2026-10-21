@@ -7440,18 +7440,24 @@ bot.on('text', async (ctx) => {
     order.trackingLink = candidateLink;
     order.trackingLinkSource = 'BOSS_PROVIDED';
     order.shareTrackUrl = '';
+    const bossDisplayName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ').trim() || 'Fer aex';
+    order.bossName = bossDisplayName;
+    order.placedByName = bossDisplayName;
+    if (!order.swiggyOrderId && order.pendingSwiggyOrderId) order.swiggyOrderId = order.pendingSwiggyOrderId;
     saveDb(db);
     await updateOrderCards(order);
 
     const trackingUrl = getStoredSwiggyTrackingUrl(order);
+    const displayOrderId = String(order.swiggyOrderId || order.id || '').trim();
+    const bossNameEsc = escapeHtml(bossDisplayName);
+    const trackEsc = escapeHtml(trackingUrl);
     const otpLine = order.deliveryOtp
-      ? `\n⌕ <b>Delivery OTP:</b> <code>${escapeHtml(String(order.deliveryOtp))}</code>`
-      : '\nDelivery OTP is not available yet. If Swiggy provides one, it will be sent separately.';
+      ? `\n<b>Delivery OTP:</b> <code>${escapeHtml(String(order.deliveryOtp))}</code>`
+      : '';
     try {
       await bot.telegram.sendMessage(
         order.fwdSenderUserId || order.userId,
-        `✓ <b>Swiggy order update for ${escapeHtml(order.userName || 'Customer')}</b>\n\n` +
-        `↗ <b>Tracking link provided by Swiggy:</b> <a href="${escapeHtml(trackingUrl)}">Open tracking</a>` +
+        `${bossNameEsc} has just placed an order (ID: ${escapeHtml(displayOrderId)}) for you on Swiggy. Click this link to track: <a href="${trackEsc}">${trackEsc}</a>` +
         `${otpLine}`,
         {
           parse_mode: 'HTML',
