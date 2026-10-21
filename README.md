@@ -34,3 +34,18 @@ npm run test:guards  # URL-first address intake, receipt card, /start smoke + st
 
 `test:guards` fails if any bot source references an identifier that is never declared (the class of bug behind
 `setUserMiniAppButton is not defined`).
+
+## ⭐ Customer orders get the same auto-offer pipeline as forwarded ones
+
+When a customer taps **Send to Beta** (or `Refresh status`), the bot now repeats the whole Boss-side pipeline
+automatically, in the background:
+
+1. resolve the live cart + delivery address,
+2. scan every logged-in Swiggy account (`0-Order` first) for the best combination of coupon, free cash and
+   free delivery,
+3. lock that account + bill on the order (`cardStage: BILL_READY`, `autoOptimized: true`).
+
+The order still stays **PENDING** for Boss approval — nothing is charged or placed automatically. The customer's
+card switches from *“Best offers check ho rahe hain”* to a verified bill with *“Waiting for Beta approval”*.
+If no free account is available the order simply stays pending and the reason is shown on the Boss card
+(`Auto offers: …`), so Boss can retry with **★ Auto Max Coupon**.

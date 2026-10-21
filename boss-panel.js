@@ -148,11 +148,16 @@ export function buildBossOrderCard(order, db = getDb()) {
   ].join('\n'));
   text += billSection(order);
   text += `${paymentNote}\n`;
+  const offerLine = order.autoOptimizeError
+    ? `\n${field('Auto offers', `<i>${esc(order.autoOptimizeError)}</i>`)}`
+    : (order.autoOptimized
+        ? `\n${field('Auto offers', `✓ Best account + max coupon locked${order.orderAccount ? ` (${esc(String(order.orderAccount))})` : ''}`)}`
+        : '');
   text += section('⌖ Cart & delivery', [
     field('Cart', order.cart ? `<a href="${esc(order.cart)}">Open cart link</a>` : '<i>Not added</i>'),
     field('Deliver to', esc(addrPreview(order))),
     field('Time', new Date(order.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })),
-  ].join('\n'));
+  ].join('\n') + offerLine);
   if (order.status === 'COMPLETED') {
     const trackingUrl = getStoredSwiggyTrackingUrl(order);
     text += section('↗ Swiggy tracking', trackingUrl

@@ -493,7 +493,7 @@ export function formatUserOrderCardText(order, isBossView = false) {
 }
 
 // Format User (Customer) Order Screen matching State Machine
-function formatUserOrderCard(order) {
+export function formatUserOrderCard(order) {
   const db = getDb();
   const slotsLeft = db.config.slotsLeft;
   const totalSlots = db.config.totalSlots;
@@ -553,6 +553,20 @@ function formatUserOrderCard(order) {
     } else if (order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.swiggyPaymentUrl) {
       buttons.push([Markup.button.callback('↻ Resend Swiggy payment details', `user_resend_approved_qr_${order.id}`)]);
     }
+  } else if (Number(order.finalPayable || 0) > 0 && (order.selectedAccount || order.autoOptimized)) {
+    // Auto max-offer finished: show the customer the verified bill while Boss approves.
+    text += `${heading(`✓ Verified bill ready (#${order.id})`)}\n\n` +
+      formatUserOrderCardText(order, false) + '\n\n' +
+      section('Status', `${heading('Waiting for Beta approval')}\n${sub('Best account, max coupon, free cash & free delivery lag chuki hain. Approve hote hi payment QR yahan aayega.')}`) +
+      `\n${field('Support', '@Its_life_001')}`;
+  } else if (order.cardStage === 'AUTO_SELECTING') {
+    text += `${heading(`◷ Best offers check ho rahe hain (#${order.id})`)}\n\n` +
+      section('Order details', [
+        field('Restaurant', esc(order.restaurantName || 'Swiggy Food Order')),
+        field('Status', '<b>Scanning best Swiggy account</b>')
+      ].join('\n')) +
+      `\n${sub('Aapke Swiggy accounts par max coupon, free cash aur free delivery apply ki ja rahi hai.')}\n` +
+      `${sub('Final bill yahan update ho jayega.')}`;
   } else {
     const rest = order.restaurantName || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : 'Swiggy Food Order');
     const ad = order.addressDetails || parseAddressDetails(order.address);
@@ -1160,6 +1174,114 @@ async function triggerBackgroundCartFetch(orderId) {
 
   saveDb(db);
   await updateOrderCards(order);
+}
+
+// ---------------------------------------------------------------------------
+// AUTO MAX-OFFER FOR CUSTOMER SUBMISSIONS
+// ---------------------------------------------------------------------------
+// A forwarded message runs the full pipeline (best 0-Order account -> max coupon
+// -> live bill) automatically. A customer tapping "Send to Beta" used to stop at a
+// plain PENDING order, so Ammi had to wait for Boss to press "Auto Max Coupon".
+// This helper gives customer orders the exact same treatment, in the background.
+const autoOptimizeInFlight = new Set();
+
+export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_TO_BETA' } = {}) {
+  const key = String(orderId);
+  if (autoOptimizeInFlight.has(key)) return { skipped: true, reason: 'in-flight' };
+  autoOptimizeInFlight.add(key);
+
+  try {
+    let db = getDb();
+    let order = db.orders?.[key];
+    if (!order) return { skipped: true, reason: 'missing' };
+    if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status)) return { skipped: true, reason: 'closed' };
+    if (order.isForwardedOrder) {
+      // Forwarded orders have their own pipeline (AUTO_SELECTING card flow).
+      return { skipped: true, reason: 'forwarded' };
+    }
+
+    // No cart -> nothing to scan.
+    if (!order.cart) {
+      order.autoOptimizeError = 'Cart link missing — no account scan possible.';
+      saveDb(db);
+      await updateOrderCards(order).catch(() => {});
+      return { skipped: true, reason: 'no-cart' };
+    }
+
+    // Background cart fetch may already have picked the best account + live bill.
+    const alreadyPicked = Boolean(order.selectedAccount) && Number(order.finalPayable || 0) > 0;
+    if (alreadyPicked) {
+      order.cardStage = 'BILL_READY';
+      order.autoOptimized = true;
+      order.autoOptimizedAt = order.autoOptimizedAt || new Date().toISOString();
+      delete order.autoOptimizeError;
+      saveDb(db);
+      await updateOrderCards(order).catch(() => {});
+      return { success: true, reused: true };
+    }
+
+    const statusBefore = order.status || 'PENDING';
+    order.cardStage = 'AUTO_SELECTING';
+    order.autoOptimizeStartedAt = new Date().toISOString();
+    delete order.autoOptimizeError;
+    saveDb(db);
+    await updateOrderCards(order).catch(() => {});
+
+    console.log(`[AutoOptimize] Order #${key} (${reason}): scanning accounts for max offer...`);
+    const best = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false });
+
+    if (!best?.success) {
+      db = getDb();
+      order = db.orders?.[key] || order;
+      order.cardStage = 'PENDING';
+      order.status = statusBefore;
+      order.autoOptimizeError = best?.error || 'Could not sync cart on any free Swiggy account.';
+      order.autoOptimizeFailedAt = new Date().toISOString();
+      saveDb(db);
+      await updateOrderCards(order).catch(() => {});
+      console.warn(`[AutoOptimize] Order #${key} failed: ${order.autoOptimizeError}`);
+      return { success: false, error: order.autoOptimizeError, code: best?.code };
+    }
+
+    db = getDb();
+    order = db.orders?.[key] || order;
+
+    if (Array.isArray(best.savedAddresses) && best.savedAddresses.length > 0) order.accountAddresses = best.savedAddresses;
+    if (Array.isArray(best.availableCoupons) && best.availableCoupons.length > 0) order.availableCoupons = best.availableCoupons;
+    if (best.paymentUrl) order.swiggyPaymentUrl = best.paymentUrl;
+    applyMaxOfferToOrder(order);
+
+    // Keep the order in Boss's approval queue: only the bill/offers were computed.
+    order.status = statusBefore;
+    order.cardStage = 'BILL_READY';
+    order.autoOptimized = true;
+    order.autoOptimizedAt = new Date().toISOString();
+    order.accountComparison = best.accountComparison || [];
+    delete order.autoOptimizeError;
+    saveDb(db);
+    await updateOrderCards(order).catch(() => {});
+
+    console.log(
+      `[AutoOptimize] Order #${key} ready: account ${order.orderAccount || order.selectedAccount}, ` +
+      `coupon ${order.couponCode || 'none'}, To Pay ₹${order.finalPayable || 0}`
+    );
+    return { success: true, order };
+  } catch (err) {
+    console.error(`[AutoOptimize] Order #${key} crashed:`, err?.stack || err?.message || err);
+    try {
+      const db = getDb();
+      const order = db.orders?.[key];
+      if (order) {
+        order.cardStage = 'PENDING';
+        order.autoOptimizeError = err?.message || 'Auto offer scan failed.';
+        saveDb(db);
+        await updateOrderCards(order).catch(() => {});
+      }
+    } catch (e) {}
+    return { success: false, error: err?.message || String(err) };
+  } finally {
+    autoOptimizeInFlight.delete(key);
+  }
 }
 
 function escapeHtml(str) {
@@ -7972,8 +8094,11 @@ async function handleSendToBoss(ctx) {
   }
   saveDb(db);
 
-  // Immediately kick off fast background cart fetch
-  triggerBackgroundCartFetch(orderId).catch(err => console.error(`[BackgroundFetch] Order #${orderId} error:`, err.message));
+  // Background pipeline for customer submissions — same treatment as a forwarded order:
+  // 1) resolve the live cart + address, 2) auto-pick the best account, 3) lock the max offer.
+  triggerBackgroundCartFetch(orderId)
+    .then(() => autoOptimizeUserOrder(orderId, { reason: 'CUSTOMER_SEND_TO_BETA' }))
+    .catch(err => console.error(`[BackgroundFetch] Order #${orderId} error:`, err?.stack || err?.message || err));
 }
 
 // Action Callbacks for User Screen & Flowchart
@@ -8177,6 +8302,17 @@ bot.action(/^user_refresh_status_(.+)$/, async (ctx) => {
   try {
     await ctx.editMessageText(card.text, { parse_mode: 'HTML', ...card.keyboard });
   } catch (e) {}
+
+  // Customer can retry the account / max-offer scan straight from their card.
+  if (
+    !order.isForwardedOrder &&
+    !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status) &&
+    (!order.selectedAccount || !(Number(order.finalPayable || 0) > 0))
+  ) {
+    autoOptimizeUserOrder(orderId, { reason: 'CUSTOMER_REFRESH_STATUS' }).catch(err =>
+      console.error(`[AutoOptimize] refresh retry failed for #${orderId}:`, err?.message || err)
+    );
+  }
 });
 
 bot.action('user_reset', async (ctx) => {
