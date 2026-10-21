@@ -1,6 +1,6 @@
 {
   "version": 15,
-  "updatedAt": "2026-10-21T11:37:15.365Z",
+  "updatedAt": "2026-10-21T11:37:39.566Z",
   "accounts": {
     "acc_9935123518": {
       "name": "prithvi",
@@ -314,71 +314,11 @@
           "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
       }
-    },
-    "acc_7678309617": {
-      "id": "acc_7678309617",
-      "name": "Aloooo (User 1)",
-      "swiggyName": "Aloooo",
-      "botTag": "User 1",
-      "email": "",
-      "phone": "7678309617",
-      "mobile": "7678309617",
-      "customerId": "285544622",
-      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI4NGQ4N2NkOS01N2JiLTQ0MTQtYmY5OS0yMjI2ODMxMTYwZWYiLCJ1c2VyX2lkIjoiMjg1NTQ0NjIyIiwic2Vzc2lvbl9kYXRhIjoiUlJEaHE2UVBjL2paVUkvVGJyTHZKREh4Wkl6alJIQ1JVVWpPSkZGVkJUZm1pRDZoSTFQME40cEI0bk5Vb3JJMXpIWlhldE40eHB2T0lDNzl2bTQ0UC9xQjFZOXloWFB0enYxd1dFaythZnZqamMyT0hWN05hR3MyakhkSlNnU2RRM29EdW9TSDlOTkcvL3d3VFErREZzNTR3SG9hdU01RzZ5K1NUT3NaK2tmalhnWFJGYWEydTVyb3J4N04vd2tyWThudU1ZN1pwcU5QeEJTS1AxSlZXWndIVVVBQUltRFYrUDQvTUN3SEY3Ty95T1ZNcHFObXVoVHhBTEZiSVV0UnpQaW0va0hYL0E9PSIsInNpZCI6InViNWQ2ZDcyNzkwLWVkMmQtNGU2Ny04MzkyLWE3NWQ0MzY3YyIsImlhdCI6MTc5MjU4MjYyOCwiZXhwIjoxNzkyNTg1MDI4fQ.fKIQalG55bQw40TRrBEAjFY6RY-_3dWVNE4RSyMZvYU",
-      "sid": "ub5d6d72790-ed2d-4e67-8392-a75d4367c",
-      "deviceId": "9689613e-a79e-92b0-7807-1f610509d806",
-      "token": "6825ed17-5506-4ba7-8bbc-f28d855b6ef474c21e9f-cc56-407f-84dd-ee3532902ec6",
-      "isLoggedIn": true,
-      "cookies": "_sid=ub5d6d72790-ed2d-4e67-8392-a75d4367c; __SW=eeERcsRaNToEz5eVfoHVazen-Kx-uw3U; _device_id=9689613e-a79e-92b0-7807-1f610509d806; _is_logged_in=1; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fbc0d15e60f4fae3f49b8b8e31df0d63c17675f864e5e8a9f7575b01000e75466b82a6f1e1b36658d7041ca739777b6ff7db93b97e0b03fc01215e07b29f534a7d951d2baf8f0809037ca6312738ab680e528844f9c3f3641bcd888050f1e1047f9ed5e8649b9529b244e7c17ca5c0bf5d2facc43959369ab4924df645bcdf44f3c50eb2758a02db853c35557134980a7c322a141bcc478cbc5d806e018e61ab1557b9b91a27fdc33808ad9813a293b50572bab00aafa924b220eb02662e324eafd35cd637021cea2735d6bfe6accb971b3f46325f323aa873ba1e20410a58e4b138b500601d9e7eea12eb041b83c82c5d9de93fd61ed9e73fc1b520d446104e208a386625c2f9e33f77a43e8afe7c566e8d4a3c6f53ede97b87002f3a1e989aeb93310ba3cbf2d7d5a3eea525e3b7530e441a38f5898e87488e1b22f2ffafb42ca280227c5c9d0b2ef2c9d58c44f8797bf7b294ed1f454077e771beb2bf2c939d9c75e5d53f0c709697697c7dce75513baa9845e9810397f2bab807ad03eb138e423c413cac7077fdf08a5f09b90b6c1e5097a8a15c5843faa2d0377163459a7319d4f3ea2f82b3916e2cce731e6e75dc3b3a1a77574cab89635f02c6696f83284abf29a5edbb28bfff9a3b37e08fec4988ed60b101e352cf0da76c47ca98566321848efd589b49dee990d02d5e2e5ca48d748dfb12109c2a91823a143d963ac1d4788ef5e29c46cc8316de0903ccf01e3e8e1b9ec4687f47e9e9abdc0e430f9da8e2059c6ab1b62fcfac70d81ffcb7da0cd79ebfb644eada357b31704c6c711d35464b2c8730c02802bff30a4cfce9f4af60f737f64c2176675fcb2f40d177bdbc818ac747bc902fb045704bec7ef3eb1e8f004079163722a6eafbe44b0524f23f23c900313c615d1216e8c03060b2e6075cd74763b949bda68dc7d567c9d8266b54bee94c7370080afc1d81198a117ac376857b11435e4769e4ce896f12ddb; token=6825ed17-5506-4ba7-8bbc-f28d855b6ef474c21e9f-cc56-407f-84dd-ee3532902ec6; tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI4NGQ4N2NkOS01N2JiLTQ0MTQtYmY5OS0yMjI2ODMxMTYwZWYiLCJ1c2VyX2lkIjoiMjg1NTQ0NjIyIiwic2Vzc2lvbl9kYXRhIjoiUlJEaHE2UVBjL2paVUkvVGJyTHZKREh4Wkl6alJIQ1JVVWpPSkZGVkJUZm1pRDZoSTFQME40cEI0bk5Vb3JJMXpIWlhldE40eHB2T0lDNzl2bTQ0UC9xQjFZOXloWFB0enYxd1dFaythZnZqamMyT0hWN05hR3MyakhkSlNnU2RRM29EdW9TSDlOTkcvL3d3VFErREZzNTR3SG9hdU01RzZ5K1NUT3NaK2tmalhnWFJGYWEydTVyb3J4N04vd2tyWThudU1ZN1pwcU5QeEJTS1AxSlZXWndIVVVBQUltRFYrUDQvTUN3SEY3Ty95T1ZNcHFObXVoVHhBTEZiSVV0UnpQaW0va0hYL0E9PSIsInNpZCI6InViNWQ2ZDcyNzkwLWVkMmQtNGU2Ny04MzkyLWE3NWQ0MzY3YyIsImlhdCI6MTc5MjU4MjYyOCwiZXhwIjoxNzkyNTg1MDI4fQ.fKIQalG55bQw40TRrBEAjFY6RY-_3dWVNE4RSyMZvYU",
-      "offers": {
-        "success": true,
-        "bothClaimed": true,
-        "offerValue": 1,
-        "offerLabel": "₹50 Free Cash (>₹199)",
-        "lockedMap": {
-          "byo-bf-v10-16": 1,
-          "byo-ln-v5-16": 1,
-          "byo-bf-v10-17": 1,
-          "byo-ln-v5-17": 1
-        },
-        "sessionExpired": false,
-        "breakfast": {
-          "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
-          "lockedDaysCount": 2,
-          "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
-          ],
-          "slotState": "LOCKED_FOR_TODAY",
-          "status": "CLAIMED",
-          "statusCode": 200,
-          "discount": "₹50 Free Cash (>₹199)",
-          "offerValue": 1,
-          "rawMessage": "You have subscribed to be notified",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
-        },
-        "lateNight": {
-          "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
-          "lockedDaysCount": 2,
-          "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
-          ],
-          "slotState": "LOCKED_FOR_TODAY",
-          "status": "CLAIMED",
-          "statusCode": 200,
-          "discount": "₹50 Free Cash (>₹199)",
-          "offerValue": 1,
-          "rawMessage": "You have subscribed to be notified",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
-        }
-      },
-      "savedAt": "2026-10-21T11:37:14.363Z"
     }
   },
-  "deletedAccounts": {},
+  "deletedAccounts": {
+    "acc_7678309617": true
+  },
   "sessionVault": {
     "6296591407": {
       "account": "acc_6296591407",
