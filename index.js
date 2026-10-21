@@ -8800,12 +8800,12 @@ bot.action(/^acc_view_orders_(.+)$/, async (ctx) => {
 // ================= ORDERS DONE (ALL IDs) =================
 async function handleAllOrdersDone(ctx) {
   if (ctx.callbackQuery) {
-    await ctx.answerCbQuery('Fetching orders from all your IDs...').catch(() => {});
+    await ctx.answerCbQuery('Fetching live orders from your logged-in ID...').catch(() => {});
   }
 
   let statusMsg = null;
   try {
-    statusMsg = await ctx.reply('⏳ <i>Saari Swiggy IDs se orders aur live tracking links fetch ho rahe hain...</i>', { parse_mode: 'HTML' });
+    statusMsg = await ctx.reply('⏳ <i>Logged-in accounts se live orders aur tracking links fetch ho rahe hain...</i>', { parse_mode: 'HTML' });
   } catch (e) {}
 
   try {
@@ -8827,18 +8827,45 @@ async function handleAllOrdersDone(ctx) {
       });
     }
 
-    // Parallel fetch orders from all accounts in parallel
+    const activeKey = getActiveOrderAccountKey(db);
+
+    // Sort accounts so active logged-in account is first, followed by other logged-in accounts
+    accountEntries.sort(([k1, a1], [k2, a2]) => {
+      if (k1 === activeKey) return -1;
+      if (k2 === activeKey) return 1;
+      const logged1 = Boolean(a1 && (a1.isLoggedIn || a1.cookies || a1.tid));
+      const logged2 = Boolean(a2 && (a2.isLoggedIn || a2.cookies || a2.tid));
+      if (logged1 && !logged2) return -1;
+      if (!logged1 && logged2) return 1;
+      return 0;
+    });
+
+    const loggedInEntries = accountEntries.filter(([, a]) => a && (a.isLoggedIn || a.cookies || a.tid));
+    const notLoggedInCount = accountEntries.length - loggedInEntries.length;
+
+    if (loggedInEntries.length === 0) {
+      if (statusMsg) {
+        try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+      }
+      return ctx.reply('⚠️ <b>Koi bhi logged-in Swiggy account nahi mila!</b>\n\nLive orders aur tracking links dekhne ke liye pehle number ya JSON se account login karein.', {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('☎ Login with Number', 'boss_login_with_number')],
+          [Markup.button.callback('▤ Login with JSON', 'boss_login_with_json')],
+          [Markup.button.callback('★ Boss Panel', 'boss_panel_home')]
+        ])
+      });
+    }
+
+    // Parallel fetch live orders from all logged-in accounts
     const accountResults = await Promise.allSettled(
-      accountEntries.map(async ([key, acc]) => {
-        if (!acc || (!acc.cookies && !acc.tid)) {
-          return { key, acc, orders: [], notLoggedIn: true };
-        }
+      loggedInEntries.map(async ([key, acc]) => {
         try {
           const orders = await fetchAccountOrders(acc);
-          return { key, acc, orders: Array.isArray(orders) ? orders : [], notLoggedIn: false };
+          return { key, acc, orders: Array.isArray(orders) ? orders : [], isActive: key === activeKey };
         } catch (err) {
           console.error(`[ORDERS_DONE] Error fetching orders for ${acc?.name || key}:`, err?.message || err);
-          return { key, acc, orders: [], error: err?.message };
+          return { key, acc, orders: [], isActive: key === activeKey, error: err?.message };
         }
       })
     );
@@ -8851,13 +8878,14 @@ async function handleAllOrdersDone(ctx) {
 
     let totalOrdersFound = 0;
     const buttons = [];
-    let text = `<blockquote>📦 <b>ORDERS DONE — ALL SWIGGY IDs</b></blockquote>\n\n`;
+    let text = `<blockquote>📦 <b>ORDERS DONE — LOGGED IN SWIGGY IDs</b></blockquote>\n\n`;
 
     for (const res of accountResults) {
       if (res.status !== 'fulfilled') continue;
-      const { key, acc, orders, notLoggedIn } = res.value;
+      const { key, acc, orders, isActive } = res.value;
       const accName = acc.name || key;
       const phoneStr = acc.phone ? `<code>${acc.phone}</code>` : '';
+      const badge = isActive ? '🟢 <b>Active Logged-in ID:</b>' : '📱 <b>Logged-in ID:</b>';
 
       // Augment orders with any db.orders that were placed from this account
       for (const dbo of dbCompletedOrders) {
@@ -8891,15 +8919,10 @@ async function handleAllOrdersDone(ctx) {
       }
 
       text += `━━━━━━━━━━━━━━━━━━━━\n`;
-      text += `📱 <b>ID: ${escapeHtml(accName)}</b> ${phoneStr ? `(${phoneStr})` : ''}\n`;
-
-      if (notLoggedIn) {
-        text += `<i>⚠️ Account logged in nahi hai (Login required).</i>\n\n`;
-        continue;
-      }
+      text += `${badge} <b>${escapeHtml(accName)}</b> ${phoneStr ? `(${phoneStr})` : ''}\n`;
 
       if (!orders || orders.length === 0) {
-        text += `<i>Is ID se Swiggy par koi orders nahi mile (0 orders).</i>\n\n`;
+        text += `<i>Is ID se Swiggy par abhi koi orders nahi mile (0 orders).</i>\n\n`;
         continue;
       }
 
@@ -8928,6 +8951,10 @@ async function handleAllOrdersDone(ctx) {
           ]);
         }
       }
+    }
+
+    if (notLoggedInCount > 0) {
+      text += `━━━━━━━━━━━━━━━━━━━━\n<i>⚠️ ${notLoggedInCount} other account(s) login required.</i>\n\n`;
     }
 
     if (totalOrdersFound === 0) {

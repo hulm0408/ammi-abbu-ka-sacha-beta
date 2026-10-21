@@ -3706,26 +3706,80 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
   };
 }
 
-// Fetch recent orders from Swiggy account (<250ms direct API with clean cookies)
+// Fetch recent orders from Swiggy account with live tracking links & OTP
 export async function fetchAccountOrders(cookiesOrAcc) {
   if (!cookiesOrAcc) return [];
+  const acc = (typeof cookiesOrAcc === 'object' && !Array.isArray(cookiesOrAcc)) ? cookiesOrAcc : null;
   try {
     const auth = await getSwiggySessionAuth(cookiesOrAcc, true);
-    if (!auth || !Array.isArray(auth.orders)) return [];
-    return auth.orders.slice(0, 10).map(o => {
-      const itemNames = (o.order_items || []).map(it => `${it.name}${it.quantity > 1 ? ' (' + it.quantity + ')' : ''}`);
-      return {
-        orderId: o.order_id,
-        restaurantName: o.restaurant_name,
-        status: o.order_status,
-        items: itemNames,
-        deliveryAddress: o.delivery_address?.area || o.delivery_address?.address || '',
-        orderTime: o.order_time,
-        orderTotal: o.order_total,
-        trackingUrl: extractSwiggyProvidedTrackingUrl(o),
-        deliveryOtp: extractSwiggyDeliveryOtp(o)
-      };
-    });
+    let rawOrders = Array.isArray(auth?.orders) ? auth.orders : [];
+
+    // Fallback: If auth.orders is empty, query direct dapiFetch order/all
+    if (rawOrders.length === 0) {
+      const dapiRes = await dapiFetch(cookiesOrAcc, 'order/all', { timeoutMs: 10000 }).catch(() => null);
+      if (Array.isArray(dapiRes?.json?.data?.orders)) {
+        rawOrders = dapiRes.json.data.orders;
+      }
+    }
+
+    if (!Array.isArray(rawOrders) || rawOrders.length === 0) return [];
+
+    const customerId = auth?.userId || acc?.customerId || '';
+    const recent = rawOrders.slice(0, 10);
+
+    const enriched = await Promise.allSettled(
+      recent.map(async (o) => {
+        const orderId = String(o.order_id || '');
+        let trkData = null;
+        let deData = null;
+
+        if (orderId) {
+          const isOlderDelivered = /delivered|completed|cancelled/i.test(String(o.order_status || ''));
+          // For active or recent orders, fetch trackV4 to extract live share tracking link & delivery OTP
+          if (!isOlderDelivered) {
+            const trkRes = await dapiFetch(
+              cookiesOrAcc,
+              `order/trackV4?order_id=${encodeURIComponent(orderId)}&type=full&version=V2${customerId ? `&customer_id=${encodeURIComponent(customerId)}` : ''}`,
+              { timeoutMs: 5000 }
+            ).catch(() => null);
+            trkData = trkRes?.json?.data || null;
+
+            if (trkData) {
+              const deRes = await dapiFetch(
+                cookiesOrAcc,
+                `order/trackV2/de?order_id=${encodeURIComponent(orderId)}`,
+                { timeoutMs: 4000 }
+              ).catch(() => null);
+              deData = deRes?.json?.data || null;
+            }
+          }
+        }
+
+        const nativeTrackingUrl = extractSwiggyProvidedTrackingUrl(o, trkData);
+        const officialFallbackUrl = orderId ? `https://www.swiggy.com/orders/track/${orderId}` : 'https://www.swiggy.com/orders';
+        const finalTrackingUrl = nativeTrackingUrl || officialFallbackUrl;
+
+        const deliveryOtp = extractSwiggyDeliveryOtp(o, trkData, { delivery: deData });
+        const liveStatus = trkData?.order_status_details?.status_message || o.order_status || 'Delivered';
+        const itemNames = (o.order_items || []).map(it => `${it.name}${it.quantity > 1 ? ' (' + it.quantity + ')' : ''}`);
+
+        return {
+          orderId: o.order_id,
+          restaurantName: o.restaurant_name || 'Swiggy Food',
+          status: liveStatus,
+          items: itemNames,
+          deliveryAddress: o.delivery_address?.area || o.delivery_address?.address || '',
+          orderTime: o.order_time || '',
+          orderTotal: o.order_total || 0,
+          trackingUrl: finalTrackingUrl,
+          deliveryOtp: deliveryOtp || ''
+        };
+      })
+    );
+
+    return enriched
+      .filter(r => r.status === 'fulfilled' && r.value)
+      .map(r => r.value);
   } catch (err) {
     console.error('fetchAccountOrders error:', err.message);
     return [];
