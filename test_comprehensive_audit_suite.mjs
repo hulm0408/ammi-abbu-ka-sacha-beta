@@ -39,12 +39,20 @@ import {
   parseDapiCartPayload,
   doesCouponMatchExpectedOrder,
   doesOrderBillMatchLiveCart,
-  reapplyWinningCouponAfterTrials
+  reapplyWinningCouponAfterTrials,
+  fetchAccountAddresses,
+  findBestMaxCouponAccountForOrder,
+  clearAllAccountReservations,
+  invalidateAccountOrderProfileCache
 } from './swiggy-cart.js';
 import {
   getReadyOrdersWaitingForAccount,
+  getBillReadyOrdersWaitingForQr,
   ingestForwardedContentIntoOrder,
   buildForwardedOrderCardView,
+  buildTelegramUserBillConfirmationCard,
+  applyBossOrderUpdate,
+  finalizePaidOrderCard,
   startOrderDeliveryInfoPoller,
   stopOrderDeliveryInfoPoller
 } from './forwarded-order-flow.js';
@@ -244,6 +252,283 @@ try {
   }
   assert(geocodeQueries.some(url => decodeURIComponent(url).includes('Flat no. 412, Parivartan Society, Pune Maharashtra 411030')), 'Forward geocoder receives the complete street address, not a city/PIN-only query');
   assert(fullAddressGeocode?.lat === '18.502975' && fullAddressGeocode?.lng === '73.846375', 'Full-address geocode returns the exact mocked Pune delivery pin');
+
+
+  // -------------------------------------------------------------
+  // Address inventory + automatic max-offer account-selection regressions
+  // -------------------------------------------------------------
+  console.log('\n--- Address Inventory + Automatic Max-Offer Account Selection ---');
+  const testJwt = (uid) => {
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({ user_id: String(uid), exp: Math.floor(Date.now() / 1000) + 86400 })).toString('base64url');
+    return `${header}.${payload}.test-signature`;
+  };
+  const responseJson = (payload, status = 200) => new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'content-type': 'application/json' }
+  });
+  const mockAccount = (uid, key) => {
+    const tid = testJwt(uid);
+    return {
+      id: key,
+      name: key,
+      phone: `9000000${String(uid).slice(-3)}`,
+      customerId: String(uid),
+      tid,
+      jwtTid: tid,
+      token: `token_${uid}`,
+      sid: `sid_${uid}`,
+      deviceId: `device_${uid}`,
+      cookies: `tid=${tid}; token=token_${uid}; _sid=sid_${uid}; _device_id=device_${uid}`,
+      isLoggedIn: true
+    };
+  };
+
+  const beforeAddressFetch = globalThis.fetch;
+  let addressFetchMode = 'profile';
+  let mcpAddressFetches = 0;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input?.url || String(input);
+    if (url.includes('profile.swiggy.com/api/v1/user/profile')) {
+      const uid = addressFetchMode === 'profile' ? '780001' : '780002';
+      const addresses = addressFetchMode === 'profile'
+        ? [{
+            id: 'profile-nested-address',
+            display_address: 'Flat no. 8, Sector 5, Gomti Nagar, Lucknow, Uttar Pradesh 226010',
+            actual_address: {
+              address_line: 'Flat no. 8',
+              formatted_address: 'Sector 5, Gomti Nagar, Lucknow, Uttar Pradesh 226010',
+              contact_name: 'Recipient One',
+              phone: '+91 98765 43210',
+              city: 'Lucknow',
+              locality: 'Gomti Nagar',
+              location: { latitude: 26.8504, longitude: 80.9504 },
+              tags: ['Home']
+            }
+          }]
+        : [];
+      return responseJson({ statusCode: 0, data: { customer_id: uid, mobile: '9000000000', addresses } });
+    }
+    if (url.includes('chkout.swiggy.com/api/v2/cart/client')) {
+      return responseJson({ statusCode: 0, data: { cart_menu_items: [], order_total: 0, addresses: [] } });
+    }
+    if (url.includes('mcp.swiggy.com/food')) {
+      mcpAddressFetches++;
+      return responseJson({
+        jsonrpc: '2.0',
+        id: 1,
+        result: {
+          structuredContent: {
+            addresses: [{
+              id: 'mcp-fallback-address',
+              address: 'House 10, Gomti Nagar, Lucknow 226010',
+              latitude: '26.8601',
+              longitude: '80.9601',
+              contact_name: 'Recipient Two',
+              phone: '9876543211',
+              annotation: 'Work'
+            }]
+          },
+          content: [{ type: 'text', text: '{}' }]
+        }
+      });
+    }
+    return responseJson({ statusCode: 0, data: {} });
+  };
+  try {
+    const nestedAddresses = await fetchAccountAddresses(mockAccount('780001', 'address-profile-test'));
+    assert(
+      nestedAddresses.some(a => a.id === 'profile-nested-address' && a.name === 'Recipient One' && a.mobile === '9876543210' && a.lat === '26.8504' && a.lng === '80.9504'),
+      'Address fetching normalizes nested Swiggy profile records (id, recipient, phone, and map pin)'
+    );
+    addressFetchMode = 'mcp';
+    const mcpFallbackAddresses = await fetchAccountAddresses(mockAccount('780002', 'address-mcp-test'));
+    assert(
+      mcpAddressFetches > 0 && mcpFallbackAddresses.some(a => a.id === 'mcp-fallback-address' && a.address.includes('Gomti Nagar')),
+      'Address fetching falls back to Swiggy Food MCP when profile/cart address lists are empty'
+    );
+  } finally {
+    globalThis.fetch = beforeAddressFetch;
+  }
+
+  const beforeSelectionFetch = globalThis.fetch;
+  const selectionDbBackup = JSON.parse(JSON.stringify(getDb()));
+  const selectionOffers = new Map([
+    ['781001', { coupon: 'SAVE20', discount: 20, payable: 280 }],
+    ['781002', { coupon: 'SAVE60', discount: 60, payable: 240 }],
+    ['781003', { coupon: 'SAVE80', discount: 80, payable: 220 }],
+    ['781004', { coupon: 'MAXCOUPON', discount: 220, payable: 80 }]
+  ]);
+  const requestUserId = (init = {}) => {
+    const headers = init.headers || {};
+    const getHeader = name => headers?.get?.(name) || headers[name] || headers[name.toLowerCase()] || '';
+    const cookie = String(getHeader('Cookie') || '');
+    const bearer = String(getHeader('Authorization') || '').replace(/^Bearer\s+/i, '');
+    const cookieTid = cookie.match(/(?:^|;\s*)tid=([^;]+)/)?.[1] || '';
+    const tid = String(getHeader('tid') || bearer || cookieTid);
+    try {
+      return String(JSON.parse(Buffer.from(tid.split('.')[1], 'base64url').toString()).user_id || '');
+    } catch {
+      return '';
+    }
+  };
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input?.url || String(input);
+    const uid = requestUserId(init);
+    if (url.includes('/dapi/order/all')) {
+      const tid = String(init.headers?.Cookie || '').match(/(?:^|;\s*)tid=([^;]+)/)?.[1] || '';
+      return responseJson({ statusCode: 0, tid, data: { orders: [] } });
+    }
+    if (url.includes('/dapi/profile/info')) {
+      return responseJson({ statusCode: 0, data: { id: uid, mobile: '9000000000' } });
+    }
+    if (url.includes('profile.swiggy.com/api/v1/user/profile')) {
+      return responseJson({
+        statusCode: 0,
+        data: {
+          customer_id: uid,
+          mobile: '9000000000',
+          addresses: [{
+            id: `addr-${uid}`,
+            name: 'Delivery Recipient',
+            mobile: '9876543210',
+            address: 'Flat 1, Hazratganj, Lucknow 226001',
+            city: 'Lucknow',
+            area: 'Hazratganj',
+            lat: '26.8500',
+            lng: '80.9500'
+          }]
+        }
+      });
+    }
+    if (url.includes('events.swiggy.com')) {
+      return responseJson({ statusCode: 0, data: {} });
+    }
+    if (url.includes('mcp.swiggy.com/food')) {
+      const request = JSON.parse(init.body || '{}');
+      const structuredContent = request.params?.name === 'fetch_food_coupons' ? { coupons: [] } : {};
+      return responseJson({
+        jsonrpc: '2.0',
+        id: request.id || 1,
+        result: { structuredContent, content: [{ type: 'text', text: '{}' }] }
+      });
+    }
+    if (url.includes('/dapi/offers/')) {
+      return responseJson({ statusCode: 0, data: { cards: [] } });
+    }
+    if (url.includes('chkout.swiggy.com/api/v2/cart/client/flush')) {
+      return responseJson({ statusCode: 0, data: {} });
+    }
+    if (url.includes('chkout.swiggy.com/api/v2/cart/client/update')) {
+      const body = JSON.parse(init.body || '{}');
+      const offer = selectionOffers.get(uid) || { coupon: '', discount: 0, payable: 300 };
+      const hasItems = Array.isArray(body.cartItems) && body.cartItems.length > 0;
+      const data = hasItems
+        ? {
+            cartId: `cart-${uid}`,
+            originalCartId: `original-${uid}`,
+            address_id: body.address_id || `addr-${uid}`,
+            restaurant_details: { id: body.restaurantId || 'max-restaurant', name: 'Max Offer Cafe' },
+            user_super_status_details: { user_status: 'SUPER' },
+            cart_menu_items: [{ menu_item_id: 501, name: 'Meal', quantity: 1, subtotal: 30000, final_price: 30000 }],
+            item_total: 300,
+            coupon_code: offer.coupon,
+            is_coupon_valid: offer.coupon ? 1 : 0,
+            coupon_discount_total: offer.discount,
+            trade_discount_total: 0,
+            positiveDeliveryChargesExclusive: 0,
+            delivery_charges: 0,
+            free_delivery_discount: 0,
+            total_packing_charges: 0,
+            total_tax: 0,
+            order_total: offer.payable,
+            cart_total_count: 1,
+            addresses: [{ id: `addr-${uid}`, address: 'Flat 1, Hazratganj, Lucknow 226001', name: 'Delivery Recipient', mobile: '9876543210', lat: '26.8500', lng: '80.9500', city: 'Lucknow' }]
+          }
+        : { cartId: `cart-${uid}`, cart_menu_items: [], order_total: 0, cart_total_count: 0, addresses: [] };
+      return responseJson({ statusCode: 0, tid: String(init.headers?.tid || ''), data });
+    }
+    if (url.includes('chkout.swiggy.com/api/v2/cart/client')) {
+      return responseJson({ statusCode: 0, tid: String(init.headers?.tid || ''), data: { cart_menu_items: [], order_total: 0, cart_total_count: 0, user_super_status_details: { user_status: 'SUPER' }, addresses: [] } });
+    }
+    return responseJson({ statusCode: 0, data: {} });
+  };
+  const maxOrderId = 'AUTO_MAX_COUPON_REGRESSION';
+  const maxOrder = {
+    id: maxOrderId,
+    status: 'PENDING',
+    cardStage: 'AUTO_SELECTING',
+    restaurantId: 'max-restaurant',
+    restaurantName: 'Max Offer Cafe',
+    items: [{ itemId: '501', menu_item_id: 501, name: 'Meal', price: 300, qty: 1, quantity: 1 }],
+    subtotal: 300,
+    itemTotal: 300,
+    address: 'Flat 1, Hazratganj, Lucknow 226001',
+    addressDetails: { name: 'Delivery Recipient', mobile: '9876543210', address: 'Flat 1, Hazratganj, Lucknow 226001', city: 'Lucknow', area: 'Hazratganj', lat: '26.8500', lng: '80.9500' },
+    userId: 999
+  };
+  try {
+    const selectionDb = getDb();
+    selectionDb.config.accounts = {};
+    selectionDb.orders = { [maxOrderId]: maxOrder };
+    for (const [uid] of selectionOffers) {
+      const account = mockAccount(uid, `auto_select_${uid}`);
+      account.name = `Offer Tier ${uid}`;
+      account.totalOrdersCount = 0;
+      account.preferredOfferValue = Number(uid.slice(-1) <= '4' ? 5 - Number(uid.slice(-1)) : 1);
+      // Make the most valuable live offer rank last using the cached offer-tier score.
+      if (uid === '781004') account.preferredOfferValue = 1;
+      selectionDb.config.accounts[account.id] = account;
+    }
+    saveDb(selectionDb);
+    clearAllAccountReservations();
+    invalidateAccountOrderProfileCache();
+    const maxResult = await findBestMaxCouponAccountForOrder(maxOrder);
+    assert(
+      maxResult.success && maxResult.winningKey === 'auto_select_781004' && maxOrder.finalPayable === 80,
+      'Automatic account selection probes later batches and picks the lowest live bill, not just the first offer-tier shortlist'
+    );
+    assert(
+      maxResult.accountComparison.length === 4 && maxOrder.couponCode === 'MAXCOUPON' && maxOrder.discountAmount === 220,
+      'Max-coupon comparison includes every eligible zero-order account and retains the strongest confirmed coupon'
+    );
+
+    await finalizePaidOrderCard({
+      telegram: {
+        deleteMessage: async () => true,
+        sendMessage: async () => ({ message_id: 9001 })
+      },
+      chatId: 999,
+      order: maxOrder,
+      livePaidResult: { swiggyOrderId: 'TEST_SWIGGY_ORDER', orderStatus: 'Delivered' },
+      formatOrderBodyFn: () => '<b>Test order</b>'
+    });
+    stopOrderDeliveryInfoPoller(maxOrderId);
+    await finalizePaidOrderCard({
+      telegram: {
+        deleteMessage: async () => true,
+        sendMessage: async () => ({ message_id: 9002 })
+      },
+      chatId: 999,
+      order: maxOrder,
+      livePaidResult: { swiggyOrderId: 'TEST_SWIGGY_ORDER', orderStatus: 'Delivered' },
+      formatOrderBodyFn: () => '<b>Test order</b>'
+    });
+    stopOrderDeliveryInfoPoller(maxOrderId);
+    const postFinalizeDb = getDb();
+    assert(
+      postFinalizeDb.config.accounts.auto_select_781004.totalOrdersCount === 1 &&
+      postFinalizeDb.config.accounts.auto_select_781004.cachedTotalOrdersCount === 1 &&
+      postFinalizeDb.config.accounts.auto_select_781004.isZeroOrderAccount === false,
+      'A completed order updates the persisted account count exactly once, even if payment finalization is retried'
+    );
+  } finally {
+    stopOrderDeliveryInfoPoller(maxOrderId);
+    clearAllAccountReservations();
+    invalidateAccountOrderProfileCache();
+    globalThis.fetch = beforeSelectionFetch;
+    saveDb(selectionDbBackup);
+  }
 
   const forwardedOrder = {
     id: 'FWD_CONTACT_TEST',
@@ -673,7 +958,53 @@ try {
   // Attempting to change without confirmation should require user confirmation
   const indexSource = fs.readFileSync('index.js', 'utf8');
   const bossPanelSource = fs.readFileSync('boss-panel.js', 'utf8');
-  const allSource = indexSource + '\n' + bossPanelSource;
+  const forwardedSource = fs.readFileSync('forwarded-order-flow.js', 'utf8');
+  const renderSource = fs.readFileSync('render.yaml', 'utf8');
+  const allSource = indexSource + '\n' + bossPanelSource + '\n' + forwardedSource;
+  assert(!/web_app|telegram-web-app\.js|\/copy|order-ux-portal|APP_BASE_URL|setUserMiniAppButton/i.test(allSource + renderSource), 'Mini App UI, WebApp entry points, APIs, and deployment URL are removed');
+  assert(indexSource.includes('action_send_to_boss') && indexSource.includes('action_send_to_beta') && indexSource.includes('action_add_cart') && indexSource.includes('action_add_address') && indexSource.includes('action_previous_order'), 'Traditional inline Telegram order buttons remain wired');
+  assert(indexSource.includes("bot.action('boss_login_with_number'") && indexSource.includes("bot.action('boss_login_with_json'") && indexSource.includes("bot.action('boss_view_accounts'"), 'Boss-panel login and account buttons map to existing Telegram handlers');
+  assert(indexSource.includes('bot.action(/^fwd_input_(cart|address|mobile)_([A-Za-z0-9_-]+)$/'), 'Order-specific Telegram input buttons have a callback handler');
+  assert(forwardedSource.includes('fwd_input_cart_') && forwardedSource.includes('fwd_input_address_') && forwardedSource.includes('fwd_input_mobile_'), 'Forwarded order cards expose Cart, Address, and Mobile input actions');
+  const intakeCard = buildForwardedOrderCardView({ id: 'TELEGRAM_BUTTON_TEST', userId: 1, userName: 'Test', status: 'PENDING', isForwardedOrder: true, cardStage: 'COLLECTING' }, getDb(), () => '');
+  const intakeCallbacks = intakeCard.keyboard.reply_markup.inline_keyboard.flat().map(button => button.callback_data).filter(Boolean);
+  assert(intakeCallbacks.includes('fwd_input_cart_TELEGRAM_BUTTON_TEST') && intakeCallbacks.includes('fwd_input_address_TELEGRAM_BUTTON_TEST'), 'Incomplete order card renders working Cart and Address callbacks');
+  const mobileCard = buildForwardedOrderCardView({ id: 'TELEGRAM_MOBILE_TEST', userId: 1, userName: 'Test', status: 'PENDING', isForwardedOrder: true, cardStage: 'COLLECTING', address: 'Hazratganj, Lucknow 226001', addressDetails: { address: 'Hazratganj, Lucknow 226001', lat: '26.85', lng: '80.94', mobile: '' } }, getDb(), () => '');
+  const mobileCallbacks = mobileCard.keyboard.reply_markup.inline_keyboard.flat().map(button => button.callback_data).filter(Boolean);
+  assert(mobileCallbacks.includes('fwd_input_mobile_TELEGRAM_MOBILE_TEST'), 'Verified-address card exposes recipient-mobile input action');
+  const billCard = buildTelegramUserBillConfirmationCard({ id: 'TELEGRAM_BILL_TEST', userId: 2, status: 'APPROVAL_PENDING' });
+  const billCallbacks = billCard.keyboard.reply_markup.inline_keyboard.flat().map(button => button.callback_data).filter(Boolean);
+  assert(billCallbacks.includes('user_approve_bill_TELEGRAM_BILL_TEST') && billCallbacks.includes('user_bill_issue_TELEGRAM_BILL_TEST') && /official Swiggy payment details to you/.test(billCard.text), 'Bill approval returns to Telegram buttons and promises only existing official Swiggy details');
+  const reviewReadyOrder = {
+    id: 'TELEGRAM_REVIEW_READY', userId: 2, fwdSenderUserId: 2, isForwardedOrder: true,
+    status: 'PENDING', cardStage: 'BILL_READY', selectedAccount: 'test-account', finalPayable: 100,
+    cart: 'https://swig.gy/gc/review-ready', address: 'Flat 1, Hazratganj, Lucknow 226001',
+    addressDetails: { address: 'Flat 1, Hazratganj, Lucknow 226001', lat: '26.85', lng: '80.94', mobile: '9876543210' }
+  };
+  const reviewReadyCard = buildForwardedOrderCardView(reviewReadyOrder, getDb(), () => 'Verified bill');
+  const reviewReadyCallbacks = reviewReadyCard.keyboard.reply_markup.inline_keyboard.flat().map(button => button.callback_data).filter(Boolean);
+  assert(reviewReadyCallbacks.includes('fwd_send_summary_TELEGRAM_REVIEW_READY'), 'Verified forwarded bill exposes its Telegram customer-approval action');
+  const approvalWaitOrder = { ...reviewReadyOrder, id: 'TELEGRAM_APPROVAL_WAIT', status: 'APPROVAL_PENDING' };
+  const approvalWaitCard = buildForwardedOrderCardView(approvalWaitOrder, getDb(), () => 'Verified bill');
+  const approvalWaitCallbacks = approvalWaitCard.keyboard.reply_markup.inline_keyboard.flat().map(button => button.callback_data).filter(Boolean);
+  assert(!approvalWaitCallbacks.some(callback => /fwd_(?:gen_qr|send_summary|input_|rechoose_acc|rescan_max)_/.test(callback)), 'Approval-pending Boss card removes stale QR, edit, account, and duplicate-summary buttons');
+  assert(getBillReadyOrdersWaitingForQr({ orders: { [approvalWaitOrder.id]: approvalWaitOrder } }).length === 0, 'Parallel QR queue excludes orders waiting for customer approval');
+  assert(indexSource.includes('async function handleConfirmOrderPaid(ctx, orderId, _confirmedBy) {\n  const result = await checkOrderPaidStatusOnly(orderId);'), 'Payment-confirmation tap only checks Swiggy status and cannot mark an order paid itself');
+  const completedGuard = await applyBossOrderUpdate({ orderId: 'MISSING_TEST_TERMINAL', cart: 'https://swig.gy/gc/example' });
+  assert(!completedGuard.ok && /not found/.test(completedGuard.error), 'Boss order input fails closed for missing order IDs');
+  db.orders.TELEGRAM_COMPLETED_TEST = { id: 'TELEGRAM_COMPLETED_TEST', status: 'COMPLETED' };
+  db.orders.TELEGRAM_QR_STARTED_TEST = { id: 'TELEGRAM_QR_STARTED_TEST', status: 'PENDING', cardStage: 'QR_GENERATED', pendingSwiggyOrderId: '' };
+  db.orders.TELEGRAM_APPROVAL_PENDING_TEST = { id: 'TELEGRAM_APPROVAL_PENDING_TEST', status: 'APPROVAL_PENDING', cardStage: 'BILL_READY' };
+  saveDb(db);
+  const completedEdit = await applyBossOrderUpdate({ orderId: 'TELEGRAM_COMPLETED_TEST', cart: 'https://swig.gy/gc/example' });
+  const activeQrEdit = await applyBossOrderUpdate({ orderId: 'TELEGRAM_QR_STARTED_TEST', address: 'New address' });
+  const approvalPendingEdit = await applyBossOrderUpdate({ orderId: 'TELEGRAM_APPROVAL_PENDING_TEST', cart: 'https://swig.gy/gc/example' });
+  assert(!completedEdit.ok && /cannot be edited/.test(completedEdit.error), 'Completed orders reject Telegram edits');
+  assert(!activeQrEdit.ok && /payment QR\/order/.test(activeQrEdit.error), 'Existing Swiggy QR orders reject delivery edits even without an order ID');
+  assert(!approvalPendingEdit.ok && /sent for approval/.test(approvalPendingEdit.error), 'Order details are locked while the customer reviews the final bill');
+  delete db.orders.TELEGRAM_COMPLETED_TEST;
+  delete db.orders.TELEGRAM_QR_STARTED_TEST;
+  delete db.orders.TELEGRAM_APPROVAL_PENDING_TEST;
   assert(indexSource.includes('Are you sure you want to change your saved Cart Link?'), 'Cart link change asks for confirmation');
   assert(indexSource.includes('Are you sure you want to change your saved Address Link?'), 'Address link change asks for confirmation');
   assert(indexSource.includes('action_confirm_change_cart') && indexSource.includes('action_confirm_change_address'), 'Link replacement has explicit confirmation action callbacks');

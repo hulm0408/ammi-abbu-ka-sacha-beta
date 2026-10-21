@@ -1,7 +1,6 @@
 import './network-shield.js';
 import { createIpv4TelegramAgent, installBulletproofTelegramTransport } from './network-shield.js';
 import http from 'http';
-import crypto from 'crypto';
 import { Telegraf, Markup } from 'telegraf';
 import dotenv from 'dotenv';
 import QRCode from 'qrcode';
@@ -89,22 +88,12 @@ import {
   executeRealQrGenerationForOrder,
   startOrderDeliveryInfoPoller,
   sendOrderDeliveryInfoNotice,
-  applyBossPortalVerification,
+  applyBossOrderUpdate,
   generateNamedUpiQrPngBuffer,
   sanitizeUpiUriForQr,
   safeTelegramCaption,
   truncateDisplayField
 } from './forwarded-order-flow.js';
-import {
-  buildUserPortalUrl,
-  buildBossOrderPortalUrl,
-  buildBossAccountsPortalUrl,
-  makeSmartPortalButton,
-  buildCleanUserIntakeCard,
-  buildCleanUserBillConfirmationCard,
-  buildCleanUserPaymentPendingCard,
-  createOrderUxHttpHandler
-} from './order-ux-portal.js';
 import {
   buildBossPanelHome,
   buildBossPendingList,
@@ -479,12 +468,16 @@ function formatUserOrderCard(order) {
     const amt = order.finalPayable ? `₹${order.finalPayable}` : 'amount shown on Swiggy';
     text += `${heading(`↗ Official Swiggy payment ready (#${order.id})`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
-      section('Payment status', `${heading('Payment ready')}\n${sub(`Pay <b>${esc(amt)}</b> using the QR or official button, then tap <b>“I have paid”</b>.`)}`) +
+      section('Payment status', `${heading('Payment ready')}\n${sub(`Pay <b>${esc(amt)}</b> using the QR or official button, then tap <b>“Check payment status”</b>.`)}`) +
       `\n${field('Support', '@Its_life_001')}`;
 
     if (order.swiggyPaymentUrl) buttons.push([Markup.button.url('↗ Pay on Swiggy', order.swiggyPaymentUrl)]);
-    buttons.push([Markup.button.callback('✓ I have paid', `user_confirm_order_${order.id}`)]);
-    if (order.customQrFileId) buttons.push([Markup.button.callback('↻ Resend payment QR', `user_resend_qr_${order.id}`)]);
+    buttons.push([Markup.button.callback('✓ Check payment status', `user_paid_status_${order.id}`)]);
+    if (order.customQrFileId) {
+      buttons.push([Markup.button.callback('↻ Resend payment QR', `user_resend_qr_${order.id}`)]);
+    } else if (order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.swiggyPaymentUrl) {
+      buttons.push([Markup.button.callback('↻ Resend Swiggy payment details', `user_resend_approved_qr_${order.id}`)]);
+    }
   } else {
     const rest = order.restaurantName || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : 'Swiggy Food Order');
     const ad = order.addressDetails || parseAddressDetails(order.address);
@@ -693,30 +686,19 @@ function getUserScreen(userId, user) {
   const slotsLeft = db.config.slotsLeft;
   const totalSlots = db.config.totalSlots;
 
-  const cartBtnText = draft.cart ? '● Cart: Added ✓' : '● Paste Cart Link';
-  const addressBtnText = draft.address ? '● Address: Added ✓' : '● Paste Address Link';
-  const verifyBoxBtnLabel = draft.cart && !draft.address
-    ? '⌖ Enter Address & Verify ›'
-    : (!draft.cart && draft.address ? '▤ Enter Cart & Verify ›' : '✎ Open Cart + Address Verify Box ›');
-
+  const cartBtnText = draft.cart ? '▤ Change Cart Link' : '▤ Cart Link';
+  const addressBtnText = draft.address ? '⌖ Change Address Link' : '⌖ Address Link';
   const inlineButtons = [
     [
-      makeSmartPortalButton(verifyBoxBtnLabel, buildUserPortalUrl(userId))
+      Markup.button.callback(cartBtnText, 'action_add_cart'),
+      Markup.button.callback(addressBtnText, 'action_add_address')
     ],
+    [Markup.button.callback('› Send to Beta', 'action_send_to_boss')],
     [
-      Markup.button.callback(cartBtnText, 'action_paste_cart'),
-      Markup.button.callback(addressBtnText, 'action_paste_address')
-    ],
-    [
-      Markup.button.callback('› Send to Beta', 'action_send_to_beta')
+      Markup.button.callback('× Cancel order', 'action_cancel_order_confirm'),
+      Markup.button.callback('↻ Previous order', 'action_previous_order')
     ]
   ];
-
-  if (draft.cart || draft.address) {
-    inlineButtons.push([
-      Markup.button.callback('● Cancel Draft', 'action_clear_draft')
-    ]);
-  }
 
   const cd = draft.cartDetails || {};
   const itemRows = Array.isArray(cd.items) ? cd.items : [];
@@ -728,7 +710,7 @@ function getUserScreen(userId, user) {
 
   let promptGuidance = '';
   if (!draft.cart && !draft.address) {
-    promptGuidance = sub('Open the <b>Verify Box</b> below (or paste in chat) — either can arrive first.');
+    promptGuidance = sub('Use the Cart and Address buttons below, or paste either link in chat — they can arrive in either order.');
   } else if (draft.cart && !draft.address) {
     promptGuidance = `${heading('Add a valid address link to continue.')}\n${sub('◈ No account allocated; QR is blocked.')}`;
   } else if (!draft.cart && draft.address) {
@@ -768,15 +750,7 @@ function getBossPanelKeyboard() {
   return { reply_markup: buildBossPanelHome(getDb()).keyboard };
 }
 
-const PUBLIC_APP_URL = (process.env.RENDER_EXTERNAL_URL || 'https://ammi-abbu-ka-sacha-beta.onrender.com').replace(/\/+$/, '');
-
-function computeCopyHmac(accKey) {
-  return crypto.createHmac('sha256', BOT_TOKEN || 'swiggy_copy_secret').update(`copy:${accKey}`).digest('hex').slice(0, 24);
-}
-
-function buildFullCodeCopyWebAppUrl(accKey) {
-  return `${PUBLIC_APP_URL}/copy?acc=${encodeURIComponent(accKey)}&sig=${computeCopyHmac(accKey)}`;
-}
+const PUBLIC_SERVICE_URL = (process.env.RENDER_EXTERNAL_URL || 'https://ammi-abbu-ka-sacha-beta.onrender.com').replace(/\/+$/, '');
 
 function makeCopyButton(label, value, fallbackCallback, style = 'primary') {
   if (value && value.length > 0 && value.length <= 256) {
@@ -785,17 +759,11 @@ function makeCopyButton(label, value, fallbackCallback, style = 'primary') {
   return { text: label, callback_data: fallbackCallback, style };
 }
 
-// 1-Click Full Session Code Copy Button:
-// - If `fullValue.length <= 256`: native Telegram `copy_text`
-// - If in private chat & HTTPS cloud URL active: instant `web_app` clipboard engine that copies ALL 3,000+ chars in 1 click and auto-closes!
-// - Fallback in group chats: `callback_data` sending full 1-tap `<code>` & `<pre>` message
-function makeFullSessionCopyButton(ctx, label, accKey, fullValue, fallbackCallback, style = 'primary') {
+// Short values use Telegram's native copy button. Longer session exports are
+// sent by the bot when the callback is tapped; no web page is required.
+function makeFullSessionCopyButton(_ctx, label, accKey, fullValue, fallbackCallback, style = 'primary') {
   if (fullValue && fullValue.length > 0 && fullValue.length <= 256) {
     return { text: label, copy_text: { text: fullValue }, style };
-  }
-  const isPrivate = !ctx?.chat || ctx.chat.type === 'private';
-  if (isPrivate && PUBLIC_APP_URL.startsWith('https://')) {
-    return { text: label, web_app: { url: buildFullCodeCopyWebAppUrl(accKey) }, style };
   }
   return { text: label, callback_data: fallbackCallback || `copy_code_${accKey}`, style };
 }
@@ -898,7 +866,7 @@ async function sendPaymentQrToUser(order) {
         ),
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback('₹ I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)],
+          [Markup.button.callback('✓ Check payment status', `user_paid_status_${order.id}`)],
           [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
         ])
       });
@@ -920,12 +888,12 @@ async function sendPaymentQrToUser(order) {
         `▣ <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
         (order.finalPayable ? `₹ <b>Amount:</b> ₹${order.finalPayable}\n\n` : '\n') +
         `↗ <b>Click to Pay Directly on Swiggy:</b>\n<a href="${escapeHtml(order.swiggyPaymentUrl)}">${escapeHtml(order.swiggyPaymentUrl)}</a>\n\n` +
-        `<i>★ Yeh authentic link Swiggy payment page se generated hai. Payment complete karke [ ₹ I Have Paid ] dabayein!</i>`,
+        `<i>★ Yeh authentic link Swiggy payment page se generated hai. Payment ke baad [ Check payment status ] dabayein!</i>`,
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [Markup.button.url('₹ Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)],
-            [Markup.button.callback('₹ I Have Paid / Confirm Payment', `user_confirm_order_${order.id}`)],
+            [Markup.button.callback('✓ Check payment status', `user_paid_status_${order.id}`)],
             [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
           ])
         }
@@ -1407,7 +1375,7 @@ bot.start(async (ctx) => {
   const userId = ctx.from.id;
   delete userWaitState[userId];
 
-  // The user-facing portal is already available from the inline screen buttons; keep startup replies immediate.
+  // Return Telegram buttons immediately; collect order inputs in chat.
 
   if (isBoss(userId)) {
     await ctx.reply(`★ Welcome back, <b>Boss</b>! Swiggy Family Care Admin Mode is active.`, {
@@ -1440,7 +1408,7 @@ bot.command(['boss', 'admin'], async (ctx) => {
   const args = ctx.message.text.trim().split(' ');
   const password = args[1];
 
-  // The user-facing portal is already available from the inline screen buttons; keep startup replies immediate.
+  // Return Telegram buttons immediately; collect order inputs in chat.
 
   if (isBoss(userId)) {
     delete userWaitState[userId];
@@ -1645,7 +1613,6 @@ bot.action(/^resend_otp_(\d{10})$/, async (ctx) => {
         parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
-            [makeSmartPortalButton('☎ Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
             [
               { text: 'Copy Number', copy_text: { text: phone } }
             ],
@@ -2636,7 +2603,6 @@ bot.action(/^relogin_phone_(\d{10})$/, async (ctx) => {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [makeSmartPortalButton('☎ Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [{ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }],
               [
                 { text: '↻ Re-enter OTP', callback_data: `prompt_reenter_otp_${phone}`, style: 'primary' },
@@ -2708,7 +2674,6 @@ bot.action(/^boss_login_acc_otp_(.+)$/, async (ctx) => {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [makeSmartPortalButton('☎ Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [{ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }],
               [
                 { text: '↻ Re-enter OTP', callback_data: `prompt_reenter_otp_${phone}`, style: 'primary' },
@@ -2882,8 +2847,11 @@ bot.action(/^user_confirm_get_qr_(.+)$/, async (ctx) => {
   const db = getDb();
   const order = db.orders[orderId];
   if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
-  if (Number(order.userId) !== Number(ctx.from.id) && !isBoss(ctx.from.id)) {
+  if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
     return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+  }
+  if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status)) {
+    return ctx.answerCbQuery('No payment QR is available for a closed order.', { show_alert: true }).catch(() => {});
   }
   await ctx.answerCbQuery('Order Confirmed! Generating your payment QR with your name... ›').catch(() => {});
   await sendPaymentQrToUser(order);
@@ -3381,7 +3349,6 @@ bot.action([
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [makeSmartPortalButton('☎ Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [{ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }],
               [
                 { text: 'Resend Delete OTP', callback_data: `boss_swiggy_delete_start_${key}`, style: 'primary' },
@@ -4064,10 +4031,10 @@ bot.action(/^user_accept_amount_(.+)$/, async (ctx) => {
         caption: `₹ <b>Payment QR Code (#${order.id})</b>\n\n` +
           `₹ <b>Payable Amount:</b> <b>₹${amt}</b>\n` +
           `⌖ <b>UPI ID:</b> <code>${upiId}</code>\n\n` +
-          `<i>Kisi bhi UPI app (GPay, PhonePe, Paytm) se scan karke ₹${amt} pay karein. Payment hone ke baad neeche "Confirm Payment" button dabayein:</i>`,
+          `<i>Kisi bhi UPI app (GPay, PhonePe, Paytm) se scan karke ₹${amt} pay karein. Payment ke baad neeche "Check payment status" button dabayein:</i>`,
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback('₹ Confirm Payment / Done', `user_confirm_order_${order.id}`)],
+          [Markup.button.callback('✓ Check payment status', `user_paid_status_${order.id}`)],
           [Markup.button.callback('● Cancel Order', `action_cancel_order_confirm_${order.id}`)]
         ])
       });
@@ -4111,7 +4078,7 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
 
   const userButtons = [
     [Markup.button.url('● Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
-    [Markup.button.callback('₹ Confirm Payment / Done', `user_confirm_order_${orderId}`)]
+    [Markup.button.callback('✓ Check payment status', `user_paid_status_${orderId}`)]
   ];
   if (order.cart && order.cart.startsWith('http')) {
     userButtons.push([Markup.button.url('● Open Swiggy Cart / Items', order.cart)]);
@@ -4144,7 +4111,7 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
           `\n☎ <b>Payment Instructions:</b>\n` +
           `1. Kisi bhi UPI App (PhonePe, Google Pay, Paytm, BHIM) se yeh QR scan karein.\n` +
           `2. Exact <b>₹${payable}</b> pay karein.\n` +
-          `3. Payment hone ke baad niche <b>[ ₹ Confirm Payment / Done ]</b> dabayein!`,
+          `3. Payment ke baad niche <b>[ Check payment status ]</b> dabayein!`,
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard(userButtons)
       });
@@ -4188,7 +4155,7 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
           `\n☎ <b>Payment Instructions:</b>\n` +
           `1. Kisi bhi UPI app (Google Pay / PhonePe / Paytm / BHIM) se QR scan karein.\n` +
           `2. Exact <b>₹${payable}</b> pay karein.\n` +
-          `3. Payment hone ke baad niche <b>[ ₹ Confirm Payment / Done ]</b> dabayein:`,
+          `3. Payment ke baad niche <b>[ Check payment status ]</b> dabayein:`,
           1000
         ),
         parse_mode: 'HTML',
@@ -4382,12 +4349,12 @@ bot.action(/^boss_forward_live_screen_(.+)$/, async (ctx) => {
           `▣ <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
           `₹ <b>Total Amount (On Swiggy Payment Page):</b> <b>₹${payable}</b>\n` +
           (order.totalSavings > 0 ? `✓ <b>Discounts & Offers Saved:</b> ₹${order.totalSavings}\n` : '') +
-          `\n<i>Beta ne Swiggy payment screen bhej di hai! Payment karein ya confirm order dabayein:</i>`,
+          `\n<i>Beta ne Swiggy payment screen bhej di hai! Payment karein ya payment status check karein:</i>`,
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [Markup.button.url('◎ Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
           ...(order.cart?.startsWith('http') ? [[Markup.button.url('▤ Open Swiggy Cart / Items', order.cart)]] : []),
-          [Markup.button.callback('₹ confirm order', `user_confirm_order_${orderId}`)]
+          [Markup.button.callback('✓ Check payment status', `user_paid_status_${orderId}`)]
         ])
       });
       await ctx.reply(`✓ <b>Live Swiggy payment screen deliver ho gaya Ammi/User ko!</b>`);
@@ -4545,146 +4512,9 @@ bot.action(/^boss_remind_fee_(.+)$/, async (ctx) => {
 });
 
 // Common handler for payment verification and real tracking extraction
-async function handleConfirmOrderPaid(ctx, orderId, confirmedBy) {
-  const db = getDb();
-  const order = db.orders[orderId];
-  if (!order) return ctx.answerCbQuery('Order not found').catch(() => {});
-
-  await ctx.answerCbQuery('Verifying payment with Swiggy API... ◷').catch(() => {});
-
-  const accKey = order.selectedAccount || getActiveOrderAccountKey(db);
-  const acc = db.config.accounts?.[accKey];
-  const trackingData = acc
-    ? await checkRealSwiggyPaymentAndExtractTracking(acc, order).catch(() => null)
-    : null;
-
-  if (trackingData?.paid && trackingData.swiggyOrderId) {
-    // Verified payment and live order confirmed by authorized Swiggy API
-    order.paidByUser = true;
-    order.paymentStatus = 'VERIFIED';
-    order.status = 'ACCEPTED';
-    order.swiggyOrderId = String(trackingData.swiggyOrderId);
-    order.liveOrderStatus = trackingData.orderStatus || 'Order Confirmed';
-    const trackingCandidate = trackingData.nativeShareUrl || trackingData.swiggyWebTrackUrl || '';
-    const providerTrackingUrl = trackingCandidate
-      ? getStoredSwiggyTrackingUrl({ trackingLink: trackingCandidate, trackingLinkSource: 'SWIGGY_API' })
-      : '';
-    const existingTrustedTrackingUrl = getStoredSwiggyTrackingUrl(order);
-    order.trackingLink = providerTrackingUrl || existingTrustedTrackingUrl;
-    order.trackingLinkSource = providerTrackingUrl ? 'SWIGGY_API' : (existingTrustedTrackingUrl ? order.trackingLinkSource : '');
-    order.shareTrackUrl = '';
-    order.deliveryOtp = trackingData.deliveryOtp || order.deliveryOtp || '';
-    order.deliveryBoyName = trackingData.deliveryBoy?.name || order.deliveryBoyName || '';
-    order.deliveryBoyMobile = trackingData.deliveryBoy?.mobile || order.deliveryBoyMobile || '';
-    saveDb(db);
-
-    // Update single cards in-place for both Ammi and Beta
-    await updateOrderCards(order);
-
-    const role = getFamilyRole(order.userId, order.userName);
-
-    const trackingLine = order.trackingLink
-      ? `↗ <b>Swiggy tracking:</b> <a href="${escapeHtml(order.trackingLink)}">Open tracking link</a>`
-      : '… Swiggy has not shared a tracking link yet. I will send it here when it becomes available.';
-    const deliveryOtpLine = order.deliveryOtp
-      ? `⌕ <b>Delivery OTP:</b> <code>${escapeHtml(String(order.deliveryOtp))}</code>`
-      : 'Delivery OTP is not available yet. If Swiggy provides one, I will send it here.';
-    const userTrackingKeyboard = order.trackingLink
-      ? Markup.inlineKeyboard([[Markup.button.url('↗ Open Swiggy tracking', order.trackingLink)]])
-      : undefined;
-    const bossTrackingKeyboard = Markup.inlineKeyboard([
-      ...(order.trackingLink ? [[Markup.button.url('↗ Open Swiggy tracking', order.trackingLink)]] : []),
-      [Markup.button.callback('↗ Add Swiggy tracking link', `boss_tracking_${orderId}`)],
-      [Markup.button.callback('⌕ Add delivery OTP', `boss_delivery_otp_${orderId}`)],
-      [Markup.button.callback('✓ Mark as complete', `boss_action_done_${orderId}`)]
-    ]);
-
-    // Send only Swiggy-provided tracking data; never synthesize a link from the order ID.
-    try {
-      await bot.telegram.sendMessage(
-        order.userId,
-        `✓ <b>${escapeHtml(role)}, your Swiggy order is confirmed.</b>\n\n` +
-        `Swiggy order ID: <code>${escapeHtml(order.swiggyOrderId)}</code>\n` +
-        `${trackingLine}\n` +
-        `${deliveryOtpLine}`,
-        { parse_mode: 'HTML', ...(userTrackingKeyboard || {}) }
-      );
-    } catch (e) {
-      console.error('Failed to send Swiggy order update to user:', e.message);
-    }
-
-    // Send the same verified information to Boss.
-    for (const bossId of db.config.bossIds) {
-      try {
-        await bot.telegram.sendMessage(
-          bossId,
-          `✓ <b>Payment verified by Swiggy for order #${escapeHtml(orderId)}.</b>\n\n` +
-          `Swiggy order ID: <code>${escapeHtml(order.swiggyOrderId)}</code>\n` +
-          `${trackingLine}\n` +
-          `${deliveryOtpLine}\n\n` +
-          `Use “Mark as complete” after delivery.`,
-          { parse_mode: 'HTML', ...bossTrackingKeyboard }
-        );
-      } catch (e) {}
-    }
-
-    const firstBossChatId = db.config.bossIds?.[0] || Number(process.env.BOSS_ID || 0);
-    startOrderDeliveryInfoPoller({
-      telegram: bot.telegram,
-      chatId: firstBossChatId,
-      orderId,
-      formatOrderBodyFn: formatUserOrderCardText
-    });
-  } else {
-    // Payment is confirmed by user, awaiting final order placement & tracking link
-    order.paidByUser = true;
-    order.paymentStatus = 'PAID_BY_USER';
-    order.status = 'ACCEPTED';
-    order.acceptedAt = new Date().toISOString();
-    db.config.slotsLeft = Math.max(0, (db.config.slotsLeft || 1) - 1);
-    saveDb(db);
-    await updateOrderCards(order);
-
-    // Notify Boss that User confirmed payment
-    for (const bossId of db.config.bossIds) {
-      try {
-        const userProfileUrl = `tg://user?id=${order.userId}`;
-        await bot.telegram.sendMessage(
-          bossId,
-          `₹ <b>PAID ORDER! <a href="${userProfileUrl}">${escapeHtml(order.userName)}</a> ne ₹${order.finalPayable || 0} ka payment confirm kar diya hai! (#${orderId})</b>\n\n` +
-          `# <b>User TG ID:</b> <a href="${userProfileUrl}">${order.userId}</a>\n` +
-          `▣ <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}\n` +
-          `₹ <b>Amount:</b> ₹${order.finalPayable || 0}\n` +
-          (order.cart ? `▤ <b>Cart:</b> <code>${escapeHtml(order.cart)}</code>\n` : '') +
-          (order.address ? `⌖ <b>Address:</b> <code>${escapeHtml(order.address)}</code>\n\n` : '\n') +
-          `› Kripya Swiggy me order place karke live tracking link share karein:`,
-          {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              [
-                makeCopyButton('● Copy Cart', order.cart || '', `boss_copy_cart_${orderId}`),
-                makeCopyButton('● Copy Address', order.address || '', `boss_copy_addr_${orderId}`)
-              ],
-              [Markup.button.callback('↗ Send Tracking Link', `boss_tracking_${orderId}`)],
-              [Markup.button.callback('● Mark as Complete', `boss_action_done_${orderId}`)]
-            ])
-          }
-        );
-      } catch (e) {}
-    }
-
-    await ctx.reply(
-      `✓ <b>Payment confirmation received! (#${orderId})</b>\n\n` +
-      `Aapka Swiggy order place kiya ja raha hai. Jald hi delivery tracking link mil jayega! ↗\n\n` +
-      `› <b>Support:</b> @Its_life_001`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
-        ])
-      }
-    );
-  }
+async function handleConfirmOrderPaid(ctx, orderId, _confirmedBy) {
+  const result = await checkOrderPaidStatusOnly(orderId);
+  await ctx.answerCbQuery(result.message || 'Waiting for Swiggy payment verification.', { show_alert: true }).catch(() => {});
 }
 
 bot.action(/^user_confirm_order_(.+)$/, async (ctx) => {
@@ -4692,18 +4522,24 @@ bot.action(/^user_confirm_order_(.+)$/, async (ctx) => {
   const db = getDb();
   const order = db.orders[orderId];
   if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
-  if (Number(order.userId) !== Number(ctx.from.id) && !isBoss(ctx.from.id)) {
+  if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
     return ctx.answerCbQuery('Unauthorized: Not your order', { show_alert: true }).catch(() => {});
   }
   await handleConfirmOrderPaid(ctx, orderId, 'User');
 });
 
 bot.action(/^user_resend_qr_(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery('Resending QR Code... !').catch(() => {});
   const orderId = ctx.match[1];
   const db = getDb();
   const order = db.orders[orderId];
-  if (!order) return ctx.reply('Order not found');
+  if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true }).catch(() => {});
+  if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
+    return ctx.answerCbQuery('Unauthorized: Not your order', { show_alert: true }).catch(() => {});
+  }
+  if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status)) {
+    return ctx.answerCbQuery('No payment QR is available for a closed order.', { show_alert: true }).catch(() => {});
+  }
+  await ctx.answerCbQuery('Resending payment details...').catch(() => {});
   await sendPaymentQrToUser(order);
 });
 
@@ -5077,7 +4913,7 @@ bot.on('photo', async (ctx) => {
     const payable = order.finalPayable || 350;
     const userButtons = [
       [Markup.button.url('◎ Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
-      [Markup.button.callback('₹ confirm order', `user_confirm_order_${orderId}`)]
+      [Markup.button.callback('✓ Check payment status', `user_paid_status_${orderId}`)]
     ];
     if (order.cart && order.cart.startsWith('http')) {
       userButtons.splice(1, 0, [Markup.button.url('▤ Open Swiggy Cart / Items', order.cart)]);
@@ -5224,7 +5060,7 @@ bot.on('document', async (ctx) => {
     const payable = order.finalPayable || 350;
     const userButtons = [
       [Markup.button.url('◎ Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
-      [Markup.button.callback('₹ confirm order', `user_confirm_order_${orderId}`)]
+      [Markup.button.callback('✓ Check payment status', `user_paid_status_${orderId}`)]
     ];
     if (order.cart && order.cart.startsWith('http')) {
       userButtons.splice(1, 0, [Markup.button.url('▤ Open Swiggy Cart / Items', order.cart)]);
@@ -5865,6 +5701,39 @@ registerForwardedOrderHandlers(bot, {
   formatOrderBodyFn: formatUserOrderCardText
 });
 
+bot.action(/^fwd_input_(cart|address|mobile)_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+  const [, inputType, orderId] = ctx.match;
+  const order = getDb().orders?.[orderId];
+  if (!order) return ctx.answerCbQuery('Order not found.', { show_alert: true }).catch(() => {});
+  if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status)) {
+    return ctx.answerCbQuery(`Order is ${order.status.toLowerCase()} and cannot be edited.`, { show_alert: true }).catch(() => {});
+  }
+  if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
+    return ctx.answerCbQuery('Bill approval is in progress or complete; delivery details are locked.', { show_alert: true }).catch(() => {});
+  }
+  if (order.pendingSwiggyOrderId || order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.cardStage === 'QR_GENERATED') {
+    return ctx.answerCbQuery('Swiggy checkout is already active. Cancel or resolve it before editing delivery details.', { show_alert: true }).catch(() => {});
+  }
+
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[ctx.from.id] = { action: `waiting_boss_order_${inputType}`, orderId };
+  const prompt = inputType === 'cart'
+    ? `▤ <b>Send the genuine Swiggy Cart / Group Cart link for order #${escapeHtml(orderId)}.</b>\n\n<i>The bill will be rechecked after the delivery address and recipient mobile are verified.</i>`
+    : inputType === 'mobile'
+      ? `☎ <b>Send only the recipient’s correct 10-digit Indian mobile for order #${escapeHtml(orderId)}.</b>\n\n<i>The Swiggy account number will never be substituted for the recipient number.</i>`
+      : `⌖ <b>Send the delivery address for order #${escapeHtml(orderId)}.</b>\n\n<i>Use a Swiggy address share, Google Maps link, full street address with area/city/PIN, or share a GPS pin. Include the recipient’s 10-digit mobile if known.</i>`;
+  await ctx.reply(prompt, {
+    parse_mode: 'HTML',
+    reply_markup: {
+      force_reply: true,
+      input_field_placeholder: inputType === 'cart'
+        ? 'Paste Swiggy cart link...'
+        : (inputType === 'mobile' ? 'Enter recipient mobile...' : 'Paste address or send GPS pin...')
+    }
+  });
+});
+
 // Optional instant QR push toggle (`/autoqr on` | `/autoqr off` | `/autoqr`) for 10x zero-tap QR generation
 bot.command('autoqr', async (ctx) => {
   if (!isBoss(ctx.from?.id)) return;
@@ -5929,6 +5798,61 @@ bot.on('text', async (ctx) => {
       const res = await ingestAndPersistRawAccountTexts([{ fileName: 'pasted_session.json', text: rawText }]);
       await sendSafeHtml(ctx, formatBulkVaultImportSummaryHtml(res, 1), getBossReplyKeyboard());
       return;
+    }
+
+    // Telegram callback-based edit prompts stay attached to their order; do not allocate a new one.
+    if (state && ['waiting_boss_order_cart', 'waiting_boss_order_address', 'waiting_boss_order_mobile'].includes(state.action)) {
+      if (rawText.startsWith('/') || ['Cancel', 'cancel', 'Close', 'close', 'Order Screen', 'Main Menu', 'Menu', 'Back', 'back'].includes(rawText)) {
+        // The normal menu/cancel handling below clears the pending prompt.
+      } else {
+        const order = getDb().orders?.[state.orderId];
+        if (!order) {
+          delete userWaitState[userId];
+          await ctx.reply('Order not found; the input prompt has been cleared.');
+          return;
+        }
+
+        const links = extractAllLinks(rawText);
+        if (state.action === 'waiting_boss_order_cart') {
+          const parsedCart = parseCartDetails(rawText);
+          if (!links.some(isValidSwiggyCartUrl) && !parsedCart) {
+            await ctx.reply('! Send a genuine Swiggy Cart / Group Cart link or a readable Swiggy cart receipt.');
+            return;
+          }
+        } else if (state.action === 'waiting_boss_order_mobile') {
+          if (!/^(?:(?:\+?91[\s-]?)|(?:0[\s-]?))?[6-9]\d{4}[\s-]?\d{5}$/.test(rawText.trim()) || !normalizeDeliveryContact(rawText)) {
+            await ctx.reply('! Send only the recipient’s valid 10-digit Indian mobile number, optionally with +91.');
+            return;
+          }
+        } else {
+          const hasAddressLink = links.some(isValidDeliveryAddressUrl);
+          const hasMapLink = links.some(link => /maps\.app\.goo\.gl|google\.com\/maps|goo\.gl\/maps/i.test(link));
+          const addressDetails = parseAddressDetails(rawText);
+          const hasPlausibleStreetAddress = rawText.length >= 20 && /[\p{L}]/u.test(rawText) &&
+            ((rawText.match(/,/g) || []).length >= 2 || /\b\d{6}\b/.test(rawText) || /address|latitude|delivery/i.test(rawText));
+          const onlyCartLinks = links.length > 0 && links.every(isValidSwiggyCartUrl) && !hasAddressLink && !hasMapLink;
+          if (onlyCartLinks || (!hasAddressLink && !hasMapLink && !addressDetails?.address && !hasPlausibleStreetAddress)) {
+            await ctx.reply('! Send a delivery address share/link, Google Maps URL, or a full street address with area, city and PIN.');
+            return;
+          }
+        }
+
+        const update = await applyBossOrderUpdate({
+          telegram: ctx.telegram,
+          bossChatId: ctx.chat.id,
+          orderId: state.orderId,
+          cart: state.action === 'waiting_boss_order_cart' ? rawText : '',
+          address: ['waiting_boss_order_address', 'waiting_boss_order_mobile'].includes(state.action) ? rawText : '',
+          formatOrderBodyFn: formatUserOrderCardText
+        });
+        if (!update.ok) {
+          await ctx.reply(`! ${escapeHtml(update.error || 'Could not update the order.')}`);
+          return;
+        }
+        delete userWaitState[userId];
+        await ctx.reply(`✓ ${escapeHtml(update.message || 'Order details updated.')}`, { parse_mode: 'HTML' });
+        return;
+      }
     }
 
     // 1B. ANY Forwarded OR Direct Boss Cart Link / Address / Combined Cart+Address -> NEVER ask for OTP!
@@ -6201,7 +6125,6 @@ bot.on('text', async (ctx) => {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [makeSmartPortalButton('☎ Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [
                 { text: 'Copy Number', copy_text: { text: phone } }
               ],
@@ -6434,7 +6357,6 @@ bot.on('text', async (ctx) => {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [makeSmartPortalButton('☎ Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [
                 { text: 'Copy Number', copy_text: { text: phoneToLogin } }
               ],
@@ -6587,7 +6509,6 @@ bot.on('text', async (ctx) => {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [makeSmartPortalButton('☎ Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [
                 { text: 'Copy Number', copy_text: { text: cleanPhone } }
               ],
@@ -6822,12 +6743,12 @@ bot.on('text', async (ctx) => {
           `₹ <b>Official Swiggy Payment Link Ready! (Order #${orderId})</b>\n\n` +
           `▣ <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy Order')}${amtText}\n\n` +
           `↗ <b>Click to Pay Directly on Swiggy:</b>\n<a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` +
-          `<i>★ Yeh authentic link Swiggy payment page se generated hai. Payment complete karke neeche [ ₹ I Have Paid ] dabayein!</i>`,
+          `<i>★ Yeh authentic link Swiggy payment page se generated hai. Payment ke baad [ Check payment status ] dabayein!</i>`,
           {
             parse_mode: 'HTML',
             ...Markup.inlineKeyboard([
               [Markup.button.url('₹ Pay on Swiggy (Official Link)', link)],
-              [Markup.button.callback('₹ I Have Paid / Confirm Payment', `user_confirm_order_${orderId}`)],
+              [Markup.button.callback('✓ Check payment status', `user_paid_status_${orderId}`)],
               [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
             ])
           }
@@ -7475,7 +7396,29 @@ async function handleIncomingTelegramLocation(ctx, loc) {
 
 bot.on('location', async (ctx) => {
   if (ctx.from?.id && isBoss(ctx.from.id)) {
-    delete userWaitState[ctx.from.id];
+    const userId = ctx.from.id;
+    const state = userWaitState[userId];
+    if (state?.action === 'waiting_boss_order_address') {
+      const update = await applyBossOrderUpdate({
+        telegram: ctx.telegram,
+        bossChatId: ctx.chat.id,
+        orderId: state.orderId,
+        location: ctx.message?.location,
+        formatOrderBodyFn: formatUserOrderCardText
+      });
+      if (update.ok) {
+        delete userWaitState[userId];
+        await ctx.reply(`✓ ${escapeHtml(update.message || 'Delivery pin saved.')}`, { parse_mode: 'HTML' });
+      } else {
+        await ctx.reply(`! ${escapeHtml(update.error || 'Could not save this delivery pin.')}`, { parse_mode: 'HTML' });
+      }
+      return;
+    }
+    if (state?.action === 'waiting_boss_order_cart' || state?.action === 'waiting_boss_order_mobile') {
+      await ctx.reply('! This prompt needs text. Use its Cart or recipient-mobile prompt, or choose the Address button to send a location pin.');
+      return;
+    }
+    delete userWaitState[userId];
     void handleBossForwardedOrderInput(ctx, {
       location: ctx.message?.location,
       formatOrderBodyFn: formatUserOrderCardText,
@@ -8562,83 +8505,123 @@ bot.catch(async (err, ctx) => {
 });
 
 // =========================================================================
-// V16 ONE-CARD STATE MACHINE + TWO-BOX [VERIFY] PORTAL & TELEGRAM ACTIONS
+// Telegram order-state, bill-approval, and payment actions
 // =========================================================================
 
-async function submitDraftAsCleanOrderForPortal(uidStr) {
-  const uid = Number(uidStr);
-  const draft = getDraft(uid);
-  if (!draft?.cart || !draft?.address) {
-    return { ok: false, error: 'Please verify both Cart Link and Delivery Address first.' };
-  }
-  const db = getDb();
-  const bossTargetId = Number(process.env.BOSS_ID || db.bosses?.[0] || 6484999726);
-  const orderId = `ORD${Math.floor(10000 + Math.random() * 89999)}`;
-  const cd = draft.cartDetails || {};
-  const newOrder = {
-    id: orderId,
-    userId: uid,
-    userName: db.autoUserNames?.[uid] || `User ${String(uid).slice(-4)}`,
-    fwdSenderUserId: uid,
-    fwdSenderName: db.autoUserNames?.[uid] || `User ${String(uid).slice(-4)}`,
-    isForwardedOrder: true,
-    isDirectBossOrder: false,
-    cart: '',
-    address: '',
-    status: 'PENDING',
-    cardStage: 'COLLECTING',
-    uxStage: 'SCREEN_02_VALIDATING',
-    createdAt: new Date().toISOString()
-  };
+// Telegram callbacks for bill approval, payment status, and corrected delivery details.
 
-  if (!db.orders) db.orders = {};
-  db.orders[orderId] = newOrder;
-  saveDb(db);
-  const submittedCart = draft.cart;
-  const submittedAddr = draft.addressOriginalText || draft.address;
-  clearDraft(uid);
+function isOrderCustomer(order, userId) {
+  const allowedIds = [order?.fwdSenderUserId, order?.userId]
+    .filter(value => value !== null && value !== undefined && String(value).trim() !== '')
+    .map(String);
+  return allowedIds.includes(String(userId));
+}
 
-  // Run full live link & address ingestion + best unused 0-order account sync!
-  try {
-    const syncRes = await applyBossPortalVerification({
-      telegram: bot.telegram,
-      bossChatId: bossTargetId,
-      orderId,
-      cart: submittedCart,
-      address: submittedAddr,
-      formatOrderBodyFn: formatUserOrderCardText
+async function sendApprovedOrderPaymentToUser(uidStr, order, { force = false } = {}) {
+  const callerId = String(uidStr || '').trim();
+  const callerIsBoss = callerId && isBoss(Number(callerId));
+  if (callerId && !isOrderCustomer(order, callerId) && !callerIsBoss) return false;
+  const targetUserId = callerId && isOrderCustomer(order, callerId)
+    ? callerId
+    : String(order?.fwdSenderUserId || order?.userId || '').trim();
+  if (!targetUserId) return false;
+  if (!force && order.customerPaymentMessageId) return true;
+
+  const upiUri = String(order.pendingSwiggyUpiUri || order.realUpiIntentUri || '').trim();
+  const paymentUrl = String(order.swiggyPaymentUrl || '').trim();
+  const amount = Number(order.finalPayable || order.finalTotal || 0);
+  const restaurant = escapeHtml(order.restaurantName || 'Swiggy Order');
+  const rows = [];
+  if (paymentUrl) rows.push([Markup.button.url('↗ Pay on Swiggy', paymentUrl)]);
+  rows.push([Markup.button.callback('✓ Check payment status', `user_paid_status_${order.id}`)]);
+  if (upiUri || paymentUrl) rows.push([Markup.button.callback('↻ Resend Swiggy payment details', `user_resend_approved_qr_${order.id}`)]);
+  const keyboard = Markup.inlineKeyboard(rows);
+
+  if (upiUri) {
+    const qrBuffer = await QRCode.toBuffer(upiUri, {
+      type: 'png',
+      width: 640,
+      margin: 2,
+      errorCorrectionLevel: 'M'
     });
-    const refreshed = getDb().orders?.[orderId];
-    if (refreshed && Number(refreshed.finalPayable || refreshed.finalTotal || 0) > 0) {
-      refreshed.finalTotal = Number(refreshed.finalPayable || refreshed.finalTotal || 0);
-      refreshed.status = 'APPROVAL_PENDING';
-      refreshed.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
-      const saveTarget = getDb();
-      saveTarget.orders[orderId] = refreshed;
-      saveDb(saveTarget);
-    }
-    return {
-      ok: true,
-      orderId,
-      message: syncRes?.message || 'Order validated — review your final total below!'
-    };
-  } catch {
-    return { ok: true, orderId, message: 'Order submitted — Boss is validating your bill.' };
+    const caption = safeTelegramCaption(
+      `₹ <b>Official Swiggy payment request · Order #${escapeHtml(order.id)}</b>\n` +
+      `▤ <b>Restaurant:</b> ${restaurant}\n` +
+      `₹ <b>Exact amount:</b> ₹${amount}\n\n` +
+      `<i>This QR encodes the existing Swiggy checkout request. Checking status verifies payment with Swiggy; a button tap alone never marks it paid.</i>`,
+      1000
+    );
+    const sent = await bot.telegram.sendPhoto(targetUserId, { source: qrBuffer }, {
+      caption,
+      parse_mode: 'HTML',
+      ...keyboard
+    });
+    order.customerPaymentMessageId = sent?.message_id || null;
+    order.customerPaymentSentAt = new Date().toISOString();
+    order.paymentSentToUser = true;
+    const db = getDb();
+    db.orders[order.id] = order;
+    saveDb(db);
+    return true;
   }
+
+  if (paymentUrl) {
+    const sent = await bot.telegram.sendMessage(
+      targetUserId,
+      `↗ <b>Official Swiggy payment link · Order #${escapeHtml(order.id)}</b>\n\n` +
+      `▤ <b>Restaurant:</b> ${restaurant}\n` +
+      `₹ <b>Exact amount:</b> ₹${amount}\n\n` +
+      `<a href=\"${escapeHtml(paymentUrl)}\">Open Swiggy payment</a>\n` +
+      `<i>Use the status button only after paying. Payment is verified with Swiggy.</i>`,
+      {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        ...keyboard
+      }
+    );
+    order.customerPaymentMessageId = sent?.message_id || null;
+    order.customerPaymentSentAt = new Date().toISOString();
+    order.paymentSentToUser = true;
+    const db = getDb();
+    db.orders[order.id] = order;
+    saveDb(db);
+    return true;
+  }
+
+  await bot.telegram.sendMessage(
+    targetUserId,
+    `✓ <b>Bill approved for order #${escapeHtml(order.id)}.</b>\n\n` +
+    `Swiggy has not returned a payment QR or official payment link yet. Do not pay using another QR or link; the official payment details will be sent here when available.`,
+    { parse_mode: 'HTML' }
+  );
+  return false;
 }
 
 async function approveUserOrderBillAction(uidStr, orderId) {
   const db = getDb();
   const order = db.orders?.[orderId];
   if (!order) return { ok: false, error: 'Order not found.' };
-  order.billApprovedByUser = true;
-  order.billApprovedAt = new Date().toISOString();
+  if (!isOrderCustomer(order, uidStr) && !isBoss(Number(uidStr))) {
+    return { ok: false, error: 'Unauthorized: this is not your order.' };
+  }
+  if (order.status === 'COMPLETED') {
+    return { ok: false, error: 'This order is already paid. No second payment QR will be created.' };
+  }
+  if (!['APPROVAL_PENDING', 'PAYMENT_PENDING'].includes(order.status)) {
+    return { ok: false, error: 'This bill is not awaiting approval.' };
+  }
+
+  if (!order.billApprovedByUser) {
+    order.billApprovedByUser = true;
+    order.billApprovedAt = new Date().toISOString();
+  }
   order.status = 'PAYMENT_PENDING';
   order.uxStage = 'SCREEN_04_PAYMENT_PENDING';
   saveDb(db);
 
   const bossTargetId = Number(process.env.BOSS_ID || db.bosses?.[0] || 6484999726);
-  // Idempotent single QR creation — never creates a 2nd QR if one already exists!
+  let qrGenerationError = '';
+  // Idempotent single Swiggy QR creation — never create a second order/QR on repeat taps.
   if (!order.pendingSwiggyUpiUri && !order.realUpiIntentUri) {
     try {
       await executeRealQrGenerationForOrder({
@@ -8647,25 +8630,50 @@ async function approveUserOrderBillAction(uidStr, orderId) {
         orderId: order.id,
         formatOrderBodyFn: formatUserOrderCardText
       });
-    } catch {}
+    } catch (error) {
+      qrGenerationError = String(error?.message || 'Swiggy payment details could not be prepared.').slice(0, 350);
+      console.warn(`[BillApproval] Swiggy payment details are not ready for #${order.id}:`, error.message);
+    }
   }
 
   const updated = getDb().orders?.[orderId] || order;
-  const payCard = buildCleanUserPaymentPendingCard(updated);
-  if (uidStr) {
-    await bot.telegram.sendMessage(uidStr, payCard.text, {
-      parse_mode: 'HTML',
-      link_preview_options: { is_disabled: true },
-      ...payCard.keyboard
-    }).catch(() => {});
+  if (qrGenerationError && !updated.pendingSwiggyUpiUri && !updated.realUpiIntentUri && !updated.swiggyPaymentUrl) {
+    return {
+      ok: false,
+      error: `Bill approval was recorded, but Swiggy payment details could not be generated: ${qrGenerationError}. No payment QR was sent; please retry later or contact support.`
+    };
   }
-  return { ok: true, orderId, message: 'Bill approved — single payment QR ready!' };
+  let sentPayment;
+  try {
+    sentPayment = await sendApprovedOrderPaymentToUser(uidStr, updated);
+  } catch (error) {
+    return {
+      ok: false,
+      error: `Bill approved, but Telegram could not deliver the existing Swiggy payment details: ${error.message}. Refresh the order screen and resend the same QR; no new order will be created.`
+    };
+  }
+  return {
+    ok: true,
+    orderId,
+    message: sentPayment
+      ? 'Bill approved — the existing Swiggy payment details were sent in Telegram.'
+      : 'Bill approved — waiting for Swiggy to return an official payment QR or link.'
+  };
 }
 
 async function rejectUserOrderBillAction(uidStr, orderId) {
   const db = getDb();
   const order = db.orders?.[orderId];
   if (!order) return { ok: false, error: 'Order not found.' };
+  if (!isOrderCustomer(order, uidStr) && !isBoss(Number(uidStr))) {
+    return { ok: false, error: 'Unauthorized: this is not your order.' };
+  }
+  if (order.billApprovedByUser || order.pendingSwiggyOrderId) {
+    return { ok: false, error: 'The bill has already been approved or sent to Swiggy and cannot be returned for edits.' };
+  }
+  if (order.status !== 'APPROVAL_PENDING') {
+    return { ok: false, error: 'This bill is no longer awaiting review.' };
+  }
   if (order.selectedAccount) {
     releaseSwiggyAccountReservation(order.selectedAccount, order.id);
   }
@@ -8679,7 +8687,7 @@ async function rejectUserOrderBillAction(uidStr, orderId) {
     cartDetails: order.cartDetails || { restaurantName: order.restaurantName, items: order.items, subtotal: order.subtotal },
     addressDetails: order.addressDetails || null
   });
-  return { ok: true, message: 'Order returned to your Verify Box — edit Cart or Address and re-verify.' };
+  return { ok: true, message: 'Order returned to your Telegram order screen so you can edit the Cart or Address.' };
 }
 
 async function checkOrderPaidStatusOnly(orderId) {
@@ -8750,71 +8758,50 @@ async function checkOrderPaidStatusOnly(orderId) {
   };
 }
 
-bot.action(/^user_approve_bill_([A-Za-z0-9_]+)$/, async (ctx) => {
-  await ctx.answerCbQuery('✓ Approving bill & issuing single payment QR...').catch(() => {});
-  await approveUserOrderBillAction(String(ctx.from.id), ctx.match[1]);
+bot.action(/^user_approve_bill_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  await ctx.answerCbQuery('Checking bill approval and Swiggy payment details...').catch(() => {});
+  const result = await approveUserOrderBillAction(String(ctx.from.id), ctx.match[1]);
+  if (!result.ok) await ctx.reply(`! ${escapeHtml(result.error || 'Bill approval failed.')}`).catch(() => {});
 });
 
-bot.action(/^user_bill_issue_([A-Za-z0-9_]+)$/, async (ctx) => {
-  await ctx.answerCbQuery('✎ Returned to your Verify Box so you can edit Cart or Address!').catch(() => {});
-  await rejectUserOrderBillAction(String(ctx.from.id), ctx.match[1]);
-  const intake = buildCleanUserIntakeCard(ctx.from.id, getDraft(ctx.from.id));
-  await ctx.reply(intake.text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...intake.keyboard });
+bot.action(/^user_bill_issue_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const result = await rejectUserOrderBillAction(String(ctx.from.id), ctx.match[1]);
+  if (!result.ok) return ctx.answerCbQuery(result.error || 'Could not return this order for edits.', { show_alert: true }).catch(() => {});
+  await ctx.answerCbQuery('Returned to your order screen for edits.').catch(() => {});
+  const screen = getUserScreen(ctx.from.id, ctx.from);
+  await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
 });
 
-bot.action(/^user_paid_status_([A-Za-z0-9_]+)$/, async (ctx) => {
-  const res = await checkOrderPaidStatusOnly(ctx.match[1]);
+bot.action(/^user_paid_status_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const orderId = ctx.match[1];
+  const order = getDb().orders?.[orderId];
+  if (!order) return ctx.answerCbQuery('Order not found.', { show_alert: true }).catch(() => {});
+  if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
+    return ctx.answerCbQuery('Unauthorized: not your order.', { show_alert: true }).catch(() => {});
+  }
+  const res = await checkOrderPaidStatusOnly(orderId);
   await ctx.answerCbQuery(res.message, { show_alert: true }).catch(() => {});
 });
 
-export const handleOrderUxPortalHttp = createOrderUxHttpHandler({
-  bot,
-  isBoss,
-  extractAllLinks,
-  isValidSwiggyCartUrl,
-  isValidDeliveryAddressUrl,
-  parseCartDetails,
-  parseAddressDetails,
-  geocodeAddressDetails,
-  resolveSwiggyLink,
-  formatUserOrderCardText,
-  submitDraftAsCleanOrder: submitDraftAsCleanOrderForPortal,
-  approveUserOrderBill: approveUserOrderBillAction,
-  rejectUserOrderBill: rejectUserOrderBillAction,
-  checkOrderPaidStatus: checkOrderPaidStatusOnly,
-  ingestBossPortalUpdate: (orderId, fields) => {
-    const db = getDb();
-    const bossTargetId = Number(process.env.BOSS_ID || db.bosses?.[0] || 6484999726);
-    return applyBossPortalVerification({
-      telegram: bot.telegram,
-      bossChatId: bossTargetId,
-      orderId,
-      cart: fields.cart,
-      address: fields.address,
-      formatOrderBodyFn: formatUserOrderCardText
-    });
-  },
-  sendBossBillSummaryToCustomer: async (orderId) => {
-    const db = getDb();
-    const order = db.orders?.[orderId];
-    if (!order) return { ok: false, error: 'Order not found.' };
-    const targetUid = order.fwdSenderUserId || order.userId;
-    order.status = 'APPROVAL_PENDING';
-    order.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
-    saveDb(db);
-    if (targetUid) {
-      const card = buildCleanUserBillConfirmationCard({ ...order, userId: targetUid });
-      await bot.telegram.sendMessage(targetUid, card.text, {
-        parse_mode: 'HTML',
-        link_preview_options: { is_disabled: true },
-        ...card.keyboard
-      }).catch(() => {});
-    }
-    return { ok: true, message: 'Clean Bill Summary sent to family member ✓ (awaiting approval).' };
+bot.action(/^user_resend_approved_qr_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const orderId = ctx.match[1];
+  const order = getDb().orders?.[orderId];
+  if (!order) return ctx.answerCbQuery('Order not found.', { show_alert: true }).catch(() => {});
+  if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
+    return ctx.answerCbQuery('Unauthorized: not your order.', { show_alert: true }).catch(() => {});
+  }
+  if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status) || !order.billApprovedByUser) {
+    return ctx.answerCbQuery('No unpaid approved payment QR is available.', { show_alert: true }).catch(() => {});
+  }
+  await ctx.answerCbQuery('Resending the same Swiggy payment request; no new QR/order will be created.').catch(() => {});
+  try {
+    await sendApprovedOrderPaymentToUser(String(ctx.from.id), order, { force: true });
+  } catch (error) {
+    await ctx.reply(`! ${escapeHtml(`Could not resend the existing Swiggy payment details: ${error.message}`)}`).catch(() => {});
   }
 });
 
-// Lightweight health check server + Zero-Login Live Swiggy Order Tracker + 1-Click Session Copy WebApp + 24x7 Keep-Alive
+// Lightweight health check server + Swiggy tracking endpoints + 24x7 Keep-Alive
 const healthPort = Number(process.env.PORT || 0);
 if (healthPort > 0) {
   const server = http.createServer(async (req, res) => {
@@ -9017,110 +9004,6 @@ setInterval(refresh, 8000);
         return res.end(trackHtml);
       }
 
-      // V16 One-Card + Two-Box [Verify] Mini App & Owner Account Manager HTTP Router
-      if (await handleOrderUxPortalHttp(req, res, reqUrl)) {
-        return;
-      }
-
-      if (reqUrl.pathname === '/copy') {
-        const accKey = reqUrl.searchParams.get('acc') || '';
-        const sig = reqUrl.searchParams.get('sig') || '';
-        if (!accKey || sig !== computeCopyHmac(accKey)) {
-          res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-          return res.end('Invalid or unauthorized copy link.');
-        }
-
-        const exported = exportSessionJson(accKey);
-        if (!exported) {
-          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-          return res.end('Session code not found for this account.');
-        }
-
-        const fullCode = JSON.stringify(exported, null, 2);
-        const safeEmbedded = JSON.stringify(fullCode).replace(/</g, '\\u003c');
-
-        const html = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>Copy Full Swiggy Session Code</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
-<style>
-  *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
-  body{background:#0b1220;color:#f8fafc;height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
-  #btn{width:100%;max-width:440px;min-height:220px;border:none;border-radius:20px;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;cursor:pointer;padding:28px 22px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;box-shadow:0 20px 50px rgba(37,99,235,.45);transition:transform .12s ease,background .18s ease}
-  #btn.done{background:linear-gradient(135deg,#059669,#10b981);box-shadow:0 20px 50px rgba(16,185,129,.45)}
-  #btn:active{transform:scale(.98)}
-  .icon{font-size:46px;line-height:1}
-  .title{font-size:21px;font-weight:800;letter-spacing:-.02em;text-align:center}
-  .meta{font-size:13px;opacity:.92;text-align:center;line-height:1.45}
-  textarea{position:fixed;top:-9999px;left:-9999px;opacity:0}
-</style>
-</head>
-<body>
-<textarea id="ta" readonly></textarea>
-<button id="btn" type="button">
-  <div class="icon" id="ic">▤</div>
-  <div class="title" id="tt">Tap Once to Copy FULL Code</div>
-  <div class="meta" id="mt">${fullCode.length} characters • 100% Complete Session + Cookies</div>
-</button>
-<script>
-const CODE = ${safeEmbedded};
-const ta = document.getElementById('ta');
-const btn = document.getElementById('btn');
-const ic = document.getElementById('ic');
-const tt = document.getElementById('tt');
-const mt = document.getElementById('mt');
-ta.value = CODE;
-
-if (window.Telegram && Telegram.WebApp) {
-  try { Telegram.WebApp.ready(); } catch (e) {}
-}
-
-function markCopied() {
-  btn.classList.add('done');
-  ic.textContent = '✓';
-  tt.textContent = 'PURA CODE COPY HO GAYA!';
-  mt.textContent = CODE.length + ' chars copied to clipboard (Full Cookies + Session)';
-  try { Telegram.WebApp?.HapticFeedback?.notificationOccurred('success'); } catch (e) {}
-  setTimeout(() => {
-    try { Telegram.WebApp?.close(); } catch (e) {}
-  }, 550);
-}
-
-async function copyAll() {
-  let ok = false;
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    try {
-      await navigator.clipboard.writeText(CODE);
-      ok = true;
-    } catch (e) {}
-  }
-  if (!ok) {
-    try {
-      ta.focus();
-      ta.select();
-      ta.setSelectionRange(0, CODE.length);
-      ok = document.execCommand('copy');
-    } catch (e) {}
-  }
-  if (ok) markCopied();
-  return ok;
-}
-
-btn.addEventListener('click', copyAll);
-document.body.addEventListener('click', copyAll);
-window.addEventListener('load', () => { setTimeout(copyAll, 40); });
-</script>
-</body>
-</html>`;
-        res.writeHead(200, {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': 'no-store, no-cache, must-revalidate'
-        });
-        return res.end(html);
-      }
     } catch (e) {}
 
     const liveAccounts = Object.values(getDb().config?.accounts || {}).filter(a => a?.isLoggedIn);
@@ -9128,10 +9011,9 @@ window.addEventListener('load', () => { setTimeout(copyAll, 40); });
     res.end(JSON.stringify({
       status: 'ok',
       bot: 'online',
-      build: 'v16-zero-sms-one-card-miniapp-verify',
+      build: 'telegram-button-order-flow',
       ipv4Shield: true,
       zeroSmsShield: true,
-      twoBoxVerifyPortal: true,
       zeroChromiumOrderFlow: true,
       tenOrderParallelAutoDispatch: true,
       zeroOtpCartIntake: true,
@@ -9141,11 +9023,11 @@ window.addEventListener('load', () => { setTimeout(copyAll, 40); });
     }));
   });
   server.listen(healthPort, '0.0.0.0', () => {
-    console.log(`◎ Cloud health & 1-click Copy server listening on 0.0.0.0:${healthPort}`);
+    console.log(`◎ Cloud health & Swiggy tracking server listening on 0.0.0.0:${healthPort}`);
   });
 
   // Self keep-alive ping every 8 minutes via public Render edge URL so container never idles out
-  const keepAliveUrl = PUBLIC_APP_URL + '/';
+  const keepAliveUrl = PUBLIC_SERVICE_URL + '/';
   setInterval(() => {
     fetch(keepAliveUrl, { signal: AbortSignal.timeout(10000) })
       .then(r => console.log(`♥ Keep-alive ping -> ${keepAliveUrl} [${r.status}]`))

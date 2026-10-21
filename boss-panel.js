@@ -1,6 +1,5 @@
 import { Telegraf, Markup } from 'telegraf';
 import { getDb, saveDb, isBoss, canTransitionOrder } from './store.js';
-import { buildBossAccountsPortalUrl, buildUserPortalUrl, makeSmartPortalButton } from './order-ux-portal.js';
 import { getStoredSwiggyTrackingUrl } from './swiggy-cart.js';
 import {
   esc,
@@ -77,13 +76,6 @@ export function buildBossPanelHome(db) {
     accBody += `${field(esc(acc.name || key), `<b>${status}</b>`)}\n`;
   }
 
-  const defaultBossId = Number(process.env.BOSS_ID || 6484999726);
-  const accMgrUrl = buildBossAccountsPortalUrl(defaultBossId);
-  const mgrButton =
-    /^https:\/\//i.test(accMgrUrl)
-      ? { text: '◈ Account Manager (OTP + JSON Vault)', web_app: { url: accMgrUrl } }
-      : { text: '◈ Account Manager (OTP + JSON Vault)', url: accMgrUrl };
-
   const text = section('★ BOSS CARE & SWIGGY PANEL', [
     section('◉ Connected Swiggy Accounts', accBody || sub('No accounts added yet.')),
     section('▤ Orders Overview', [
@@ -95,19 +87,21 @@ export function buildBossPanelHome(db) {
   ].join('\n'));
 
   const keyboard = Markup.inlineKeyboard([
-    [mgrButton],
-    [makeSmartPortalButton('☎ Open Portal (Mini App)', buildUserPortalUrl(Number(process.env.BOSS_ID || 6484999726)))],
     [
+      { text: '☎ Login with Number', callback_data: 'boss_login_with_number' },
+      { text: '▤ Login with JSON', callback_data: 'boss_login_with_json' },
+    ],
+    [
+      { text: '◉ Connected Accounts', callback_data: 'boss_view_accounts' },
       { text: '▣ Pending Orders', callback_data: 'boss_view_pending' },
-      { text: '× Cancelled Orders', callback_data: 'boss_view_cancelled_orders' },
     ],
     [
       { text: '▤ Order History', callback_data: 'boss_view_archive' },
-      { text: '◉ View Accounts', callback_data: 'boss_view_accounts' },
+      { text: '× Cancelled Orders', callback_data: 'boss_view_cancelled_orders' },
     ],
     [
       { text: '▣ Claim Offers (All Accounts)', callback_data: 'boss_claim_all_event_offers' },
-      { text: '! Refresh Panel', callback_data: 'boss_refresh' },
+      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' },
     ],
     [{ text: '× Close Panel', callback_data: 'close_menu' }],
   ]);

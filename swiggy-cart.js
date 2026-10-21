@@ -3211,23 +3211,122 @@ export async function verifyPaymentStatusFromApi(cookies = '') {
 //   2. GET https://maps.swiggy.com/addresses/nearby (CAS_HOST zero-WAF across Indian hubs + order coords)
 //   3. GET /dapi/order/all -> orders[].delivery_address (historical addresses used on empty-cart accounts)
 // ---------------------------------------------------------------------------
+function normalizeFetchedSwiggyAddress(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const nestedAddress = raw.address && typeof raw.address === 'object' ? raw.address : null;
+  const source = raw.actual_address || raw.actualAddress || raw.address_details || raw.addressDetails || nestedAddress || raw;
+  const location = source.location || raw.location || source.coordinates || raw.coordinates || {};
+  const firstText = (...values) => {
+    for (const value of values) {
+      if (value === null || value === undefined || typeof value === 'object') continue;
+      const text = String(value).trim();
+      if (text && !/^none$/i.test(text)) return text;
+    }
+    return '';
+  };
+
+  const flatNo = firstText(
+    source.flat_no, source.flatNo, source.address_line, source.address_line1,
+    raw.flat_no, raw.flatNo, raw.address_line, raw.address_line1
+  );
+  const area = firstText(source.locality, source.area, source.area_name, source.sublocality, raw.locality, raw.area);
+  const city = firstText(source.city, source.city_name, raw.city, raw.city_name);
+  const pincode = firstText(source.pincode, source.pin_code, source.postal_code, raw.pincode, raw.pin_code);
+  let address = firstText(
+    raw.display_address, raw.displayAddress, raw.formatted_address, raw.formattedAddress, raw.full_address, raw.fullAddress,
+    source.display_address, source.displayAddress, source.formatted_address, source.formattedAddress, source.full_address, source.fullAddress,
+    typeof raw.address === 'string' ? raw.address : '',
+    typeof source.address === 'string' ? source.address : '',
+    source.address_line1, raw.address_line1,
+    source.address_line, raw.address_line
+  );
+  if (address && flatNo && !normalizeAddressText(address).includes(normalizeAddressText(flatNo))) {
+    address = `${flatNo}, ${address}`;
+  }
+  if (!address) {
+    address = [flatNo, area, city, pincode].filter(Boolean).join(', ');
+  }
+
+  let lat = source.lat ?? source.latitude ?? location.lat ?? location.latitude ?? raw.lat ?? raw.latitude;
+  let lng = source.lng ?? source.longitude ?? location.lng ?? location.longitude ?? raw.lng ?? raw.longitude;
+  const coordinates = Array.isArray(location) ? location : (Array.isArray(location.coordinates) ? location.coordinates : null);
+  if (!isValidIndianDeliveryCoordinates(lat, lng) && coordinates?.length >= 2) {
+    // GeoJSON stores [longitude, latitude]; Swiggy address records may use [latitude, longitude].
+    const first = Number(coordinates[0]);
+    const second = Number(coordinates[1]);
+    if (isValidIndianDeliveryCoordinates(second, first)) {
+      lat = second;
+      lng = first;
+    } else if (isValidIndianDeliveryCoordinates(first, second)) {
+      lat = first;
+      lng = second;
+    }
+  }
+
+  const tags = Array.isArray(source.tags) ? source.tags : (Array.isArray(raw.tags) ? raw.tags : []);
+  const category = Array.isArray(source.address_category) ? source.address_category[0] : source.address_category;
+  const annotation = firstText(
+    source.annotation, raw.annotation, tags[0],
+    category === 1 ? 'Home' : category === 2 ? 'Work' : ''
+  );
+  const mobile = normalizeIndianMobile(firstText(
+    source.mobile, source.phone, source.receiver_mobile, source.receiver_phone, source.receiver_mobile_number,
+    source.contact_number, source.contactNumber, raw.mobile, raw.phone, raw.receiver_mobile,
+    raw.receiver_phone, raw.receiver_mobile_number, raw.contact_number, raw.contactNumber
+  ));
+
+  return {
+    id: firstText(raw.id, raw.address_id, raw.addressId, source.id, source.address_id, source.addressId),
+    city: city || 'Address',
+    name: firstText(source.name, source.contact_name, source.receiver_name, raw.name, raw.contact_name, raw.receiver_name),
+    mobile: mobile || '',
+    flat_no: flatNo,
+    area,
+    landmark: firstText(source.landmark, source.directions_to_reach, raw.landmark, raw.directions_to_reach, area),
+    address,
+    lat: lat === null || lat === undefined ? '' : String(lat),
+    lng: lng === null || lng === undefined ? '' : String(lng),
+    annotation
+  };
+}
+
+async function fetchMcpSavedAddresses(account) {
+  const result = await callSwiggyFoodMcpTool(account, 'get_addresses', {}, 4500).catch(() => null);
+  if (!result?.ok) return [];
+  let data = result.structured;
+  if ((!data || typeof data !== 'object') && result.text) {
+    try { data = JSON.parse(result.text); } catch {}
+  }
+  const list = Array.isArray(data)
+    ? data
+    : [
+        data?.addresses,
+        data?.savedAddresses,
+        data?.saved_addresses,
+        data?.data?.addresses,
+        data?.data?.savedAddresses,
+        data?.data?.saved_addresses,
+        Array.isArray(data?.data) ? data.data : null
+      ].find(Array.isArray) || [];
+  return list.map(normalizeFetchedSwiggyAddress).filter(Boolean);
+}
+
 export async function fetchAccountAddresses(cookiesOrAcc) {
   if (!cookiesOrAcc) return [];
   try {
-    const auth = await getSwiggySessionAuth(cookiesOrAcc);
-    if (!auth || auth.sessionExpired) return [];
-
+    const auth = await getSwiggySessionAuth(cookiesOrAcc).catch(() => null);
     const collected = [];
     const seenKeys = new Set();
 
     const addNormalized = (raw) => {
-      if (!raw) return;
-      const addrStr = String(raw.address || '').trim();
+      const normalized = normalizeFetchedSwiggyAddress(raw);
+      if (!normalized) return;
+      const addrStr = String(normalized.address || '').trim();
       if (!addrStr || addrStr.length < 4) return;
-      const id = String(raw.id || '').trim();
-      const lat = raw.lat ? String(raw.lat).trim() : '';
-      const lng = raw.lng ? String(raw.lng).trim() : '';
-      const mobile = normalizeIndianMobile(raw.mobile);
+      const id = String(normalized.id || '').trim();
+      const lat = normalized.lat ? String(normalized.lat).trim() : '';
+      const lng = normalized.lng ? String(normalized.lng).trim() : '';
+      const mobile = normalizeIndianMobile(normalized.mobile);
       const normText = normalizeAddressText(addrStr);
       const identityKey = id ? `${id}:${normText}` : `${lat.slice(0, 6)},${lng.slice(0, 6)}:${normText}`;
       const dedupeKey = `${identityKey}:${mobile || 'no-phone'}`;
@@ -3245,8 +3344,9 @@ export async function fetchAccountAddresses(cookiesOrAcc) {
         );
         if (dupByGeo) {
           if (!dupByGeo.id && id) dupByGeo.id = id;
-          if (!dupByGeo.name && raw.name) dupByGeo.name = raw.name;
+          if (!dupByGeo.name && normalized.name) dupByGeo.name = normalized.name;
           if (!dupByGeo.mobile && mobile) dupByGeo.mobile = mobile;
+          if (!dupByGeo.annotation && normalized.annotation) dupByGeo.annotation = normalized.annotation;
           return;
         }
       }
@@ -3254,20 +3354,26 @@ export async function fetchAccountAddresses(cookiesOrAcc) {
       seenKeys.add(dedupeKey);
       collected.push({
         id,
-        city: raw.city || 'Address',
-        name: raw.name || '',
+        city: normalized.city || 'Address',
+        name: normalized.name || '',
         mobile,
-        flat_no: raw.flat_no && raw.flat_no !== 'None' ? raw.flat_no : '',
-        area: raw.area || '',
-        landmark: raw.landmark || '',
+        flat_no: normalized.flat_no || '',
+        area: normalized.area || '',
+        landmark: normalized.landmark || '',
         address: addrStr,
         lat,
         lng,
-        annotation: raw.annotation || ''
+        annotation: normalized.annotation || ''
       });
     };
 
-    // Source 0: Native Swiggy Android Profile (`https://profile.swiggy.com/api/v1/user/profile` — returns ALL saved addresses nationwide in ~80ms!)
+    // If native/web profile auth is unavailable, try Swiggy's address tool directly before giving up.
+    if (!auth || auth.sessionExpired) {
+      for (const address of await fetchMcpSavedAddresses(cookiesOrAcc)) addNormalized(address);
+      return collected;
+    }
+
+    // Source 0: Native Swiggy Android Profile (`profile.swiggy.com`) — returns saved addresses across regions.
     const profPromise = (auth.profileAddresses?.length
       ? Promise.resolve({ addresses: auth.profileAddresses })
       : fetchSwiggyAndroidProfile(cookiesOrAcc, {
@@ -3279,47 +3385,19 @@ export async function fetchAccountAddresses(cookiesOrAcc) {
           timeoutMs: 4500
         }).catch(() => null)
     ).then((prof) => {
-      for (const a of (prof?.addresses || [])) {
-        addNormalized({
-          id: a.id,
-          city: a.city || 'Address',
-          name: a.name || '',
-          mobile: a.mobile || '',
-          flat_no: a.flat_no,
-          area: a.area || '',
-          landmark: a.landmark || '',
-          address: `${a.flat_no && a.flat_no !== 'None' ? a.flat_no + ', ' : ''}${a.address || ''}`.trim(),
-          lat: a.lat,
-          lng: a.lng,
-          annotation: a.annotation || ''
-        });
-      }
+      for (const address of (prof?.addresses || [])) addNormalized(address);
     });
 
-    // Source 1: Cart (`dapi/cart` or `chkout/cart/client`) -> `addresses`
+    // Source 1: Cart (`dapi/cart` or `chkout/cart/client`) -> saved addresses.
     const cartPromise = swiggyCartGet(cookiesOrAcc, { timeoutMs: 5000 })
       .then(({ json }) => {
         const list = json?.data?.cartMeta?.addresses || json?.data?.addresses || [];
-        for (const a of list) {
-          addNormalized({
-            id: a.id,
-            city: a.city || 'Address',
-            name: a.name || '',
-            mobile: a.mobile || '',
-            flat_no: a.flat_no,
-            area: a.area || '',
-            landmark: a.landmark || '',
-            address: `${a.flat_no && a.flat_no !== 'None' ? a.flat_no + ', ' : ''}${a.address || ''}`.trim(),
-            lat: a.lat,
-            lng: a.lng,
-            annotation: a.annotation || ''
-          });
-        }
+        for (const address of list) addNormalized(address);
       })
       .catch(() => {});
 
     // Source 2: Probe only coordinates from this account's real recent order history.
-    // Never query a hard-coded Lucknow hub for a customer who may live in another city.
+    // Never query a hard-coded city hub for a customer who may live elsewhere.
     const probeCoords = [];
     const recentOrderCoord = (auth.orders || []).find(o => o?.delivery_address?.lat && o?.delivery_address?.lng)?.delivery_address;
     if (recentOrderCoord?.lat && recentOrderCoord?.lng && isValidIndianDeliveryCoordinates(recentOrderCoord.lat, recentOrderCoord.lng)) {
@@ -3331,58 +3409,32 @@ export async function fetchAccountAddresses(cookiesOrAcc) {
           probeCoords.slice(0, 2).map(async ([la, ln]) => {
             try {
               const url = `https://maps.swiggy.com/addresses/nearby?lat_long=${la},${ln}&radius_mtr=50000&entity_type=1&entity_id=${encodeURIComponent(auth.userId)}&market_place_id=1&marketplace_business_lines=0`;
-              const r = await fetch(url, {
+              const response = await fetch(url, {
                 headers: buildChkoutHeaders(auth, la, ln, {
                   'client-id': 'checkout-web-app',
                   'source': 'web-cart'
                 }),
                 signal: AbortSignal.timeout(4000)
               });
-              if (!r.ok) return;
-              const j = await r.json().catch(() => null);
-              for (const item of (j?.addresses || [])) {
-                const aa = item?.actual_address;
-                if (!aa) continue;
-                const cat = Array.isArray(aa.address_category) ? aa.address_category[0] : aa.address_category;
-                const tagLabel = aa.tags?.[0] || (cat === 1 ? 'Home' : cat === 2 ? 'Work' : 'Saved');
-                addNormalized({
-                  id: item.id || '',
-                  city: aa.city || 'Address',
-                  name: aa.contact_name || '',
-                  mobile: aa.phone ? String(aa.phone).replace(/^\+?91/, '') : '',
-                  flat_no: aa.address_line || '',
-                  area: aa.locality || '',
-                  landmark: aa.directions_to_reach || aa.locality || '',
-                  address: `${aa.address_line ? aa.address_line + ', ' : ''}${aa.formatted_address || aa.locality || ''}`.trim(),
-                  lat: aa.location?.lat,
-                  lng: aa.location?.lng,
-                  annotation: tagLabel
-                });
-              }
-            } catch (e) {}
+              if (!response.ok) return;
+              const json = await response.json().catch(() => null);
+              for (const address of (json?.addresses || [])) addNormalized(address);
+            } catch {}
           })
         )
       : Promise.resolve();
 
     await Promise.all([profPromise, cartPromise, casPromise]);
 
-    // Source 3: Historical order `delivery_address` from GET /dapi/order/all (covers empty-cart accounts outside hub cities!)
-    for (const o of (auth.orders || [])) {
-      const da = o?.delivery_address;
-      if (!da) continue;
-      addNormalized({
-        id: da.id || '',
-        city: da.city || 'Address',
-        name: da.name || '',
-        mobile: da.mobile ? String(da.mobile).replace(/^\+?91/, '') : '',
-        flat_no: da.flat_no || '',
-        area: da.area || '',
-        landmark: da.landmark || da.area || '',
-        address: `${da.flat_no && da.flat_no !== 'None' ? da.flat_no + ', ' : ''}${da.address || da.address_line1 || da.area || ''}`.trim(),
-        lat: da.lat,
-        lng: da.lng,
-        annotation: da.annotation || 'Past Order'
-      });
+    // Source 3: Historical order `delivery_address` from GET /dapi/order/all (also works with an empty cart).
+    for (const order of (auth.orders || [])) {
+      if (order?.delivery_address) addNormalized(order.delivery_address);
+    }
+
+    // Source 4: Swiggy Food MCP as a final read-only fallback. This covers accounts where
+    // profile/cart/order endpoints return empty or partial address inventories.
+    if (collected.length === 0) {
+      for (const address of await fetchMcpSavedAddresses(cookiesOrAcc)) addNormalized(address);
     }
 
     return collected;
@@ -5121,9 +5173,13 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     if (paySt && paySt !== 'success' && !/delivered|completed/.test(st)) return false;
     return true;
   }).length;
-  const totalOrdersCount = Number.isFinite(Number(acc.totalOrdersCount))
-    ? Math.max(0, Number(acc.totalOrdersCount))
-    : realPastOrdersCount;
+  // Stored/imported account counts and the observed Swiggy history are both lower bounds.
+  // Keep the maximum so a stale `0` (or an empty recent-history page) cannot make an
+  // already-used account look new and win the automatic fresh-account tier again.
+  const knownOrderCounts = [acc.totalOrdersCount, acc.cachedTotalOrdersCount, realPastOrdersCount]
+    .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)))
+    .map(value => Math.max(0, Number(value)));
+  const totalOrdersCount = knownOrderCounts.length ? Math.max(...knownOrderCounts) : realPastOrdersCount;
 
   const nowMs = Date.now();
   const liveActiveOrdersCount = rawOrders.filter(o => {
@@ -5268,17 +5324,44 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   const accountComparison = [];
   let bestOverallProbe = null;
 
-  // Up to 3 fast waves: if an earlier order temporarily borrowed extra `0-Order` accounts for probing,
-  // wait seamlessly (`0.01ms` wake-up!) for those extra `0-Order` accounts to release BEFORE ever touching `>0`-Order IDs!
+  // Probe free accounts in bounded parallel waves; if another order temporarily borrowed extra
+  // `0-Order` accounts, wait for those reservations before falling back to older accounts.
   const totalZeroOrderPoolCount = validPool.filter(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders).length;
 
-  for (let wave = 0; wave < 3 && !bestOverallProbe; wave++) {
+  const probeLimit = Number.isFinite(Number(maxParallelProbes))
+    ? Math.max(1, Math.floor(Number(maxParallelProbes)))
+    : 3;
+  const isBetterProbe = (candidate, incumbent) => {
+    if (!candidate) return false;
+    if (!incumbent) return true;
+    if (preferZeroOrderAccounts && candidate.profile.isZeroOrderAccount !== incumbent.profile.isZeroOrderAccount) {
+      return candidate.profile.isZeroOrderAccount;
+    }
+    const candidatePayable = Number(candidate.probeOrder?.finalPayable);
+    const incumbentPayable = Number(incumbent.probeOrder?.finalPayable);
+    const candidateHasPayable = Number.isFinite(candidatePayable) && candidatePayable >= 0;
+    const incumbentHasPayable = Number.isFinite(incumbentPayable) && incumbentPayable >= 0;
+    if (candidateHasPayable !== incumbentHasPayable) return candidateHasPayable;
+    if (candidateHasPayable && candidatePayable !== incumbentPayable) return candidatePayable < incumbentPayable;
+
+    const candidateSavings = Number(candidate.probeOrder?.totalSavings || 0);
+    const incumbentSavings = Number(incumbent.probeOrder?.totalSavings || 0);
+    if (candidateSavings !== incumbentSavings) return candidateSavings > incumbentSavings;
+    return Number(candidate.probeOrder?.discountAmount || 0) > Number(incumbent.probeOrder?.discountAmount || 0);
+  };
+
+  // Keep probing later batches after finding an early winner: coupon and wallet offers can
+  // differ from the cached account tier, so only live bills reveal the actual best account.
+  // `triedKeys` grows on every successful reservation, making this loop strictly finite.
+  for (let wave = 0; wave < validPool.length + 1; wave++) {
     let freshDb = getDb();
     let busyMap = getBusySwiggyAccountsMap(freshDb, orderId);
 
-    // If free `0-Order` accounts exist in pool (< 10 settled orders) AND another order is mid-probe (`inFlightAccountReservations.size > settledZeroCount`),
-    // wait momentarily for extra probe accounts to release so ALL 10 orders strictly get `0-Order` IDs!
-    let freeZeroNow = validPool.filter(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders && !busyMap.has(x.key) && !triedKeys.has(x.key));
+    // If another order temporarily borrowed extra `0-Order` accounts for probing, wait for
+    // them to release before falling back to an older account.
+    let freeZeroNow = validPool.filter(x =>
+      x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders && !busyMap.has(x.key) && !triedKeys.has(x.key)
+    );
     const settledZeroCount = Object.values(freshDb?.orders || {}).filter(o =>
       o && o.id !== orderId && !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status) &&
       ['BILL_READY', 'QR_GENERATED'].includes(o.cardStage) && o.selectedAccountZeroOrders
@@ -5294,40 +5377,43 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
       await waitForAccountRelease(2500);
       freshDb = getDb();
       busyMap = getBusySwiggyAccountsMap(freshDb, orderId);
-      freeZeroNow = validPool.filter(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders && !busyMap.has(x.key) && !triedKeys.has(x.key));
+      freeZeroNow = validPool.filter(x =>
+        x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders && !busyMap.has(x.key) && !triedKeys.has(x.key)
+      );
     }
 
     const freeCandidates = validPool
       .filter(x => !busyMap.has(x.key) && !triedKeys.has(x.key))
       .sort((a, b) => scoreAccountOfferPotential(b.profile, estSubtotal) - scoreAccountOfferPotential(a.profile, estSubtotal));
-
-    // Strict `0-Order` priority: whenever ANY free `0-Order` ID exists, pick EXCLUSIVELY from `0-Order` IDs first!
     const zeroOrderFree = freeCandidates.filter(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders);
     const zeroActiveFree = freeCandidates.filter(x => x.profile.hasZeroActiveOrders);
 
-    let activeTierPool = (preferZeroOrderAccounts && zeroOrderFree.length > 0)
-      ? zeroOrderFree
-      : (strictZeroOrdersOnly ? zeroOrderFree : (zeroActiveFree.length > 0 ? zeroActiveFree : freeCandidates));
-
-    // Only if 0 accounts are free across the entire bot and caller explicitly allowed fallback when 1 account exists:
-    if (activeTierPool.length === 0) {
-      if (wave === 0 && !strictZeroOrdersOnly && validPool.length > 0 && busyMap.size === 0) {
-        activeTierPool = validPool.filter(x => !triedKeys.has(x.key));
-      } else {
-        break;
-      }
+    let activeTierPool;
+    if (strictZeroOrdersOnly) {
+      activeTierPool = zeroOrderFree;
+    } else if (preferZeroOrderAccounts && zeroOrderFree.length > 0) {
+      activeTierPool = zeroOrderFree;
+    } else if (preferZeroOrderAccounts && bestOverallProbe?.profile?.isZeroOrderAccount) {
+      // There is no reason to spend time probing older IDs after a valid 0-order winner exists.
+      break;
+    } else {
+      activeTierPool = zeroActiveFree.length > 0 ? zeroActiveFree : freeCandidates;
     }
 
-    // Dynamic disjoint probe count:
-    // - 1 order across 10 accounts -> probes up to 4 top accounts in parallel (~4s)
-    // - 10 concurrent orders across 10 accounts -> each atomically locks 1 distinct `0-Order` ID (`0` lock contention, ~4s total!)
+    if (activeTierPool.length === 0) break;
+
+    // Divide free IDs across orders currently auto-selecting. A single order can inspect
+    // several accounts in parallel; a simultaneous burst atomically reserves distinct IDs.
     const selectingOrdersNow = Math.max(
       1,
       Object.values(freshDb?.orders || {}).filter(o =>
         o && !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status) && o.cardStage === 'AUTO_SELECTING'
       ).length
     );
-    const targetBatchSize = Math.max(1, Math.min(maxParallelProbes, Math.floor(activeTierPool.length / selectingOrdersNow) || 1));
+    const targetBatchSize = Math.max(1, Math.min(
+      probeLimit,
+      Math.floor(activeTierPool.length / selectingOrdersNow) || 1
+    ));
 
     const reservedBatch = [];
     for (const item of activeTierPool) {
@@ -5339,23 +5425,30 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     }
     if (reservedBatch.length === 0) break;
 
-    let parallelProbes = [];
-    try {
-      parallelProbes = await Promise.all(
-        reservedBatch.map(({ key, acc, profile }) =>
-          withSwiggyAccountLock(key, async () => {
-            const probeOrder = JSON.parse(JSON.stringify(order));
-            delete probeOrder.addressDetails?.id;
-            const res = await syncGroupCartAndCheckoutForAccount(acc, probeOrder, { captureScreenshot: false });
-            return { key, acc, profile, res, probeOrder, preCart: null };
-          })
-        )
-      );
-    } catch (e) {
-      for (const r of reservedBatch) releaseSwiggyAccountReservation(r.key, orderId);
-      throw e;
-    }
+    // One account's unexpected exception must not abandon other in-flight probes or leave
+    // a reservation/cart behind; settle each independently and keep trying free accounts.
+    const parallelProbes = await Promise.all(reservedBatch.map(async ({ key, acc, profile }) => {
+      const probeOrder = JSON.parse(JSON.stringify(order));
+      delete probeOrder.addressDetails?.id;
+      try {
+        const res = await withSwiggyAccountLock(key, async () => {
+          const result = await syncGroupCartAndCheckoutForAccount(acc, probeOrder, { captureScreenshot: false });
+          return { key, acc, profile, res: result, probeOrder, preCart: null };
+        });
+        return res;
+      } catch (error) {
+        return {
+          key,
+          acc,
+          profile,
+          res: { success: false, error: error?.message || 'Account probe failed.' },
+          probeOrder,
+          preCart: null
+        };
+      }
+    }));
 
+    const previousBestProbe = bestOverallProbe;
     for (const probe of parallelProbes) {
       if (!probe.res?.success) continue;
       const { key, acc, profile, probeOrder } = probe;
@@ -5374,33 +5467,33 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
         totalSavings: probeOrder.totalSavings || 0,
         finalPayable: probeOrder.finalPayable || 0
       });
-
-      const isBetter =
-        !bestOverallProbe ||
-        ((preferZeroOrderAccounts && probe.profile.isZeroOrderAccount !== bestOverallProbe.profile.isZeroOrderAccount)
-          ? probe.profile.isZeroOrderAccount
-          : (probeOrder.finalPayable >= 0 && bestOverallProbe.probeOrder.finalPayable >= 0 && probeOrder.finalPayable !== bestOverallProbe.probeOrder.finalPayable
-              ? probeOrder.finalPayable < bestOverallProbe.probeOrder.finalPayable
-              : (probeOrder.totalSavings || 0) > (bestOverallProbe.probeOrder.totalSavings || 0)));
-
-      if (isBetter) bestOverallProbe = probe;
+      if (isBetterProbe(probe, bestOverallProbe)) bestOverallProbe = probe;
     }
 
-    // Delete ALL non-winning reservations from map FIRST, THEN fire `notifyAccountReleased()` once so EVERY waiting order sees ALL freed accounts immediately in 0.01ms!
-    const losers = reservedBatch.filter(r => !bestOverallProbe || r.key !== bestOverallProbe.key);
-    for (const l of losers) {
-      const cur = inFlightAccountReservations.get(l.key);
-      if (cur && cur.orderId === String(orderId)) {
-        inFlightAccountReservations.delete(l.key);
+    const replacedPreviousBest = Boolean(
+      previousBestProbe && bestOverallProbe && previousBestProbe.key !== bestOverallProbe.key
+    );
+    const probesToClean = parallelProbes.filter(p => !bestOverallProbe || p.key !== bestOverallProbe.key);
+    if (replacedPreviousBest) probesToClean.push(previousBestProbe);
+
+    // Release all non-winner reservations before waking waiters. Per-account locks keep
+    // cart cleanup serialized if another order reserves one of these IDs immediately.
+    let releasedAny = false;
+    for (const probe of probesToClean) {
+      const current = inFlightAccountReservations.get(probe.key);
+      if (current && current.orderId === String(orderId)) {
+        inFlightAccountReservations.delete(probe.key);
+        releasedAny = true;
       }
     }
-    if (losers.length > 0) notifyAccountReleased();
+    if (releasedAny) notifyAccountReleased();
 
-    const successfulLoserProbes = parallelProbes.filter(p => p.res?.success && (!bestOverallProbe || p.key !== bestOverallProbe.key));
-    if (successfulLoserProbes.length > 0) {
-      await Promise.all(
-        successfulLoserProbes.map(p => withSwiggyAccountLock(p.key, () => restoreOrFlushAccount(p.acc, p.preCart, p.probeOrder.restaurantId)))
-      );
+    if (probesToClean.length > 0) {
+      await Promise.all(probesToClean.map(probe =>
+        withSwiggyAccountLock(probe.key, () =>
+          restoreOrFlushAccount(probe.acc, probe.preCart, probe.probeOrder?.restaurantId || order.restaurantId)
+        )
+      ));
     }
   }
 

@@ -4,11 +4,6 @@ import jsQR from 'jsqr';
 import { PNG } from 'pngjs';
 import { Markup } from 'telegraf';
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
-import {
-  buildBossOrderPortalUrl,
-  makeSmartPortalButton,
-  buildCleanUserBillConfirmationCard
-} from './order-ux-portal.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import {
   resolveSwiggyLink,
@@ -715,6 +710,51 @@ function buildSenderHeaderLine(order) {
   return `◉ <b>Forwarded From:</b> ${profileTag}`;
 }
 
+export function buildTelegramUserBillConfirmationCard(order) {
+  const items = Array.isArray(order?.items) ? order.items : [];
+  const itemLines = items.map((item) => {
+    const quantity = Number(item.qty || item.quantity || 1);
+    const lineTotal = Number(item.lineTotal || (Number(item.price || 0) * quantity) || 0);
+    return `▪ ${quantity} × ${escapeHtml(item.name || 'Item')}${lineTotal > 0 ? `: ₹${lineTotal}` : ''}`;
+  });
+  const address = order?.addressDetails?.address || order?.address || 'Verified delivery address';
+  const total = Number(order?.finalPayable ?? order?.finalTotal ?? order?.subtotal ?? 0);
+  const billLines = [
+    `Restaurant: <b>${escapeHtml(order?.restaurantName || 'Swiggy Order')}</b>`,
+    `Deliver to: ${escapeHtml(address)}`,
+    order?.addressDetails?.city ? `City: ${escapeHtml(order.addressDetails.city)}` : '',
+    '',
+    '<b>Bill details</b>',
+    `Items subtotal: ₹${Number(order?.subtotal || 0)}`,
+    Number(order?.tradeDiscountTotal || 0) > 0 ? `Restaurant offer: −₹${Number(order.tradeDiscountTotal)}` : '',
+    order?.couponCode && Number(order?.discountAmount || 0) > 0
+      ? `Coupon ${escapeHtml(order.couponCode)}: −₹${Number(order.discountAmount)}`
+      : '',
+    Number(order?.freeCashApplied || 0) > 0 ? `Swiggy Money / Free Cash: −₹${Number(order.freeCashApplied)}` : '',
+    Number(order?.freeDeliveryDiscount || 0) > 0 ? `Free-delivery saving: −₹${Number(order.freeDeliveryDiscount)}` : '',
+    `Delivery: ${Number(order?.deliveryFee || 0) > 0 ? `₹${Number(order.deliveryFee)}` : 'FREE'}`,
+    Number(order?.packingCharges || 0) > 0 ? `Packing: ₹${Number(order.packingCharges)}` : '',
+    Number(order?.taxesAndCharges || 0) > 0 ? `GST and other charges: ₹${Number(order.taxesAndCharges)}` : '',
+    Number(order?.totalSavings || 0) > 0 ? `Total savings: ₹${Number(order.totalSavings)}` : '',
+    `<b>Total to pay: ₹${total}</b>`,
+    '',
+    '<i>Approving sends the official Swiggy payment details to you. If a Swiggy request already exists, the same request is reused; a button tap alone never marks payment complete.</i>'
+  ].filter(Boolean);
+  if (itemLines.length) {
+    billLines.splice(3, 0, '<b>Items</b>', ...itemLines);
+  }
+
+  const text =
+    `i <b>Please check the delivery address and final bill.</b>\n\n` +
+    `<b>Order #${escapeHtml(order?.id || '')} — Approval pending</b>\n\n` +
+    billLines.join('\n');
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('✓ Approve bill', `user_approve_bill_${order.id}`)],
+    [Markup.button.callback('! Something is wrong', `user_bill_issue_${order.id}`)]
+  ]);
+  return { text, keyboard };
+}
+
 function summarizeAddressPreview(order) {
   const ad = order.addressDetails || parseAddressDetails(order.address);
   if (!ad) return escapeHtml(order.address || '');
@@ -776,6 +816,7 @@ export function getBillReadyOrdersWaitingForQr(db) {
       o &&
       o.isForwardedOrder === true &&
       !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status) &&
+      !(o.status === 'APPROVAL_PENDING' && !o.billApprovedByUser) &&
       o.cardStage === 'BILL_READY' &&
       Boolean(o.selectedAccount) &&
       hasVerifiedDeliveryLocation(o) &&
@@ -865,10 +906,18 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
       text,
       keyboard: Markup.inlineKeyboard([
         [Markup.button.callback('↻ Retry Swiggy tracking', `fwd_retry_track_${order.id}`)],
-        [Markup.button.callback('⌕ Add delivery OTP', `boss_delivery_otp_${order.id}`)],
-        [makeSmartPortalButton('⌂ Open Order Card ›', buildBossOrderPortalUrl(order.id))]
+        [Markup.button.callback('⌕ Add delivery OTP', `boss_delivery_otp_${order.id}`)]
       ])
     };
+  }
+
+  if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
+    const text =
+      `◷ <b>WAITING FOR CUSTOMER BILL APPROVAL (#${escapeHtml(order.id)})</b>\n` +
+      `${senderLine}\n\n` +
+      `${formatOrderBodyFn(order, true)}\n\n` +
+      `<i>The verified bill summary was sent in Telegram. Payment details will be sent to the customer after approval.</i>`;
+    return { text, keyboard: Markup.inlineKeyboard([[cancelBtn]]) };
   }
 
   // Stage 3: Account Selected & Live Bill Fetched -> [Generate QR] [Paid] [Parallel Batch Buttons] [Re-Scan Offers] [Switch Account] [Cancel]
@@ -935,12 +984,16 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
       Markup.button.callback('▣ Re-Scan Max Offer', `fwd_rescan_max_${order.id}`),
       Markup.button.callback('↻ Change Account', `fwd_rechoose_acc_${order.id}`)
     ]);
-    rows.push([
-      ...(order.fwdSenderUserId && !order.isDirectBossOrder
-        ? [Markup.button.callback('↑ Send Bill Summary ›', `fwd_send_summary_${order.id}`)]
-        : []),
-      makeSmartPortalButton('✎ Review / Edit Card ›', buildBossOrderPortalUrl(order.id))
-    ]);
+    if (order.fwdSenderUserId && !order.isDirectBossOrder && !order.billApprovedByUser && !['APPROVAL_PENDING', 'PAYMENT_PENDING', 'COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status)) {
+      rows.push([Markup.button.callback('↑ Send Bill Summary ›', `fwd_send_summary_${order.id}`)]);
+    }
+    if (!order.pendingSwiggyOrderId && !order.pendingSwiggyUpiUri && !order.realUpiIntentUri && order.cardStage !== 'QR_GENERATED') {
+      rows.push([
+        Markup.button.callback('✎ Change Cart', `fwd_input_cart_${order.id}`),
+        Markup.button.callback('⌖ Change Address', `fwd_input_address_${order.id}`)
+      ]);
+      rows.push([Markup.button.callback('☎ Change Recipient Mobile', `fwd_input_mobile_${order.id}`)]);
+    }
     rows.push([cancelBtn]);
     return { text, keyboard: Markup.inlineKeyboard(rows) };
   }
@@ -1054,10 +1107,10 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     ? 'verified delivery address / exact GPS pin'
     : (!hasDeliveryContact ? 'recipient’s correct 10-digit mobile' : 'Cart link');
   const actionHint = !hasDeliveryContact && hasAddress && hasCart
-    ? `i Open <b>Review / Edit Card</b> and enter the recipient’s 10-digit mobile in the address box (without replacing the address).`
+    ? `i Use <b>Add Recipient Mobile</b> below and enter the correct 10-digit Indian number.`
     : (order.isDirectBossOrder
-        ? `i Send ${missingItem} next — this card will auto-replace cleanly!`
-        : `i Forward ${escapeHtml(order.fwdSenderName)}'s ${missingItem} next — this card will auto-replace cleanly!`);
+        ? `i Use the buttons below or send ${missingItem} in this chat.`
+        : `i Forward ${escapeHtml(order.fwdSenderName)}'s ${missingItem}, or enter it with the buttons below.`);
 
   const text =
     `✉ <b>NEW ORDER CARD (#${escapeHtml(order.id)})</b>\n` +
@@ -1068,17 +1121,15 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     `<i>${actionHint}</i>\n` +
     `<i>◈ No account allocated; QR is blocked.</i>`;
 
-  const portalBtnLabel = !hasAddress && hasCart
-    ? '⌖ Enter Missing Address & Verify ›'
-    : (hasAddress && !hasCart ? '▤ Enter Missing Cart & Verify ›' : '✎ Open Cart + Address Verify Box ›');
+  const inputButtons = [];
+  if (!hasCart) inputButtons.push(Markup.button.callback('▤ Enter Cart Link', `fwd_input_cart_${order.id}`));
+  if (!hasAddress) inputButtons.push(Markup.button.callback('⌖ Add / Correct Address', `fwd_input_address_${order.id}`));
+  else if (!hasDeliveryContact) inputButtons.push(Markup.button.callback('☎ Add Recipient Mobile', `fwd_input_mobile_${order.id}`));
 
-  return {
-    text,
-    keyboard: Markup.inlineKeyboard([
-      [makeSmartPortalButton(portalBtnLabel, buildBossOrderPortalUrl(order.id))],
-      [cancelBtn]
-    ])
-  };
+  const rows = [];
+  if (inputButtons.length) rows.push(inputButtons);
+  rows.push([cancelBtn]);
+  return { text, keyboard: Markup.inlineKeyboard(rows) };
 }
 
 export async function postOrReplaceForwardedCard(telegram, chatId, order, db, formatOrderBodyFn, { includeQrDelete = false } = {}) {
@@ -1126,7 +1177,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   const trimmed = String(rawText || '').trim();
   if (!trimmed) return { updatedCart, updatedAddress };
 
-  const contactMatch = trimmed.match(/^(?:\+?91[\s-]?)?([6-9]\d{4}[\s-]?\d{5})$/);
+  const contactMatch = trimmed.match(/^(?:(?:\+?91[\s-]?)|(?:0[\s-]?))?([6-9]\d{4}[\s-]?\d{5})$/);
   if (contactMatch && order.addressDetails?.address) {
     const mobile = contactMatch[1].replace(/\D/g, '');
     order.addressDetails = { ...order.addressDetails, mobile };
@@ -1277,10 +1328,29 @@ export async function finalizePaidOrderCard({
     // Invalidate cached `0-Order` badge so once a `0-Order` ID completes its 1st order, next order grabs another fresh `0-Order` ID!
     invalidateAccountOrderProfileCache(order.selectedAccount);
     const curDb = getDb();
+    const persistedOrder = curDb?.orders?.[order.id];
     const usedAccObj = curDb?.config?.accounts?.[order.selectedAccount];
-    if (usedAccObj) {
+    const alreadyCounted = Boolean(order.accountOrderCountIncremented || persistedOrder?.accountOrderCountIncremented);
+    const alreadyCompleted = (order.status === 'COMPLETED' && order.cardStage === 'PAID_CONFIRMED') ||
+      (persistedOrder?.status === 'COMPLETED' && persistedOrder?.cardStage === 'PAID_CONFIRMED');
+    if (usedAccObj && !alreadyCounted && !alreadyCompleted) {
+      const knownCounts = [usedAccObj.totalOrdersCount, usedAccObj.cachedTotalOrdersCount, order.selectedAccountTotalOrders]
+        .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)))
+        .map(value => Math.max(0, Number(value)));
+      const nextOrderCount = (knownCounts.length ? Math.max(...knownCounts) : 0) + 1;
       usedAccObj.isZeroOrderAccount = false;
-      usedAccObj.cachedTotalOrdersCount = Number(usedAccObj.cachedTotalOrdersCount || 0) + 1;
+      usedAccObj.totalOrdersCount = nextOrderCount;
+      usedAccObj.cachedTotalOrdersCount = nextOrderCount;
+      order.accountOrderCountIncremented = true;
+      if (persistedOrder) persistedOrder.accountOrderCountIncremented = true;
+      saveDb(curDb);
+    } else if (usedAccObj && alreadyCompleted && !alreadyCounted) {
+      // Legacy completed cards predate the idempotency marker; don't increment them again.
+      order.accountOrderCountIncremented = true;
+      if (persistedOrder) persistedOrder.accountOrderCountIncremented = true;
+      saveDb(curDb);
+    } else if (alreadyCounted) {
+      order.accountOrderCountIncremented = true;
     }
   }
 
@@ -2208,6 +2278,9 @@ export function registerForwardedOrderHandlers(bot, {
     const db = getDb();
     const order = db.orders?.[orderId];
     if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
+      return ctx.answerCbQuery('Customer bill approval locks account changes.', { show_alert: true });
+    }
 
     if (order.selectedAccount) {
       releaseSwiggyAccountReservation(order.selectedAccount, orderId);
@@ -2225,6 +2298,9 @@ export function registerForwardedOrderHandlers(bot, {
     const db = getDb();
     const order = db.orders?.[orderId];
     if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
+      return ctx.answerCbQuery('Wait for the customer to approve the bill before generating or sending payment details.', { show_alert: true });
+    }
 
     await ctx.answerCbQuery('! Generating Official Swiggy Payment QR...');
     try {
@@ -2352,6 +2428,9 @@ export function registerForwardedOrderHandlers(bot, {
     const db = getDb();
     const order = db.orders?.[orderId];
     if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
+      return ctx.answerCbQuery('Customer bill approval locks offer and bill changes.', { show_alert: true });
+    }
     const accKey = order.selectedAccount;
     const acc = accKey ? db.config?.accounts?.[accKey] : null;
     if (!acc || !acc.isLoggedIn) {
@@ -2374,25 +2453,46 @@ export function registerForwardedOrderHandlers(bot, {
   });
 
   // 7. Screen 02 -> Screen 03: Send Clean Bill Confirmation Summary to Customer (Sending summary is NOT approval!)
-  bot.action(/^fwd_send_summary_([A-Za-z0-9_]+)$/, async (ctx) => {
+  bot.action(/^fwd_send_summary_([A-Za-z0-9_-]+)$/, async (ctx) => {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
     const order = db.orders?.[orderId];
     if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
+      return ctx.answerCbQuery('Bill summary is already awaiting customer approval.', { show_alert: true });
+    }
+    if (['COMPLETED', 'CANCELLED', 'REJECTED', 'PAYMENT_PENDING'].includes(order.status) || order.billApprovedByUser || !['BILL_READY', 'QR_GENERATED'].includes(order.cardStage)) {
+      return ctx.answerCbQuery('Only a verified bill awaiting customer approval can be sent.', { show_alert: true });
+    }
+    if (Number(order.finalPayable || 0) <= 0) {
+      return ctx.answerCbQuery('The verified amount is invalid; no approval card was sent.', { show_alert: true });
+    }
     const targetUserId = order.fwdSenderUserId || order.userId;
     if (!targetUserId) {
-      return ctx.answerCbQuery('Customer chat ID not available — share portal link instead.', { show_alert: true });
+      return ctx.answerCbQuery('Customer chat ID is not available. Ask them to start the bot first.', { show_alert: true });
     }
+    const previousStatus = order.status;
+    const previousUxStage = order.uxStage;
     order.status = 'APPROVAL_PENDING';
     order.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
     upsertOrder(order.id, order);
-    const summaryView = buildCleanUserBillConfirmationCard({ ...order, userId: targetUserId });
-    await ctx.telegram.sendMessage(targetUserId, summaryView.text, {
-      parse_mode: 'HTML',
-      link_preview_options: { is_disabled: true },
-      ...summaryView.keyboard
-    });
+    const summaryView = buildTelegramUserBillConfirmationCard({ ...order, userId: targetUserId });
+    try {
+      await ctx.telegram.sendMessage(targetUserId, summaryView.text, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        ...summaryView.keyboard
+      });
+    } catch (error) {
+      order.status = previousStatus;
+      order.uxStage = previousUxStage || 'SCREEN_02_BILL_READY';
+      upsertOrder(order.id, order);
+      return ctx.answerCbQuery(`Could not send bill summary: ${String(error?.message || 'Telegram delivery failed.').slice(0, 130)}`, { show_alert: true });
+    }
+    const freshDb = getDb();
+    const freshOrder = freshDb.orders?.[orderId] || order;
+    await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, freshOrder, freshDb, formatOrderBodyFn).catch(() => {});
     await ctx.answerCbQuery('✓ Bill summary sent — awaiting explicit approval!');
   });
 
@@ -2446,48 +2546,77 @@ export function registerForwardedOrderHandlers(bot, {
 }
 
 // =========================================================================
-// LIVE TWO-BOX [VERIFY] HANDLER FOR BOSS FORWARDED / DIRECT ORDERS
+// Telegram button-driven update handler for Boss forwarded / direct orders
 // =========================================================================
-export async function applyBossPortalVerification({
+export async function applyBossOrderUpdate({
   telegram,
   bossChatId,
   orderId,
   cart = '',
   address = '',
+  location = null,
   formatOrderBodyFn
 }) {
   const db = getDb();
   const order = db?.orders?.[orderId];
   if (!order) return { ok: false, error: `Order #${orderId} not found.` };
-  if (order.pendingSwiggyOrderId && (cart || address)) {
-    return { ok: false, error: 'Cart and delivery details cannot be edited after Swiggy has created a payment QR/order. Cancel or resolve the existing Swiggy order before retrying.' };
+  if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status)) {
+    return { ok: false, error: `Order #${orderId} is ${order.status.toLowerCase()} and cannot be edited.` };
   }
-  if (!cart && !address) {
-    return { ok: false, error: 'Please fill at least one box before clicking Verify.' };
+  if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
+    return { ok: false, error: 'The bill has been sent for approval or approved; ask the customer to report an issue before changing delivery details.' };
+  }
+  const swiggyCheckoutStarted = Boolean(order.pendingSwiggyOrderId || order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.cardStage === 'QR_GENERATED');
+  if (swiggyCheckoutStarted && (cart || address || location)) {
+    return { ok: false, error: 'Cart and delivery details cannot be edited after Swiggy has created a payment QR/order. Resolve or cancel the existing Swiggy order first.' };
+  }
+  if (!cart && !address && !location) {
+    return { ok: false, error: 'Send a cart link, delivery address, recipient mobile, or GPS pin.' };
   }
 
   let updatedCart = false;
   let updatedAddr = false;
 
-  if (cart && cart !== order.cart) {
-    const resCart = await ingestForwardedContentIntoOrder(order, { rawText: cart });
-    if (!resCart.updatedCart && !order.cart) {
-      return { ok: false, error: 'Invalid Swiggy Cart link — paste a valid https://swig.gy/gc/... or Swiggy cart link.' };
+  if (location) {
+    try {
+      const locationResult = await ingestForwardedContentIntoOrder(order, { location });
+      if (locationResult.error) return { ok: false, error: locationResult.error };
+      updatedAddr = Boolean(locationResult.updatedAddress);
+    } catch (error) {
+      return { ok: false, error: error?.message || 'Could not resolve this delivery pin.' };
     }
-    updatedCart = true;
+  }
+
+  if (cart && cart !== order.cart) {
+    try {
+      const resCart = await ingestForwardedContentIntoOrder(order, { rawText: cart });
+      if (!resCart.updatedCart) {
+        return { ok: false, error: 'Invalid Swiggy Cart link. Send a genuine Swiggy cart or group-cart link.' };
+      }
+      updatedCart = true;
+    } catch (error) {
+      return { ok: false, error: error?.message || 'Could not verify this Swiggy cart link.' };
+    }
   }
 
   if (address && address !== order.address && address !== order.addressOriginalText) {
-    const resAddr = await ingestForwardedContentIntoOrder(order, { rawText: address });
+    let resAddr;
+    try {
+      resAddr = await ingestForwardedContentIntoOrder(order, { rawText: address });
+    } catch (error) {
+      return { ok: false, error: error?.message || 'Could not verify these delivery details.' };
+    }
+    if (resAddr.error) return { ok: false, error: resAddr.error };
     if (!resAddr.updatedAddress && address.trim().length >= 12) {
-      // Accept clean street address typed directly in the Boss form box
+      // Keep manually entered street addresses, but checkout remains blocked until
+      // geocoding supplies verified coordinates and a separate recipient mobile.
       const plainGeo = await geocodeAddressDetails({ address: address.trim(), raw: address.trim() }).catch(() => ({ address: address.trim() }));
       order.address = plainGeo.address || address.trim();
       order.addressOriginalText = address.trim();
       order.addressDetails = plainGeo;
       updatedAddr = true;
-    } else if (!resAddr.updatedAddress && !order.address) {
-      return { ok: false, error: 'Invalid Delivery Address — paste a Swiggy/Google Maps link or complete street address.' };
+    } else if (!resAddr.updatedAddress) {
+      return { ok: false, error: 'Invalid delivery details. Send a Swiggy/Google Maps address, full street address, or the recipient’s 10-digit Indian mobile after the address is saved.' };
     } else {
       updatedAddr = true;
     }
@@ -2495,9 +2624,12 @@ export async function applyBossPortalVerification({
 
   upsertOrder(order.id, order);
 
-  const hasBothNow = Boolean(order.cart && order.address);
-  if (hasBothNow) {
-    // Auto-select best unused 0-order account & fetch real Swiggy bill + max offer!
+  const readyForCheckout = Boolean(
+    order.cart &&
+    hasVerifiedDeliveryLocation(order) &&
+    hasVerifiedDeliveryContact(order)
+  );
+  if (readyForCheckout) {
     try {
       await executeOrderBillSyncOnAccount({
         telegram,
@@ -2508,21 +2640,21 @@ export async function applyBossPortalVerification({
       });
       return {
         ok: true,
-        message: 'Cart ✓ & Address ✓ verified — Live Swiggy Bill & Best Unused Account ready!'
+        message: 'Cart, verified Indian delivery location, and recipient mobile are ready. Swiggy bill and eligible offers are being checked.'
       };
     } catch (syncErr) {
       await postOrReplaceForwardedCard(telegram, bossChatId, order, getDb(), formatOrderBodyFn).catch(() => {});
       return {
         ok: true,
-        message: `Cart ✓ & Address ✓ saved (manual account select ready: ${syncErr.message}).`
+        message: `Delivery details saved. Manual account selection is ready: ${syncErr.message}`
       };
     }
   }
 
   await postOrReplaceForwardedCard(telegram, bossChatId, order, getDb(), formatOrderBodyFn).catch(() => {});
+  const changes = [updatedCart ? 'Cart saved' : '', updatedAddr ? 'Delivery details saved' : ''].filter(Boolean);
   return {
     ok: true,
-    message: `${updatedCart ? 'Cart ✓' : 'Address ✓'} verified — fill the other box to complete!`
+    message: changes.length ? `${changes.join(' and ')}. Check the refreshed order card for the next required detail.` : 'No order details changed.'
   };
 }
-
