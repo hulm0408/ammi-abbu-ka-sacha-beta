@@ -11,6 +11,7 @@ test_*.mjs
 !test_v18_auto_bill_summary_and_tracking_e2e.mjs
 !test_v19_share_link_only_e2e.mjs
 !test_v20_single_card_chat_e2e.mjs
+!test_v21_personalised_qr_prompts_and_routing_e2e.mjs
 probe_*.mjs
 inspect_*.mjs
 find_*.mjs

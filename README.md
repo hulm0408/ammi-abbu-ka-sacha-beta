@@ -46,6 +46,24 @@ Ammi/Abbu used to get a separate bubble for every step. Now:
 
 Cart and address data are never shortened or guessed to save messages — only the chat bubbles are reduced.
 
+## 🧾 Payment QR, prompts and who receives the summary
+
+* **Personalised QR.** After the customer approves the bill, the QR is drawn by `generateNamedUpiQrPngBuffer`
+  (orange header with the customer's name, the exact amount and the order id inside the image). If Swiggy
+  returns a payment URL instead, that official link is forwarded; if neither exists, the configured
+  `bossUpiId` is used so the customer still gets a scannable QR (`paymentQrKind` records which one).
+* **No leaked HTML.** Every message that contains `<b>/<i>/<code>` sets `parse_mode: 'HTML'` — enforced by a
+  test that walks each `reply`/`sendMessage`/`editMessageText` call in the bot sources.
+* **Interactive prompts.** `Paste Cart Link` / `Paste Address Link` send exactly one `force_reply` prompt
+  (keyboard + placeholder). When the link arrives the prompt and the pasted message are deleted, so the chat
+  keeps a single card. Repeated taps replace the prompt instead of stacking them.
+* **Send to Beta with missing data** deletes the previous card and any prompt, then asks only for the missing
+  cart link or address.
+* **Summary routing** (`resolveBillSummaryAudience`): a Boss-forwarded / Boss-entered order keeps the bill
+  summary **inside the bot** (`BOSS_ONLY`, the Boss card is the summary). A customer's own *Send to Beta*
+  order goes to **both** (`CUSTOMER_AND_BOSS`) — the customer gets the confirm card, the Boss card shows the
+  same bill.
+
 ## 🧪 Tests
 
 ```bash
