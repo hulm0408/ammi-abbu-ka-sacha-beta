@@ -49,8 +49,10 @@ export function card(title, ...lines) {
   return section(title, lines.filter(Boolean).join('\n'));
 }
 
-// Monospace aligned table (rows = array of column string arrays)
-// Renders as a clean <pre> table with rows and columns.
+// Monospace bordered table (rows = array of column string arrays)
+// Draws full grid borders using Unicode box-drawing characters, matching
+// Telegram's Rich Text Demo table style: bordered rows/columns, bold header.
+// Zero cost, no external APIs — pure <pre> + box-drawing characters.
 export function table(rows) {
   if (!rows || rows.length === 0) return '';
   const colCount = Math.max(...rows.map(r => r.length));
@@ -60,10 +62,31 @@ export function table(rows) {
       widths[c] = Math.max(widths[c], String(row[c] ?? '').length);
     }
   }
-  const lines = rows.map((row) => {
-    const cells = row.map((cell, c) => String(cell ?? '').padEnd(widths[c]));
-    return cells.join('  ');
-  });
+
+  const pad = (s) => ` ${String(s ?? '')} `;
+  const hline = (left, mid, right) => {
+    const segs = widths.map(w => '─'.repeat(w + 2));
+    return [left, ...segs.map((seg, i) => i < colCount - 1 ? seg + mid : seg + right)].join('');
+  };
+
+  const top = hline('┌', '┬', '┐');
+  const mid = hline('├', '┼', '┤');
+  const bot = hline('└', '┴', '┘');
+
+  const rowLine = (cells, isHeader = false) => {
+    const parts = cells.map((cell, c) => pad(isHeader ? `<b>${cell}</b>` : cell).padEnd(widths[c] + 2));
+    return `│${parts.join('│')}│`;
+  };
+
+  const lines = [top];
+  lines.push(rowLine(rows[0], true)); // header row (bold)
+  lines.push(mid);
+  for (let i = 1; i < rows.length; i++) {
+    lines.push(rowLine(rows[i]));
+    if (i < rows.length - 1) lines.push(mid);
+  }
+  lines.push(bot);
+
   return `<pre>${lines.join('\n')}</pre>\n`;
 }
 
