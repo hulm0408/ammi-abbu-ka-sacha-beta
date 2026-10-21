@@ -8942,6 +8942,8 @@ async function handleAllOrdersDone(ctx) {
 
     let totalOrdersFound = 0;
     const buttons = [];
+    const emptyAccounts = [];
+    const matchedDbOrderIds = new Set();
     let text = `<blockquote>📦 <b>ORDERS DONE — LOGGED IN SWIGGY IDs</b></blockquote>\n\n`;
 
     for (const res of accountResults) {
@@ -8960,6 +8962,7 @@ async function handleAllOrdersDone(ctx) {
           const swiggyId = String(dbo.swiggyOrderId || dbo.id || '');
           const existing = orders.find(o => String(o.orderId || '') === swiggyId);
           if (existing) {
+            matchedDbOrderIds.add(String(dbo.id || dbo.swiggyOrderId));
             if (!existing.trackingUrl && dbo.trackingLink) {
               existing.trackingUrl = dbo.trackingLink;
             }
@@ -8967,6 +8970,7 @@ async function handleAllOrdersDone(ctx) {
               existing.deliveryOtp = dbo.deliveryOtp;
             }
           } else if (dbo.status === 'COMPLETED' || dbo.swiggyOrderId) {
+            matchedDbOrderIds.add(String(dbo.id || dbo.swiggyOrderId));
             // Never synthesize a tracking URL — only real Swiggy links are shown
             const realTrack = dbo.trackingLink && isOfficialSwiggyTrackingUrl(dbo.trackingLink, { allowProviderShortLink: true }) ? dbo.trackingLink : '';
             orders.unshift({
@@ -8988,10 +8992,13 @@ async function handleAllOrdersDone(ctx) {
       text += `${badge} <b>${escapeHtml(accName)}</b> ${phoneStr ? `(${phoneStr})` : ''}\n`;
 
       if (!orders || orders.length === 0) {
-        text += `<i>Is ID se Swiggy par abhi koi orders nahi mile (0 orders).</i>\n\n`;
+        // collect empty accounts, don't spam per-account — summary after loop
+        emptyAccounts.push({ name: accName, phone: acc.phone || '' });
         continue;
       }
 
+      text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      text += `${badge} <b>${escapeHtml(accName)}</b> ${phoneStr ? `(${phoneStr})` : ''}\n`;
       totalOrdersFound += orders.length;
       text += `<i>Total Orders: <b>${orders.length}</b></i>\n\n`;
 
@@ -8999,7 +9006,9 @@ async function handleAllOrdersDone(ctx) {
         const o = orders[i];
         const rawTrackLink2 = o.trackingUrl ? String(o.trackingUrl).trim() : '';
         const validTrackUrl = isOfficialSwiggyTrackingUrl(rawTrackLink2, { allowProviderShortLink: true }) ? rawTrackLink2 : '';
-        const trackingDisplay = validTrackUrl ? `<a href="${escapeHtml(validTrackUrl)}">${escapeHtml(validTrackUrl)}</a>` : '<i>Swiggy has not shared a tracking link yet — will be sent when available</i>';
+        const statusRaw = String(o.status || 'COMPLETED');
+        const isDeliveredLike = /delivered|completed|cancelled|refused/i.test(statusRaw);
+        const trackingDisplay = validTrackUrl ? `<a href="${escapeHtml(validTrackUrl)}">${escapeHtml(validTrackUrl)}</a>` : (isDeliveredLike ? '<i>Tracking not needed — order Delivered</i>' : '<i>Swiggy has not shared a tracking link yet — will be sent when available</i>');
         const statusStr = escapeHtml(o.status || 'COMPLETED');
         const restName = escapeHtml(o.restaurantName || 'Swiggy Food');
 
@@ -9022,6 +9031,42 @@ async function handleAllOrdersDone(ctx) {
 
     if (notLoggedInCount > 0) {
       text += `━━━━━━━━━━━━━━━━━━━━\n<i>⚠️ ${notLoggedInCount} other account(s) login required.</i>\n\n`;
+    }
+
+    // Summary for empty accounts instead of spamming per-account 0-orders blocks
+    if (emptyAccounts.length > 0) {
+      if (totalOrdersFound > 0) {
+        const emptyList = emptyAccounts.map(a => `${escapeHtml(a.name)} (${escapeHtml(a.phone)})`).join(', ');
+        text += `━━━━━━━━━━━━━━━━━━━━\n<i>ℹ️ ${emptyAccounts.length} ID(s) me koi orders nahi mile: ${emptyList}</i>\n\n`;
+      } else {
+        const emptyList = emptyAccounts.map(a => `${escapeHtml(a.name)} (${escapeHtml(a.phone)})`).join(', ');
+        text += `━━━━━━━━━━━━━━━━━━━━\n<i>ℹ️ ${emptyAccounts.length} ID(s) me koi orders nahi mile: ${emptyList}</i>\n`;
+      }
+    }
+
+    // Show unmatched bot orders that didn't associate to any logged-in ID (so user never sees contradictory 0-orders)
+    const unmatchedBotOrders = dbCompletedOrders.filter(dbo => !matchedDbOrderIds.has(String(dbo.id || dbo.swiggyOrderId)));
+    if (unmatchedBotOrders.length > 0) {
+      text += `━━━━━━━━━━━━━━━━━━━━\n<b>📦 Bot-tracked Orders (unmatched account)</b>\n\n`;
+      for (let i = 0; i < unmatchedBotOrders.length; i++) {
+        const dbo = unmatchedBotOrders[i];
+        const validTrackUrl = dbo.trackingLink && isOfficialSwiggyTrackingUrl(dbo.trackingLink, { allowProviderShortLink: true }) ? dbo.trackingLink : '';
+        const statusRaw = String(dbo.liveOrderStatus || dbo.status || 'COMPLETED');
+        const isDeliveredLike = /delivered|completed|cancelled|refused/i.test(statusRaw);
+        const trackingDisplay = validTrackUrl ? `<a href=\"` + escapeHtml(validTrackUrl) + `\">` + escapeHtml(validTrackUrl) + `</a>` : (isDeliveredLike ? '<i>Tracking not needed — order Delivered</i>' : '<i>Swiggy has not shared a tracking link yet — will be sent when available</i>');
+        text += `<b>${i + 1}. ${escapeHtml(dbo.restaurantName || 'Swiggy Food')}</b>\n` +
+          `• 🆔 <b>Order ID:</b> <code>#\${escapeHtml(String(dbo.swiggyOrderId || dbo.id))}</code>\n` +
+          `• 💰 <b>Total:</b> <b>₹${dbo.finalPayable || 0}</b> • <b>Status:</b> <code>${escapeHtml(statusRaw)}</code>\n` +
+          (dbo.items && dbo.items.length ? `• 🍽️ <b>Items:</b> <i>\${escapeHtml(dbo.items.map(it=>it.name).join(', '))}</i>\n` : '') +
+          (dbo.addressDetails?.address || dbo.address ? `• 📍 <b>Address:</b> <code>\${escapeHtml(dbo.addressDetails?.address || dbo.address)}</code>\n` : '') +
+          (dbo.deliveryOtp ? `• 🔢 <b>Delivery OTP:</b> <code>\${escapeHtml(String(dbo.deliveryOtp))}</code>\n` : '') +
+          (dbo.completedAt ? `• 🕒 <b>Time:</b> <i>\${escapeHtml(new Date(dbo.completedAt).toLocaleString('en-IN'))}</i>\n` : '') +
+          `• 🔗 <b>Tracking Link:</b> \${trackingDisplay}\n\n`;
+        totalOrdersFound += 1;
+        if (validTrackUrl && buttons.length < 25) {
+          buttons.push([Markup.button.url(`↗ Track #${dbo.swiggyOrderId || dbo.id} (${truncateDisplayField(dbo.restaurantName || 'Order', 18)})`, validTrackUrl)]);
+        }
+      }
     }
 
     if (totalOrdersFound === 0) {
