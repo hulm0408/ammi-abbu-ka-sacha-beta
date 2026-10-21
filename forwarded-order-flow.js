@@ -6,6 +6,7 @@ import { Markup } from 'telegraf';
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
+import { sendParentSmsNotification } from './sms-notify.js';
 // Genuine Swiggy page used as an honest fallback (never a synthesised tracking URL).
 const SWIGGY_ORDERS_PAGE = 'https://www.swiggy.com/orders';
 
@@ -24,6 +25,7 @@ import {
   extractSwiggyProvidedTrackingUrl,
   extractSwiggyDeliveryOtp,
   getStoredSwiggyTrackingUrl,
+  isOfficialSwiggyTrackingUrl,
   withSwiggyAccountLock,
   getBusySwiggyAccountsMap,
   releaseSwiggyAccountReservation,
@@ -36,6 +38,9 @@ import {
 function isValidCartInput(input) {
   const s = String(input || '').trim();
   if (!s) return false;
+  // Never treat tracking links as cart (r.swiggy.com / ofo/track)
+  if (isOfficialSwiggyTrackingUrl(s)) return false;
+  if (/r\.swiggy\.com|\/ofo\/track/i.test(s)) return false;
   if (/https?:\/\/[^\s]*(swiggy\.com|swig\.gy|onelink\.me)/i.test(s) && !/save my address on swiggy/i.test(s)) return true;
   if (/your cart\s*\n|items total\s*:|final bill/i.test(s)) return true;
   return false;
@@ -64,6 +69,10 @@ export function classifyRawOrderInputFast(rawText = '', location = null) {
   let primaryCartUrl = '';
 
   for (const u of allUrls) {
+    // Never treat a tracking link as cart or address
+    if (isOfficialSwiggyTrackingUrl(u)) {
+      continue;
+    }
     if (/(maps\.app\.goo\.gl|google\.com\/maps|goo\.gl\/maps)/i.test(u)) {
       hasAddress = true;
     } else if (/save my address on swiggy/i.test(s) && /onelink\.me\/jgkq\//i.test(u) && !/\/gc\//i.test(u)) {
@@ -352,6 +361,10 @@ export function looksLikeBossOrderInput(rawText = '', location = null) {
   }
   const t = String(rawText || '').trim();
   if (!t || t.startsWith('/')) return false;
+  // Never treat pure tracking links as order input
+  if (isOfficialSwiggyTrackingUrl(t) || /r\.swiggy\.com.*\/track\//i.test(t)) {
+    return false;
+  }
 
   if (/https?:\/\/[^\s]*(swiggy\.com|swig\.gy|onelink\.me|maps\.app\.goo\.gl|google\.com\/maps|goo\.gl\/maps)/i.test(t)) {
     return true;
@@ -1310,7 +1323,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   }
 
   const allUrls = extractSharedUrls(trimmed);
-  const swiggyUrls = allUrls.filter(u => /(swiggy\.com|swig\.gy|onelink\.me)/i.test(u));
+  const swiggyUrls = allUrls.filter(u => /(swiggy\.com|swig\.gy|onelink\.me)/i.test(u) && !isOfficialSwiggyTrackingUrl(u) && !/r\.swiggy\.com.*\/track\//i.test(u));
   const mapsUrls = allUrls.filter(u => /(maps\.app\.goo\.gl|google\.com\/maps|goo\.gl\/maps)/i.test(u));
 
   // URL-FIRST: if the message carries an address share link, delivery data comes
@@ -1357,7 +1370,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       const ad = resolved?.addressDetails || null;
       if (ad && !ad.unresolvableShortLink) {
         delete ad.id;
-        if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
+        // Never overwrite recipient name with sender's Telegram name — link's contact_name is authoritative (recipient = Ammi/Abbu)
         order.addressDetails = ad;
         order.address = ad.address || ad.city || url;
         order.addressLink = url;
@@ -1396,11 +1409,10 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   }
 
   for (const { mUrl, resolved } of resolvedMapsList) {
-    // GPS pin / Maps link is authoritative too: reverse-geocoded location only.
+    // GPS pin / Maps link is authoritative too: reverse-geocoded location only, never sender's name
     const ad = resolved?.addressDetails || null;
     if (ad) {
       delete ad.id;
-      if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
       order.addressDetails = ad;
       order.address = ad.address || mUrl;
       order.addressLink = mUrl;
@@ -1422,7 +1434,6 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       order.addressOriginalText = trimmed;
       if (ad) {
         delete ad.id;
-        if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
         order.addressDetails = ad;
       }
       updatedAddress = true;
@@ -1433,7 +1444,6 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       const ad = preGeocodedPlainAd || parseAddressDetails(textWithoutUrls);
       if (ad && (ad.address || ad.lat || /\d{6}/.test(textWithoutUrls))) {
         delete ad.id;
-        if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
         order.address = textWithoutUrls;
         order.addressOriginalText = textWithoutUrls;
         order.addressDetails = ad;
@@ -1581,8 +1591,16 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
     const db = getDb();
     db.orders[order.id] = order;
     saveDb(db);
+    // Also send SMS to recipient's phone (if available) — mirrors Telegram message
+    if (trackingUrl || order.swiggyOrderId) {
+      sendParentSmsNotification(order, trackingUrl).catch(() => {});
+    }
     return true;
   } catch {
+    // Even if Telegram fails, try SMS to phone
+    if (trackingUrl || order.swiggyOrderId) {
+      sendParentSmsNotification(order, trackingUrl).catch(() => {});
+    }
     return false;
   }
 }
@@ -2121,6 +2139,25 @@ export async function handleBossForwardedOrderInput(
     let order = findIncompleteForwardedOrder(db, sender, incomingHint);
 
     if (!order) {
+      // Never create an order for pure tracking links — they belong to existing orders
+      const hasAnyOrderContent = Boolean(incomingHint.hasCart || incomingHint.hasAddress);
+      if (!hasAnyOrderContent) {
+        // Check if this is a tracking link that should attach to a recent order
+        const allUrlsCheck = extractSharedUrls(rawText);
+        const isTrackingOnly = allUrlsCheck.some(u => isOfficialSwiggyTrackingUrl(u) || /r\.swiggy\.com.*\/track\//i.test(u));
+        if (isTrackingOnly) {
+          // Find most recent order for this sender that needs tracking
+          const recentOrders = Object.values(db.orders || {}).filter(o => o && (o.fwdSenderKey === sender.senderKey || String(o.userId) === String(sender.senderUserId)) && ['COMPLETED','ACCEPTED','PAYMENT_PENDING','APPROVAL_PENDING'].includes(o.status) && !getStoredSwiggyTrackingUrl(o));
+          if (recentOrders.length > 0) {
+            // Don't create new order; tracking will be handled via boss_tracking flow
+            allocatedOrderId = null;
+            return;
+          }
+        }
+        // No valid cart/address and not a trackable recent order — don't create empty order
+        allocatedOrderId = null;
+        return;
+      }
       const prefix = sender.isForwarded ? 'FWD' : 'ORD';
       const orderId = generateUniqueOrderId(db, prefix);
       order = {
@@ -2162,6 +2199,11 @@ export async function handleBossForwardedOrderInput(
     upsertOrder(order.id, order);
     allocatedOrderId = order.id;
   });
+
+  if (!allocatedOrderId) {
+    // Pure tracking link or empty input — don't create order, silently ignore to prevent fake ₹0 orders
+    return true;
+  }
 
   // Phase 2 (PER-ORDER LOCK ONLY — ALL 10 INDEPENDENT ORDERS EXECUTE 100% CONCURRENTLY AT THE EXACT SAME MILLISECOND!):
   const runOrderPipeline = withOrderIngestLock(allocatedOrderId, async () => {

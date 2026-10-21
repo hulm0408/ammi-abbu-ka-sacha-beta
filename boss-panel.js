@@ -38,6 +38,10 @@ function addrPreview(order) {
 
 // Monospace bill table inside a bordered section
 function billSection(order) {
+  const hasBill = Number(order.subtotal || order.itemTotal || order.finalPayable || 0) > 0 || (Array.isArray(order.items) && order.items.length > 0);
+  if (!hasBill) {
+    return section('Final Bill', sub('Calculating max coupon and final bill — items not loaded yet'));
+  }
   const rows = [['Final Bill', '']];
   rows.push(['Items Total', `₹${Number(order.subtotal || 0)}`]);
   if (order.tradeDiscountTotal > 0) rows.push(['Restaurant Offer Discount', `−₹${Number(order.tradeDiscountTotal)}`]);
