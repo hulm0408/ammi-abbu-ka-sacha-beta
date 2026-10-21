@@ -24,8 +24,33 @@ import {
   getGenuinePaymentDetails,
   generateUpiQrUrl,
   extractRealSwiggyTracking,
-  verifyPaymentStatusFromApi
+  verifyPaymentStatusFromApi,
+  parseAddressDetails,
+  formatSwiggyWorldCartReceipt,
+  isValidIndianDeliveryCoordinates,
+  geocodeAddressDetails,
+  saveAddressToAccount,
+  generateRealSwiggyMerchantUpiQr,
+  swiggyCartUpdate,
+  extractSwiggyProvidedTrackingUrl,
+  extractSwiggyDeliveryOtp,
+  getStoredSwiggyTrackingUrl,
+  isOfficialSwiggyTrackingUrl,
+  parseDapiCartPayload,
+  doesCouponMatchExpectedOrder,
+  doesOrderBillMatchLiveCart,
+  reapplyWinningCouponAfterTrials
 } from './swiggy-cart.js';
+import {
+  getReadyOrdersWaitingForAccount,
+  ingestForwardedContentIntoOrder,
+  buildForwardedOrderCardView,
+  startOrderDeliveryInfoPoller,
+  stopOrderDeliveryInfoPoller
+} from './forwarded-order-flow.js';
+import { table } from './rich-text.js';
+import { extractStandaloneMobileNumber, prepareNewSwiggyAccountIdentity } from './account-vault-intake.js';
+import { parseSwiggyOtpError, sanitizeSwiggyName } from './swiggy-bridge.js';
 
 console.log('================================================================');
 console.log('🛡️ COMPREHENSIVE 20-SCENARIO AUDIT & VERIFICATION TEST SUITE');
@@ -49,6 +74,307 @@ const db = getDb();
 const initialBackup = JSON.parse(JSON.stringify(db));
 
 try {
+  // -------------------------------------------------------------
+  // Standalone login number, account-name, and Swiggy security-diagnostic regressions
+  // -------------------------------------------------------------
+  console.log('\n--- Login Number / Account Name / Swiggy Security Diagnostics ---');
+  assert(extractStandaloneMobileNumber('9876543210') === '9876543210', 'A standalone 10-digit Indian mobile is accepted');
+  assert(extractStandaloneMobileNumber('919876543210') === '9876543210', 'A standalone 12-digit 91-prefixed number is normalized');
+  assert(extractStandaloneMobileNumber('+91 98765-43210') === '9876543210', 'Formatted +91 mobile input is normalized');
+  assert(extractStandaloneMobileNumber('119876543210') === null, 'A 12-digit number without the 91 prefix is rejected');
+  assert(extractStandaloneMobileNumber('Address, Lucknow 9876543210') === null, 'A number embedded in address text cannot request login OTP');
+  const newIdentity = prepareNewSwiggyAccountIdentity('  Bhai  ', {});
+  assert(newIdentity.success && newIdentity.name === 'Bhai' && newIdentity.key === 'bhai', 'New account name is preserved with a safe key');
+  assert(!prepareNewSwiggyAccountIdentity('Bhai', { bhai: { name: 'Bhai' } }).success, 'Duplicate account labels cannot overwrite an existing account');
+  assert(sanitizeSwiggyName('जगदीश कुमार') === 'जगदीश कुमार', 'Signup name sanitization preserves non-Latin letters');
+  const securityChallenge = parseSwiggyOtpError({ status: 403, data: { statusMessage: 'captcha challenge' } });
+  assert(securityChallenge.code === 'SWIGGY_SECURITY_CHALLENGE' && securityChallenge.retryable === false && /will not retry or bypass/i.test(securityChallenge.message), 'Swiggy challenge is diagnosed without retry/bypass guidance');
+  const otpRateLimit = parseSwiggyOtpError({ status: 429 });
+  assert(otpRateLimit.code === 'SWIGGY_RATE_LIMIT' && otpRateLimit.retryable === false, 'Swiggy rate limit is distinguished from OTP/auth failures');
+  const verifiedCouponCart = parseDapiCartPayload({
+    cartMeta: {
+      cartId: 'cart-coupon-check',
+      restaurant_details: { id: 'restaurant-coupon-check', name: 'Sample Cafe' },
+      cart_menu_items: [{ menu_item_id: 1, name: 'Meal', quantity: 1, subtotal: 20000, final_price: 20000 }],
+      item_total: 200,
+      coupon_code: 'FEASTMODE70',
+      is_coupon_valid: 1,
+      coupon_discount_total: 140,
+      trade_discount_total: 40,
+      trade_discount_reward_amount: 40,
+      positiveDeliveryChargesExclusive: 0,
+      free_delivery_discount: 28,
+      taxesAndCharges: 22.38,
+      order_total: 43,
+      addresses: [{ id: 'addr-coupon-check', address: 'Hazratganj, Lucknow', lat: '26.85', lng: '80.95' }]
+    }
+  });
+  const couponOrderCheck = { couponCode: 'FEASTMODE70', discountAmount: 140 };
+  const sampleExpectedBill = {
+    ...couponOrderCheck,
+    itemTotal: 200,
+    tradeDiscountTotal: 40,
+    freeCashApplied: 40,
+    freeDeliveryDiscount: 28,
+    deliveryFee: 0,
+    swiggyOneMembershipFee: 0,
+    packingCharges: 0,
+    taxesAndCharges: 22.38,
+    finalPayable: 43
+  };
+  assert(verifiedCouponCart.finalPayable === 43 && verifiedCouponCart.totalSavings === 208 && verifiedCouponCart.freeCashApplied === 40, 'Sample cart parses to ₹43 payable with ₹208 savings including ₹40 Free Cash');
+  assert(doesOrderBillMatchLiveCart(verifiedCouponCart, sampleExpectedBill), 'Payment gate accepts an exact live match for coupon, free cash, free delivery, charges, and total');
+  assert(!doesOrderBillMatchLiveCart({ ...verifiedCouponCart, freeCashApplied: 0 }, sampleExpectedBill), 'Payment gate blocks if Free Cash disappears from the live cart');
+  assert(!doesOrderBillMatchLiveCart({ ...verifiedCouponCart, freeDeliveryDiscount: 0 }, sampleExpectedBill), 'Payment gate blocks if free-delivery savings disappear from the live cart');
+  assert(doesCouponMatchExpectedOrder(verifiedCouponCart, couponOrderCheck), 'QR gate accepts only the exact Swiggy-confirmed coupon and discount');
+  assert(!doesCouponMatchExpectedOrder({ ...verifiedCouponCart, couponCode: 'TRYNEW', discountAmount: 40 }, couponOrderCheck), 'QR gate rejects a weaker coupon left active after coupon trials');
+  assert(!doesCouponMatchExpectedOrder({ ...verifiedCouponCart, discountAmount: 100 }, couponOrderCheck), 'QR gate rejects a changed coupon discount instead of charging against a stale bill');
+  let winnerReapplyCalls = 0;
+  const restoredWinner = await reapplyWinningCouponAfterTrials({
+    account: {},
+    order: {},
+    bestCartState: { couponCode: 'FEASTMODE70', discountAmount: 140 },
+    bestCode: 'FEASTMODE70',
+    appliedAnyTrial: true,
+    applyCouponFn: async () => {
+      winnerReapplyCalls++;
+      return { items: [{ name: 'Meal' }], couponCode: 'FEASTMODE70', discountAmount: 140 };
+    }
+  });
+  assert(winnerReapplyCalls === 1 && restoredWinner.success, 'Winning coupon is re-applied after trials even when its stored snapshot already matches');
+  const failedWinnerReapply = await reapplyWinningCouponAfterTrials({
+    account: {}, order: {}, bestCartState: {}, bestCode: 'FEASTMODE70', appliedAnyTrial: true,
+    applyCouponFn: async () => ({ items: [{ name: 'Meal' }], couponCode: 'TRYNEW', discountAmount: 40 })
+  });
+  assert(!failedWinnerReapply.success && failedWinnerReapply.code === 'MAX_COUPON_RELOCK_FAILED', 'Payment is blocked if Swiggy leaves a weaker coupon active instead of the winner');
+  const sampleCouponReceipt = formatSwiggyWorldCartReceipt({ ...verifiedCouponCart, ...couponOrderCheck, finalPayable: 43, swiggyVerified: true });
+  assert(sampleCouponReceipt.includes('Coupon FEASTMODE70: −₹140 (applied)') && sampleCouponReceipt.includes('₹28 saved'), 'Receipt clearly labels the applied coupon and free-delivery saving');
+
+  // -------------------------------------------------------------
+  // Delivery identity regressions: receipt phone + location must survive a round trip
+  // -------------------------------------------------------------
+  console.log('\n--- Delivery Address / Number / Coordinate Regression Checks ---');
+  const deliveryReceipt = formatSwiggyWorldCartReceipt({
+    restaurantName: 'Some Cafe',
+    selectedAccountPhone: '9876543210',
+    addressDetails: {
+      name: 'Prathmesh',
+      mobile: '9823305540',
+      city: 'Pune',
+      address: 'Flat no. 412, Parivartan Society, Pune Maharashtra 411030',
+      flat_no: 'Flat no. 412',
+      lat: '18.502975',
+      lng: '73.846375'
+    },
+    items: [],
+    finalPayable: 139
+  });
+  const roundTripAddress = parseAddressDetails(deliveryReceipt);
+  assert(roundTripAddress?.name === 'Prathmesh', 'Formatted receipt round-trip retains recipient name');
+  assert(roundTripAddress?.mobile === '9823305540', 'Formatted receipt selects delivery mobile, not Order Account mobile');
+  assert(roundTripAddress?.city === 'Pune', 'Formatted receipt round-trip retains delivery city');
+  assert(roundTripAddress?.address === 'Flat no. 412, Parivartan Society, Pune Maharashtra 411030', 'Formatted receipt round-trip retains complete street address');
+  assert(roundTripAddress?.lat === '18.502975' && roundTripAddress?.lng === '73.846375', 'Formatted receipt round-trip retains the correct GPS coordinates');
+  assert(isValidIndianDeliveryCoordinates('18.502975', '73.846375'), 'Valid Pune coordinates accepted');
+  assert(!isValidIndianDeliveryCoordinates('73.846375', '18.502975'), 'Swapped Pune latitude/longitude rejected');
+  const accountOnlyPhone = parseAddressDetails('Order Account: 9876543210\nPune Address\nPrathmesh\nFlat no. 412, Parivartan Society, Pune Maharashtra 411030');
+  assert(accountOnlyPhone?.mobile === null, 'Order Account number is never substituted as recipient mobile');
+
+  const noPhoneSave = await saveAddressToAccount(
+    { phone: '9876543210' },
+    { address: 'Flat no. 412, Parivartan Society, Pune Maharashtra 411030', lat: '18.502975', lng: '73.846375' },
+    [{ id: 'saved-home', address: 'Flat no. 412, Parivartan Society, Pune Maharashtra 411030', mobile: '9876543210', lat: '18.502975', lng: '73.846375' }]
+  );
+  assert(!noPhoneSave.addressId && /recipient mobile number/i.test(noPhoneSave.error || ''), 'A saved address/account phone cannot substitute for a missing recipient number');
+
+  let missingAddressQrBlocked = false;
+  try {
+    await generateRealSwiggyMerchantUpiQr({ account: {}, order: { status: 'PENDING' } });
+  } catch (error) {
+    missingAddressQrBlocked = error?.diag?.code === 'QR_DELIVERY_ADDRESS_UNVERIFIED';
+  }
+  assert(missingAddressQrBlocked, 'Real Swiggy QR generation fails closed without a verified delivery location');
+  let mismatchedPendingQrBlocked = false;
+  try {
+    await generateRealSwiggyMerchantUpiQr({
+      account: { phone: '9000000000' },
+      order: {
+        status: 'PENDING',
+        addressDetails: { id: 'new-address', name: 'Parent', mobile: '9823305540', address: 'New Pune address', lat: '18.502975', lng: '73.846375' },
+        pendingSwiggyUpiUri: 'upi://pay?pa=swiggyupi@icici&am=100',
+        pendingSwiggyOrderId: 'OLD_ORDER',
+        pendingQrCreatedAt: Date.now(),
+        pendingQrAddressId: 'old-address',
+        pendingQrAddressText: 'old address',
+        pendingQrDeliveryMobile: '9823305540',
+        pendingQrLat: '18.502975',
+        pendingQrLng: '73.846375',
+        pendingQrAddressAccount: '9000000000'
+      }
+    });
+  } catch (error) {
+    mismatchedPendingQrBlocked = error?.diag?.code === 'QR_EXISTING_DELIVERY_ADDRESS_MISMATCH';
+  }
+  assert(mismatchedPendingQrBlocked, 'Address changes cannot reuse or duplicate a recent QR bound to another delivery address');
+  const invalidCartUpdate = await swiggyCartUpdate(
+    {},
+    { restaurantId: 'restaurant', address_id: 'saved-id', cartItems: [{ itemId: 'item', quantity: 1 }] }
+  );
+  assert(invalidCartUpdate?.json?.statusMessage?.includes('verified Indian coordinates'), 'Cart item updates are blocked when verified delivery coordinates are missing');
+
+  const originalFetch = globalThis.fetch;
+  const geocodeQueries = [];
+  globalThis.fetch = async (url) => {
+    const urlText = String(url);
+    geocodeQueries.push(urlText);
+    return urlText.includes('photon.komoot.io')
+      ? { ok: true, json: async () => ({ features: [] }) }
+      : { ok: true, json: async () => [{ lat: '18.502975', lon: '73.846375' }] };
+  };
+  let fullAddressGeocode;
+  try {
+    fullAddressGeocode = await geocodeAddressDetails({
+      address: 'Flat no. 412, Parivartan Society, Pune Maharashtra 411030'
+    }, { cookies: 'test-account-session' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert(geocodeQueries.some(url => decodeURIComponent(url).includes('Flat no. 412, Parivartan Society, Pune Maharashtra 411030')), 'Forward geocoder receives the complete street address, not a city/PIN-only query');
+  assert(fullAddressGeocode?.lat === '18.502975' && fullAddressGeocode?.lng === '73.846375', 'Full-address geocode returns the exact mocked Pune delivery pin');
+
+  const forwardedOrder = {
+    id: 'FWD_CONTACT_TEST',
+    isForwardedOrder: true,
+    status: 'PENDING',
+    cardStage: 'NEED_ACCOUNT',
+    cart: 'https://swig.gy/gc/example',
+    address: 'Flat 4, Pune',
+    addressDetails: {
+      address: 'Flat 4, Parivartan Society, Pune',
+      lat: '18.502975',
+      lng: '73.846375',
+      mobile: ''
+    }
+  };
+  const incompleteForwardedDb = { orders: { [forwardedOrder.id]: forwardedOrder } };
+  assert(getReadyOrdersWaitingForAccount(incompleteForwardedDb).length === 0, 'Forwarded orders without recipient mobile cannot enter account allocation');
+  const capturedContact = await ingestForwardedContentIntoOrder(forwardedOrder, { rawText: '9823305540' });
+  assert(capturedContact.updatedAddress && forwardedOrder.addressDetails.mobile === '9823305540', 'Forwarded-order contact-only correction updates the recipient number without replacing the street address');
+  assert(getReadyOrdersWaitingForAccount(incompleteForwardedDb).length === 1, 'Forwarded order becomes account-ready only after the recipient mobile is supplied');
+
+  const officialTrackingUrl = 'https://www.swiggy.com/orders/track/250070826195484';
+  assert(
+    extractSwiggyProvidedTrackingUrl({ shareable_url: officialTrackingUrl }) === officialTrackingUrl,
+    'Tracking extraction accepts a Swiggy URL explicitly present in its shareable field'
+  );
+  assert(
+    extractSwiggyProvidedTrackingUrl({ order_id: '250070826195484' }) === null,
+    'Tracking extraction never constructs a link from an order ID alone'
+  );
+  assert(
+    extractSwiggyProvidedTrackingUrl({ tracking_url: 'https://swig.gy/provider-short-code' }) === 'https://swig.gy/provider-short-code',
+    'An opaque Swiggy short link is accepted only when Swiggy returns it in an explicit tracking field'
+  );
+  assert(
+    !isOfficialSwiggyTrackingUrl('https://swig.gy/gc/group-cart-code') &&
+    !getStoredSwiggyTrackingUrl({ trackingLink: 'https://swig.gy/provider-short-code', trackingLinkSource: 'BOSS_PROVIDED' }),
+    'Manual tracking input rejects ambiguous short cart links instead of presenting them as tracking'
+  );
+  assert(
+    extractSwiggyDeliveryOtp({ payment_otp: '112233', delivery_otp: '4821' }) === '4821',
+    'Only a delivery OTP is surfaced; payment/login OTP fields are ignored'
+  );
+  assert(
+    extractSwiggyDeliveryOtp({ payment_otp: '112233' }, { delivery: { otp: '5937' } }) === '5937',
+    'An unlabeled OTP is accepted only when it comes from the delivery-details response context'
+  );
+  assert(
+    extractSwiggyDeliveryOtp({ delivery: { payment_otp: '112233', login_otp: '112244' } }) === '',
+    'Payment and login OTPs stay excluded even when nested in a broad delivery response'
+  );
+  assert(
+    getStoredSwiggyTrackingUrl({ trackingLink: officialTrackingUrl }) === '',
+    'Legacy unmarked tracking URLs are not treated as provider-supplied links'
+  );
+  assert(
+    getStoredSwiggyTrackingUrl({ trackingLink: officialTrackingUrl, trackingLinkSource: 'SWIGGY_API' }) === officialTrackingUrl,
+    'Provider-supplied Swiggy tracking URL is retained when marked with its source'
+  );
+  const fakeTrackCard = buildForwardedOrderCardView({
+    id: 'TRACK_SAFE_TEST',
+    status: 'COMPLETED',
+    swiggyOrderId: '250070826195484',
+    trackingLink: 'https://www.swiggy.com/track-order/250070826195484',
+    shareTrackUrl: 'https://bot.example/track/TRACK_SAFE_TEST?sig=fake'
+  }, { config: { accounts: {} } }, () => '<b>Order</b>');
+  assert(
+    !fakeTrackCard.text.includes('/track-order/250070826195484') && !fakeTrackCard.text.includes('bot.example/track/'),
+    'Completed order card does not display bot-generated or legacy unverified tracking links'
+  );
+  const realTrackCard = buildForwardedOrderCardView({
+    id: 'TRACK_OTP_TEST',
+    status: 'COMPLETED',
+    swiggyOrderId: '250070826195484',
+    trackingLink: officialTrackingUrl,
+    trackingLinkSource: 'SWIGGY_API',
+    deliveryOtp: '4821',
+    liveOrderStatus: 'Out for delivery'
+  }, { config: { accounts: {} } }, () => '<b>Order</b>');
+  assert(
+    realTrackCard.text.includes(officialTrackingUrl) && realTrackCard.text.includes('4821') && realTrackCard.text.includes('Out for delivery'),
+    'Tracking card pairs Swiggy-provided tracking URL with delivery OTP and live status when available'
+  );
+  const listStyleTable = table([['#', 'Item', 'Qty', 'Line Total'], ['1', 'Paratha', '2', '₹80']]);
+  assert(
+    !listStyleTable.includes('<pre>') && !listStyleTable.includes('─') && listStyleTable.includes('Paratha') && listStyleTable.includes('Qty: 2'),
+    'Telegram order items render as a readable list, not a fake monospace table with separator lines'
+  );
+
+  console.log('\n--- Scenario 15B: Delivery Tracking Arrives Later ---');
+  const pollOrderId = 'TRACKING_POLL_LATER';
+  const pollDb = getDb();
+  pollDb.config.accounts = pollDb.config.accounts || {};
+  pollDb.config.accounts.TEST_TRACKING_ACCOUNT = { cookies: 'test-cookie' };
+  pollDb.orders[pollOrderId] = {
+    id: pollOrderId,
+    status: 'COMPLETED',
+    userId: 'TRACKING_TEST_USER',
+    selectedAccount: 'TEST_TRACKING_ACCOUNT',
+    swiggyOrderId: '250070826195484',
+    trackingLink: '',
+    trackingLinkSource: '',
+    deliveryOtp: ''
+  };
+  saveDb(pollDb);
+  const deliveryNotices = [];
+  let trackingFetchCount = 0;
+  startOrderDeliveryInfoPoller({
+    telegram: { sendMessage: async (chatId, text) => { deliveryNotices.push({ chatId, text }); } },
+    chatId: 'TRACKING_BOSS_CHAT',
+    orderId: pollOrderId,
+    intervalMs: 5,
+    maxDurationMs: 1000,
+    customTrackingFetcher: async () => ({
+      trackingUrl: officialTrackingUrl,
+      deliveryOtp: ++trackingFetchCount > 1 ? '4821' : '',
+      status: 'Out for delivery'
+    })
+  });
+  await new Promise(resolve => setTimeout(resolve, 35));
+  stopOrderDeliveryInfoPoller(pollOrderId);
+  const polledOrder = getDb().orders[pollOrderId];
+  assert(
+    polledOrder.trackingLink === officialTrackingUrl && polledOrder.trackingLinkSource === 'SWIGGY_API' && polledOrder.deliveryOtp === '4821',
+    'Bounded delivery poller persists a later Swiggy tracking URL and delivery OTP with source provenance'
+  );
+  assert(
+    deliveryNotices.length >= 2 && deliveryNotices.some(notice => notice.text.includes(officialTrackingUrl) && notice.text.includes('4821')),
+    'Customer first receives tracking, then receives a follow-up with the delivery OTP when Swiggy publishes it later'
+  );
+  delete pollDb.orders[pollOrderId];
+  delete pollDb.config.accounts.TEST_TRACKING_ACCOUNT;
+  saveDb(pollDb);
+
   // -------------------------------------------------------------
   // Test 1: Normal Successful Order Flow
   // -------------------------------------------------------------

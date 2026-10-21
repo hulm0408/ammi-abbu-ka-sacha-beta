@@ -193,8 +193,8 @@ try {
     Boolean(bossCard1) &&
     bossCard1.text.includes('Order For:') &&
     bossCard1.text.includes('Rahul Boss') &&
-    flatButtons(bossCard1).includes('❌ Cancel Order'),
-    'Boss Direct Send #1: Card #101 created under Boss\'s OWN name ("Rahul Boss") with [ ❌ Cancel Order ]'
+    flatButtons(bossCard1).includes('✕ Cancel Order'),
+    'Boss Direct Send #1: Card #101 created under Boss\'s OWN name ("Rahul Boss") with [ ✕ Cancel Order ]'
   );
 
   // 2. Simultaneously, Boss FORWARDS a message from "Ammi" -> Card #102 created under "Ammi" WITHOUT deleting Boss's personal Card #101!
@@ -212,7 +212,7 @@ try {
     Boolean(ammiCard1) &&
     ammiCard1.text.includes('Forwarded From:') &&
     ammiCard1.text.includes('Ammi') &&
-    flatButtons(ammiCard1).includes('❌ Cancel Order'),
+    flatButtons(ammiCard1).includes('✕ Cancel Order'),
     'Forwarded IB Send: Card #102 created under "Ammi" while keeping Boss\'s personal Card #101 untouched!'
   );
 
@@ -241,13 +241,13 @@ try {
     Boolean(bossBillCard) &&
     bossBillCard.text.includes('Rahul Boss') &&
     bossBillCard.text.includes('Final Bill') &&
-    flatButtons(bossBillCard).includes('🔳 Generate QR') &&
-    flatButtons(bossBillCard).includes('✅ Paid') &&
-    flatButtons(bossBillCard).includes('❌ Cancel Order'),
-    'Live Swiggy Bill Fetched on Bill Card with [ 🔳 Generate QR ], [ ✅ Paid ], & [ ❌ Cancel Order ]'
+    flatButtons(bossBillCard).includes('□ Generate QR') &&
+    flatButtons(bossBillCard).includes('✓ Paid') &&
+    flatButtons(bossBillCard).includes('✕ Cancel Order'),
+    'Live Swiggy Bill Fetched on Bill Card with [ □ Generate QR ], [ ✓ Paid ], & [ ✕ Cancel Order ]'
   );
 
-  // Click `[ 🔳 Generate QR ]` -> HITS REAL `https://payments.swiggy.com/api/v3/order/place`!
+  // Click `[ □ Generate QR ]` -> HITS REAL `https://payments.swiggy.com/api/v3/order/place`!
   await clickButton(`fwd_gen_qr_${bossOrderId}`, billCardId);
   let storedOrder = getDb().orders[bossOrderId];
   if (!storedOrder.pendingSwiggyUpiUri) {
@@ -311,16 +311,29 @@ try {
   const paidTrackCard = messages.get(paidCardId);
   console.log('\n--- REAL SWIGGY PAID + LIVE TRACKING CARD (#106) ---\n' + paidTrackCard.text + '\n----------------------------------------------------\n');
 
+  const finalizedTrackingOrder = getDb().orders[bossOrderId];
+  const providerTrackingUrl = finalizedTrackingOrder.trackingLinkSource === 'SWIGGY_API'
+    ? finalizedTrackingOrder.trackingLink
+    : '';
+  const trackingControlPresent = providerTrackingUrl
+    ? flatButtons(paidTrackCard).includes('↗ Open Swiggy tracking')
+    : flatButtons(paidTrackCard).includes('↻ Retry Swiggy tracking');
+  const trackingDisplayedSafely = providerTrackingUrl
+    ? paidTrackCard.text.includes(`href="${providerTrackingUrl}"`)
+    : !/href="https?:\/\/[^\"]*\/track/i.test(paidTrackCard.text);
   ok(
     Boolean(paidTrackCard) &&
     paidTrackCard.text.includes('Rahul Boss') &&
     paidTrackCard.text.includes('250070826195484') &&
     paidTrackCard.text.includes('Order Delivered') &&
     paidTrackCard.text.includes('SurajKumar Kumar') &&
-    paidTrackCard.text.includes('/track/' + bossOrderId) &&
-    paidTrackCard.text.includes('https://www.swiggy.com/track-order/250070826195484') &&
-    flatButtons(paidTrackCard).includes('❌ Cancel Order'),
-    'Confirmed Card #106 extracted 100% REAL Swiggy Order Status ("Order Delivered"), Rider Name ("SurajKumar Kumar"), Shareable Live Map Link & Direct Swiggy Track Link!'
+    (providerTrackingUrl
+      ? paidTrackCard.text.includes(providerTrackingUrl)
+      : paidTrackCard.text.includes('Swiggy has not shared a tracking link yet')) &&
+    trackingDisplayedSafely &&
+    !paidTrackCard.text.includes('bot.example/track/') &&
+    trackingControlPresent,
+    'Confirmed card uses only Swiggy-provided tracking data and still shows live status and delivery-partner details'
   );
 
   // =========================================================================
@@ -341,11 +354,11 @@ try {
     'Any error immediately sends Boss a copyable [AI-DIAG] diagnostic card with exact error code, stage & link!'
   );
 
-  // Cancel Ammi's incomplete card (#102) via `[ ❌ Cancel Order ]`
+  // Cancel Ammi's incomplete card (#102) via `[ ✕ Cancel Order ]`
   const ammiCancelCb = flatCallbacks(messages.get(102)).find(c => c.startsWith('fwd_cancel_'));
   await clickButton(ammiCancelCb, 102);
   const cancelConfirmMsg = Array.from(messages.values()).pop();
-  ok(deletedIds.includes(102) && cancelConfirmMsg?.text.includes('Order Cancelled'), 'Ammi\'s card cancelled cleanly via [ ❌ Cancel Order ]');
+  ok(deletedIds.includes(102) && cancelConfirmMsg?.text.includes('Order Cancelled'), 'Ammi\'s card cancelled cleanly via [ ✕ Cancel Order ]');
 
   // Cleanup live helper cart & verify both accounts clean!
   await swiggyCartFlush(accHelper).catch(() => {});

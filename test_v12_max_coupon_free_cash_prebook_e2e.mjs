@@ -34,6 +34,7 @@ puppeteer.launch = async (...args) => {
   return origLaunch.apply(puppeteer, args);
 };
 
+if (process.env.SKIP_LIVE_SWIGGY_TESTS !== '1') {
 // =========================================================================
 // PART 1: LIVE SWIGGY PRODUCTION — 15-Day Pre-Book + PATCH Reward Switcher
 // =========================================================================
@@ -183,6 +184,10 @@ console.log('\n━━━ PART 2: Live Production Sequential Cart-First Discovery
     globalThis.fetch = realFetch;
     await swiggyCartFlush(acc).catch(() => {});
   }
+}
+
+} else {
+  console.log('Skipping live Swiggy production tests; running the mocked checkout matrix only.');
 }
 
 // =========================================================================
@@ -420,6 +425,7 @@ console.log('\n━━━ PART 3: Full Max-Coupon + Campaign Free Cash (`₹50`) 
   }
 }
 
+if (process.env.SKIP_LIVE_SWIGGY_TESTS !== '1') {
 // =========================================================================
 // PART 4: FINAL LIVE CART CLEANLINESS CHECK ON ALL REAL ACCOUNTS
 // =========================================================================
@@ -432,6 +438,10 @@ console.log('\n━━━ PART 4: Final Live Swiggy Cart Flush & Clean-State Veri
     const after = await inspectCartForAccount(acc);
     check(`${key}: Live Swiggy cart confirmed 100% clean & empty (${after?.items?.length || 0} items)`, (after?.items?.length || 0) === 0);
   }
+}
+
+} else {
+  console.log('Skipping live Swiggy cart-cleanliness checks.');
 }
 
 console.log(`\n🏆 ALL ${passed}/${passed} TASK 11 E2E ASSERTIONS PASSED WITH ${chromiumLaunches} CHROMIUM LAUNCHES! 🚀`);

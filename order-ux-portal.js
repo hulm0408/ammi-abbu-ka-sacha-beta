@@ -38,6 +38,11 @@ import {
   verifySwiggyOtpViaBridge
 } from './swiggy-bridge.js';
 import { table, heading, sub, field, section } from './rich-text.js';
+import { getStoredSwiggyTrackingUrl } from './swiggy-cart.js';
+
+function getSafePublishedTrackingLink(order) {
+  return getStoredSwiggyTrackingUrl(order);
+}
 
 const PORTAL_SIGN_SECRET = crypto
   .createHash('sha256')
@@ -152,28 +157,28 @@ export function buildCleanUserIntakeCard(userId, draft = {}, userInfo = {}) {
 
   // Determine badge & prompt line
   let statusBadge = 'Cart & address needed';
-  let topBanner = 'ℹ️ <b>Send cart + address.</b> <i>Either can arrive first.</i>';
-  let actionPrompt = '📝 <b>Open the Verify Form below (or paste in chat) to add Cart + Address.</b>';
-  let primaryCtaLabel = '📝 Open Cart + Address Verify Box ›';
+  let topBanner = 'i <b>Send cart + address.</b> <i>Either can arrive first.</i>';
+  let actionPrompt = '✎ <b>Open the Verify Form below (or paste in chat) to add Cart + Address.</b>';
+  let primaryCtaLabel = '✎ Open Cart + Address Verify Box ›';
 
   if (hasCart && !hasAddress) {
-    statusBadge = '🟡 Address needed';
-    actionPrompt = '📍 <b>Add a valid address link to continue.</b>';
-    primaryCtaLabel = '📍 Enter Address & Verify ›';
+    statusBadge = '● Address needed';
+    actionPrompt = '⌖ <b>Add a valid address link to continue.</b>';
+    primaryCtaLabel = '⌖ Enter Address & Verify ›';
   } else if (!hasCart && hasAddress) {
-    statusBadge = '🟡 Cart needed';
-    actionPrompt = '🛒 <b>Add a valid Swiggy cart link to continue.</b>';
-    primaryCtaLabel = '🛒 Enter Cart Link & Verify ›';
+    statusBadge = '● Cart needed';
+    actionPrompt = '▤ <b>Add a valid Swiggy cart link to continue.</b>';
+    primaryCtaLabel = '▤ Enter Cart Link & Verify ›';
   } else if (hasCart && hasAddress) {
-    statusBadge = '🟢 Ready to validate';
-    topBanner = '✅ <b>Cart ✓  Address ✓</b> · <i>Ready to submit for bill validation.</i>';
-    actionPrompt = '🚀 <b>Both Cart &amp; Address verified — tap Submit to fetch your bill.</b>';
-    primaryCtaLabel = '✏️ Review / Edit Boxes ›';
+    statusBadge = '● Ready to validate';
+    topBanner = '✓ <b>Cart ✓  Address ✓</b> · <i>Ready to submit for bill validation.</i>';
+    actionPrompt = '› <b>Both Cart &amp; Address verified — tap Submit to fetch your bill.</b>';
+    primaryCtaLabel = '✎ Review / Edit Boxes ›';
   }
 
   const restLine = hasCart
-    ? `🍽 <b>${esc(cd.restaurantName || 'Swiggy Cart')}</b>\n<i>${totalQty > 0 ? `${totalQty} item${totalQty > 1 ? 's' : ''} · ` : ''}original cart verified</i>`
-    : `🍽 <b>Cart not added yet</b>\n<i>Paste Swiggy group order / cart link</i>`;
+    ? `▤ <b>${esc(cd.restaurantName || 'Swiggy Cart')}</b>\n<i>${totalQty > 0 ? `${totalQty} item${totalQty > 1 ? 's' : ''} · ` : ''}original cart verified</i>`
+    : `▤ <b>Cart not added yet</b>\n<i>Paste Swiggy group order / cart link</i>`;
 
   const ad = draft?.addressDetails || {};
   const deliverLine = hasAddress
@@ -206,21 +211,21 @@ export function buildCleanUserIntakeCard(userId, draft = {}, userInfo = {}) {
       itemTable,
     ].filter(Boolean).join('\n')) +
     '\n' +
-    section('📋 Order Summary', summaryTable) +
+    section('▤ Order Summary', summaryTable) +
     '\n' +
-    section('⏭ Next Step', `${actionPrompt}\n${sub('🔒 No account allocated; QR is blocked.')}`);
+    section('› Next Step', `${actionPrompt}\n${sub('◈ No account allocated; QR is blocked.')}`);
 
   const rows = [
     [makeSmartPortalButton(primaryCtaLabel, portalUrl)],
     [
-      Markup.button.callback(hasCart ? '🟣 Cart ✓' : '🟣 Paste Cart', 'action_paste_cart'),
-      Markup.button.callback(hasAddress ? '🔵 Address ✓' : '🔵 Paste Address', 'action_paste_address')
+      Markup.button.callback(hasCart ? '● Cart ✓' : '● Paste Cart', 'action_paste_cart'),
+      Markup.button.callback(hasAddress ? '● Address ✓' : '● Paste Address', 'action_paste_address')
     ]
   ];
   if (hasCart && hasAddress) {
-    rows.push([Markup.button.callback('🚀 Submit for Bill Validation ›', 'action_send_to_beta')]);
+    rows.push([Markup.button.callback('› Submit for Bill Validation ›', 'action_send_to_beta')]);
   }
-  rows.push([Markup.button.callback('🗑 Clear Draft', 'action_reset_draft')]);
+  rows.push([Markup.button.callback('× Clear Draft', 'action_reset_draft')]);
 
   return { text, keyboard: Markup.inlineKeyboard(rows), portalUrl };
 }
@@ -256,9 +261,9 @@ export function buildCleanUserBillConfirmationCard(order) {
   ]);
 
   const text =
-    `ℹ️ <b>Check your delivery address and total.</b>\n` +
-    section(`#${esc(order.id)} — ORDER SUMMARY · 🟡 <b>Approval pending</b>`, [
-      `🍽 <b>${esc(order.restaurantName || 'Swiggy Order')}</b>`,
+    `i <b>Check your delivery address and total.</b>\n` +
+    section(`#${esc(order.id)} — ORDER SUMMARY · ● <b>Approval pending</b>`, [
+      `▤ <b>${esc(order.restaurantName || 'Swiggy Order')}</b>`,
       `<i>${totalQty || items.length || 1} items · address validated</i>`,
       '',
       `<b>DELIVER TO</b>`,
@@ -268,16 +273,16 @@ export function buildCleanUserBillConfirmationCard(order) {
       itemTable,
     ].filter(Boolean).join('\n')) +
     '\n' +
-    section('💰 Final Bill', billTable) +
+    section('₹ Final Bill', billTable) +
     '\n' +
-    section('⚠️ Important', `<i>🔒 No QR before explicit approval.</i>`);
+    section('! Important', `<i>◈ No QR before explicit approval.</i>`);
 
   const keyboard = Markup.inlineKeyboard([
     [
-      Markup.button.callback('✅ Approve bill', `user_approve_bill_${order.id}`),
-      Markup.button.callback('⚠️ Something is wrong', `user_bill_issue_${order.id}`)
+      Markup.button.callback('✓ Approve bill', `user_approve_bill_${order.id}`),
+      Markup.button.callback('! Something is wrong', `user_bill_issue_${order.id}`)
     ],
-    [makeSmartPortalButton('📱 View Order Card in App ›', portalUrl)]
+    [makeSmartPortalButton('☎ View Order Card in App ›', portalUrl)]
   ]);
 
   return { text, keyboard };
@@ -290,19 +295,19 @@ export function buildCleanUserPaymentPendingCard(order) {
     ['Order ID', `#${esc(order.id)}`],
     ['Amount', `<b>₹${totalToPay}</b>`],
     ['Restaurant', esc(order.restaurantName || 'Swiggy Order')],
-    ['Status', '🟡 Waiting for verified payment'],
+    ['Status', '● Waiting for verified payment'],
   ]);
 
   const text =
-    `💳 <b>Pay when ready</b> · <i>Amount confirmed by the order summary</i>\n` +
-    section('📋 Payment Request Issued', paymentTable) +
+    `₹ <b>Pay when ready</b> · <i>Amount confirmed by the order summary</i>\n` +
+    section('▤ Payment Request Issued', paymentTable) +
     '\n' +
     `<i>"I've paid" requests a status check only.</i>\n` +
-    section('⚠️ Important', `<i>🔒 No duplicate QR. No trust in a button tap.</i>`);
+    section('! Important', `<i>◈ No duplicate QR. No trust in a button tap.</i>`);
 
   const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback("🔍 I've paid — check status", `user_paid_status_${order.id}`)],
-    [makeSmartPortalButton('🔳 Open Full Payment Card ›', portalUrl)]
+    [Markup.button.callback("⌕ I've paid — check status", `user_paid_status_${order.id}`)],
+    [makeSmartPortalButton('□ Open Full Payment Card ›', portalUrl)]
   ]);
   return { text, keyboard };
 }
@@ -606,7 +611,7 @@ export async function serializeUserPortalState(userId, preferredOrderId = '') {
       billApprovedByUser: Boolean(activeOrder.billApprovedByUser),
       hasQr: Boolean(upiUri),
       qrDataUrl,
-      trackingLink: activeOrder.shareTrackUrl || activeOrder.trackingLink || '',
+      trackingLink: getSafePublishedTrackingLink(activeOrder),
       liveOrderStatus: activeOrder.liveOrderStatus || ''
     } : null
   };
@@ -616,7 +621,7 @@ export function deriveUxStageFromOrder(order) {
   if (!order) return 'SCREEN_01_INTAKE';
   if (!order.cart || !order.address) return 'SCREEN_01_INTAKE';
   if (order.status === 'COMPLETED') {
-    return order.trackingLink ? 'SCREEN_05_TRACKING_READY' : 'SCREEN_05_PAID_TRACKING_DELAYED';
+    return getSafePublishedTrackingLink(order) ? 'SCREEN_05_TRACKING_READY' : 'SCREEN_05_PAID_TRACKING_DELAYED';
   }
   if (order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.status === 'PAYMENT_PENDING' || order.cardStage === 'QR_GENERATED') {
     return 'SCREEN_04_PAYMENT_PENDING';
@@ -657,7 +662,7 @@ export function serializeBossOrderPortalState(orderId) {
     ),
     discount: Number(order.discount || order.totalSavings || 0),
     finalTotal: Number(order.finalPayable || order.finalTotal || 0),
-    trackingLink: order.shareTrackUrl || order.trackingLink || '',
+    trackingLink: getSafePublishedTrackingLink(order),
     hasQr: Boolean(order.realUpiIntentUri)
   };
 }
@@ -800,7 +805,7 @@ function renderBossOrderView(st) {
       </div>
 
       <div class="btn-row">
-        <button type="button" class="btn btn-neutral" id="gpsBtn">📍 Fill Live GPS</button>
+        <button type="button" class="btn btn-neutral" id="gpsBtn">⌖ Fill Live GPS</button>
         <button type="submit" class="btn btn-primary" id="verifySubmitBtn">✓ Verify &amp; Update Bill</button>
       </div>
     </form>
@@ -990,7 +995,7 @@ function renderUserFlowView(st) {
       </div>
 
       <div class="btn-row">
-        <button type="button" class="btn btn-neutral" id="uGpsBtn">📍 Use GPS</button>
+        <button type="button" class="btn btn-neutral" id="uGpsBtn">⌖ Use GPS</button>
         <button type="submit" class="btn btn-primary" id="uVerifyBtn">✓ Verify</button>
       </div>
     </form>
@@ -1055,14 +1060,14 @@ function attachGpsFill(btnId, inputId) {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         btn.disabled = false;
-        btn.textContent = '📍 GPS Filled ✓';
+        btn.textContent = '⌖ GPS Filled ✓';
         const lat = pos.coords.latitude.toFixed(6);
         const lng = pos.coords.longitude.toFixed(6);
         box.value = (box.value ? box.value.trim() + '\\n' : '') + 'https://maps.google.com/?q=' + lat + ',' + lng;
       },
       () => {
         btn.disabled = false;
-        btn.textContent = '📍 Use GPS';
+        btn.textContent = '⌖ Use GPS';
         showToast('Location permission denied — paste Swiggy/Google Maps link instead.', 'banner-amber');
       },
       { enableHighAccuracy: true, timeout: 8000 }
@@ -1670,7 +1675,7 @@ function setTab(id) {
   } else if (id === '06') {
     bodyHtml = \`
       <div class="banner banner-blue"><strong>Account manager · owner-only · secure actions</strong></div>
-      <div id="otpNotice" class="toast \${DEMO.otpLocked ? 'show banner banner-red' : ''}">\${DEMO.otpLocked ? '🔒 Phone locked for 15m after 3 wrong OTP attempts.' : ''}</div>
+      <div id="otpNotice" class="toast \${DEMO.otpLocked ? 'show banner banner-red' : ''}">\${DEMO.otpLocked ? '◈ Phone locked for 15m after 3 wrong OTP attempts.' : ''}</div>
       <div class="summary-card">
         <div><div class="rest-name">AC-7929 · session active</div><div class="rest-meta">0 previous orders · eligible · Welcome offer</div></div>
         <button class="btn btn-soft-blue" onclick="alert('Daily Breakfast + Late Night offers checked ✓')">Check / claim eligible offers</button>
@@ -2086,7 +2091,7 @@ export function createOrderUxHttpHandler({
           return sendJson(res, 429, {
             ok: false,
             locked: true,
-            message: `🔒 Locked after 3 wrong OTP attempts. Try again in ${Math.ceil(lock.retryAfterSec / 60)} min.`
+            message: `◈ Locked after 3 wrong OTP attempts. Try again in ${Math.ceil(lock.retryAfterSec / 60)} min.`
           });
         }
         const otpRes = await requestSwiggyOtpViaBridge(Number(bid), cleanPhone, `acc_${cleanPhone}`, `Swiggy ${maskAccountCode(cleanPhone)}`).catch(e => ({ success: false, error: e.message }));
@@ -2110,7 +2115,7 @@ export function createOrderUxHttpHandler({
           return sendJson(res, 429, {
             ok: false,
             locked: true,
-            message: `🔒 Wrong OTP ×3 lock active for ${maskPhoneStars(cleanPhone)} (${Math.ceil(preLock.retryAfterSec / 60)}m remaining).`
+            message: `◈ Wrong OTP ×3 lock active for ${maskPhoneStars(cleanPhone)} (${Math.ceil(preLock.retryAfterSec / 60)}m remaining).`
           });
         }
         const verifyRes = await verifySwiggyOtpViaBridge(Number(bid), otpCode).catch(e => ({ success: false, error: e.message }));
@@ -2121,7 +2126,7 @@ export function createOrderUxHttpHandler({
             locked: strike.locked,
             failures: strike.failures,
             message: strike.locked
-              ? `🔒 Wrong OTP ×3 — ${maskPhoneStars(cleanPhone)} locked for 15 minutes.`
+              ? `◈ Wrong OTP ×3 — ${maskPhoneStars(cleanPhone)} locked for 15 minutes.`
               : `Invalid OTP (${strike.failures}/3 attempts used).`
           });
         }

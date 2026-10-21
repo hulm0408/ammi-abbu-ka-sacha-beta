@@ -63,6 +63,70 @@ function distanceMeters(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
 }
 
+// Swiggy delivery locations are India-only. These broad bounds reject swapped,
+// empty, or obviously stale fallback coordinates without rejecting remote Indian regions.
+export function isValidIndianDeliveryCoordinates(lat, lng) {
+  const nLat = Number(lat);
+  const nLng = Number(lng);
+  return Number.isFinite(nLat) && Number.isFinite(nLng) &&
+    nLat >= 5.5 && nLat <= 38.5 && nLng >= 67 && nLng <= 99;
+}
+
+function normalizeIndianMobile(value) {
+  let digits = String(value || '').replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2);
+  if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1);
+  return /^[6-9]\d{9}$/.test(digits) ? digits : '';
+}
+
+function normalizeAddressText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/_/g, ' ')
+    .toLocaleLowerCase('en-IN')
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function hasSameAddressText(left, right) {
+  const a = normalizeAddressText(left);
+  const b = normalizeAddressText(right);
+  return Boolean(a && b && a === b);
+}
+
+function isUsableDeliveryAddress(details) {
+  const address = String(details?.address || '').trim();
+  return Boolean(
+    details && !details.unresolvableShortLink && address.length >= 8 &&
+    !/^(?:address pending|delivery location|unknown address)$/i.test(address) &&
+    isValidIndianDeliveryCoordinates(details.lat, details.lng)
+  );
+}
+
+function mergeExplicitAddressDetails(current, incoming) {
+  if (!incoming || typeof incoming !== 'object') return current || null;
+  const currentAddress = String(current?.address || '').trim();
+  const incomingAddress = String(incoming.address || '').trim();
+  const addressChanged = currentAddress && incomingAddress && !hasSameAddressText(currentAddress, incomingAddress);
+  if (addressChanged) {
+    const next = { ...incoming };
+    delete next.id;
+    next.name = incoming.name || '';
+    next.mobile = normalizeIndianMobile(incoming.mobile) || '';
+    if (!isValidIndianDeliveryCoordinates(incoming.lat, incoming.lng)) {
+      delete next.lat;
+      delete next.lng;
+    }
+    return next;
+  }
+  const merged = { ...(current || {}) };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value !== null && value !== undefined && value !== '') merged[key] = value;
+  }
+  return merged;
+}
+
 // Clean & normalize cookies (strips expired aws-waf-token so WAF never blocks requests)
 export function cleanSwiggyCookieString(rawCookies, acc = null) {
   let pairs = [];
@@ -734,7 +798,17 @@ export async function swiggyCartGet(accountOrCookies, { lat = '26.8658609', lng 
   return aRes || { status: 0, json: null };
 }
 
-export async function swiggyCartUpdate(accountOrCookies, cartPayload, { lat = '26.8658609', lng = '80.9307755', address = '', area = '', flushFirst = true, timeoutMs = 10000 } = {}) {
+export async function swiggyCartUpdate(accountOrCookies, cartPayload, { lat = '', lng = '', address = '', area = '', flushFirst = true, timeoutMs = 10000 } = {}) {
+  const requestedItems = Array.isArray(cartPayload?.cartItems) ? cartPayload.cartItems : [];
+  if (requestedItems.length > 0 && (!cartPayload?.address_id || !isValidIndianDeliveryCoordinates(lat, lng))) {
+    return {
+      status: 0,
+      json: {
+        statusCode: 1,
+        statusMessage: 'Cart update blocked: bind the exact delivery address and provide verified Indian coordinates first.'
+      }
+    };
+  }
   // Fast Path 1 (~250ms ZERO-CHROMIUM pure HTTP): Native Android `chkout.swiggy.com/api/v2/cart/client/update`!
   const aRes = await androidCheckoutCartCall(accountOrCookies, 'client/update', {
     method: 'POST',
@@ -1439,7 +1513,7 @@ export async function fetchLiveGroupCart(groupCartId, restaurantId = null, hostN
 // REVERSE & FORWARD GEOCODING ENGINE (Swiggy Maps API + Nominatim fallback)
 // ---------------------------------------------------------------------------
 export async function reverseGeocodeCoords(lat, lng, accountOrCookies = null) {
-  if (!lat || !lng) return null;
+  if (!isValidIndianDeliveryCoordinates(lat, lng)) return null;
   const sLat = String(lat).trim();
   const sLng = String(lng).trim();
 
@@ -1512,9 +1586,10 @@ const forwardGeocodeCache = new Map();
 export async function geocodeAddressDetails(addrObj, accountOrCookies = null) {
   if (!addrObj || typeof addrObj !== 'object') return addrObj;
   const out = { ...addrObj };
+  const hasAnyCoords = Boolean(String(out.lat || '').trim() || String(out.lng || '').trim());
 
-  // Case A: Already has coordinates -> enrich street/area/city if missing
-  if (out.lat && out.lng) {
+  // Case A: Trust already-supplied GPS coordinates only when both are plausible in India.
+  if (out.lat && out.lng && isValidIndianDeliveryCoordinates(out.lat, out.lng)) {
     if (!out.address || out.address.startsWith('Delivering to ') || out.address.startsWith('Pinned Location')) {
       const rev = await reverseGeocodeCoords(out.lat, out.lng, accountOrCookies);
       if (rev) {
@@ -1522,16 +1597,46 @@ export async function geocodeAddressDetails(addrObj, accountOrCookies = null) {
         out.area = out.area || rev.area;
         out.landmark = out.landmark || rev.landmark;
         out.city = (!out.city || out.city === 'Delivery' || out.city === 'Shared Location') ? rev.city : out.city;
+        out.pincode = out.pincode || rev.pincode || '';
       }
     }
     return out;
   }
+  if (hasAnyCoords) {
+    delete out.lat;
+    delete out.lng;
+  }
 
-  // Case B: Has text street address without coordinates -> check 0ms cache & saved account addresses first!
+  // Case B: Resolve a full street address. Never reuse a saved address merely because
+  // it shares a city, prefix, or nearby GPS point; that can select the wrong home/contact.
   const rawAddr = String(out.address || '').trim();
   if (!rawAddr || out.unresolvableShortLink) return out;
 
-  const normTarget = rawAddr.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  // Query both providers with the COMPLETE address. The previous implementation raced
+  // house-level results against a PIN-code/city-only query, so the broad centroid often won.
+  let cleanAddr = rawAddr
+    .replace(/Hey!\s*Save my address on Swiggy using the link\s*:?\s*/gi, '')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/^\s*Address\s*:\s*/i, '')
+    .replace(/(?:^|[\n,])\s*(?:Latitude|Longitude|lat|lng)\s*[:=]\s*[^\n,]*/gi, ' ')
+    .replace(/(?:^|[\n,])\s*(?:Phone|Mobile|Tel|Contact)\s*[:=]\s*\+?[\d\s-]+/gi, ' ')
+    .replace(/_/g, ' ')
+    .replace(/[\r\n]+/g, ', ')
+    .replace(/\s+/g, ' ')
+    .replace(/[, ]+$/g, '')
+    .trim();
+  if (cleanAddr.length < 8) return out;
+
+  const normalizedBase = normalizeAddressText(cleanAddr);
+  const cityLabel = String(out.city || '').trim();
+  const pincode = String(out.pincode || cleanAddr.match(/\b([1-8]\d{5})\b/)?.[1] || '').trim();
+  const querySuffixes = [];
+  if (cityLabel && !/^(?:address|delivery|shared location)$/i.test(cityLabel) &&
+      !normalizedBase.includes(normalizeAddressText(cityLabel))) querySuffixes.push(cityLabel);
+  if (pincode && !normalizedBase.includes(pincode)) querySuffixes.push(pincode);
+  if (!/\bindia\b/i.test(cleanAddr)) querySuffixes.push('India');
+  cleanAddr = [cleanAddr, ...querySuffixes].filter(Boolean).join(', ');
+  const normTarget = normalizeAddressText(cleanAddr);
   if (normTarget && forwardGeocodeCache.has(normTarget)) {
     const cached = forwardGeocodeCache.get(normTarget);
     out.lat = cached.lat;
@@ -1541,80 +1646,41 @@ export async function geocodeAddressDetails(addrObj, accountOrCookies = null) {
     out.landmark = out.landmark || cached.landmark;
     return out;
   }
+  if (cleanAddr.length < 12) return out;
 
-  // Check ONLY the target account's saved addresses if provided (NEVER storm all 12+ DB accounts on every geocode!)
-  if (accountOrCookies && typeof accountOrCookies === 'object') {
-    try {
-      const singleSaved = await fetchAccountAddresses(accountOrCookies);
-      const matchedSaved = singleSaved.find(sa => {
-        if (!sa.lat || !sa.lng || !sa.address) return false;
-        const normSa = sa.address.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-        return normTarget.includes(normSa) || normSa.includes(normTarget) ||
-          (normTarget.length > 18 && normSa.slice(0, 24) === normTarget.slice(0, 24));
-      });
-      if (matchedSaved) {
-        out.lat = String(matchedSaved.lat);
-        out.lng = String(matchedSaved.lng);
-        out.id = out.id || matchedSaved.id;
-        out.name = out.name || matchedSaved.name;
-        out.mobile = out.mobile || matchedSaved.mobile;
-        out.city = out.city || matchedSaved.city;
-        out.area = out.area || matchedSaved.area;
-        out.flat_no = out.flat_no || matchedSaved.flat_no;
-        if (normTarget) forwardGeocodeCache.set(normTarget, { lat: out.lat, lng: out.lng, city: out.city, area: out.area, landmark: out.landmark });
-        return out;
-      }
-    } catch (e) {}
-  }
-
-  // Ultra-fast high-concurrency parallel geocoder (~140ms via `Promise.any` across Photon Komoot + Nominatim — NEVER tarpits on 10x bursts!):
-  const cleanAddr = rawAddr.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
-  const parts = cleanAddr.split(',').map(s => s.trim()).filter(Boolean);
-  const pinMatch = cleanAddr.match(/\b([1-8]\d{5})\b/);
-  const pin = pinMatch ? pinMatch[1] : '';
-  const bestSpecificQuery = parts.length >= 3 ? parts.slice(-3).join(', ') : cleanAddr;
-  const fallbackAreaQuery = out.area && out.city
-    ? `${out.area.replace(/_/g, ' ')}, ${out.city}${pin ? ', ' + pin : ''}, India`
-    : (pin ? `${pin}, India` : (out.city ? `${out.city}, India` : cleanAddr));
-
-  const tryPhoton = async (q) => {
-    const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=1`, {
+  const tryPhoton = async () => {
+    const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(cleanAddr)}&limit=1`, {
       headers: { 'User-Agent': 'TelegramSlotBot/2.0', 'Accept': 'application/json' },
       signal: AbortSignal.timeout(2500)
     });
     if (!r.ok) throw new Error('photon_non_200');
     const j = await r.json();
     const coords = j?.features?.[0]?.geometry?.coordinates;
-    if (Array.isArray(coords) && coords.length >= 2) {
+    if (Array.isArray(coords) && coords.length >= 2 && isValidIndianDeliveryCoordinates(coords[1], coords[0])) {
       return { lat: String(coords[1]), lng: String(coords[0]) };
     }
-    throw new Error('photon_empty');
+    throw new Error('photon_empty_or_outside_india');
   };
 
-  const tryNominatim = async (q) => {
-    const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=in&q=${encodeURIComponent(q)}`, {
+  const tryNominatim = async () => {
+    const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=in&q=${encodeURIComponent(cleanAddr)}`, {
       headers: { 'User-Agent': 'TelegramSlotBot/2.0', 'Accept-Language': 'en' },
       signal: AbortSignal.timeout(2500)
     });
     if (!r.ok) throw new Error('nom_non_200');
     const arr = await r.json();
-    if (Array.isArray(arr) && arr[0]?.lat && arr[0]?.lon) {
+    if (Array.isArray(arr) && arr[0]?.lat && arr[0]?.lon && isValidIndianDeliveryCoordinates(arr[0].lat, arr[0].lon)) {
       return { lat: String(arr[0].lat), lng: String(arr[0].lon) };
     }
-    throw new Error('nom_empty');
+    throw new Error('nom_empty_or_outside_india');
   };
 
   try {
-    const geoHit = await Promise.any([
-      tryPhoton(bestSpecificQuery),
-      ...(fallbackAreaQuery !== bestSpecificQuery ? [tryPhoton(fallbackAreaQuery)] : []),
-      tryNominatim(bestSpecificQuery),
-      ...(pin ? [tryNominatim(`${pin}, India`)] : [])
-    ]);
+    const geoHit = await Promise.any([tryPhoton(), tryNominatim()]);
     if (geoHit?.lat && geoHit?.lng) {
       out.lat = geoHit.lat;
       out.lng = geoHit.lng;
-      if (normTarget) forwardGeocodeCache.set(normTarget, { lat: out.lat, lng: out.lng, city: out.city, area: out.area, landmark: out.landmark });
+      forwardGeocodeCache.set(normTarget, { lat: out.lat, lng: out.lng, city: out.city, area: out.area, landmark: out.landmark });
     }
   } catch {}
 
@@ -1860,11 +1926,11 @@ export async function generatePersonalizedQrCard({
 <body>
   <div class="card" id="card">
     <div class="header-badge">
-      ⚡ SWIGGY OFFICIAL INSTANT PAY
+      ! SWIGGY OFFICIAL INSTANT PAY
     </div>
     <br>
     <div class="restaurant-title">
-      🏪 ${restaurantName}
+      ▣ ${restaurantName}
     </div>
     <div class="qr-frame">
       <div class="qr-wrapper">
@@ -1877,13 +1943,13 @@ export async function generatePersonalizedQrCard({
     <div class="amount-box">
       <div class="amount-label">Amount To Pay</div>
       <div class="amount-value">₹${amount}</div>
-      ${savings > 0 ? `<div class="savings-badge">🎉 Saved ₹${savings} with Coupons & Free Delivery</div>` : ''}
+      ${savings > 0 ? `<div class="savings-badge">✓ Saved ₹${savings} with Coupons & Free Delivery</div>` : ''}
     </div>
     <div class="instructions">
-      📲 <b>Scan & Pay</b> using PhonePe, Google Pay, Paytm or any UPI App
+      ☎ <b>Scan & Pay</b> using PhonePe, Google Pay, Paytm or any UPI App
     </div>
     <div class="footer">
-      🔒 100% Genuine Swiggy Checkout • Order placed automatically upon payment
+      ◈ 100% Genuine Swiggy Checkout • Order placed automatically upon payment
     </div>
   </div>
 </body>
@@ -2049,16 +2115,36 @@ export function parseAddressDetails(text) {
     searchScope = delivSectionMatch[0];
   }
 
-  const phoneMatch = searchScope.match(/(?:📱|phone|mobile|tel|contact)?[:\s]*([6-9]\d{9})\b/i) || str.match(/(?:📱|phone|mobile|tel|contact)[:\s]*([6-9]\d{9})\b/i);
-  if (phoneMatch) mobile = phoneMatch[1];
+  // Receipt messages may start with an unrelated "Order Account" and restaurant block.
+  // Once the delivery header is found, discard everything before it so the account
+  // phone and restaurant name can never be parsed as the recipient's details.
+  const findAddressHeaderIndex = (scope) => String(scope || '').split(/\r?\n/).findIndex(line =>
+    /^(?:📍\s*)?[A-Za-z][A-Za-z .'-]{0,35}\s+Address$/i.test(line.trim())
+  );
+  let addressHeaderIdx = findAddressHeaderIndex(searchScope);
+  if (addressHeaderIdx > 0) {
+    searchScope = searchScope.split(/\r?\n/).slice(addressHeaderIdx).join('\n');
+    addressHeaderIdx = 0;
+  }
 
-  const latMatch = (searchScope + '\n' + str).match(/(?:🧭\s*Latitude|lat|latitude)[:\s]*(-?[0-9]{1,2}\.[0-9]{3,10})/i);
-  const lngMatch = (searchScope + '\n' + str).match(/(?:🧭\s*Longitude|lng|long|longitude)[:\s]*(-?[0-9]{1,3}\.[0-9]{3,10})/i);
+  const phoneScope = searchScope
+    .split(/\r?\n/)
+    .filter(line => !/order\s*account/i.test(line))
+    .join('\n');
+  const labeledPhoneMatch = phoneScope.match(/(?:📱\s*)?(?:phone|mobile|tel|contact|ph(?:one)?)\s*[:\-]?\s*(?:\+?91[\s-]*)?[6-9](?:[\s-]?\d){9}\b/i);
+  const standalonePhoneLine = phoneScope.split(/\r?\n/).find(line =>
+    /^\s*(?:\+?91[\s-]*)?[6-9](?:[\s-]?\d){9}\s*$/.test(line)
+  );
+  const phoneValue = labeledPhoneMatch?.[0] || standalonePhoneLine || '';
+  mobile = normalizeIndianMobile(phoneValue) || null;
+
+  const latMatch = searchScope.match(/(?:🧭\s*Latitude|lat|latitude)[:\s]*(-?[0-9]{1,2}\.[0-9]{3,10})/i);
+  const lngMatch = searchScope.match(/(?:🧭\s*Longitude|lng|long|longitude)[:\s]*(-?[0-9]{1,3}\.[0-9]{3,10})/i);
   if (latMatch) lat = latMatch[1];
   if (lngMatch) lng = lngMatch[1];
 
   if (!lat || !lng) {
-    const coordsMatch = str.match(/\b([1-3][0-9]\.[0-9]{4,10})[,\s]+([6-9][0-9]\.[0-9]{4,10})\b/);
+    const coordsMatch = searchScope.match(/\b([1-3][0-9]\.[0-9]{4,10})[,\s]+([6-9][0-9]\.[0-9]{4,10})\b/);
     if (coordsMatch) {
       lat = coordsMatch[1];
       lng = coordsMatch[2];
@@ -2071,31 +2157,16 @@ export function parseAddressDetails(text) {
     if (candidateName && candidateName.length <= 50) name = candidateName;
   }
 
-  // Match `<City> Address` header with OR without 📍 emoji (e.g. `Pune Address`, `Lucknow Address`)
-  const cityHeaderMatch = searchScope.match(/(?:^|\n)\s*(?:📍\s*)?([A-Za-z][A-Za-z\s]{1,30}?)\s+Address\s*(?:\n|$)/i)
-    || searchScope.match(/city\s*[:\-]\s*([^\n\r,]+)/i);
+  // Match a city header on a single line only; do not let `\\s` span "Your Cart" or a restaurant name.
+  const headerLine = searchScope.split(/\r?\n/).map(line => line.trim()).find(line =>
+    /^(?:📍\s*)?[A-Za-z][A-Za-z .'-]{0,35}\s+Address$/i.test(line)
+  );
+  const cityHeaderMatch = headerLine?.match(/^(?:📍\s*)?([A-Za-z][A-Za-z .'-]{0,35}?)\s+Address$/i)
+    || searchScope.match(/(?:^|\n)\s*city\s*[:\-]\s*([^\n\r,]+)/i);
   if (cityHeaderMatch) {
     const c = (cityHeaderMatch[1] || '').trim();
     if (!/^(delivering|delivery|your|saved|order|billing)$/i.test(c)) {
       city = c;
-    }
-  }
-
-  if (!city) {
-    const knownCities = [
-      'Lucknow', 'Hyderabad', 'Secunderabad', 'Bangalore', 'Bengaluru', 'New Delhi', 'Delhi',
-      'Mumbai', 'Navi Mumbai', 'Thane', 'Pune', 'Kolkata', 'Chennai', 'Jaipur', 'Ahmedabad',
-      'Chandigarh', 'Noida', 'Greater Noida', 'Gurgaon', 'Gurugram', 'Ghaziabad', 'Faridabad',
-      'Kanpur', 'Varanasi', 'Prayagraj', 'Allahabad', 'Agra', 'Gorakhpur', 'Bareilly', 'Aligarh',
-      'Moradabad', 'Meerut', 'Kota', 'Indore', 'Bhopal', 'Patna', 'Ranchi', 'Raipur', 'Bilaspur',
-      'Bhubaneswar', 'Guwahati', 'Kochi', 'Coimbatore', 'Nagpur', 'Surat', 'Vadodara', 'Ludhiana',
-      'Amritsar', 'Dehradun', 'Jodhpur', 'Udaipur', 'Gwalior', 'Jabalpur', 'Visakhapatnam', 'Vijayawada'
-    ];
-    for (const c of knownCities) {
-      if (new RegExp('\\b' + c + '\\b', 'i').test(address || searchScope)) {
-        city = c;
-        break;
-      }
     }
   }
 
@@ -2160,14 +2231,41 @@ export function parseAddressDetails(text) {
     }
   }
 
-  // Derive flat_no, area, landmark cleanly from comma/newline-separated address parts
+  const knownCities = [
+    'Lucknow', 'Hyderabad', 'Secunderabad', 'Bangalore', 'Bengaluru', 'New Delhi', 'Delhi',
+    'Mumbai', 'Navi Mumbai', 'Thane', 'Pune', 'Kolkata', 'Chennai', 'Jaipur', 'Ahmedabad',
+    'Chandigarh', 'Noida', 'Greater Noida', 'Gurgaon', 'Gurugram', 'Ghaziabad', 'Faridabad',
+    'Kanpur', 'Varanasi', 'Prayagraj', 'Allahabad', 'Agra', 'Gorakhpur', 'Bareilly', 'Aligarh',
+    'Moradabad', 'Meerut', 'Kota', 'Indore', 'Bhopal', 'Patna', 'Ranchi', 'Raipur', 'Bilaspur',
+    'Bhubaneswar', 'Guwahati', 'Kochi', 'Coimbatore', 'Nagpur', 'Surat', 'Vadodara', 'Ludhiana',
+    'Amritsar', 'Dehradun', 'Jodhpur', 'Udaipur', 'Gwalior', 'Jabalpur', 'Visakhapatnam', 'Vijayawada'
+  ];
+  if (!city) {
+    const citySearchText = address || searchScope;
+    city = knownCities.find(c => new RegExp('\\b' + c + '\\b', 'i').test(citySearchText)) || null;
+  }
+
+  // Keep receiver contact data out of the street text used for geocoding and delivery cards.
+  if (address) {
+    address = address
+      .replace(/(?:📱\s*)?(?:phone|mobile|tel|contact|ph(?:one)?)\s*[:\-]?\s*(?:\+?91[\s-]*)?[6-9](?:[\s-]?\d){9}\b/gi, '')
+      .replace(/[ ,]+$/g, '')
+      .trim();
+  }
+
+  // Derive flat_no, area, landmark cleanly from comma/newline-separated address parts.
+  // Ignore postal/state/country suffixes so a state name cannot become the delivery area.
   if (address) {
     const segs = address.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
     if (segs.length >= 2) {
       flat_no = segs[0];
-      const nonCountry = segs.filter(s => !/^india$/i.test(s) && !/\b\d{6}\b/.test(s) && (!city || s.toLowerCase() !== city.toLowerCase()));
-      area = nonCountry[nonCountry.length - 1] || segs[1] || city || 'Main Area';
-      landmark = nonCountry[Math.max(0, nonCountry.length - 2)] || area;
+      const stateNames = /^(andhra pradesh|arunachal pradesh|assam|bihar|chhattisgarh|goa|gujarat|haryana|himachal pradesh|jharkhand|karnataka|kerala|madhya pradesh|maharashtra|manipur|meghalaya|mizoram|nagaland|odisha|punjab|rajasthan|sikkim|tamil nadu|telangana|tripura|uttar pradesh|uttarakhand|west bengal|delhi|jammu and kashmir|ladakh|puducherry)$/i;
+      const locationParts = segs.filter(s =>
+        !/^india$/i.test(s) && !/\b\d{6}\b/.test(s) &&
+        (!city || s.toLowerCase() !== city.toLowerCase()) && !stateNames.test(s)
+      );
+      area = locationParts[locationParts.length - 1] || segs[1] || city || 'Main Area';
+      landmark = locationParts[Math.max(0, locationParts.length - 2)] || area;
     }
   }
 
@@ -2827,6 +2925,41 @@ export function parseDapiCartPayload(data) {
   };
 }
 
+// Require the live cart to match the coupon and discount shown on the order before a payment QR is created.
+export function doesCouponMatchExpectedOrder(cart, order) {
+  if (!cart || !order) return false;
+  const expectedCode = String(order.couponCode || '').trim().toUpperCase();
+  const actualCode = String(cart.couponCode || '').trim().toUpperCase();
+  const expectedDiscount = Math.max(0, Number(order.discountAmount || 0));
+  const actualDiscount = Math.max(0, Number(cart.discountAmount || 0));
+  if (expectedCode !== actualCode) return false;
+  if (!expectedCode) return expectedDiscount <= 0 && actualDiscount <= 0;
+  return expectedDiscount > 0 && actualDiscount > 0 && Math.abs(expectedDiscount - actualDiscount) <= 0.01;
+}
+
+// Before payment, make sure all verified savings and bill components still match Swiggy's live cart.
+export function doesOrderBillMatchLiveCart(cart, order, tolerance = 0.02) {
+  if (!doesCouponMatchExpectedOrder(cart, order)) return false;
+  const fields = [
+    'itemTotal',
+    'tradeDiscountTotal',
+    'freeCashApplied',
+    'freeDeliveryDiscount',
+    'deliveryFee',
+    'swiggyOneMembershipFee',
+    'packingCharges',
+    'taxesAndCharges',
+    'finalPayable'
+  ];
+  for (const field of fields) {
+    if (order[field] === undefined || order[field] === null) continue;
+    const expected = Number(order[field]);
+    const actual = Number(cart[field]);
+    if (!Number.isFinite(expected) || !Number.isFinite(actual) || Math.abs(expected - actual) > tolerance) return false;
+  }
+  return true;
+}
+
 // Fast inspect an active personal cart for a specific chosen account (<500ms direct DAPI / Native Android call)
 export async function inspectCartForAccount(accountOrCookies) {
   if (!accountOrCookies) return null;
@@ -2919,27 +3052,138 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '', accountSessi
   };
 }
 
-// Extract real live tracking link from Swiggy account (<250ms zero-WAF API — NEVER fabricates fake tracking URLs!)
-export async function extractRealSwiggyTracking(cookies = '') {
-  if (!cookies) {
-    return { trackingUrl: null, orderId: null, status: 'NO_COOKIES' };
+export function isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink = false } = {}) {
+  try {
+    const url = new URL(String(value || '').trim());
+    const host = url.hostname.toLowerCase();
+    const isProviderShortHost = host === 'swig.gy' || host === 'swiggy.onelink.me';
+    const swiggyHost = isProviderShortHost || host === 'swiggy.com' || host.endsWith('.swiggy.com');
+    const pathHasTrackingContext = /track|tracking/i.test(url.pathname) ||
+      (/share/i.test(url.pathname) && /order|track/i.test(url.pathname));
+    const queryHasTrackingContext = /(?:^|[?&])(?:tracking_url|track_url|order_id|orderid)=/i.test(url.search) &&
+      /order|track|share/i.test(url.pathname);
+    const isExplicitSwiggyTrackingRoute = pathHasTrackingContext || queryHasTrackingContext;
+    const isProviderShortLink = allowProviderShortLink && isProviderShortHost && url.pathname.length > 1;
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port && swiggyHost &&
+      (isExplicitSwiggyTrackingRoute || isProviderShortLink) &&
+      !/support\/issues|\/restaurant(?:s)?(?:\/|$)|\/menu(?:\/|$)|\/gc(?:\/|$)/i.test(url.pathname);
+  } catch {
+    return false;
   }
+}
+
+export function getStoredSwiggyTrackingUrl(order) {
+  const source = String(order?.trackingLinkSource || '');
+  if (!['SWIGGY_API', 'BOSS_PROVIDED'].includes(source)) return '';
+  const value = String(order?.trackingLink || '').trim();
+  return isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink: source === 'SWIGGY_API' }) ? value : '';
+}
+
+// Accept a tracking/share URL only when Swiggy's own response includes it under a
+// tracking/share field (or an action explicitly labelled for tracking/sharing).
+export function extractSwiggyProvidedTrackingUrl(...sources) {
+  const candidates = [];
+  const seen = new Set();
+  const walk = (node, context = '', depth = 0) => {
+    if (!node || depth > 10) return;
+    if (Array.isArray(node)) {
+      for (const value of node) walk(value, context, depth + 1);
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    const labelContext = Object.entries(node)
+      .filter(([key, value]) => /^(?:title|label|name|text|action_name|display_name)$/i.test(key) && typeof value === 'string')
+      .map(([, value]) => value)
+      .filter(value => /track|share|order/i.test(value))
+      .join(' ');
+    const localContext = `${context} ${labelContext}`.toLowerCase();
+    for (const [key, value] of Object.entries(node)) {
+      const nextContext = `${localContext} ${key}`.toLowerCase();
+      if (typeof value === 'string' && /^https:\/\//i.test(value.trim()) && /track|tracking|share/i.test(nextContext)) {
+        const url = value.trim();
+        if (!seen.has(url) && isOfficialSwiggyTrackingUrl(url, { allowProviderShortLink: true })) {
+          seen.add(url);
+          candidates.push(url);
+        }
+      } else if (value && typeof value === 'object') {
+        walk(value, nextContext, depth + 1);
+      }
+    }
+  };
+  for (const source of sources) walk(source);
+  return candidates[0] || null;
+}
+
+// Only return delivery/rider hand-off codes, never login/payment OTPs.
+export function extractSwiggyDeliveryOtp(...sources) {
+  const DELIVERY_CONTEXT = /delivery|rider|partner|handover|drop.?off|recipient/i;
+  const PAYMENT_CONTEXT = /payment|login|auth(?:entication)?|transaction|upi/i;
+  const OTP_KEY = /otp|verification.?code|delivery.?code/i;
+  const normalizeCode = value => {
+    if (value && typeof value === 'object') {
+      value = value.code ?? value.value ?? value.otp ?? value.otp_code ?? '';
+    }
+    const digits = String(value ?? '').replace(/\D/g, '');
+    return digits.length >= 4 && digits.length <= 8 ? digits : '';
+  };
+  const walk = (node, context = '', depth = 0) => {
+    if (!node || depth > 10) return '';
+    if (Array.isArray(node)) {
+      for (const value of node) {
+        const found = walk(value, context, depth + 1);
+        if (found) return found;
+      }
+      return '';
+    }
+    if (typeof node !== 'object') return '';
+
+    const localDeliveryContext = Object.entries(node).some(([key, value]) =>
+      /^(?:type|purpose|context|label|title|name)$/i.test(key) &&
+      typeof value === 'string' && DELIVERY_CONTEXT.test(value)
+    );
+    const localContext = `${context} ${localDeliveryContext ? 'delivery handover' : ''}`;
+    for (const [key, value] of Object.entries(node)) {
+      const nextContext = `${localContext} ${key}`;
+      if (OTP_KEY.test(key) && !PAYMENT_CONTEXT.test(nextContext) && (DELIVERY_CONTEXT.test(nextContext) || localDeliveryContext)) {
+        const code = normalizeCode(value);
+        if (code) return code;
+      }
+      if (value && typeof value === 'object') {
+        const found = walk(value, nextContext, depth + 1);
+        if (found) return found;
+      }
+    }
+    return '';
+  };
+  for (const source of sources) {
+    const found = walk(source);
+    if (found) return found;
+  }
+  return '';
+}
+
+// Extract Swiggy's actual tracking URL and delivery OTP. Never construct a URL from an order ID.
+export async function extractRealSwiggyTracking(cookies = '') {
+  if (!cookies) return { trackingUrl: null, orderId: null, deliveryOtp: '', status: 'NO_COOKIES' };
   try {
     const auth = await getSwiggySessionAuth(cookies, true);
-    if (auth?.orders?.length > 0) {
-      const latest = auth.orders[0];
-      if (latest?.order_id) {
-        return {
-          trackingUrl: `https://www.swiggy.com/orders/track/${latest.order_id}`,
-          orderId: String(latest.order_id),
-          status: latest.order_status || 'ACTIVE'
-        };
-      }
+    const latest = auth?.orders?.[0];
+    if (latest?.order_id) {
+      const orderId = String(latest.order_id);
+      const tracking = await dapiFetch(cookies, `order/trackV4?order_id=${encodeURIComponent(orderId)}&type=full&version=V2`).catch(() => null);
+      const trackData = tracking?.json?.data || {};
+      return {
+        trackingUrl: extractSwiggyProvidedTrackingUrl(latest, trackData),
+        deliveryOtp: extractSwiggyDeliveryOtp(latest, trackData),
+        orderId,
+        status: latest.order_status || trackData.order_status || 'ACTIVE'
+      };
     }
   } catch (err) {
     console.error('Error fetching real tracking link from Swiggy:', err.message);
   }
-  return { trackingUrl: null, orderId: null, status: 'NOT_FOUND' };
+  return { trackingUrl: null, orderId: null, deliveryOtp: '', status: 'NOT_FOUND' };
 }
 
 // Verify payment status against authorized Swiggy API
@@ -2983,21 +3227,26 @@ export async function fetchAccountAddresses(cookiesOrAcc) {
       const id = String(raw.id || '').trim();
       const lat = raw.lat ? String(raw.lat).trim() : '';
       const lng = raw.lng ? String(raw.lng).trim() : '';
-      const normText = addrStr.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 45);
-      const dedupeKey = id || `${lat.slice(0, 6)},${lng.slice(0, 6)}:${normText}`;
+      const mobile = normalizeIndianMobile(raw.mobile);
+      const normText = normalizeAddressText(addrStr);
+      const identityKey = id ? `${id}:${normText}` : `${lat.slice(0, 6)},${lng.slice(0, 6)}:${normText}`;
+      const dedupeKey = `${identityKey}:${mobile || 'no-phone'}`;
       if (seenKeys.has(dedupeKey)) return;
 
-      // Also avoid near-identical coordinate duplicates
+      // GPS proximity alone is not enough to merge saved addresses: multiple flats or
+      // family members can share a pin but have different receiver names/numbers.
       if (lat && lng) {
         const dupByGeo = collected.find(existing =>
           existing.lat && existing.lng &&
           distanceMeters(existing.lat, existing.lng, lat, lng) < 35 &&
-          (!id || !existing.id || existing.id === id)
+          hasSameAddressText(existing.address, addrStr) &&
+          (!id || !existing.id || existing.id === id) &&
+          (!mobile || !existing.mobile || mobile === normalizeIndianMobile(existing.mobile))
         );
         if (dupByGeo) {
           if (!dupByGeo.id && id) dupByGeo.id = id;
           if (!dupByGeo.name && raw.name) dupByGeo.name = raw.name;
-          if (!dupByGeo.mobile && raw.mobile) dupByGeo.mobile = raw.mobile;
+          if (!dupByGeo.mobile && mobile) dupByGeo.mobile = mobile;
           return;
         }
       }
@@ -3007,7 +3256,7 @@ export async function fetchAccountAddresses(cookiesOrAcc) {
         id,
         city: raw.city || 'Address',
         name: raw.name || '',
-        mobile: raw.mobile || '',
+        mobile,
         flat_no: raw.flat_no && raw.flat_no !== 'None' ? raw.flat_no : '',
         area: raw.area || '',
         landmark: raw.landmark || '',
@@ -3069,11 +3318,12 @@ export async function fetchAccountAddresses(cookiesOrAcc) {
       })
       .catch(() => {});
 
-    // Source 2: Targeted CAS_HOST check on customer's recent coordinate + Lucknow hub only (2 fast ~80ms calls instead of 14!)
-    const probeCoords = [['26.865861', '80.930776']];
-    const recentOrderCoord = auth.orders?.[0]?.delivery_address;
-    if (recentOrderCoord?.lat && recentOrderCoord?.lng) {
-      probeCoords.unshift([String(recentOrderCoord.lat), String(recentOrderCoord.lng)]);
+    // Source 2: Probe only coordinates from this account's real recent order history.
+    // Never query a hard-coded Lucknow hub for a customer who may live in another city.
+    const probeCoords = [];
+    const recentOrderCoord = (auth.orders || []).find(o => o?.delivery_address?.lat && o?.delivery_address?.lng)?.delivery_address;
+    if (recentOrderCoord?.lat && recentOrderCoord?.lng && isValidIndianDeliveryCoordinates(recentOrderCoord.lat, recentOrderCoord.lng)) {
+      probeCoords.push([String(recentOrderCoord.lat), String(recentOrderCoord.lng)]);
     }
 
     const casPromise = (auth.jwtTid && auth.userId)
@@ -3156,19 +3406,17 @@ export async function fetchAllAccountsSavedAddresses() {
       }));
     })
   );
-  const normAddr = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 45);
   const flat = [];
   for (const list of perAcc) {
     for (const a of list) {
-      const dup = flat.find(x =>
-        (x.id && a.id && x.id === a.id) ||
-        (
-          (!x.id || !a.id) &&
-          x.lat && a.lat &&
-          distanceMeters(x.lat, x.lng, a.lat, a.lng) < 35 &&
-          normAddr(x.address) === normAddr(a.address)
-        )
-      );
+      const dup = flat.find(x => {
+        if (!hasSameAddressText(x.address, a.address)) return false;
+        if (x.mobile && a.mobile && normalizeIndianMobile(x.mobile) !== normalizeIndianMobile(a.mobile)) return false;
+        if (x.name && a.name && normalizeAddressText(x.name) !== normalizeAddressText(a.name)) return false;
+        const bothHaveCoords = isValidIndianDeliveryCoordinates(x.lat, x.lng) && isValidIndianDeliveryCoordinates(a.lat, a.lng);
+        if (bothHaveCoords && distanceMeters(x.lat, x.lng, a.lat, a.lng) >= 35) return false;
+        return true;
+      });
       if (!dup) flat.push(a);
     }
   }
@@ -3180,22 +3428,52 @@ export async function fetchAllAccountsSavedAddresses() {
 export async function saveAddressToAccount(account, addrDetails, existingAddresses = null) {
   if (!account || !addrDetails) return { addressId: '', addressDetails: addrDetails || null, createdNew: false };
 
-  // Strip any foreign `id` that belonged to a DIFFERENT Swiggy account unless confirmed in THIS account's `savedList`!
-  const candidateId = addrDetails.id ? String(addrDetails.id) : '';
+  // Never trust an address ID copied from another account on its own. The target account's
+  // saved address must also have the same normalized street text before its ID/contact is reused.
   const sanitizedInput = { ...addrDetails };
   delete sanitizedInput.id;
 
   const enriched = await geocodeAddressDetails(sanitizedInput, account);
   delete enriched.id;
   const savedList = Array.isArray(existingAddresses) ? existingAddresses : await fetchAccountAddresses(account);
+  if (!isUsableDeliveryAddress(enriched)) {
+    return {
+      addressId: '',
+      addressDetails: enriched,
+      createdNew: false,
+      error: 'Delivery location could not be verified. Please send the exact Google Maps pin or a complete street address with area, city and PIN code.'
+    };
+  }
+  const rawPhone = normalizeIndianMobile(enriched.mobile);
+  if (!rawPhone) {
+    return {
+      addressId: '',
+      addressDetails: enriched,
+      createdNew: false,
+      error: 'Recipient mobile number is missing or invalid. Add the receiver’s correct 10-digit Indian mobile number; the Swiggy account number will not be substituted.'
+    };
+  }
+  enriched.mobile = rawPhone;
 
-  // 1. Reuse existing saved address on THIS exact account if ID matches or coordinates are within 120m!
+  // 1. Reuse only an exact textual address match on THIS account. GPS proximity by itself
+  // can conflate apartments, family members, or neighboring homes that share a map pin.
   if (savedList.length > 0) {
-    const existing = savedList.find(sa =>
-      (candidateId && sa.id && String(sa.id) === candidateId) ||
-      (enriched.lat && enriched.lng && sa.lat && sa.lng && distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng) < 120)
-    );
-    if (existing && existing.id) {
+    const existing = savedList.find(sa => {
+      if (!sa.id || !hasSameAddressText(enriched.address, sa.address)) return false;
+      if (normalizeIndianMobile(sa.mobile) !== rawPhone) return false;
+      if (!isValidIndianDeliveryCoordinates(enriched.lat, enriched.lng) || !isValidIndianDeliveryCoordinates(sa.lat, sa.lng)) return false;
+      return distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng) < 35;
+    });
+    if (existing) {
+      const savedMobile = normalizeIndianMobile(enriched.mobile);
+      if (!savedMobile) {
+        return {
+          addressId: '',
+          addressDetails: enriched,
+          createdNew: false,
+          error: 'Recipient mobile number is missing or invalid. Add the receiver’s correct 10-digit Indian mobile number before ordering.'
+        };
+      }
       return {
         addressId: String(existing.id),
         addressDetails: {
@@ -3204,7 +3482,7 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
           lat: enriched.lat || existing.lat,
           lng: enriched.lng || existing.lng,
           name: enriched.name || existing.name,
-          mobile: enriched.mobile || existing.mobile,
+          mobile: savedMobile,
           city: enriched.city || existing.city
         },
         createdNew: false
@@ -3212,11 +3490,8 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
     }
   }
 
-  // 2. Create address on target Swiggy account using exact verified Swiggy payload (`statusCode: 0`)
+  // 2. Create the explicitly supplied delivery address on the selected Swiggy account.
   // Automatically mints `_session_tid` + `_csrf` in ~650ms via Zero-Chromium HTTP & retries with fresh session if needed!
-  if (!enriched.lat || !enriched.lng) {
-    return { addressId: '', addressDetails: enriched, createdNew: false };
-  }
 
   for (let saveAttempt = 0; saveAttempt < 2; saveAttempt++) {
     try {
@@ -3227,18 +3502,14 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
       const auth = await getSwiggySessionAuth(account, mustForce);
       if (!auth?.userId) continue;
 
-      const rawPhone = String(enriched.mobile || account.phone || '9876543210').replace(/\D/g, '').slice(-10) || '9876543210';
-      const citySlug = String(enriched.city || 'india').replace(/[^a-zA-Z\s]/g, ' ').trim() || 'india';
-      const flatNo = saveAttempt === 0
-        ? (String(enriched.flat_no || enriched.address?.split(',')[0] || 'Ground Floor').trim().slice(0, 60) || 'Ground Floor')
-        : 'Ground Floor';
-      const areaStr = saveAttempt === 0
-        ? (String(enriched.area || citySlug || 'Main Area').trim().slice(0, 80) || 'Main Area')
-        : 'Main Road';
-      const landmarkStr = saveAttempt === 0
-        ? (String(enriched.landmark || areaStr || 'Near Main Road').trim().slice(0, 80) || 'Near Main Road')
-        : 'Near Main Road';
-      const fullAddr = String(enriched.address || `${flatNo}, ${areaStr}, ${citySlug}`).trim();
+      const cityLabel = String(enriched.city || '').trim();
+      const citySlug = /^(?:address|delivery|shared location)$/i.test(cityLabel)
+        ? ''
+        : cityLabel.replace(/[^a-zA-Z\s]/g, ' ').trim();
+      const flatNo = String(enriched.flat_no || enriched.address?.split(',')[0] || '').trim().slice(0, 60);
+      const areaStr = String(enriched.area || '').trim().slice(0, 80);
+      const landmarkStr = String(enriched.landmark || '').trim().slice(0, 80);
+      const fullAddr = String(enriched.address || '').trim();
 
       const { json } = await dapiFetch(account, 'address', {
         method: 'POST',
@@ -3274,20 +3545,20 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
       }
 
       // Zero-Chromium Official Swiggy Food MCP `create_address` fallback (`200ms`, zero `_csrf` / WebView dependency!)
-      const postalMatch = fullAddr.match(/\b(\d{6})\b/);
+      const postalMatch = fullAddr.match(/\b([1-8]\d{5})\b/);
       const mcpCreated = await callSwiggyFoodMcpTool(account, 'create_address', {
         fullAddress: fullAddr,
         addressLine: flatNo,
         addressLine2: landmarkStr,
         locality: areaStr,
         city: citySlug,
-        postalCode: postalMatch ? postalMatch[1] : '226001',
+        postalCode: postalMatch?.[1] || String(enriched.pincode || ''),
         latitude: Number(enriched.lat),
         longitude: Number(enriched.lng),
         addressCategory: 'OTHER',
         addressTag: String(enriched.annotation || 'Order Delivery').slice(0, 30),
-        userName: String(account.swiggyName || account.name || enriched.name || 'Customer').trim(),
-        userPhone: String(account.phone || rawPhone).replace(/\D/g, '').slice(-10) || rawPhone,
+        userName: String(enriched.name || account.swiggyName || account.name || 'Customer').trim(),
+        userPhone: rawPhone,
         receiverName: String(enriched.name || account.swiggyName || account.name || 'Customer').trim(),
         receiverPhone: rawPhone
       }, 6500).catch(() => null);
@@ -3309,7 +3580,12 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
     }
   }
 
-  return { addressId: '', addressDetails: enriched, createdNew: false };
+  return {
+    addressId: '',
+    addressDetails: enriched,
+    createdNew: false,
+    error: 'Swiggy did not accept the verified delivery address. No default or first-saved address was selected; please recheck the pin, street, and receiver number.'
+  };
 }
 
 // Fetch recent orders from Swiggy account (<250ms direct API with clean cookies)
@@ -3328,7 +3604,8 @@ export async function fetchAccountOrders(cookiesOrAcc) {
         deliveryAddress: o.delivery_address?.area || o.delivery_address?.address || '',
         orderTime: o.order_time,
         orderTotal: o.order_total,
-        trackingUrl: `https://www.swiggy.com/orders/track/${o.order_id}`
+        trackingUrl: extractSwiggyProvidedTrackingUrl(o),
+        deliveryOtp: extractSwiggyDeliveryOtp(o)
       };
     });
   } catch (err) {
@@ -3411,9 +3688,14 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
     }
 
     if (order.couponCode && Number(order.discountAmount || 0) > 0) {
-      lines.push(`Coupon ${order.couponCode}: −₹${order.discountAmount}`);
+      lines.push(`Coupon ${order.couponCode}: −₹${order.discountAmount} (applied)`);
     } else if (order.couponCode) {
-      lines.push(`Coupon ${order.couponCode}: −₹0`);
+      lines.push(`Coupon ${order.couponCode}: not applied (₹0 discount confirmed)`);
+    } else if (order.swiggyVerified) {
+      lines.push('Coupon: no eligible offer confirmed by Swiggy');
+    }
+    if (order.offerDiagnostics) {
+      lines.push(`Offer check: ${String(order.offerDiagnostics)}`);
     }
 
     const oneFee = Number(order.swiggyOneMembershipFee || 0);
@@ -3462,7 +3744,7 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
       lines.push(`Final Total: ₹${order.finalPayable}`);
     }
   } else {
-    lines.push(`🛒 <b>Cart Status:</b> <i>Waiting for Swiggy items / cart verification...</i>`);
+    lines.push(`▤ <b>Cart Status:</b> <i>Waiting for Swiggy items / cart verification...</i>`);
   }
 
   return lines.join('\n');
@@ -3795,9 +4077,15 @@ export async function fetchSwiggyProfileFromCookies(cookiesOrAcc) {
 // 4) Warm-WAF `/dapi/cart/applyCoupon` (ONLY when `cachedWafToken` is already warm -> `0` cold Chromium launches!)
 export async function applyLiveCouponToOrder(account, order, couponCode, { fastSingleEngine = false } = {}) {
   if (!account || !order) return null;
-  const lat = order.addressDetails?.lat || '26.8658609';
-  const lng = order.addressDetails?.lng || '80.9307755';
-  const addressId = String(order.addressDetails?.id || '');
+  if (!isUsableDeliveryAddress(order.addressDetails) || !normalizeIndianMobile(order.addressDetails.mobile)) {
+    return { success: false, code: 'DELIVERY_ADDRESS_UNVERIFIED', error: 'Verify the recipient address, Indian map location, and mobile number before updating the live Swiggy cart.' };
+  }
+  const lat = String(order.addressDetails.lat);
+  const lng = String(order.addressDetails.lng);
+  const addressId = String(order.addressDetails.id || '');
+  if (!addressId) {
+    return { success: false, code: 'DELIVERY_ADDRESS_NOT_BOUND', error: 'The exact delivery address is not bound to this Swiggy account; the live cart was not changed.' };
+  }
   const code = couponCode ? String(couponCode).trim().toUpperCase() : '';
   const isRemove = !code || code === 'REMOVE' || code === 'NONE' || code === 'CLEAR';
 
@@ -3896,6 +4184,37 @@ export async function applyLiveCouponToOrder(account, order, couponCode, { fastS
   return fallbackParsed;
 }
 
+// Coupon trials mutate the live Swiggy cart. Re-apply the best snapshot even when
+// its code equals the remembered winner, because a later trial may have replaced it.
+export async function reapplyWinningCouponAfterTrials({
+  account,
+  order,
+  bestCartState,
+  bestCode,
+  appliedAnyTrial,
+  applyCouponFn = applyLiveCouponToOrder
+}) {
+  if (!bestCode || !appliedAnyTrial) return { success: true, cart: bestCartState };
+
+  let finalApplied = null;
+  try {
+    finalApplied = await applyCouponFn(account, order, bestCode, { fastSingleEngine: false });
+  } catch {}
+
+  if (
+    !finalApplied?.items?.length ||
+    String(finalApplied.couponCode || '').toUpperCase() !== String(bestCode).toUpperCase() ||
+    Number(finalApplied.discountAmount || 0) <= 0
+  ) {
+    return {
+      success: false,
+      code: 'MAX_COUPON_RELOCK_FAILED',
+      error: `Swiggy did not confirm the best coupon (${bestCode}) after comparison. The order is blocked from payment; refresh the cart and retry.`
+    };
+  }
+  return { success: true, cart: finalApplied };
+}
+
 // ---------------------------------------------------------------------------
 // SYNC GROUP CART, DELIVERY ADDRESS, SWIGGY ONE LITE (+₹1) & MAX COUPON ENGINE
 // Fast API pipeline (<3s without screenshot, +checkout capture when needed):
@@ -3927,9 +4246,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       order.items.every(it => it.itemId || it.menu_item_id)
     );
     const rawAddrSource = order.addressOriginalText || order.address || '';
-    const hasReadyCoords = Boolean(order.addressDetails?.lat && order.addressDetails?.lng);
-
-    const addrResolvePromise = rawAddrSource && (!order.addressDetails || !order.addressDetails.lat)
+    const addrResolvePromise = rawAddrSource && !isUsableDeliveryAddress(order.addressDetails)
       ? resolveSwiggyLink(rawAddrSource).catch(() => null)
       : Promise.resolve(null);
 
@@ -3942,13 +4259,13 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
         addrResolvePromise
       ]);
       if (resolvedAddr?.addressDetails && !resolvedAddr.addressDetails.unresolvableShortLink) {
-        order.addressDetails = { ...(order.addressDetails || {}), ...resolvedAddr.addressDetails };
+        order.addressDetails = mergeExplicitAddressDetails(order.addressDetails, resolvedAddr.addressDetails);
       }
-      if (order.addressDetails && (!order.addressDetails.lat || !order.addressDetails.lng)) {
+      if (order.addressDetails && !isUsableDeliveryAddress(order.addressDetails)) {
         order.addressDetails = await geocodeAddressDetails(order.addressDetails, account);
       }
       let earlySaved = null;
-      if (order.addressDetails?.lat && order.addressDetails?.lng) {
+      if (isUsableDeliveryAddress(order.addressDetails)) {
         earlySaved = await saveAddressToAccount(account, order.addressDetails, fetchedAddrs);
       }
       return { fetchedAddrs, earlySaved, resolvedAddr };
@@ -3980,10 +4297,25 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     }
 
     if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
-      order.addressDetails = { ...(order.addressDetails || {}), ...addrMeta.addressDetails };
+      order.addressDetails = mergeExplicitAddressDetails(order.addressDetails, addrMeta.addressDetails);
     }
-    if (order.addressDetails && (!order.addressDetails.lat || !order.addressDetails.lng)) {
+    if (order.addressDetails && !isUsableDeliveryAddress(order.addressDetails)) {
       order.addressDetails = await geocodeAddressDetails(order.addressDetails, account);
+    }
+    if (!isUsableDeliveryAddress(order.addressDetails)) {
+      return {
+        success: false,
+        code: 'DELIVERY_ADDRESS_UNVERIFIED',
+        error: 'Delivery address could not be verified to a real Indian map location. No default or first-saved address was used. Send the exact Google Maps pin or a full street address with area, city and PIN code.'
+      };
+    }
+    if (addrBundle.earlySaved && !addrBundle.earlySaved.addressId) {
+      const missingPhone = /recipient mobile number/i.test(addrBundle.earlySaved.error || '');
+      return {
+        success: false,
+        code: missingPhone ? 'DELIVERY_CONTACT_REQUIRED' : 'DELIVERY_ADDRESS_BIND_FAILED',
+        error: addrBundle.earlySaved.error || 'The exact delivery address could not be saved on this Swiggy account.'
+      };
     }
 
     let restaurantId = cartMeta?.restaurantId || order.restaurantId || null;
@@ -4003,8 +4335,8 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
         restaurantId,
         hostName,
         account,
-        order.addressDetails?.lat || '17.385044',
-        order.addressDetails?.lng || '78.486671'
+        String(order.addressDetails.lat),
+        String(order.addressDetails.lng)
       );
       if (liveGc?.status === 'ACTIVE' && liveGc.items?.length > 0) {
         order.items = liveGc.items;
@@ -4021,15 +4353,20 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     }
     if (restaurantId) order.restaurantId = restaurantId;
 
-    if (!order.addressDetails && savedAddresses.length > 0) {
-      order.addressDetails = savedAddresses[0];
-      order.address = savedAddresses[0].address;
-    }
-
-    // Bind / save target delivery address on this Swiggy account so `address_id` & delivery fee are 100% accurate
+    // Never substitute the first saved address. Bind only the address supplied/confirmed for this order.
     let targetAddressId = '';
     if (order.addressDetails) {
-      const savedRes = addrBundle.earlySaved || await saveAddressToAccount(account, order.addressDetails, savedAddresses);
+      const earlyDetails = addrBundle.earlySaved?.addressDetails;
+      const earlySavedMatches = Boolean(
+        addrBundle.earlySaved?.addressId &&
+        hasSameAddressText(earlyDetails?.address, order.addressDetails.address) &&
+        normalizeIndianMobile(earlyDetails?.mobile) === normalizeIndianMobile(order.addressDetails.mobile) &&
+        isValidIndianDeliveryCoordinates(earlyDetails?.lat, earlyDetails?.lng) &&
+        distanceMeters(earlyDetails.lat, earlyDetails.lng, order.addressDetails.lat, order.addressDetails.lng) < 35
+      );
+      const savedRes = earlySavedMatches
+        ? addrBundle.earlySaved
+        : await saveAddressToAccount(account, order.addressDetails, savedAddresses);
       targetAddressId = savedRes.addressId || '';
       if (savedRes.addressDetails) {
         order.addressDetails = savedRes.addressDetails;
@@ -4040,10 +4377,18 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
           savedAddresses.unshift(savedRes.addressDetails);
         }
       }
+      if (!targetAddressId) {
+        const missingPhone = /recipient mobile number/i.test(savedRes.error || '');
+        return {
+          success: false,
+          code: missingPhone ? 'DELIVERY_CONTACT_REQUIRED' : 'DELIVERY_ADDRESS_BIND_FAILED',
+          error: savedRes.error || 'The exact delivery address could not be bound to the Swiggy cart. No saved/default address was selected.'
+        };
+      }
     }
 
-    const lat = order.addressDetails?.lat || '26.8658609';
-    const lng = order.addressDetails?.lng || '80.9307755';
+    const lat = String(order.addressDetails.lat);
+    const lng = String(order.addressDetails.lng);
 
     let liveCart = inspectedInitialCart;
     if (liveCart?.sessionExpired) {
@@ -4183,15 +4528,6 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
             ).catch(() => null);
             const parsedRev = reverted?.json?.data ? parseDapiCartPayload(reverted.json.data) : null;
             if (parsedRev?.items?.length > 0) liveCart = parsedRev;
-          }
-        }
-        if (!targetAddressId && Array.isArray(parsedSynced.savedAddresses) && parsedSynced.savedAddresses.length > 0) {
-          const nearSaved = parsedSynced.savedAddresses.find(sa =>
-            sa.id && (!order.addressDetails?.lat || distanceMeters(sa.lat, sa.lng, order.addressDetails.lat, order.addressDetails.lng) < 5000)
-          );
-          if (nearSaved?.id) {
-            targetAddressId = String(nearSaved.id);
-            order.addressDetails = { ...(order.addressDetails || {}), id: String(nearSaved.id) };
           }
         }
       } else {
@@ -4382,6 +4718,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     // Priority 3: Official Swiggy Food MCP `fetch_food_coupons` structured coupons (sorted by applicable first!)
     let mcpTotalCouponsCount = 0;
     const mcpIneligibleReasons = [];
+    const mcpIneligibleCodes = new Set();
     if (mcpCouponsResp?.structured) {
       const rawCouponsArr = Array.isArray(mcpCouponsResp.structured?.coupons)
         ? mcpCouponsResp.structured.coupons
@@ -4392,8 +4729,9 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
         const isApplicable = cp?.is_applicable !== false && cp?.applicable !== false;
         const desc = cp?.title || cp?.header || cp?.description || 'Restaurant Coupon';
         pushCoupon(cCode, desc, cp?.description || desc, isApplicable ? 5 : 20);
-        if (!isApplicable && cCode && cp?.ineligible_reason) {
-          mcpIneligibleReasons.push(`${cCode}: ${cp.ineligible_reason}`);
+        if (!isApplicable && cCode) {
+          mcpIneligibleCodes.add(String(cCode).trim().toUpperCase());
+          if (cp?.ineligible_reason) mcpIneligibleReasons.push(`${cCode}: ${cp.ineligible_reason}`);
         }
       }
       const rawMcpStr = JSON.stringify(mcpCouponsResp.structured);
@@ -4455,7 +4793,10 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       let appliedAnyTrial = false;
       const validVerifiedCoupons = [];
 
-      for (const cand of availableCoupons.slice(0, 8)) {
+      // Probe all live candidates, excluding MCP-marked ineligible codes unless they were explicitly requested or already active.
+      const explicitlySelectedCodes = new Set([order.couponCode, bestCode].filter(Boolean).map(code => String(code).trim().toUpperCase()));
+      const couponsToTest = availableCoupons.filter(c => !mcpIneligibleCodes.has(c.code) || explicitlySelectedCodes.has(c.code));
+      for (const cand of couponsToTest) {
         if (cand.code === bestCode && bestCartState.discountAmount > 0) {
           validVerifiedCoupons.push({ ...cand, discountAmount: bestCartState.discountAmount, finalPayable: bestCartState.finalPayable });
           continue;
@@ -4478,7 +4819,11 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
         }
       }
 
-      validVerifiedCoupons.sort((a, b) => (b.discountAmount || 0) - (a.discountAmount || 0));
+      validVerifiedCoupons.sort((a, b) => {
+        const payA = Number.isFinite(Number(a.finalPayable)) ? Number(a.finalPayable) : Number.POSITIVE_INFINITY;
+        const payB = Number.isFinite(Number(b.finalPayable)) ? Number(b.finalPayable) : Number.POSITIVE_INFINITY;
+        return (payA - payB) || ((b.discountAmount || 0) - (a.discountAmount || 0));
+      });
       if (validVerifiedCoupons.length > 0) {
         const validSet = new Set(validVerifiedCoupons.map(v => v.code));
         const remainder = availableCoupons.filter(c => !validSet.has(c.code));
@@ -4486,14 +4831,29 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
         availableCoupons.push(...validVerifiedCoupons, ...remainder);
       }
 
-      if (bestCode) {
-        if (appliedAnyTrial && bestCartState.couponCode !== bestCode) {
-          const finalApplied = await applyLiveCouponToOrder(account, order, bestCode, { fastSingleEngine: true });
-          if (finalApplied && finalApplied.items?.length > 0) bestCartState = finalApplied;
+      if (bestCode && appliedAnyTrial) {
+        const restoredWinner = await reapplyWinningCouponAfterTrials({
+          account,
+          order,
+          bestCartState,
+          bestCode,
+          appliedAnyTrial
+        });
+        if (!restoredWinner.success) {
+          return { ...restoredWinner, accountComparison: [] };
         }
-      } else if (appliedAnyTrial) {
+        bestCartState = restoredWinner.cart;
+      } else if (!bestCode && appliedAnyTrial) {
         const cleaned = await applyLiveCouponToOrder(account, order, 'REMOVE', { fastSingleEngine: true }).catch(() => null);
-        if (cleaned && cleaned.items?.length > 0) bestCartState = cleaned;
+        if (!cleaned?.items?.length || cleaned.couponCode) {
+          return {
+            success: false,
+            code: 'COUPON_CLEAR_FAILED',
+            error: 'Swiggy did not confirm removal of an unverified coupon. The order is blocked from payment; refresh the cart and retry.',
+            accountComparison: []
+          };
+        }
+        bestCartState = cleaned;
       }
       // Note: `generateRealSwiggyMerchantUpiQr` automatically enforces `needsSubOrDiscountRelock` right before `order/place`,
       // saving ~750ms here so cold-start `syncGroupCartAndCheckoutForAccount` always completes in ~4.2s (<6.5s budget)!
@@ -4550,8 +4910,8 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       order.swiggyVerified = true;
     } else {
       const probe = await swiggyCartGet(account, {
-        lat: order?.addressDetails?.lat || '26.8658609',
-        lng: order?.addressDetails?.lng || '80.9307755'
+        lat: String(order.addressDetails.lat),
+        lng: String(order.addressDetails.lng)
       }).catch(() => null);
       const swiggyMsg = probe?.json?.statusMessage || probe?.json?.data?.cartMeta?.cart_banner_message || probe?.json?.data?.cart_banner_message || '';
       if (probe?.json?.statusCode === 999 || (probe?.json?.statusCode === 1 && /session|login|auth/i.test(swiggyMsg))) {
@@ -4559,7 +4919,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
         return {
           success: false,
           code: 'ACCOUNT_SESSION_EXPIRED_OR_PARTIAL',
-          error: `Account ${accLabel} session expired on Swiggy (msg="${swiggyMsg || 'session expired'}"). Re-Login ${accLabel} via OTP in 📱 Accounts or pick another FREE account!`
+          error: `Account ${accLabel} session expired on Swiggy (msg="${swiggyMsg || 'session expired'}"). Re-Login ${accLabel} via OTP in ☎ Accounts or pick another FREE account!`
         };
       }
       order.swiggyVerified = false;
@@ -4871,7 +5231,10 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   }
 
   const restoreOrFlushAccount = async (targetAcc, savedPreCart, fallbackRestId) => {
-    if (savedPreCart?.items?.length > 0 && savedPreCart?.restaurantId) {
+    if (
+      savedPreCart?.items?.length > 0 && savedPreCart?.restaurantId &&
+      savedPreCart.addressDetails?.id && isUsableDeliveryAddress(savedPreCart.addressDetails)
+    ) {
       await swiggyCartUpdate(
         targetAcc,
         {
@@ -4883,8 +5246,8 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
           subscriptionItems: []
         },
         {
-          lat: savedPreCart.addressDetails?.lat || '26.8658609',
-          lng: savedPreCart.addressDetails?.lng || '80.9307755',
+          lat: String(savedPreCart.addressDetails.lat),
+          lng: String(savedPreCart.addressDetails.lng),
           flushFirst: true
         }
       ).catch(() => {});
@@ -5153,11 +5516,43 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     throw err;
   }
 
+  // A QR must never be generated from a city default, an unresolved short link, or an
+  // unconfirmed account number. Fail closed unless the exact delivery location/contact exists.
+  if (!isUsableDeliveryAddress(order?.addressDetails)) {
+    const err = new Error('Cannot generate payment QR: verify the exact delivery address and map location first. No saved/default address will be substituted.');
+    err.diag = { code: 'QR_DELIVERY_ADDRESS_UNVERIFIED', stage: 'GENERATE_REAL_QR' };
+    throw err;
+  }
+  if (!normalizeIndianMobile(order.addressDetails.mobile)) {
+    const err = new Error('Cannot generate payment QR: add and verify the recipient’s correct 10-digit mobile number first.');
+    err.diag = { code: 'QR_DELIVERY_CONTACT_REQUIRED', stage: 'GENERATE_REAL_QR' };
+    throw err;
+  }
+
+  const recentPendingQr = Boolean(
+    order.pendingSwiggyUpiUri?.startsWith('upi://') && order.pendingSwiggyOrderId &&
+    order.pendingQrCreatedAt && (Date.now() - Number(order.pendingQrCreatedAt)) < 4 * 60 * 1000
+  );
+  const pendingAddressMatches = Boolean(
+    order.pendingQrAddressId && String(order.pendingQrAddressId) === String(order.addressDetails.id || '') &&
+    hasSameAddressText(order.pendingQrAddressText, order.addressDetails.address) &&
+    normalizeIndianMobile(order.pendingQrDeliveryMobile) === normalizeIndianMobile(order.addressDetails.mobile) &&
+    isValidIndianDeliveryCoordinates(order.pendingQrLat, order.pendingQrLng) &&
+    distanceMeters(order.pendingQrLat, order.pendingQrLng, order.addressDetails.lat, order.addressDetails.lng) < 35 &&
+    (!order.pendingQrAddressAccount || !account?.phone || String(order.pendingQrAddressAccount) === String(account.phone))
+  );
+  if (recentPendingQr && !forceNewQr && !pendingAddressMatches) {
+    const err = new Error('An active Swiggy payment QR is tied to a different or unverified delivery address. No replacement order was placed; verify or cancel the existing Swiggy order first.');
+    err.diag = { code: 'QR_EXISTING_DELIVERY_ADDRESS_MISMATCH', stage: 'GENERATE_REAL_QR' };
+    throw err;
+  }
+
   // CONTRACT RULE (Screen 04 & 07): Idempotent Single QR — reuse active unexpired QR without re-placing order (= ZERO duplicate SMS!)
   if (
     globalThis.fetch === __bootNetworkFetchRef &&
     !forceNewQr &&
     order &&
+    pendingAddressMatches &&
     typeof order.pendingSwiggyUpiUri === 'string' &&
     order.pendingSwiggyUpiUri.startsWith('upi://') &&
     order.pendingSwiggyOrderId &&
@@ -5188,8 +5583,8 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       throw err;
     }
 
-    const reqLat = String(order?.addressDetails?.lat || '26.8658609');
-    const reqLng = String(order?.addressDetails?.lng || '80.9307755');
+    const reqLat = String(order.addressDetails.lat);
+    const reqLng = String(order.addressDetails.lng);
     const unwrapCartMeta = (resp) => resp?.json?.data?.cartMeta || resp?.json?.data || {};
     const extractCartCount = (cartResp, meta) =>
       Number(
@@ -5201,11 +5596,12 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         0
       );
 
-    // Parallel session auth + live cart GET + pre-fetched saved addresses (when `order.addressDetails.id` is missing):
+    // Parallel session auth + live cart GET + saved-address inventory. The address ID must be verified
+    // against this account even when the order already carries an ID from a prior selection.
     let [auth, curCart, prefetchedAddrs] = await Promise.all([
       getSwiggySessionAuth(account, false),
       swiggyCartGet(account, { lat: reqLat, lng: reqLng }),
-      order?.addressDetails?.id ? Promise.resolve(null) : fetchAccountAddresses(account).catch(() => [])
+      fetchAccountAddresses(account).catch(() => [])
     ]);
     if (!auth?.userId || !auth?.jwtTid) {
       auth = await getSwiggySessionAuth(account, true);
@@ -5218,10 +5614,20 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
 
     let cm = unwrapCartMeta(curCart);
     let itemCount = extractCartCount(curCart, cm);
-    let resolvedOwnAddressId = String(cm.address_id || cm.delivery_address?.id || order?.addressDetails?.id || '');
+    const savedRes = await saveAddressToAccount(account, order.addressDetails, prefetchedAddrs || []);
+    if (!savedRes?.addressId || !isUsableDeliveryAddress(savedRes.addressDetails) || !normalizeIndianMobile(savedRes.addressDetails.mobile)) {
+      const err = new Error(savedRes?.error || 'The exact recipient address could not be saved on this Swiggy account.');
+      err.diag = { code: 'QR_DELIVERY_ADDRESS_BIND_FAILED', stage: 'GENERATE_REAL_QR' };
+      throw err;
+    }
+    order.addressDetails = savedRes.addressDetails;
+    const requestedAddressId = String(savedRes.addressId);
+    let cartAddressId = String(cm.address_id || cm.delivery_address?.id || '');
+    let resolvedOwnAddressId = requestedAddressId;
+    let cartAddressMismatch = cartAddressId !== requestedAddressId;
 
     // Only run full Group Cart + Offer discovery sync here if `order.items` wasn't already resolved yet!
-    if ((!resolvedOwnAddressId || !cm.order_total || itemCount <= 0) && (!order?.restaurantId || !order?.items?.length) && (order?.cart || order?.cartLink)) {
+    if ((cartAddressMismatch || !cm.order_total || itemCount <= 0) && (!order?.restaurantId || !order?.items?.length) && (order?.cart || order?.cartLink)) {
       const syncCheck = await syncGroupCartAndCheckoutForAccount(account, order, { captureScreenshot: false });
       if (!syncCheck?.success) {
         const err = new Error(syncCheck?.error || 'Failed to sync cart onto selected Swiggy account before QR generation.');
@@ -5234,34 +5640,34 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       curCart = await swiggyCartGet(account, { lat: updatedLat, lng: updatedLng });
       cm = unwrapCartMeta(curCart);
       itemCount = extractCartCount(curCart, cm);
-      resolvedOwnAddressId = String(cm.address_id || cm.delivery_address?.id || order?.addressDetails?.id || '');
+      requestedAddressId = String(order.addressDetails?.id || requestedAddressId);
+      cartAddressId = String(cm.address_id || cm.delivery_address?.id || '');
+      resolvedOwnAddressId = requestedAddressId;
+      cartAddressMismatch = cartAddressId !== requestedAddressId;
     }
 
     // Instant Direct Cart + Address + Swiggy One + `offer_ids` Rehydration Shield:
     const expectedSubItems = Array.isArray(order?.activeSubscriptionItems) && order.activeSubscriptionItems.length > 0
       ? order.activeSubscriptionItems
       : (Number(order?.swiggyOneMembershipFee || 0) > 0 ? [{ plan_id: '773', quantity: 1 }] : []);
+    const cartOfferSnapshot = curCart?.json?.data ? parseDapiCartPayload(curCart.json.data) : null;
+    const expectedLiveBillMatches = doesOrderBillMatchLiveCart(cartOfferSnapshot, order);
     const needsSubOrDiscountRelock =
       (expectedSubItems.length > 0 && Number(cm.subscription_total || 0) === 0) ||
-      (Number(order?.tradeDiscountTotal || 0) > 0 && Number(cm.trade_discount_total || 0) === 0);
+      (Number(order?.tradeDiscountTotal || 0) > 0 && Number(cm.trade_discount_total || 0) === 0) ||
+      !expectedLiveBillMatches;
 
-    if ((!resolvedOwnAddressId || Number(cm.order_total || 0) <= 0 || itemCount <= 0 || needsSubOrDiscountRelock) && order?.restaurantId && order?.items?.length > 0) {
-      let ownAddrId = resolvedOwnAddressId;
+    if ((cartAddressMismatch || !resolvedOwnAddressId || Number(cm.order_total || 0) <= 0 || itemCount <= 0 || needsSubOrDiscountRelock) && order?.restaurantId && order?.items?.length > 0) {
+      const ownAddrId = requestedAddressId;
       if (!ownAddrId) {
-        const savedList = prefetchedAddrs?.length
-          ? prefetchedAddrs
-          : (auth?.profileAddresses?.length ? auth.profileAddresses : await fetchAccountAddresses(account));
-        if (order.addressDetails) {
-          const savedRes = await saveAddressToAccount(account, order.addressDetails, savedList);
-          ownAddrId = String(savedRes.addressId || '');
-          if (savedRes.addressDetails) order.addressDetails = savedRes.addressDetails;
-        }
-        if (!ownAddrId && savedList[0]?.id) ownAddrId = String(savedList[0].id);
-        if (ownAddrId) resolvedOwnAddressId = ownAddrId;
+        const err = new Error('Exact recipient address is not bound to this Swiggy account.');
+        err.diag = { code: 'QR_DELIVERY_ADDRESS_BIND_FAILED', stage: 'GENERATE_REAL_QR' };
+        throw err;
       }
+      resolvedOwnAddressId = ownAddrId;
 
-      const directLat = String(order?.addressDetails?.lat || reqLat);
-      const directLng = String(order?.addressDetails?.lng || reqLng);
+      const directLat = String(order.addressDetails.lat);
+      const directLng = String(order.addressDetails.lng);
       const directSubItems = Array.isArray(order?.activeSubscriptionItems)
         ? order.activeSubscriptionItems
         : (Number(order?.swiggyOneMembershipFee || 0) > 0 ? [{ plan_id: '773', quantity: 1 }] : []);
@@ -5282,55 +5688,33 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         curCart = directSync;
         cm = directMeta;
         itemCount = extractCartCount(directSync, directMeta);
+        cartAddressId = String(cm.address_id || cm.delivery_address?.id || '');
+        cartAddressMismatch = cartAddressId !== requestedAddressId;
+      }
+
+      const relockedCartOffers = curCart?.json?.data ? parseDapiCartPayload(curCart.json.data) : null;
+      if (!doesOrderBillMatchLiveCart(relockedCartOffers, order)) {
+        const err = new Error('Swiggy did not confirm the same coupon, savings, and bill total shown on the review screen. Payment was stopped; refresh the cart and verify the bill again.');
+        err.diag = { code: 'QR_BILL_RELOCK_FAILED', stage: 'GENERATE_REAL_QR' };
+        throw err;
       }
     }
 
-    // Final safety guarantee: create/bind real Swiggy `address_id` on this account if still missing (even if `order.addressDetails.lat` wasn't geocoded yet)!
-    let fallbackSavedAddrId = '';
-    if (!resolvedOwnAddressId && !cm.address_id && !order?.addressDetails?.id) {
-      const savedList = await fetchAccountAddresses(account);
-      const rawFallbackAddr = order?.addressDetails || (order?.address ? { address: String(order.address) } : null);
-      if (rawFallbackAddr) {
-        const savedRes = await saveAddressToAccount(account, rawFallbackAddr, savedList);
-        if (savedRes?.addressId) {
-          fallbackSavedAddrId = String(savedRes.addressId);
-          if (savedRes.addressDetails) order.addressDetails = savedRes.addressDetails;
-        }
-      }
-      if (!fallbackSavedAddrId && savedList[0]?.id) fallbackSavedAddrId = String(savedList[0].id);
-
-      // Push the recovered `fallbackSavedAddrId` directly onto Swiggy's active checkout cart before `order/place`!
-      if (fallbackSavedAddrId && order?.restaurantId && order?.items?.length > 0) {
-        const bindLat = String(order?.addressDetails?.lat || reqLat);
-        const bindLng = String(order?.addressDetails?.lng || reqLng);
-        const bindSubItems = Array.isArray(order?.activeSubscriptionItems)
-          ? order.activeSubscriptionItems
-          : (Number(order?.swiggyOneMembershipFee || 0) > 0 ? [{ plan_id: '773', quantity: 1 }] : []);
-        const boundSync = await swiggyCartUpdate(
-          account,
-          {
-            restaurantId: String(order.restaurantId),
-            address_id: fallbackSavedAddrId,
-            couponCode: String(cm.coupon_code || order.couponCode || ''),
-            cartItems: buildSwiggyCartItemsPayload(order.items),
-            mealItems: [],
-            subscriptionItems: bindSubItems
-          },
-          { lat: bindLat, lng: bindLng, flushFirst: false }
-        ).catch(() => null);
-        const boundMeta = unwrapCartMeta(boundSync);
-        if (boundMeta && (boundMeta.order_total !== undefined || boundMeta.cart_total_count !== undefined)) {
-          curCart = boundSync;
-          cm = boundMeta;
-          itemCount = extractCartCount(boundSync, cm);
-        }
-      }
+    if (cartAddressMismatch || cartAddressId !== requestedAddressId) {
+      const err = new Error('Swiggy checkout is still bound to a different delivery address. The order was stopped before payment.');
+      err.diag = {
+        code: 'QR_DELIVERY_ADDRESS_MISMATCH',
+        stage: 'GENERATE_REAL_QR',
+        requestedAddressId,
+        cartAddressId
+      };
+      throw err;
     }
 
-    let cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || '');
-    const addressId = String(cm.address_id || cm.delivery_address?.id || resolvedOwnAddressId || order?.addressDetails?.id || fallbackSavedAddrId || '');
-    const lat = String(order?.addressDetails?.lat || cm.restaurant_details?.lat || reqLat);
-    const lng = String(order?.addressDetails?.lng || cm.restaurant_details?.lng || reqLng);
+    const cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || '');
+    const addressId = requestedAddressId;
+    const lat = reqLat;
+    const lng = reqLng;
     const swiggyMsg = String(curCart?.json?.statusMessage || cm.cart_banner_message || cm.payment_banner_message || '');
 
     if (!addressId || Number(cm.order_total || 0) <= 0) {
@@ -5635,6 +6019,12 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       order.pendingSwiggyUpiUri = upiIntentUrl;
       order.pendingQrAmount = liveOrderTotal;
       order.pendingQrCreatedAt = Date.now();
+      order.pendingQrAddressId = String(order.addressDetails?.id || addressId);
+      order.pendingQrAddressText = normalizeAddressText(order.addressDetails?.address || '');
+      order.pendingQrDeliveryMobile = normalizeIndianMobile(order.addressDetails?.mobile);
+      order.pendingQrLat = String(order.addressDetails?.lat || '');
+      order.pendingQrLng = String(order.addressDetails?.lng || '');
+      order.pendingQrAddressAccount = String(account.phone || account.mobile || '');
     }
 
     return {
@@ -5804,13 +6194,9 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
   const trkData = trkRes?.json?.data || {};
   const deData = deRes?.json?.data || {};
 
-  // Check if Swiggy returned any shareable link in trackV4 actions
-  const allTrackJson = JSON.stringify(trkData);
-  const shareMatch = allTrackJson.match(/https?:\/\/(?:www\.)?(?:swig\.gy|swiggy\.com)\/[^\s"\\]+/i);
-  const nativeShareUrl =
-    matchedOrder?.shareable_url ||
-    trkData?.shareable_url ||
-    (shareMatch && !/support\/issues/i.test(shareMatch[0]) ? shareMatch[0] : null);
+  // Use only a tracking/share URL explicitly returned by Swiggy; never synthesize one from the order ID.
+  const nativeShareUrl = extractSwiggyProvidedTrackingUrl(matchedOrder, trkData);
+  const deliveryOtp = extractSwiggyDeliveryOtp(matchedOrder, trkData, { delivery: deData });
 
   const rawStatusMsg = trkData?.order_status_details?.status_message || matchedOrder?.order_status || 'Order Confirmed';
   const cleanOrderStatus = /rate your delivery|^delivered$/i.test(String(rawStatusMsg).trim())
@@ -5834,9 +6220,10 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
       lng: deData?.lng || deData?.location?.lng || null
     },
     deliveryAddress: matchedOrder?.delivery_address || order?.addressDetails || null,
+    deliveryOtp,
     nativeShareUrl,
-    swiggyWebTrackUrl: nativeShareUrl || `https://www.swiggy.com/track-order/${confirmedOrderId}`,
-    swiggyAppDeepLink: `swiggy://track-order?order_id=${confirmedOrderId}`
+    swiggyWebTrackUrl: nativeShareUrl || null,
+    swiggyAppDeepLink: null
   };
 }
 

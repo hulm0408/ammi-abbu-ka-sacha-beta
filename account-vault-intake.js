@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import {
   getDb,
   saveDb,
@@ -6,6 +7,8 @@ import {
   extractSwiggyAccountsListFromInput,
   syncCloudVaultNow
 } from './store.js';
+import { extractStandaloneMobileNumber } from './phone-utils.js';
+export { extractStandaloneMobileNumber, normalizeIndianMobileNumber } from './phone-utils.js';
 import {
   verifySwiggySessionLive,
   inspectAccountOrderHistoryAndOffers
@@ -18,20 +21,38 @@ import { extractSessionFilesFromZipBuffer } from './vault-sync.js';
 import { section, sub, table } from './rich-text.js';
 
 /**
- * Strict guard against false OTP / Phone Login triggers:
- * Returns `true` ONLY when `rawText` is genuinely a standalone Indian mobile number
- * (e.g. `9876543210` or `+91 98765-43210`), NEVER when `rawText` contains ANY URL,
- * cart link (`https://swig.gy/gc/622166/Umbashiya-642855918`), address text, JSON, or words!
+ * Validate a new display name and produce a short, collision-safe account key.
  */
-export function extractStandaloneMobileNumber(rawText) {
-  if (!rawText || typeof rawText !== 'string') return null;
-  const trimmed = rawText.trim();
-  if (trimmed.length < 10 || trimmed.length > 18) return null;
-  if (/https?:\/\/|swig\.gy|swiggy|goo\.gl|maps|cart|flat|house|floor|road|nagar|colony|sector|[{[\]@\\/a-z]/i.test(trimmed)) {
-    return null;
+export function prepareNewSwiggyAccountIdentity(rawName, accounts = {}) {
+  const name = typeof rawName === 'string'
+    ? rawName.normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
+    : '';
+  const length = [...name].length;
+  if (length < 2 || length > 40 || !/[\p{L}\p{N}]/u.test(name) || /^\p{N}+$/u.test(name)) {
+    return { success: false, error: 'Use a name with 2–40 characters and at least one letter (for example, Bhai or Office).' };
   }
-  const m = trimmed.match(/^(?:\+?91[\s-]?)?([6-9]\d{4}[\s-]?\d{5})$/);
-  return m ? m[1].replace(/\D/g, '') : null;
+
+  const normalizedName = name.toLocaleLowerCase('en-IN');
+  const duplicateName = Object.entries(accounts || {}).find(([, account]) =>
+    String(account?.name || '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-IN') === normalizedName
+  );
+  if (duplicateName) {
+    return { success: false, error: `That account name is already in use (${duplicateName[1]?.name || duplicateName[0]}). Choose a distinct label or use the existing account.` };
+  }
+
+  const slug = name.toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_+/g, '_')
+    .slice(0, 24)
+    .replace(/_+$/g, '');
+  const hash = crypto.createHash('sha256').update(normalizedName).digest('hex').slice(0, 10);
+  const key = slug || `account_${hash}`;
+
+  if (Object.prototype.hasOwnProperty.call(accounts || {}, key)) {
+    return { success: false, error: `The generated account key “${key}” is already in use. Add a distinguishing word to the name.` };
+  }
+  return { success: true, name, key };
 }
 
 /**
@@ -277,10 +298,10 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
     ).join('\n');
     const errLines = parseErrors.slice(0, 6).map(p => `• <code>${p.fileName}</code>: ${p.reason}`).join('\n');
     return (
-      `⚠️ <b>Koi Active Session Save Nahi Hua (${filesCount} file checked)</b>\n\n` +
-      (expLines ? `❌ <b>Expired / Logged Out (${expiredList.length}):</b>\n${expLines}\n\n` : '') +
-      (errLines ? `⚠️ <b>Invalid File (${parseErrors.length}):</b>\n${errLines}\n\n` : '') +
-      `📦 <b>Permanent Vault Active IDs Ready:</b> <b>${totalVaultActiveCount}</b>`
+      `! <b>Koi Active Session Save Nahi Hua (${filesCount} file checked)</b>\n\n` +
+      (expLines ? `× <b>Expired / Logged Out (${expiredList.length}):</b>\n${expLines}\n\n` : '') +
+      (errLines ? `! <b>Invalid File (${parseErrors.length}):</b>\n${errLines}\n\n` : '') +
+      `▣ <b>Permanent Vault Active IDs Ready:</b> <b>${totalVaultActiveCount}</b>`
     );
   }
 
@@ -288,33 +309,33 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
     const acc = item.account || {};
     const label = acc.phone || acc.name || item.key;
     const tag = (item.isZeroOrderAccount || item.totalOrdersCount === 0)
-      ? '🆕 0-Order'
-      : (typeof item.totalOrdersCount === 'number' ? `📦 ${item.totalOrdersCount} Orders` : '🟢 Ready');
-    return `${idx + 1}. ✅ <code>${label}</code> (${tag})`;
+      ? '+ 0-Order'
+      : (typeof item.totalOrdersCount === 'number' ? `▣ ${item.totalOrdersCount} Orders` : '● Ready');
+    return `${idx + 1}. ✓ <code>${label}</code> (${tag})`;
   }).join('\n');
   const moreNote = savedAccounts.length > 18
     ? `\n<i>...aur ${savedAccounts.length - 18} accounts bhi Vault me save ho gaye!</i>`
     : '';
   const skippedNote = expiredList.length > 0
-    ? `\n\n🧹 <b>Skipped Dead/Logged-Out (${expiredList.length}):</b> ${expiredList.slice(0, 6).map(e => `<code>${e.phone || e.fileName}</code>`).join(', ')}${expiredList.length > 6 ? '...' : ''}`
+    ? `\n\n× <b>Skipped Dead/Logged-Out (${expiredList.length}):</b> ${expiredList.slice(0, 6).map(e => `<code>${e.phone || e.fileName}</code>`).join(', ')}${expiredList.length > 6 ? '...' : ''}`
     : '';
 
   const summaryTable = [
-    ['📂 Files Processed', String(filesCount)],
-    ['🆕 Fresh 0-Order IDs', String(zeroOrderCount)],
-    ['🟢 Other Active IDs', String(usedAccountCount)],
+    ['▤ Files Processed', String(filesCount)],
+    ['+ Fresh 0-Order IDs', String(zeroOrderCount)],
+    ['● Other Active IDs', String(usedAccountCount)],
     ['☁️ Total Active Ready', `${totalVaultActiveCount} (${totalVaultZeroOrderCount} Zero-Order)`],
   ];
 
   return (
-    section(`✅ ${savedAccounts.length} Swiggy Account(s) Permanently Saved to Vault!`, [
+    section(`✓ ${savedAccounts.length} Swiggy Account(s) Permanently Saved to Vault!`, [
       table(summaryTable),
       '',
       previewLines,
       moreNote,
       skippedNote,
     ].filter(Boolean).join('\n')) +
-    `\n\n${sub('🚀 Ab jab bhi Cart + Address aayega, bot bina OTP maange apne aap Best 0-Order + Max Offer account select karke bill nikal dega!')}`
+    `\n\n${sub('› Ab jab bhi Cart + Address aayega, bot bina OTP maange apne aap Best 0-Order + Max Offer account select karke bill nikal dega!')}`
   );
 }
 
@@ -341,7 +362,7 @@ export function createBulkDocumentBatchCollector({
     let statusMsg = null;
     if (files.length >= 2 && lastCtx?.reply) {
       statusMsg = await lastCtx.reply(
-        `⏳ <b>${files.length} Account Files Received!</b> Sabko ek saath verify karke Permanent Vault me save kiya ja raha hai...`,
+        `◷ <b>${files.length} Account Files Received!</b> Sabko ek saath verify karke Permanent Vault me save kiya ja raha hai...`,
         { parse_mode: 'HTML' }
       ).catch(() => null);
     }
