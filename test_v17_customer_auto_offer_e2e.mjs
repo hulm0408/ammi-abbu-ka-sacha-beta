@@ -117,7 +117,9 @@ const afterReady = getDb().orders.AUTO_READY_1;
 check('autoOptimizeUserOrder reports success', readyResult?.success === true);
 check('card stage becomes BILL_READY', afterReady.cardStage === 'BILL_READY');
 check('order is flagged as auto-optimized', afterReady.autoOptimized === true);
-check('order stays PENDING for Boss approval', afterReady.status === 'PENDING');
+check('bill summary is auto-sent once to the customer', Boolean(afterReady.billSummarySentAt));
+check('order now waits for customer approval (no auto payment)',
+  ['APPROVAL_PENDING', 'PENDING'].includes(afterReady.status) && !afterReady.billApprovedByUser);
 check('bill values are untouched', afterReady.finalPayable === 73 && afterReady.couponCode === 'FEASTMODE70');
 
 // ---------------------------------------------------------------------------
@@ -125,10 +127,12 @@ check('bill values are untouched', afterReady.finalPayable === 73 && afterReady.
 // ---------------------------------------------------------------------------
 console.log('\n--- Scenario 2: customer card after auto max-offer ---');
 const card = formatUserOrderCard(afterReady);
-check('card announces the verified bill', /Verified bill ready/i.test(card.text));
+check('card announces the bill summary', /(?:Verified bill ready|Bill summary sent)/i.test(card.text));
 check('card shows the amount to pay', /To Pay: ₹73/.test(card.text));
 check('card shows the coupon', /Coupon FEASTMODE70: −₹130/.test(card.text));
-check('card tells the customer approval is pending', /Waiting for Beta approval/i.test(card.text));
+const approveButtons = card.keyboard.reply_markup.inline_keyboard.flat();
+check('card asks the customer to approve the bill', /Approve karein/i.test(card.text));
+check('card exposes an Approve-bill button', approveButtons.some(b => b.callback_data === 'user_approve_bill_AUTO_READY_1'));
 check('card never shows the Swiggy account number', !/9935123518/.test(card.text));
 check('card keeps refresh + cancel buttons',
   card.keyboard.reply_markup.inline_keyboard.flat().some(b => b.callback_data === 'user_refresh_status_AUTO_READY_1'));

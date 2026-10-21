@@ -29,7 +29,7 @@ Order cards render as a compact receipt: `Order Account` → `Your Cart` → `De
 
 ```bash
 npm test          # 131-scenario behavioural audit suite
-npm run test:guards  # URL-first address intake, receipt card, /start smoke + static undefined-reference guard
+npm run test:guards  # URL-first address intake, receipt card, auto bill summary → QR → real tracking, /start smoke + static undefined-reference guard
 ```
 
 `test:guards` fails if any bot source references an identifier that is never declared (the class of bug behind
@@ -45,7 +45,15 @@ automatically, in the background:
    free delivery,
 3. lock that account + bill on the order (`cardStage: BILL_READY`, `autoOptimized: true`).
 
-The order still stays **PENDING** for Boss approval — nothing is charged or placed automatically. The customer's
-card switches from *“Best offers check ho rahe hain”* to a verified bill with *“Waiting for Beta approval”*.
+Nothing is charged or placed automatically. As soon as the max-discount bill is locked, the bot sends the
+customer the **bill summary exactly once** (`billSummarySentAt` guard) with **✓ Approve bill** /
+**! Something is wrong** buttons. Tapping *Approve* sends the official Swiggy payment QR/link straight to the
+customer (no Boss step in between), consumes one slot and records `billApprovedByUser`.
+
+After payment is verified the customer receives the **real Swiggy tracking link** that Swiggy itself returned.
+The bot never substitutes its own `/track/<orderId>` page: if Swiggy has not published a link yet, the message
+says so (with a plain `swiggy.com/orders` shortcut) and the tracking poller pushes the exact link later.
+
 If no free account is available the order simply stays pending and the reason is shown on the Boss card
-(`Auto offers: …`), so Boss can retry with **★ Auto Max Coupon**.
+(`Auto offers: …`), so Boss can retry with **★ Auto Max Coupon**. Boss's *Send Bill Summary* button is now a
+manual **resend** of that same summary — it can never bill the customer twice.

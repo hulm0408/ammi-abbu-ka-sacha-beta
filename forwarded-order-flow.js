@@ -5,6 +5,9 @@ import { PNG } from 'pngjs';
 import { Markup } from 'telegraf';
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
+// Genuine Swiggy page used as an honest fallback (never a synthesised tracking URL).
+const SWIGGY_ORDERS_PAGE = 'https://www.swiggy.com/orders';
+
 import {
   resolveSwiggyLink,
   parseAddressDetails,
@@ -757,6 +760,66 @@ export function buildTelegramUserBillConfirmationCard(order) {
   return { text, keyboard };
 }
 
+// ---------------------------------------------------------------------------
+// Customer identity + one-time bill summary
+// ---------------------------------------------------------------------------
+// Resolve the customer's Telegram chat for an order. Boss's own orders and
+// orders that only exist in the Boss chat return '' so a summary is never sent
+// back to the Boss by accident.
+export function resolveCustomerChatId(order, bossIds = []) {
+  const target = String(order?.fwdSenderUserId || order?.userId || '').trim();
+  if (!target) return '';
+  if (order?.isDirectBossOrder) return '';
+  const bossSet = new Set((bossIds || []).map(id => String(id)));
+  if (bossSet.has(target)) return '';
+  if (order?.bossChatId && String(order.bossChatId) === target) return '';
+  return target;
+}
+
+// Sends the max-discount bill summary to the customer EXACTLY ONCE.
+// After this the order waits in `APPROVAL_PENDING`: the customer taps
+// "Approve bill" and only then are the official Swiggy payment details sent.
+export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null, force = false } = {}) {
+  if (!telegram?.sendMessage || !order?.id) return { sent: false, reason: 'no-telegram' };
+
+  const liveDb = db || getDb();
+  const customerId = resolveCustomerChatId(order, liveDb?.config?.bossIds || []);
+  if (!customerId) return { sent: false, reason: 'no-customer-chat' };
+
+  if (!force && (order.billSummarySentAt || order.billApprovedByUser)) return { sent: false, reason: 'already-sent' };
+  if (['COMPLETED', 'CANCELLED', 'REJECTED', 'PAYMENT_PENDING'].includes(order.status)) return { sent: false, reason: 'not-awaiting-review' };
+  if (Number(order.finalPayable || 0) <= 0) return { sent: false, reason: 'bill-not-ready' };
+  if (!order.selectedAccount) return { sent: false, reason: 'no-account' };
+
+  const summary = buildTelegramUserBillConfirmationCard({ ...order, userId: customerId });
+  try {
+    await telegram.sendMessage(customerId, summary.text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...summary.keyboard
+    });
+  } catch (error) {
+    order.billSummarySendError = String(error?.message || error).slice(0, 200);
+    const failDb = getDb();
+    if (failDb.orders?.[order.id]) {
+      failDb.orders[order.id].billSummarySendError = order.billSummarySendError;
+      saveDb(failDb);
+    }
+    return { sent: false, reason: 'telegram-error', error: order.billSummarySendError };
+  }
+
+  order.status = 'APPROVAL_PENDING';
+  order.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
+  order.billSummarySentAt = new Date().toISOString();
+  order.billSummaryAutoSent = true;
+  delete order.billSummarySendError;
+
+  const freshDb = getDb();
+  freshDb.orders[order.id] = order;
+  saveDb(freshDb);
+  return { sent: true, customerId };
+}
+
 function summarizeAddressPreview(order) {
   const ad = order.addressDetails || parseAddressDetails(order.address);
   if (!ad) {
@@ -1429,15 +1492,20 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
   if (!force && notices[recipientId] === noticeKey) return false;
 
   const lines = [
-    `✓ <b>Swiggy order update</b>`,
+    order.status === 'COMPLETED'
+      ? `✓ <b>Payment received — Swiggy order confirmed</b>`
+      : `✓ <b>Swiggy order update</b>`,
     `Order reference: <code>#${escapeHtml(String(order.id))}</code>`
   ];
-  if (order.swiggyOrderId) lines.push(`Swiggy order ID: <code>${escapeHtml(String(order.swiggyOrderId))}</code>`);
+  if (order.swiggyOrderId) lines.push(`Swiggy order no.: <code>${escapeHtml(String(order.swiggyOrderId))}</code>`);
   if (order.liveOrderStatus) lines.push(`Status: ${escapeHtml(String(order.liveOrderStatus))}`);
+  // Only a link Swiggy itself returned is presented as tracking. The order number
+  // or a bot-side /track/<orderId> URL is never passed off as a tracking link.
   if (trackingUrl) {
-    lines.push(`↗ <b>Tracking link from Swiggy:</b> <a href="${escapeHtml(trackingUrl)}">Open Swiggy tracking</a>`);
+    lines.push(`↗ <b>Live tracking (Swiggy link):</b> <a href="${escapeHtml(trackingUrl)}">Open Swiggy tracking</a>`);
   } else {
-    lines.push('… Swiggy has not shared a tracking link yet. I will send it here when it becomes available.');
+    lines.push(`↗ <b>Live tracking:</b> <a href="${SWIGGY_ORDERS_PAGE}">Swiggy app → Orders</a>`);
+    lines.push('… Swiggy has not shared a tracking link yet. I will send the exact link here as soon as it is published.');
   }
   if (deliveryOtp) {
     lines.push(`⌕ <b>Delivery OTP:</b> <code>${escapeHtml(deliveryOtp)}</code>`);
@@ -1677,8 +1745,22 @@ export async function executeOrderBillSyncOnAccount({
     order.baselineSwiggyOrderId = latestExisting ? String(latestExisting) : '';
   }
 
-  const freshDb = getDb();
+  let freshDb = getDb();
   freshDb.orders[order.id] = order;
+  saveDb(freshDb);
+
+  // Send the max-discount bill summary to the customer once; the QR is generated
+  // only after they explicitly approve it.
+  try {
+    const summarySend = await sendBillSummaryToCustomerOnce(telegram, order, { db: freshDb });
+    if (summarySend?.sent) {
+      console.log(`[BillSummary] Sent to customer ${summarySend.customerId} for Order #${order.id}`);
+    }
+  } catch (summaryErr) {
+    console.warn('[BillSummary] Auto-send skipped:', summaryErr?.message || summaryErr);
+  }
+
+  freshDb = getDb();
   await postOrReplaceForwardedCard(telegram, chatId, order, freshDb, formatOrderBodyFn, { includeQrDelete: true });
   return order;
 }
@@ -2054,7 +2136,9 @@ export async function handleBossForwardedOrderInput(
             accKey: 'BEST',
             formatOrderBodyFn
           });
-          if (shouldAutoQr) {
+          // Never create the payment QR before the customer confirms the bill.
+          const awaitingCustomerApproval = getDb().orders?.[targetOrderId]?.status === 'APPROVAL_PENDING';
+          if (shouldAutoQr && !awaitingCustomerApproval) {
             const tgAdapter = typeof ctx.telegram?.sendPhoto === 'function'
               ? ctx.telegram
               : {
@@ -2485,7 +2569,21 @@ export function registerForwardedOrderHandlers(bot, {
     const order = db.orders?.[orderId];
     if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
     if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
-      return ctx.answerCbQuery('Bill summary is already awaiting customer approval.', { show_alert: true });
+      // The summary is automatic now; this button becomes an explicit resend.
+      if (!order.billSummarySentAt) {
+        return ctx.answerCbQuery('Bill summary is already awaiting customer approval.', { show_alert: true });
+      }
+      const resend = await sendBillSummaryToCustomerOnce(ctx.telegram, order, { db, force: true });
+      if (!resend?.sent) {
+        return ctx.answerCbQuery(
+          `Could not resend the bill summary: ${resend?.reason || 'delivery failed'}.`,
+          { show_alert: true }
+        );
+      }
+      const resentDb = getDb();
+      const resentOrder = resentDb.orders?.[orderId] || order;
+      await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, resentOrder, resentDb, formatOrderBodyFn).catch(() => {});
+      return ctx.answerCbQuery('✓ Bill summary resent to the customer (same bill, same QR later).');
     }
     if (['COMPLETED', 'CANCELLED', 'REJECTED', 'PAYMENT_PENDING'].includes(order.status) || order.billApprovedByUser || !['BILL_READY', 'QR_GENERATED'].includes(order.cardStage)) {
       return ctx.answerCbQuery('Only a verified bill awaiting customer approval can be sent.', { show_alert: true });

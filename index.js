@@ -93,6 +93,8 @@ import {
   applyBossOrderUpdate,
   generateNamedUpiQrPngBuffer,
   sanitizeUpiUriForQr,
+  sendBillSummaryToCustomerOnce,
+  resolveCustomerChatId,
   safeTelegramCaption,
   truncateDisplayField
 } from './forwarded-order-flow.js';
@@ -553,6 +555,14 @@ export function formatUserOrderCard(order) {
     } else if (order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.swiggyPaymentUrl) {
       buttons.push([Markup.button.callback('↻ Resend Swiggy payment details', `user_resend_approved_qr_${order.id}`)]);
     }
+  } else if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
+    // The max-discount bill summary was sent; the QR is created only after approval.
+    text += `${heading(`◷ Bill summary sent (#${order.id})`)}\n\n` +
+      formatUserOrderCardText(order, false) + '\n\n' +
+      section('Confirm', `${heading('Bill check karke Approve karein')}\n${sub('Approve karte hi official Swiggy payment QR/link aapko bheja jayega. Kuch galat lage to "Something is wrong" dabayein.')}`) +
+      `\n${field('Support', '@Its_life_001')}`;
+    buttons.push([Markup.button.callback('✓ Approve bill', `user_approve_bill_${order.id}`)]);
+    buttons.push([Markup.button.callback('! Something is wrong', `user_bill_issue_${order.id}`)]);
   } else if (Number(order.finalPayable || 0) > 0 && (order.selectedAccount || order.autoOptimized)) {
     // Auto max-offer finished: show the customer the verified bill while Boss approves.
     text += `${heading(`✓ Verified bill ready (#${order.id})`)}\n\n` +
@@ -1216,8 +1226,19 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
       order.autoOptimizedAt = order.autoOptimizedAt || new Date().toISOString();
       delete order.autoOptimizeError;
       saveDb(db);
+
+      // Still send the one-time bill summary so the customer can confirm the QR.
+      let summarySent = false;
+      try {
+        const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, { db: getDb() });
+        summarySent = Boolean(summarySend?.sent);
+      } catch (summaryErr) {
+        console.warn('[AutoOptimize] Bill summary skipped:', summaryErr?.message || summaryErr);
+      }
+
+      order = getDb().orders?.[key] || order;
       await updateOrderCards(order).catch(() => {});
-      return { success: true, reused: true };
+      return { success: true, reused: true, summarySent, order };
     }
 
     const statusBefore = order.status || 'PENDING';
@@ -1259,13 +1280,26 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
     order.accountComparison = best.accountComparison || [];
     delete order.autoOptimizeError;
     saveDb(db);
+
+    // One-time max-discount bill summary -> customer approves -> QR is generated.
+    let summarySent = false;
+    try {
+      const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, { db: getDb() });
+      summarySent = Boolean(summarySend?.sent);
+      if (summarySent) console.log(`[AutoOptimize] Bill summary sent for Order #${key} -> ${summarySend.customerId}`);
+    } catch (summaryErr) {
+      console.warn('[AutoOptimize] Bill summary skipped:', summaryErr?.message || summaryErr);
+    }
+
+    order = getDb().orders?.[key] || order;
     await updateOrderCards(order).catch(() => {});
 
     console.log(
       `[AutoOptimize] Order #${key} ready: account ${order.orderAccount || order.selectedAccount}, ` +
-      `coupon ${order.couponCode || 'none'}, To Pay ₹${order.finalPayable || 0}`
+      `coupon ${order.couponCode || 'none'}, To Pay ₹${order.finalPayable || 0}` +
+      `${summarySent ? ', bill summary sent' : ''}`
     );
-    return { success: true, order };
+    return { success: true, order, summarySent };
   } catch (err) {
     console.error(`[AutoOptimize] Order #${key} crashed:`, err?.stack || err?.message || err);
     try {
@@ -2800,6 +2834,12 @@ bot.action(/^boss_auto_max_coupon_(.+)$/, async (ctx) => {
       }
 
       saveDb(db);
+      try {
+        const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, { db: getDb() });
+        if (summarySend?.sent) console.log(`[MaxCoupon] Bill summary sent for Order #${order.id}`);
+      } catch (summaryErr) {
+        console.warn('[MaxCoupon] Bill summary skipped:', summaryErr?.message || summaryErr);
+      }
       await updateOrderCards(order);
       try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
 
@@ -4322,7 +4362,10 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
   if (order.status === 'PENDING') {
     order.status = 'ACCEPTED';
     order.acceptedAt = new Date().toISOString();
-    db.config.slotsLeft = Math.max(0, (db.config.slotsLeft || 1) - 1);
+    if (!order.slotConsumed) {
+      order.slotConsumed = true;
+      db.config.slotsLeft = Math.max(0, (db.config.slotsLeft || 1) - 1);
+    }
   }
 
   await ctx.answerCbQuery('Generating genuine payment QR... !').catch(() => {});
@@ -5469,6 +5512,7 @@ bot.action(/^boss_action_accept_(.+)$/, async (ctx) => {
   }
 
   db.config.slotsLeft = Math.max(0, db.config.slotsLeft - 1);
+  order.slotConsumed = true;
   order.status = 'ACCEPTED';
   order.acceptedAt = new Date().toISOString();
   saveDb(db);
@@ -8913,7 +8957,7 @@ async function sendApprovedOrderPaymentToUser(uidStr, order, { force = false } =
   return false;
 }
 
-async function approveUserOrderBillAction(uidStr, orderId) {
+export async function approveUserOrderBillAction(uidStr, orderId) {
   const db = getDb();
   const order = db.orders?.[orderId];
   if (!order) return { ok: false, error: 'Order not found.' };
@@ -8925,6 +8969,29 @@ async function approveUserOrderBillAction(uidStr, orderId) {
   }
   if (!['APPROVAL_PENDING', 'PAYMENT_PENDING'].includes(order.status)) {
     return { ok: false, error: 'This bill is not awaiting approval.' };
+  }
+
+  // A slot is consumed when the customer actually approves the bill (Boss's
+  // "Accept" does the same for manual approvals, so it is never counted twice).
+  if (!order.slotConsumed) {
+    if (Number(db.config?.slotsLeft || 0) <= 0) {
+      order.status = 'REJECTED';
+      order.rejectedAt = new Date().toISOString();
+      order.rejectReason = 'Sorry, slot has ended.';
+      if (order.selectedAccount) releaseSwiggyAccountReservation(order.selectedAccount, order.id);
+      saveDb(db);
+      await updateOrderCards(order).catch(() => {});
+      try {
+        await bot.telegram.sendMessage(
+          String(uidStr),
+          `× <b>Sorry, slot has ended.</b>\n\nAapka bill approve nahi ho saka kyunki slots khatam ho chuke hain.`,
+          { parse_mode: 'HTML' }
+        );
+      } catch (e) {}
+      return { ok: false, error: 'Sorry, slot has ended.' };
+    }
+    db.config.slotsLeft = Math.max(0, Number(db.config.slotsLeft || 0) - 1);
+    order.slotConsumed = true;
   }
 
   if (!order.billApprovedByUser) {
