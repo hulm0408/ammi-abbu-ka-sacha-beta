@@ -5765,6 +5765,31 @@ bot.command('autoqr', async (ctx) => {
   );
 });
 
+// Detect if pasted text looks like a Swiggy Session JSON
+// (used to route boss-pasted session JSON straight to Vault Saver)
+function looksLikeSwiggySessionJson(rawText) {
+  if (!rawText || typeof rawText !== 'string') return false;
+  const trimmed = rawText.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') return false;
+    const obj = Array.isArray(parsed) ? parsed[0] : parsed;
+    const jsonStr = JSON.stringify(obj).toLowerCase();
+    return (
+      jsonStr.includes('_session_tid') ||
+      jsonStr.includes('"tid"') ||
+      jsonStr.includes('"token"') ||
+      jsonStr.includes('"cookies"') ||
+      jsonStr.includes('"customerid"') ||
+      jsonStr.includes('"session_id"') ||
+      jsonStr.includes('swiggy')
+    );
+  } catch (e) {
+    return false;
+  }
+}
+
 // Text message handler
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;

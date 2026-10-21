@@ -1,4 +1,4 @@
-import { Telegraf } from 'telegraf';
+import { Telegraf, Markup } from 'telegraf';
 import { getDb, saveDb, isBoss, canTransitionOrder } from './store.js';
 import { buildBossAccountsPortalUrl } from './order-ux-portal.js';
 import {
@@ -12,7 +12,7 @@ import {
   DIVIDER,
 } from './rich-text.js';
 
-const Markup = Telegraf.Markup;
+
 
 // Show an alert popup to Boss when something goes wrong
 export async function bossAlert(ctx, message) {
