@@ -6,7 +6,7 @@
 // structured and professional — matching Telegram's Rich Text Demo style.
 // Zero cost, no external APIs, works with existing telegraf HTML rendering.
 
-export const DIVIDER = '━━━━━━━━━━━━━━━';
+export const DIVIDER = '──────────────────────────────';
 export const SECTION_GAP = '\n';
 
 export function esc(str = '') {
@@ -49,10 +49,9 @@ export function card(title, ...lines) {
   return section(title, lines.filter(Boolean).join('\n'));
 }
 
-// Native-style bordered table using <pre> + Unicode box-drawing chars.
-// Telegram renders this exactly like the Rich Text Demo table — full grid
-// borders with ┌ ┬ ┐ ├ ┼ ┤ └ ┴ ┘ │ ─ and bold header rows inside <pre>.
-// Zero cost, no external APIs.
+// Simple text table with dash separators — clean Telegram styling.
+// Uses normal text with icons, <pre> monospace, bold headers, and dash lines.
+// No box-drawing characters. Zero cost, no external APIs.
 export function table(rows) {
   if (!rows || rows.length === 0) return '';
   const colCount = Math.max(...rows.map(r => r.length));
@@ -63,29 +62,19 @@ export function table(rows) {
     }
   }
 
-  const pad = (s) => ` ${String(s ?? '')} `;
-  const hline = (left, mid, right) => {
-    const segs = widths.map(w => '─'.repeat(w + 2));
-    return [left, ...segs.map((seg, i) => i < colCount - 1 ? seg + mid : seg + right)].join('');
-  };
+  const pad = (s, w) => ` ${String(s ?? '')} `.padEnd(w + 2);
+  const totalWidth = widths.reduce((a, b) => a + b, 0) + colCount * 3 + 1;
+  const sep = '─'.repeat(totalWidth);
 
-  const top = hline('┌', '┬', '┐');
-  const mid = hline('├', '┼', '┤');
-  const bot = hline('└', '┴', '┘');
-
-  const rowLine = (cells, isHeader = false) => {
-    const parts = cells.map((cell, c) => pad(isHeader ? `<b>${cell}</b>` : cell).padEnd(widths[c] + 2));
-    return `│${parts.join('│')}│`;
-  };
-
-  const lines = [top];
-  lines.push(rowLine(rows[0], true)); // header row (bold)
-  lines.push(mid);
+  const lines = [];
+  lines.push(sep);
+  lines.push(rows[0].map((c, i) => pad(`<b>${esc(c)}</b>`, widths[i])).join('│'));
+  lines.push(sep);
   for (let i = 1; i < rows.length; i++) {
-    lines.push(rowLine(rows[i]));
-    if (i < rows.length - 1) lines.push(mid);
+    lines.push(rows[i].map((c, i) => pad(esc(c), widths[i])).join('│'));
+    if (i < rows.length - 1) lines.push(sep);
   }
-  lines.push(bot);
+  lines.push(sep);
 
   return `<pre>${lines.join('\n')}</pre>\n`;
 }
