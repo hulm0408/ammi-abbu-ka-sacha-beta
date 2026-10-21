@@ -33,6 +33,7 @@ import {
   hydrateAccountsFromCloudVault,
   syncCloudVaultNow,
 } from './store.js';
+import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
 import {
   extractStandaloneMobileNumber,
   extractStandaloneOtpDigits,
@@ -59,6 +60,8 @@ import {
   fetchSwiggyProfileFromCookies,
   parseAddressDetails,
   parseCartDetails,
+  extractAddressShareUrl,
+  isAddressShareUrl,
   syncGroupCartAndCheckoutForAccount,
   findBestMaxCouponAccountForOrder,
   applyMaxOfferToOrder,
@@ -91,6 +94,8 @@ import {
   applyBossOrderUpdate,
   generateNamedUpiQrPngBuffer,
   sanitizeUpiUriForQr,
+  sendBillSummaryToCustomerOnce,
+  resolveCustomerChatId,
   safeTelegramCaption,
   truncateDisplayField
 } from './forwarded-order-flow.js';
@@ -139,18 +144,111 @@ const bot = installBulletproofTelegramTransport(
 );
 
 const userWaitState = {};
+
+// ---------------------------------------------------------------------------
+// One live card per customer chat
+// ---------------------------------------------------------------------------
+// Ammi/Abbu used to get 3-4 bubbles per link ("verified & saved", "now paste
+// the next one", the screen …). Instead we keep ONE card and edit it in place:
+// when a link is accepted the customer's own message and the stale prompt
+// bubbles are deleted, and the card is refreshed with the next step.
+const userChatCards = new Map();
+
+function userCardState(userId) {
+  const key = String(userId || '');
+  if (!userChatCards.has(key)) userChatCards.set(key, { messageId: null, promptIds: [] });
+  return userChatCards.get(key);
+}
+
+function rememberUserCard(userId, message) {
+  if (!userId || !message?.message_id) return;
+  userCardState(userId).messageId = message.message_id;
+}
+
+function rememberUserPrompt(userId, message) {
+  if (!userId || !message?.message_id) return;
+  const state = userCardState(userId);
+  if (message.message_id === state.messageId) return;
+  state.promptIds.push(message.message_id);
+}
+
+// Deletes the customer's own message plus the old prompt bubbles. The live card
+// is kept (and can be deleted explicitly when an order ends).
+async function cleanupUserChat(telegram, chatId, userId, { deleteIncomingId = null, deleteCard = false } = {}) {
+  const state = userCardState(userId);
+  const safeDelete = async (messageId) => {
+    if (!messageId || messageId === state.messageId) return;
+    try { await telegram.deleteMessage(chatId, messageId); } catch {}
+  };
+  await safeDelete(deleteIncomingId);
+  for (const id of state.promptIds) await safeDelete(id);
+  state.promptIds = [];
+  if (deleteCard && state.messageId) {
+    try { await telegram.deleteMessage(chatId, state.messageId); } catch {}
+    state.messageId = null;
+  }
+  return state;
+}
+
+// Refreshes the single card: edit in place when possible, otherwise post once.
+// `deleteIncoming` removes the customer's pasted link message; `notice` shows a
+// short toast instead of an extra chat bubble.
+async function renderUserCard(ctx, userId, { deleteIncoming = false, notice = '' } = {}) {
+  const chatId = ctx.chat?.id || userId;
+  const telegram = ctx.telegram || ctx.tg;
+  const incomingId = deleteIncoming ? (ctx.message?.message_id || null) : null;
+  const state = await cleanupUserChat(telegram, chatId, userId, { deleteIncomingId: incomingId });
+
+  let screen;
+  try {
+    screen = getUserScreen(userId, ctx.from || { id: userId });
+  } catch (err) {
+    console.error('[UserCard] render failed:', err?.message || err);
+    return null;
+  }
+
+  if (state.messageId) {
+    try {
+      await telegram.editMessageText(chatId, state.messageId, null, screen.text, {
+        parse_mode: 'HTML',
+        ...screen.keyboard
+      });
+      if (notice && ctx.answerCbQuery) await ctx.answerCbQuery(notice).catch(() => {});
+      return state.messageId;
+    } catch {
+      // Card was deleted by the customer or is too old to edit -> post a fresh one.
+      state.messageId = null;
+    }
+  }
+
+  const sent = await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard }).catch(() => null);
+  if (sent?.message_id) {
+    state.messageId = sent.message_id;
+    if (notice && ctx.answerCbQuery) await ctx.answerCbQuery(notice).catch(() => {});
+  }
+  return sent?.message_id || null;
+}
+
+
+// Never let a stray async rejection or an unexpected throw take the whole bot
+// down (Telegram polling, order sync, Swiggy fetches all run concurrently).
+// Every failure is logged with its stack so it can be fixed instead of being
+// reported to users as "[AI-DIAG] UNEXPECTED_ERROR".
+process.on('unhandledRejection', (reason) => {
+  const text = reason?.stack || reason?.message || String(reason);
+  console.error('× Unhandled promise rejection:', text);
+});
+process.on('uncaughtException', (err) => {
+  const text = err?.stack || err?.message || String(err);
+  console.error('× Uncaught exception (bot kept alive):', text);
+});
+
 const splitJsonChunks = {};
 
 function extractAllLinks(text) {
-  if (!text) return [];
-  const urlRegex = /(https?:\/\/[^\s]+|t\.me\/[^\s]+|www\.[^\s]+|maps\.app\.goo\.gl\/[^\s]+|swig\.gy\/[^\s]+)/gi;
-  const matches = text.match(urlRegex) || [];
-  return matches.map(link => {
-    let l = link.trim().replace(/[,\.;\)]+$/, '');
-    if (l.startsWith('www.')) l = 'https://' + l;
-    else if (!l.startsWith('http') && !l.startsWith('t.me')) l = 'https://' + l;
-    return l;
-  });
+  // Markdown / duplicated links are normalised to the bare URL by link-utils,
+  // so `[link](link)` never turns into one broken url with text around it.
+  return extractSharedUrls(text);
 }
 
 function extractLink(text) {
@@ -313,112 +411,171 @@ function getBossReplyKeyboard() {
   ]).resize().persistent(false);
 }
 
-// Render the exact Swiggy World address block + itemized list + Final Bill matching Boss's exact layout
+// ---------------------------------------------------------------------------
+// Order card renderer — compact Swiggy-style receipt:
+//   Order Account / Your Cart / Delivering To / items / Bill Summary / To Pay
+// Address data is ONLY ever the URL-resolved delivery details (never chat text).
+// ---------------------------------------------------------------------------
+
+const PLACEHOLDER_CITIES = /^(?:india|address|delivery|delivering|shared location|delivery address|order|billing|your|saved)$/i;
+
+function cleanAddressLine(line) {
+  return String(line || '')
+    .replace(/(?:📱\s*)?(?:phone|mobile|tel|contact)\s*[:\-]?\s*\+?[\d\s\-]{10,}/gi, '')
+    .replace(/\bOrder\s*Account\s*:.*$/gi, '')
+    .replace(/^[,\s]+|[,\s]+$/g, '')
+    .trim();
+}
+
+// Normalises an addressDetails object for display: drops placeholder cities,
+// duplicate lines and any phone/account noise that may have leaked in earlier.
+function normalizeAddressForDisplay(ad) {
+  if (!ad || typeof ad !== 'object') return null;
+  const out = { ...ad };
+  const city = String(out.city || '').trim();
+  out.city = city && !PLACEHOLDER_CITIES.test(city) ? city : '';
+
+  if (out.mobile) {
+    const digits = String(out.mobile).replace(/\D/g, '').slice(-10);
+    out.mobile = digits.length === 10 ? digits : '';
+  }
+
+  const seen = new Set();
+  const lines = String(out.address || '')
+    .split(/\r?\n/)
+    .map(cleanAddressLine)
+    .filter(line => {
+      if (!line) return false;
+      if (/^(?:delivering\s*to|your\s*cart|select an available payment method)$/i.test(line)) return false;
+      if (out.city && line.toLowerCase() === `${out.city} address`.toLowerCase()) return false;
+      const key = line.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  out.address = lines.join('\n').trim();
+  if (!out.address && !out.city && !out.lat) return null;
+  return out;
+}
+
 export function formatUserOrderCardText(order, isBossView = false) {
   const db = getDb();
   const selectedAcc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
   const accPhone = order.orderAccount || selectedAcc?.phone || selectedAcc?.mobile || null;
   const restName = order.restaurantName || order.restaurant || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : '');
+  const ad = normalizeAddressForDisplay(order.addressDetails || parseAddressDetails(order.address));
 
-  const ad = order.addressDetails || parseAddressDetails(order.address);
+  const blocks = [];
 
   // ---------- 1. ORDER ACCOUNT (Boss view only) ----------
-  const accountPart = (isBossView && accPhone)
-    ? section('◉ Order Account', field('Account', esc(accPhone)))
-    : '';
+  if (isBossView && accPhone) {
+    blocks.push(`<b>Order Account:</b> <code>${esc(accPhone)}</code>`);
+  }
 
   // ---------- 2. CART / RESTAURANT ----------
-  const cartPart = restName
-    ? section('▣ Cart / Restaurant', field('Restaurant', esc(restName)))
-    : '';
+  if (restName) {
+    blocks.push(`<b>Your Cart</b>\n<b>${esc(restName)}</b>`);
+  }
 
-  // ---------- 3. DELIVERY ADDRESS (bordered card) ----------
-  let addrPart = '';
-  if (ad && (ad.name || ad.mobile || ad.address || ad.city || ad.lat)) {
-    const cityHeader = ad.city ? `${esc(ad.city)} Address` : 'Delivery Address';
-    let addrBody = `<b>${cityHeader}</b>\n`;
-    if (ad.name) addrBody += `${esc(ad.name)}\n`;
-    if (ad.mobile) {
-      const cleanTel = String(ad.mobile).replace(/\D/g, '').slice(-10) || ad.mobile;
-      addrBody += `<a href="tel:${esc(cleanTel)}">${esc(ad.mobile)}</a>\n`;
-    }
-    if (ad.flat_no && ad.address && !String(ad.address).startsWith(ad.flat_no)) {
-      addrBody += `${esc(ad.flat_no)}\n`;
-    }
-    if (ad.address) {
-      const addrLines = String(ad.address).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-      for (const ln of addrLines) addrBody += `${esc(ln)}\n`;
-    }
-    if (ad.lat) addrBody += `Latitude: ${esc(String(ad.lat))}\n`;
-    if (ad.lng) addrBody += `Longitude: ${esc(String(ad.lng))}\n`;
-    addrBody += 'Select an Available Payment Method';
-    addrPart = section(`⌖ ${cityHeader}`, addrBody);
-  } else if (order.address) {
-    addrPart = section('⌖ Delivery Address', `${esc(order.address)}\nSelect an Available Payment Method`);
+  // ---------- 3. DELIVERY ADDRESS ----------
+  const addrLines = [];
+  if (ad && (ad.address || ad.city || ad.name || ad.mobile || ad.lat)) {
+    addrLines.push('<b>Delivering To</b>');
+    addrLines.push(`<b>${esc(ad.city ? `${ad.city} Address` : 'Delivery Address')}</b>`);
+    if (ad.name) addrLines.push(esc(ad.name));
+    if (ad.mobile) addrLines.push(esc(ad.mobile));
+    if (ad.flat_no && ad.address && !ad.address.startsWith(ad.flat_no)) addrLines.push(esc(ad.flat_no));
+    if (ad.address) addrLines.push(...ad.address.split('\n').map(line => esc(line)));
+    if (ad.lat) addrLines.push(`Latitude: ${esc(String(ad.lat))}`);
+    if (ad.lng) addrLines.push(`Longitude: ${esc(String(ad.lng))}`);
+  } else if (order.addressDetails?.unresolvableShortLink) {
+    addrLines.push('<b>Delivering To</b>');
+    addrLines.push('<i>Address link could not be resolved — send a fresh address link or GPS pin.</i>');
   } else {
-    addrPart = section('⌖ Delivery Address', '<i>Address pending / not provided</i>');
+    addrLines.push('<b>Delivering To</b>');
+    addrLines.push('<i>Address pending / share the Swiggy address link or a GPS pin.</i>');
+  }
+  blocks.push(addrLines.join('\n'));
+
+  // ---------- 4. ORDER ITEMS ----------
+  const items = Array.isArray(order.items) ? order.items : [];
+  if (items.length > 0) {
+    const itemLines = [];
+    for (const it of items) {
+      const qty = Number(it.qty || it.quantity || 1);
+      const price = Number(it.price || (it.lineTotal ? it.lineTotal / qty : 0)) || 0;
+      const lineTotal = Number(it.lineTotal || Math.round(price * qty * 100) / 100) || 0;
+      itemLines.push(`<b>${esc(it.name || 'Item')}</b>`);
+      itemLines.push(`₹${price} × ${qty} = ₹${lineTotal}`);
+      itemLines.push('');
+    }
+    const totalQty = items.reduce((sum, it) => sum + Number(it.qty || it.quantity || 1), 0);
+    const itemsTotal = Number(order.itemTotal || order.subtotal || items.reduce((sum, it) => sum + (Number(it.lineTotal) || 0), 0));
+    itemLines.push(`${totalQty} ${totalQty === 1 ? 'Item' : 'Items'} • Subtotal: ₹${itemsTotal}`);
+    blocks.push(itemLines.join('\n').trim());
   }
 
-  // ---------- 4. ORDER ITEMS (monospace table inside border) ----------
-  let itemsPart = '';
-  if (order.items && Array.isArray(order.items) && order.items.length > 0) {
-    const rows = [['#', 'Item', 'Qty', 'Price', 'Total']];
-    order.items.forEach((it, idx) => {
-      const price = it.price ? it.price : Math.round(((it.lineTotal || 0) / (it.qty || 1)) * 100) / 100;
-      const lineTotal = it.lineTotal || Math.round((price * it.qty) * 100) / 100;
-      rows.push([String(idx + 1), esc(it.name), String(it.qty || 1), `₹${price}`, `₹${lineTotal}`]);
-    });
-    itemsPart = section('▪ Order Items', table(rows));
-  }
+  // ---------- 5. BILL SUMMARY ----------
+  const billLines = [];
+  const hasBill = Number(order.finalPayable || order.subtotal || 0) > 0;
+  if (hasBill) {
+    billLines.push('<b>Bill Summary</b>');
+    billLines.push(`Items Total: ₹${Number(order.subtotal || order.itemTotal || 0)}`);
 
-  // ---------- 5. FINAL BILL (monospace table inside border) ----------
-  let billPart = '';
-  if (order.finalPayable || order.subtotal) {
-    const billRows = [['Final Bill', '']];
-    if (order.subtotal) billRows.push(['Items Total', `₹${order.subtotal}`]);
     const merchantOfferDisc = order.merchantTradeDiscount !== undefined
       ? Number(order.merchantTradeDiscount || 0)
       : Math.max(0, Math.round((Number(order.tradeDiscountTotal || 0) - Number(order.campaignFreeCash || 0)) * 100) / 100);
-    if (merchantOfferDisc > 0) billRows.push(['Restaurant Offer Discount', `−₹${merchantOfferDisc}`]);
+    if (merchantOfferDisc > 0) billLines.push(`Restaurant Offer Discount: −₹${merchantOfferDisc}`);
+
     if (order.couponCode && Number(order.discountAmount || 0) > 0) {
-      billRows.push([`Applied coupon ${esc(order.couponCode)}`, `−₹${order.discountAmount}`]);
+      billLines.push(`Coupon ${esc(order.couponCode)}: −₹${Number(order.discountAmount)}`);
     } else if (order.couponCode) {
-      billRows.push([`Coupon ${esc(order.couponCode)}`, 'Not applied (₹0 discount confirmed)']);
+      billLines.push(`Coupon ${esc(order.couponCode)}: not applied`);
     } else if (order.swiggyVerified) {
-      billRows.push(['Coupon', 'No eligible offer confirmed by Swiggy']);
+      billLines.push('Coupon: no eligible offer confirmed by Swiggy');
     }
+
+    const freeCash = Number(order.freeCashApplied || 0);
+    if (freeCash > 0) billLines.push(`Extra Discount ( Free Cash ): −₹${freeCash}`);
+
     const oneFee = Number(order.swiggyOneMembershipFee || 0);
-    if (oneFee > 0) billRows.push(['Swiggy One Lite Membership', `+₹${oneFee}`]);
-    if (order.freeCashApplied > 0) billRows.push(['Swiggy Money / Free Cash', `−₹${order.freeCashApplied}`]);
+    if (oneFee > 0) billLines.push(`Swiggy One Lite Membership: +₹${oneFee}`);
+
     const savedDel = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
-    const isFreeDel = Number(order.deliveryFee || 0) <= 0 && (order.swiggyOneApplied || savedDel > 0 || oneFee > 0 || order.freeDelivery);
+    const isFreeDel = Number(order.deliveryFee || 0) <= 0 &&
+      (order.swiggyOneApplied || savedDel > 0 || oneFee > 0 || order.freeDelivery);
     if (isFreeDel) {
-      billRows.push(['Free Delivery upto 7km', 'Delivery Fee: FREE' + (savedDel > 0 ? ` (₹${savedDel} saved)` : '')]);
+      billLines.push('Free Delivery upto 7km');
+      billLines.push(`Delivery Fee: FREE${savedDel > 0 ? ` (₹${savedDel} saved)` : ''}`);
     } else if (Number(order.deliveryFee || 0) > 0) {
-      billRows.push(['Delivery Fee', `₹${order.deliveryFee}`]);
+      billLines.push(`Delivery Fee: ₹${Number(order.deliveryFee)}`);
     } else {
-      billRows.push(['Delivery Fee', 'FREE']);
+      billLines.push('Delivery Fee: FREE');
     }
-    if (order.packingCharges > 0) billRows.push(['Packing Charges', `₹${order.packingCharges}`]);
-    if (order.taxesAndCharges > 0) billRows.push(['GST & Other Charges', `₹${order.taxesAndCharges}`]);
-    if (order.totalSavings > 0) billRows.push(['Total Savings', `₹${order.totalSavings}`]);
-    if (order.finalPayable) billRows.push([`<b>Final Total</b>`, `<b>₹${order.finalPayable}</b>`]);
-    billPart = section('₹ Final Bill', table(billRows));
+
+    if (order.packingCharges > 0) billLines.push(`Packing Charges: ₹${Number(order.packingCharges)}`);
+    if (order.taxesAndCharges > 0) billLines.push(`GST & Other Charges: ₹${Number(order.taxesAndCharges)}`);
+
+    if (Number(order.totalSavings || 0) > 0) {
+      billLines.push('━━━━━━━━━━━━━━');
+      billLines.push(`Total Savings: ₹${Number(order.totalSavings)}`);
+    }
+    billLines.push(`<b>To Pay: ₹${Number(order.finalPayable || order.subtotal || 0)}</b>`);
+    blocks.push(billLines.join('\n'));
   } else {
-    billPart = section('₹ Final Bill', '<i>Calculating max coupon and bill on Swiggy…</i>');
+    blocks.push('<b>Bill Summary</b>\n<i>Calculating max coupon and final bill on Swiggy…</i>');
   }
 
   // ---------- 6. PAYMENT LINK ----------
-  let payPart = '';
   if (order.swiggyPaymentUrl) {
-    payPart = section('↗ Official Swiggy Payment Link', `<a href="${esc(order.swiggyPaymentUrl)}">${esc(order.swiggyPaymentUrl)}</a>`);
+    blocks.push(`<b>Swiggy Payment:</b> <a href="${esc(order.swiggyPaymentUrl)}">Open official Swiggy payment</a>`);
   }
 
-  return [accountPart, cartPart, addrPart, itemsPart, billPart, payPart].filter(Boolean).join('\n');
+  return blocks.filter(Boolean).join('\n\n');
 }
 
 // Format User (Customer) Order Screen matching State Machine
-function formatUserOrderCard(order) {
+export function formatUserOrderCard(order) {
   const db = getDb();
   const slotsLeft = db.config.slotsLeft;
   const totalSlots = db.config.totalSlots;
@@ -478,6 +635,28 @@ function formatUserOrderCard(order) {
     } else if (order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.swiggyPaymentUrl) {
       buttons.push([Markup.button.callback('↻ Resend Swiggy payment details', `user_resend_approved_qr_${order.id}`)]);
     }
+  } else if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
+    // The max-discount bill summary was sent; the QR is created only after approval.
+    text += `${heading(`◷ Bill summary sent (#${order.id})`)}\n\n` +
+      formatUserOrderCardText(order, false) + '\n\n' +
+      section('Confirm', `${heading('Bill check karke Approve karein')}\n${sub('Approve karte hi official Swiggy payment QR/link aapko bheja jayega. Kuch galat lage to "Something is wrong" dabayein.')}`) +
+      `\n${field('Support', '@Its_life_001')}`;
+    buttons.push([Markup.button.callback('✓ Approve bill', `user_approve_bill_${order.id}`)]);
+    buttons.push([Markup.button.callback('! Something is wrong', `user_bill_issue_${order.id}`)]);
+  } else if (Number(order.finalPayable || 0) > 0 && (order.selectedAccount || order.autoOptimized)) {
+    // Auto max-offer finished: show the customer the verified bill while Boss approves.
+    text += `${heading(`✓ Verified bill ready (#${order.id})`)}\n\n` +
+      formatUserOrderCardText(order, false) + '\n\n' +
+      section('Status', `${heading('Waiting for Beta approval')}\n${sub('Best account, max coupon, free cash & free delivery lag chuki hain. Approve hote hi payment QR yahan aayega.')}`) +
+      `\n${field('Support', '@Its_life_001')}`;
+  } else if (order.cardStage === 'AUTO_SELECTING') {
+    text += `${heading(`◷ Best offers check ho rahe hain (#${order.id})`)}\n\n` +
+      section('Order details', [
+        field('Restaurant', esc(order.restaurantName || 'Swiggy Food Order')),
+        field('Status', '<b>Scanning best Swiggy account</b>')
+      ].join('\n')) +
+      `\n${sub('Aapke Swiggy accounts par max coupon, free cash aur free delivery apply ki ja rahi hai.')}\n` +
+      `${sub('Final bill yahan update ho jayega.')}`;
   } else {
     const rest = order.restaurantName || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : 'Swiggy Food Order');
     const ad = order.addressDetails || parseAddressDetails(order.address);
@@ -719,6 +898,12 @@ function getUserScreen(userId, user) {
     promptGuidance = `${heading('Dono links verified hain!')}\n${sub("Niche [ › Send to Beta ] dabayein:")}`;
   }
 
+  // A saved address link that Swiggy has not resolved yet: the card explains it
+  // instead of a separate tip message.
+  if (draft.addressDetails?.unresolvableShortLink) {
+    promptGuidance += `\n${sub('i Address link Swiggy ne abhi resolve nahi kiya — naya address link ya Telegram • Location pin bhej dein.')}`;
+  }
+
   const summaryBlock =
     `${heading(`#${esc(String(userId).slice(-5).padStart(5, '3'))} — ORDER SUMMARY`)} · ${sub(statusTag)}\n` +
     (draft.cart && cd.restaurantName
@@ -771,6 +956,7 @@ function makeFullSessionCopyButton(_ctx, label, accKey, fullValue, fallbackCallb
 // Single card in-place updater for Boss and User
 async function updateOrderCards(order) {
   const db = getDb();
+  const result = { bossCardUpdated: false, userCardUpdated: false };
 
   // 1. Update Boss card in-place
   if (order.bossMessageIds) {
@@ -784,6 +970,7 @@ async function updateOrderCards(order) {
           bossCard.text,
           { parse_mode: 'HTML', ...bossCard.keyboard }
         );
+        result.bossCardUpdated = true;
       } catch (e) {}
     }
   }
@@ -799,8 +986,29 @@ async function updateOrderCards(order) {
         userCard.text,
         { parse_mode: 'HTML', ...userCard.keyboard }
       );
+      result.userCardUpdated = true;
     } catch (e) {}
   }
+  return result;
+}
+
+// The bill summary is rendered INTO the customer's single live card when it
+// exists, so confirming the bill never adds another chat bubble.
+async function deliverBillSummaryIntoSingleCard(order, _summary) {
+  const uid = order?.userChatId || order?.userId;
+  if (!uid) return false;
+  const state = userChatCards.get(String(uid));
+  if (!state?.messageId) return false;
+  const preview = {
+    ...order,
+    status: 'APPROVAL_PENDING',
+    uxStage: 'SCREEN_03_BILL_CONFIRMATION',
+    billSummarySentAt: order.billSummarySentAt || new Date().toISOString(),
+    userChatId: uid,
+    userMessageId: state.messageId
+  };
+  const res = await updateOrderCards(preview).catch(() => null);
+  return Boolean(res?.userCardUpdated);
 }
 
 // Delete order card messages from all boss chats and customer chat
@@ -1085,6 +1293,144 @@ async function triggerBackgroundCartFetch(orderId) {
 
   saveDb(db);
   await updateOrderCards(order);
+}
+
+// ---------------------------------------------------------------------------
+// AUTO MAX-OFFER FOR CUSTOMER SUBMISSIONS
+// ---------------------------------------------------------------------------
+// A forwarded message runs the full pipeline (best 0-Order account -> max coupon
+// -> live bill) automatically. A customer tapping "Send to Beta" used to stop at a
+// plain PENDING order, so Ammi had to wait for Boss to press "Auto Max Coupon".
+// This helper gives customer orders the exact same treatment, in the background.
+const autoOptimizeInFlight = new Set();
+
+export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_TO_BETA' } = {}) {
+  const key = String(orderId);
+  if (autoOptimizeInFlight.has(key)) return { skipped: true, reason: 'in-flight' };
+  autoOptimizeInFlight.add(key);
+
+  try {
+    let db = getDb();
+    let order = db.orders?.[key];
+    if (!order) return { skipped: true, reason: 'missing' };
+    if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status)) return { skipped: true, reason: 'closed' };
+    if (order.isForwardedOrder) {
+      // Forwarded orders have their own pipeline (AUTO_SELECTING card flow).
+      return { skipped: true, reason: 'forwarded' };
+    }
+
+    // No cart -> nothing to scan.
+    if (!order.cart) {
+      order.autoOptimizeError = 'Cart link missing — no account scan possible.';
+      saveDb(db);
+      await updateOrderCards(order).catch(() => {});
+      return { skipped: true, reason: 'no-cart' };
+    }
+
+    // Background cart fetch may already have picked the best account + live bill.
+    const alreadyPicked = Boolean(order.selectedAccount) && Number(order.finalPayable || 0) > 0;
+    if (alreadyPicked) {
+      order.cardStage = 'BILL_READY';
+      order.autoOptimized = true;
+      order.autoOptimizedAt = order.autoOptimizedAt || new Date().toISOString();
+      delete order.autoOptimizeError;
+      saveDb(db);
+
+      // Still send the one-time bill summary so the customer can confirm the QR.
+      let summarySent = false;
+      try {
+        const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+          db: getDb(),
+          deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary)
+        });
+        summarySent = Boolean(summarySend?.sent);
+      } catch (summaryErr) {
+        console.warn('[AutoOptimize] Bill summary skipped:', summaryErr?.message || summaryErr);
+      }
+
+      order = getDb().orders?.[key] || order;
+      await updateOrderCards(order).catch(() => {});
+      return { success: true, reused: true, summarySent, order };
+    }
+
+    const statusBefore = order.status || 'PENDING';
+    order.cardStage = 'AUTO_SELECTING';
+    order.autoOptimizeStartedAt = new Date().toISOString();
+    delete order.autoOptimizeError;
+    saveDb(db);
+    await updateOrderCards(order).catch(() => {});
+
+    console.log(`[AutoOptimize] Order #${key} (${reason}): scanning accounts for max offer...`);
+    const best = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false });
+
+    if (!best?.success) {
+      db = getDb();
+      order = db.orders?.[key] || order;
+      order.cardStage = 'PENDING';
+      order.status = statusBefore;
+      order.autoOptimizeError = best?.error || 'Could not sync cart on any free Swiggy account.';
+      order.autoOptimizeFailedAt = new Date().toISOString();
+      saveDb(db);
+      await updateOrderCards(order).catch(() => {});
+      console.warn(`[AutoOptimize] Order #${key} failed: ${order.autoOptimizeError}`);
+      return { success: false, error: order.autoOptimizeError, code: best?.code };
+    }
+
+    db = getDb();
+    order = db.orders?.[key] || order;
+
+    if (Array.isArray(best.savedAddresses) && best.savedAddresses.length > 0) order.accountAddresses = best.savedAddresses;
+    if (Array.isArray(best.availableCoupons) && best.availableCoupons.length > 0) order.availableCoupons = best.availableCoupons;
+    if (best.paymentUrl) order.swiggyPaymentUrl = best.paymentUrl;
+    applyMaxOfferToOrder(order);
+
+    // Keep the order in Boss's approval queue: only the bill/offers were computed.
+    order.status = statusBefore;
+    order.cardStage = 'BILL_READY';
+    order.autoOptimized = true;
+    order.autoOptimizedAt = new Date().toISOString();
+    order.accountComparison = best.accountComparison || [];
+    delete order.autoOptimizeError;
+    saveDb(db);
+
+    // One-time max-discount bill summary -> customer approves -> QR is generated.
+    let summarySent = false;
+    try {
+      const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+        db: getDb(),
+        deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary)
+      });
+      summarySent = Boolean(summarySend?.sent);
+      if (summarySent) console.log(`[AutoOptimize] Bill summary sent for Order #${key} -> ${summarySend.customerId}`);
+    } catch (summaryErr) {
+      console.warn('[AutoOptimize] Bill summary skipped:', summaryErr?.message || summaryErr);
+    }
+
+    order = getDb().orders?.[key] || order;
+    await updateOrderCards(order).catch(() => {});
+
+    console.log(
+      `[AutoOptimize] Order #${key} ready: account ${order.orderAccount || order.selectedAccount}, ` +
+      `coupon ${order.couponCode || 'none'}, To Pay ₹${order.finalPayable || 0}` +
+      `${summarySent ? ', bill summary sent' : ''}`
+    );
+    return { success: true, order, summarySent };
+  } catch (err) {
+    console.error(`[AutoOptimize] Order #${key} crashed:`, err?.stack || err?.message || err);
+    try {
+      const db = getDb();
+      const order = db.orders?.[key];
+      if (order) {
+        order.cardStage = 'PENDING';
+        order.autoOptimizeError = err?.message || 'Auto offer scan failed.';
+        saveDb(db);
+        await updateOrderCards(order).catch(() => {});
+      }
+    } catch (e) {}
+    return { success: false, error: err?.message || String(err) };
+  } finally {
+    autoOptimizeInFlight.delete(key);
+  }
 }
 
 function escapeHtml(str) {
@@ -1372,35 +1718,94 @@ bot.hears(['Success Archive', '★ Success Archive', 'success archive', '/archiv
 // ================= COMMANDS =================
 
 bot.start(async (ctx) => {
-  const userId = ctx.from.id;
+  const userId = ctx.from?.id;
+  if (!userId) return;
   delete userWaitState[userId];
 
-  // Return Telegram buttons immediately; collect order inputs in chat.
-
-  if (isBoss(userId)) {
-    await ctx.reply(`★ Welcome back, <b>Boss</b>! Swiggy Family Care Admin Mode is active.`, {
-      parse_mode: 'HTML',
-      ...getBossReplyKeyboard()
-    });
-    const home = getBossPanelHome();
-    await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
-    await sendPendingOrdersToBoss(userId);
-    return;
-  }
-
-  const draft = getDraft(userId);
-  await ctx.reply(
+  const welcomeText =
     `→ <b>Welcome to Swiggy Slot Bot!</b>\n\n` +
     `Swiggy order ke liye apna <b>Cart link</b> aur <b>Delivery Address link</b> share karein:\n\n` +
-    `› Pehle <b>Cart link</b> bhejein ya <b>Address link</b> bhejein, fir <b>[ › Send to Beta ]</b> daba dein!`,
-    {
+    `› Pehle <b>Cart link</b> bhejein ya <b>Address link</b> bhejein, fir <b>[ › Send to Beta ]</b> daba dein!`;
+
+  // A new user must ALWAYS get a working screen. Any helper failure below is
+  // contained here so /start can never surface an UNEXPECTED_ERROR to the user.
+  try {
+    if (isBoss(userId)) {
+      await ctx.reply(`★ Welcome back, <b>Boss</b>! Swiggy Family Care Admin Mode is active.`, {
+        parse_mode: 'HTML',
+        ...getBossReplyKeyboard()
+      });
+      try {
+        const home = getBossPanelHome();
+        await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
+        await sendPendingOrdersToBoss(userId);
+      } catch (panelErr) {
+        console.error('[START] boss panel render failed:', panelErr?.stack || panelErr?.message || panelErr);
+      }
+      return;
+    }
+
+    const draft = getDraft(userId);
+    await ctx.reply(welcomeText, {
       parse_mode: 'HTML',
       ...getUserReplyKeyboard(draft)
-    }
-  );
+    });
 
-  const screen = getUserScreen(userId, ctx.from);
-  await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    try {
+      const screen = getUserScreen(userId, ctx.from);
+      const screenMsg = await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+      rememberUserCard(userId, screenMsg);
+    } catch (screenErr) {
+      console.error('[START] user screen render failed:', screenErr?.stack || screenErr?.message || screenErr);
+      await ctx.reply('› Cart link ya Address link paste karke order shuru karein.', {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[
+          Markup.button.callback('▤ Cart Link', 'action_add_cart'),
+          Markup.button.callback('⌖ Address Link', 'action_add_address')
+        ]])
+      }).catch(() => {});
+    }
+  } catch (err) {
+    console.error('[START] handler failed:', err?.stack || err?.message || err);
+    try {
+      await ctx.reply(welcomeText, { parse_mode: 'HTML', ...getUserReplyKeyboard() });
+    } catch (e2) {
+      console.error('[START] fallback reply failed:', e2?.message || e2);
+    }
+  }
+});
+
+bot.command('help', async (ctx) => {
+  const isBossUser = isBoss(ctx.from?.id);
+  const text =
+    `→ <b>Kaise order karein</b>\n\n` +
+    `1. Swiggy app se apna <b>Cart link</b> bhejein (ya ▤ Cart Link button dabayein).\n` +
+    `2. Apna <b>Delivery Address link</b> bhejein (Swiggy share-address link ya Telegram • Location pin).\n` +
+    `3. Dono ready hone par <b>[ › Send to Beta ]</b> dabayein.\n\n` +
+    `<i>Address sirf aapke Swiggy address link se liya jata hai — chat me likha hua koi bhi text address ya number nahi banega.</i>` +
+    (isBossUser ? `\n\n★ Boss: <code>/boss</code> se panel, <code>/parallel</code> se ready orders ek saath.` : '');
+  return ctx.reply(text, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([[
+      Markup.button.callback('▤ Cart Link', 'action_add_cart'),
+      Markup.button.callback('⌖ Address Link', 'action_add_address')
+    ]])
+  });
+});
+
+bot.command('cancel', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  delete userWaitState[userId];
+  clearDraft(userId);
+  if (isBoss(userId)) {
+    const home = getBossPanelHome();
+    return ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
+  }
+  return ctx.reply('● <b>Draft cancel kar diya gaya hai.</b>\n\nNaya order shuru karne ke liye cart aur address link bhejein.', {
+    parse_mode: 'HTML',
+    ...getUserReplyKeyboard()
+  });
 });
 
 bot.command(['boss', 'admin'], async (ctx) => {
@@ -2545,6 +2950,15 @@ bot.action(/^boss_auto_max_coupon_(.+)$/, async (ctx) => {
       }
 
       saveDb(db);
+      try {
+        const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+          db: getDb(),
+          deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary)
+        });
+        if (summarySend?.sent) console.log(`[MaxCoupon] Bill summary sent for Order #${order.id}`);
+      } catch (summaryErr) {
+        console.warn('[MaxCoupon] Bill summary skipped:', summaryErr?.message || summaryErr);
+      }
       await updateOrderCards(order);
       try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
 
@@ -4067,7 +4481,10 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
   if (order.status === 'PENDING') {
     order.status = 'ACCEPTED';
     order.acceptedAt = new Date().toISOString();
-    db.config.slotsLeft = Math.max(0, (db.config.slotsLeft || 1) - 1);
+    if (!order.slotConsumed) {
+      order.slotConsumed = true;
+      db.config.slotsLeft = Math.max(0, (db.config.slotsLeft || 1) - 1);
+    }
   }
 
   await ctx.answerCbQuery('Generating genuine payment QR... !').catch(() => {});
@@ -5214,6 +5631,7 @@ bot.action(/^boss_action_accept_(.+)$/, async (ctx) => {
   }
 
   db.config.slotsLeft = Math.max(0, db.config.slotsLeft - 1);
+  order.slotConsumed = true;
   order.status = 'ACCEPTED';
   order.acceptedAt = new Date().toISOString();
   saveDb(db);
@@ -6718,12 +7136,13 @@ bot.on('text', async (ctx) => {
       return;
     }
 
-    let link = rawText.trim();
-    const urlMatch = link.match(/(https?:\/\/[^\s]+)/i);
-    const amtMatch = link.match(/(?:₹|rs\.?|inr)?\s*([0-9]{2,5})\b/i);
+    // Only the link is meaningful; markdown wrappers and the note around it are dropped.
+    const pastedUrls = extractSharedUrls(rawText);
+    let link = pastedUrls[0] || stripSharedLinks(rawText);
+    const amtMatch = rawText.match(/(?:₹|rs\.?|inr)?\s*([0-9]{2,5})\b/i);
 
-    if (urlMatch) {
-      link = urlMatch[1];
+    if (pastedUrls.length > 0) {
+      link = pastedUrls[0];
       if (amtMatch && !link.includes(amtMatch[1])) {
         order.finalPayable = parseInt(amtMatch[1], 10);
       }
@@ -7032,49 +7451,27 @@ bot.on('text', async (ctx) => {
       if (linkMeta?.hostName) draftUpdates.hostName = linkMeta.hostName;
     } catch (e) {}
 
-    // Check if user also sent address details in the same text
+    // Check if user also sent address details in the same text.
+    // Only the address link matters; marketing text around it is ignored.
     const parsedAddr = parseAddressDetails(rawText);
+    const addrLinkInCartMsg = extractAddressShareUrl(rawText);
     const curBefore = getDraft(userId);
-    if (parsedAddr && !curBefore.address) {
-      const geoAddr = await geocodeAddressDetails(parsedAddr).catch(() => parsedAddr);
-      draftUpdates.address = geoAddr.address || `${geoAddr.city || 'Delivery'} Address`;
-      draftUpdates.addressOriginalText = rawText;
-      draftUpdates.addressDetails = geoAddr;
+    if ((parsedAddr || addrLinkInCartMsg) && !curBefore.address) {
+      const geoAddr = parsedAddr
+        ? await geocodeAddressDetails(parsedAddr).catch(() => parsedAddr)
+        : null;
+      draftUpdates.address = geoAddr?.address || addrLinkInCartMsg || `${geoAddr?.city || 'Delivery'} Address`;
+      draftUpdates.addressOriginalText = geoAddr?.address || addrLinkInCartMsg || stripSharedLinks(rawText);
+      if (addrLinkInCartMsg) draftUpdates.addressLink = addrLinkInCartMsg;
+      if (geoAddr) draftUpdates.addressDetails = geoAddr;
     }
 
     updateDraft(userId, draftUpdates);
     const curDraft = getDraft(userId);
 
-    if (curDraft.address) {
-      await ctx.reply(
-        `✓ <b>Cart Link verified & saved!</b>\n\n✓ <i>Dono links ready hain! Niche <b>[ › Send to Beta ]</b> dabayein:</i>`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('● Cart: Added ✓', 'action_paste_cart'),
-              Markup.button.callback('● Address: Added ✓', 'action_paste_address')
-            ],
-            [Markup.button.callback('› Send to Beta', 'action_send_to_beta')]
-          ]),
-          ...getUserReplyKeyboard(curDraft)
-        }
-      );
-    } else {
-      userWaitState[userId] = { action: 'waiting_address' };
-      await ctx.reply(
-        `✓ <b>Cart Link verified & saved!</b>\n\n› Ab niche button dabakar <b>Delivery Address</b> paste karein (ya Telegram • <b>Location</b> bhej dein):`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('● Paste Address Link', 'action_paste_address')]
-          ])
-        }
-      );
-    }
-
-    const screen = getUserScreen(userId, ctx.from);
-    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    if (!curDraft.address) userWaitState[userId] = { action: 'waiting_address' };
+    // One card only: the pasted link message is deleted and the card refreshed.
+    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Cart link saved' });
     return;
   }
 
@@ -7105,7 +7502,7 @@ bot.on('text', async (ctx) => {
     // Resolve full address details immediately (preserves full Swiggy Share text + geocodes coordinates!)
     let resolvedAddrDetails = parsedAddr;
     try {
-      const addrMeta = await resolveSwiggyLink(rawText);
+      const addrMeta = await resolveSwiggyLink(validAddress || rawText);
       if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
         resolvedAddrDetails = { ...(resolvedAddrDetails || {}), ...addrMeta.addressDetails };
       } else if (resolvedAddrDetails) {
@@ -7113,10 +7510,12 @@ bot.on('text', async (ctx) => {
       }
     } catch (e) {}
 
-    const cleanDisplayAddr = resolvedAddrDetails?.address || validAddress || rawText.trim();
+    // When a link is present only the link matters: the marketing block around
+    // it ("It is a one time use link and will be valid for 24 hours") is ignored.
+    const cleanDisplayAddr = resolvedAddrDetails?.address || validAddress || stripSharedLinks(rawText);
     const draftUpdates = {
       address: cleanDisplayAddr,
-      addressOriginalText: rawText,
+      addressOriginalText: resolvedAddrDetails?.address || validAddress || stripSharedLinks(rawText),
       ...(validAddress ? { addressLink: validAddress } : {})
     };
     if (resolvedAddrDetails) draftUpdates.addressDetails = resolvedAddrDetails;
@@ -7132,40 +7531,9 @@ bot.on('text', async (ctx) => {
     updateDraft(userId, draftUpdates);
     const curDraft = getDraft(userId);
 
-    const bareOneLinkNotice = (validAddress && /onelink\.me\/JgkQ/i.test(validAddress) && !resolvedAddrDetails?.address)
-      ? `\n\ni <i>Tip: Agar Swiggy link ke neeche wali <code>Address: ...</code> line delete ho gayi thi, toh aap poora Swiggy message, Google Maps link, ya Telegram • Location Pin bhi bhej sakte hain taaki exact street address auto-fill ho jaye!</i>`
-      : '';
-
-    if (curDraft.cart) {
-      await ctx.reply(
-        `✓ <b>Address Link verified & saved!</b>${bareOneLinkNotice}\n\n✓ <i>Dono links ready hain! Niche <b>[ › Send to Beta ]</b> dabayein:</i>`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('● Cart: Added ✓', 'action_paste_cart'),
-              Markup.button.callback('● Address: Added ✓', 'action_paste_address')
-            ],
-            [Markup.button.callback('› Send to Beta', 'action_send_to_beta')]
-          ]),
-          ...getUserReplyKeyboard(curDraft)
-        }
-      );
-    } else {
-      userWaitState[userId] = { action: 'waiting_cart' };
-      await ctx.reply(
-        `✓ <b>Address Link verified & saved!</b>${bareOneLinkNotice}\n\n› Ab niche button dabakar <b>Swiggy Cart link</b> paste karein:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('● Paste Cart Link', 'action_paste_cart')]
-          ])
-        }
-      );
-    }
-
-    const screen = getUserScreen(userId, ctx.from);
-    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    if (!curDraft.cart) userWaitState[userId] = { action: 'waiting_cart' };
+    // One card only: link message deleted, unresolved-link tip stays on the card.
+    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Address link saved' });
     return;
   }
 
@@ -7203,7 +7571,7 @@ bot.on('text', async (ctx) => {
     if (parsedAddrDirect || validAddrLink) {
       let geoAddr = parsedAddrDirect;
       try {
-        const addrMeta = await resolveSwiggyLink(rawText);
+        const addrMeta = await resolveSwiggyLink(validAddrLink || rawText);
         if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
           geoAddr = { ...(geoAddr || {}), ...addrMeta.addressDetails };
         } else if (geoAddr) {
@@ -7214,7 +7582,8 @@ bot.on('text', async (ctx) => {
       // NEVER overwrite clean street address with bare JgkQ URL!
       updateDraft(userId, {
         address: geoAddr?.address || validAddrLink || `${geoAddr?.city || 'Delivery'} Address`,
-        addressOriginalText: rawText,
+        // Link-shared messages: store the resolved address, never the pasted chat text.
+        addressOriginalText: geoAddr?.address || validAddrLink || stripSharedLinks(rawText),
         ...(validAddrLink ? { addressLink: validAddrLink } : {}),
         ...(geoAddr ? { addressDetails: geoAddr } : {})
       });
@@ -7251,46 +7620,15 @@ bot.on('text', async (ctx) => {
     }
 
     if (curDraft.cart && curDraft.address) {
-      await ctx.reply(
-        `✓ <b>Cart aur Address dono ready hain!</b>\n\n› Niche <b>[ › Send to Beta ]</b> dabayein:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('● Cart: Added ✓', 'action_paste_cart'),
-              Markup.button.callback('● Address: Added ✓', 'action_paste_address')
-            ],
-            [Markup.button.callback('› Send to Beta', 'action_send_to_beta')]
-          ]),
-          ...getUserReplyKeyboard(curDraft)
-        }
-      );
+      delete userWaitState[userId];
     } else if (addedCart && !curDraft.address) {
       userWaitState[userId] = { action: 'waiting_address' };
-      await ctx.reply(
-        `✓ <b>Cart Link add ho gaya!</b>\n\n› Ab niche button dabakar <b>Delivery Address link</b> paste karein:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('● Paste Address Link', 'action_paste_address')]
-          ])
-        }
-      );
     } else if (addedAddress && !curDraft.cart) {
       userWaitState[userId] = { action: 'waiting_cart' };
-      await ctx.reply(
-        `✓ <b>Address Link add ho gaya!</b>\n\n› Ab niche button dabakar <b>Swiggy Cart link</b> paste karein:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('● Paste Cart Link', 'action_paste_cart')]
-          ])
-        }
-      );
     }
-
-    const screen = getUserScreen(userId, ctx.from);
-    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    // One card only: the pasted link message is deleted, card shows items +
+    // address and Send to Beta becomes the single next action.
+    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Link saved' });
     return;
   }
 
@@ -7502,14 +7840,8 @@ async function handleCartLinkFlow(ctx) {
     );
   }
   userWaitState[userId] = { action: 'waiting_cart' };
-  await ctx.reply(
-    `● <b>Send Swiggy Cart Link (ask to paste the link):</b>\n\n` +
-    `Kripya apna genuine Swiggy cart / group cart link chat me paste karein:`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste cart link...' }
-    }
-  );
+  // No extra bubble: the single card already shows "Cart Link > Not added yet".
+  await renderUserCard(ctx, userId, { notice: 'Cart link chat me paste karein' });
 }
 
 // Address Link Flow (asks confirmation before replacing an already-saved Address Link)
@@ -7532,15 +7864,8 @@ async function handleAddressLinkFlow(ctx) {
     );
   }
   userWaitState[userId] = { action: 'waiting_address' };
-  await ctx.reply(
-    `● <b>Send Delivery Address Link:</b>\n\n` +
-    `Swiggy app se share kiya hua poora address message, Google Maps link, ya Telegram • Location Pin chat me bhejein:\n` +
-    `<i>Example: <code>https://swiggy.onelink.me/JgkQ/52yat6op</code></i>`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste Swiggy address / Google Maps link or send Location...' }
-    }
-  );
+  // Single card only — the customer sees "Address link not received" on it.
+  await renderUserCard(ctx, userId, { notice: 'Address link ya location bhejein' });
 }
 
 // Cancel Order with "Are you sure" Red Confirmation (FigJam Flowchart)
@@ -7680,20 +8005,41 @@ async function handleSendToBoss(ctx) {
 
   let deliveryDetails = { ...(draft.addressDetails || {}) };
   const addressSource = draft.addressOriginalText || draft.address;
-  const parsedAddress = parseAddressDetails(addressSource);
-  if (parsedAddress) {
-    for (const [key, value] of Object.entries(parsedAddress)) {
-      if (value !== null && value !== undefined && value !== '') deliveryDetails[key] = value;
-    }
-  }
-  if (!normalizeDeliveryContact(deliveryDetails.mobile)) {
+  const addressLink = draft.addressLink || extractAddressShareUrl(addressSource) || (isAddressShareUrl(addressSource) ? addressSource : '');
+
+  if (addressLink) {
+    // URL-FIRST: the shared Swiggy address link is the only source of delivery
+    // data. Never merge name / mobile / area from the pasted chat text.
     try {
-      const addrMeta = await resolveSwiggyLink(addressSource);
-      if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
-        deliveryDetails = { ...deliveryDetails, ...addrMeta.addressDetails };
+      const addrMeta = await resolveSwiggyLink(addressLink);
+      const resolvedAd = addrMeta?.addressDetails;
+      if (resolvedAd && !resolvedAd.unresolvableShortLink) {
+        deliveryDetails = { ...resolvedAd };
+      } else {
+        deliveryDetails = { ...deliveryDetails, unresolvableShortLink: true };
       }
     } catch (e) {}
+  } else {
+    // Plain-text address / GPS pin — the message itself is the source.
+    const parsedAddress = parseAddressDetails(addressSource);
+    if (parsedAddress) {
+      for (const [key, value] of Object.entries(parsedAddress)) {
+        if (value !== null && value !== undefined && value !== '') deliveryDetails[key] = value;
+      }
+    }
   }
+
+  if (addressLink && deliveryDetails.unresolvableShortLink) {
+    userWaitState[userId] = { action: 'waiting_address' };
+    return ctx.reply(
+      `! <b>Address link resolve nahi hua.</b>\n\nSwiggy share-address link expire ho gaya ho sakta hai. Naya address link bhejein, ya Telegram • <b>Location</b> pin bhejein.`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[Markup.button.callback('● Paste Address Link', 'action_paste_address')]])
+      }
+    );
+  }
+
   const explicitRecipientMobile = normalizeDeliveryContact(deliveryDetails.mobile);
   if (!explicitRecipientMobile) {
     userWaitState[userId] = { action: 'waiting_recipient_mobile' };
@@ -7716,9 +8062,9 @@ async function handleSendToBoss(ctx) {
     userName: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || role,
     handle: ctx.from.username ? `@${ctx.from.username}` : null,
     type: 'SWIGGY_ORDER',
-    address: draft.address,
+    address: draft.addressDetails?.address || draft.address,
     addressOriginalText: draft.addressOriginalText || draft.address || '',
-    addressLink: draft.addressLink || null,
+    addressLink: draft.addressLink || extractAddressShareUrl(draft.addressOriginalText || draft.address) || null,
     cart: draft.cart,
     restaurantId: draft.restaurantId || null,
     groupCartId: draft.groupCartId || null,
@@ -7735,7 +8081,8 @@ async function handleSendToBoss(ctx) {
   if (draft.cartDetails) {
     const cd = draft.cartDetails;
     if (cd.restaurantName) newOrder.restaurantName = cd.restaurantName;
-    if (cd.orderAccount) newOrder.orderAccount = cd.orderAccount;
+    // NEVER copy the "Order Account" phone from pasted cart text: the account used
+    // for the order is the Swiggy account selected by the bot, not the pasted number.
     if (cd.items && cd.items.length > 0) newOrder.items = cd.items;
     if (cd.itemsTotal > 0) { newOrder.itemTotal = cd.itemsTotal; newOrder.subtotal = cd.itemsTotal; }
     if (cd.tradeDiscountTotal > 0) newOrder.tradeDiscountTotal = cd.tradeDiscountTotal;
@@ -7774,7 +8121,9 @@ async function handleSendToBoss(ctx) {
   // Fallback: If addressDetails is missing, resolve directly from address text/link without clobbering
   if (!newOrder.addressDetails && (newOrder.addressOriginalText || newOrder.address)) {
     try {
-      const addrMeta = await resolveSwiggyLink(newOrder.addressOriginalText || newOrder.address);
+      // Prefer the address share link itself; never hand the whole pasted text to the resolver.
+      const addrLinkForOrder = extractAddressShareUrl(newOrder.addressOriginalText || newOrder.address);
+      const addrMeta = await resolveSwiggyLink(addrLinkForOrder || newOrder.addressOriginalText || newOrder.address);
       if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
         newOrder.addressDetails = addrMeta.addressDetails;
         if (addrMeta.addressDetails.address) newOrder.address = addrMeta.addressDetails.address;
@@ -7785,6 +8134,11 @@ async function handleSendToBoss(ctx) {
   db.orders[orderId] = newOrder;
   saveDb(db);
   clearDraft(userId);
+
+  // Track the same single card the customer has been using since the links.
+  if (ctx.callbackQuery?.message?.message_id) {
+    rememberUserCard(userId, ctx.callbackQuery.message);
+  }
 
   // Edit User's single card in-place if initiated via inline button, else send and save message ID
   const userCard = formatUserOrderCard(newOrder);
@@ -7814,8 +8168,11 @@ async function handleSendToBoss(ctx) {
   }
   saveDb(db);
 
-  // Immediately kick off fast background cart fetch
-  triggerBackgroundCartFetch(orderId).catch(err => console.error(`[BackgroundFetch] Order #${orderId} error:`, err.message));
+  // Background pipeline for customer submissions — same treatment as a forwarded order:
+  // 1) resolve the live cart + address, 2) auto-pick the best account, 3) lock the max offer.
+  triggerBackgroundCartFetch(orderId)
+    .then(() => autoOptimizeUserOrder(orderId, { reason: 'CUSTOMER_SEND_TO_BETA' }))
+    .catch(err => console.error(`[BackgroundFetch] Order #${orderId} error:`, err?.stack || err?.message || err));
 }
 
 // Action Callbacks for User Screen & Flowchart
@@ -7828,15 +8185,8 @@ bot.action(['action_paste_cart', 'action_force_change_cart', 'action_change_cart
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_cart' };
-  await ctx.reply(
-    `● <b>Swiggy Cart Link paste karein:</b>\n\n` +
-    `Kripya apna genuine Swiggy cart / group cart link chat me paste karein:\n` +
-    `<i>Example: <code>https://swig.gy/gc/...</code> ya <code>https://www.swiggy.com/restaurants/...</code></i>`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste Swiggy cart link here...' }
-    }
-  );
+  // Keep the chat to one card: just refresh it, no extra prompt bubble.
+  await renderUserCard(ctx, userId, { notice: 'Cart link chat me paste karein' });
 });
 
 bot.action('action_add_address', async (ctx) => {
@@ -7848,23 +8198,14 @@ bot.action(['action_paste_address', 'action_force_change_address', 'action_chang
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_address' };
-  await ctx.reply(
-    `● <b>Delivery Address Link paste karein:</b>\n\n` +
-    `Swiggy app se share kiya hua delivery address link chat me paste karein:\n` +
-    `<i>Example: <code>https://swiggy.onelink.me/JgkQ/52yat6op</code></i>\n` +
-    `<i>(Google Maps link bhi chalega)</i>`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste Swiggy address link (https://swiggy.onelink.me/JgkQ/...)' }
-    }
-  );
+  await renderUserCard(ctx, userId, { notice: 'Address link ya location bhejein' });
 });
 
 bot.action('action_cancel_change_link', async (ctx) => {
   await ctx.answerCbQuery('Link preserved ●').catch(() => {});
   const userId = ctx.from.id;
-  const screen = getUserScreen(userId, ctx.from);
-  await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+  // Keep editing the existing card instead of posting another copy of the screen.
+  await renderUserCard(ctx, userId);
 });
 
 bot.action('boss_prompt_total_slots', async (ctx) => {
@@ -7909,6 +8250,7 @@ bot.action(/^user_confirm_cancel_(.+)$/, async (ctx) => {
 
   if (target === 'draft') {
     clearDraft(userId);
+    userChatCards.delete(String(userId));
     const screen = getUserScreen(userId, ctx.from);
     await ctx.answerCbQuery('Draft Cancelled ●').catch(() => {});
     try {
@@ -7952,6 +8294,7 @@ bot.action(/^user_confirm_cancel_(.+)$/, async (ctx) => {
 
   // 2. Delete card messages from user and boss chats
   await deleteOrderMessages(order);
+  userChatCards.delete(String(userId));
 
   // 3. Notify bosses with View Cancelled Orders button
   for (const bossId of db.config.bossIds) {
@@ -8019,6 +8362,17 @@ bot.action(/^user_refresh_status_(.+)$/, async (ctx) => {
   try {
     await ctx.editMessageText(card.text, { parse_mode: 'HTML', ...card.keyboard });
   } catch (e) {}
+
+  // Customer can retry the account / max-offer scan straight from their card.
+  if (
+    !order.isForwardedOrder &&
+    !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status) &&
+    (!order.selectedAccount || !(Number(order.finalPayable || 0) > 0))
+  ) {
+    autoOptimizeUserOrder(orderId, { reason: 'CUSTOMER_REFRESH_STATUS' }).catch(err =>
+      console.error(`[AutoOptimize] refresh retry failed for #${orderId}:`, err?.message || err)
+    );
+  }
 });
 
 bot.action('user_reset', async (ctx) => {
@@ -8477,18 +8831,40 @@ bot.command('resetslots', async (ctx) => {
 bot.action('noop', async (ctx) => ctx.answerCbQuery().catch(() => {}));
 
 bot.catch(async (err, ctx) => {
-  // Ignore harmless "not modified" edits
-  if (err.description && err.description.includes('message is not modified')) return;
+  const description = String(err?.description || '');
+  const message = String(err?.message || '');
 
-  // Ignore normal 400 "message too long" & transient query expiration
-  const ignorePhrases = ['message is not modified', 'query is too old', 'MESSAGE_ID_INVALID', 'message is too long', 'message to be edited'];
-  if (ignorePhrases.some(p => (err.message || err.description || '').toLowerCase().includes(p.toLowerCase()))) return;
+  // Ignore harmless "not modified" edits and transient Telegram races
+  const ignorePhrases = [
+    'message is not modified',
+    'query is too old',
+    'MESSAGE_ID_INVALID',
+    'message is too long',
+    'message to be edited',
+    'message can\'t be edited'
+  ];
+  if (ignorePhrases.some(p => (message || description).toLowerCase().includes(p.toLowerCase()))) return;
 
   const updateType = ctx?.updateType || 'unknown';
-  const errMsg = err.message || err.description || String(err);
+  const errMsg = message || description || String(err);
   console.error(`× Bot error [${updateType}]:`, errMsg);
+  if (err?.stack) console.error(`  ↳ ${String(err.stack).split('\n').slice(1, 4).join('\n  ↳ ')}`);
 
-  // Send error to Boss
+  // Tell the person who triggered it something useful — but only for real code
+  // faults. Transient Telegram/network failures must not spam the chat.
+  const looksLikeCodeFault = /is not defined|is not a function|ReferenceError|TypeError|Cannot read|undefined \(reading/i.test(`${message} ${description}`);
+  if (looksLikeCodeFault) {
+    try {
+      if (ctx?.chat?.id && typeof ctx.reply === 'function') {
+        await ctx.reply(
+          '! <b>Kuch technical issue aa gaya.</b>\n\nKripya dobara try karein ya /start dabayein. Aapka data safe hai.',
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
+      }
+    } catch (e) {}
+  }
+
+  // Report to Boss with the exact failing line so the bug can be fixed fast.
   try {
     const db = getDb();
     const bossIds = db?.config?.bossIds || [];
@@ -8597,7 +8973,7 @@ async function sendApprovedOrderPaymentToUser(uidStr, order, { force = false } =
   return false;
 }
 
-async function approveUserOrderBillAction(uidStr, orderId) {
+export async function approveUserOrderBillAction(uidStr, orderId) {
   const db = getDb();
   const order = db.orders?.[orderId];
   if (!order) return { ok: false, error: 'Order not found.' };
@@ -8609,6 +8985,29 @@ async function approveUserOrderBillAction(uidStr, orderId) {
   }
   if (!['APPROVAL_PENDING', 'PAYMENT_PENDING'].includes(order.status)) {
     return { ok: false, error: 'This bill is not awaiting approval.' };
+  }
+
+  // A slot is consumed when the customer actually approves the bill (Boss's
+  // "Accept" does the same for manual approvals, so it is never counted twice).
+  if (!order.slotConsumed) {
+    if (Number(db.config?.slotsLeft || 0) <= 0) {
+      order.status = 'REJECTED';
+      order.rejectedAt = new Date().toISOString();
+      order.rejectReason = 'Sorry, slot has ended.';
+      if (order.selectedAccount) releaseSwiggyAccountReservation(order.selectedAccount, order.id);
+      saveDb(db);
+      await updateOrderCards(order).catch(() => {});
+      try {
+        await bot.telegram.sendMessage(
+          String(uidStr),
+          `× <b>Sorry, slot has ended.</b>\n\nAapka bill approve nahi ho saka kyunki slots khatam ho chuke hain.`,
+          { parse_mode: 'HTML' }
+        );
+      } catch (e) {}
+      return { ok: false, error: 'Sorry, slot has ended.' };
+    }
+    db.config.slotsLeft = Math.max(0, Number(db.config.slotsLeft || 0) - 1);
+    order.slotConsumed = true;
   }
 
   if (!order.billApprovedByUser) {
@@ -9099,6 +9498,30 @@ function startAutoEventOffersPrebookLoop() {
   if (typeof autoEventPrebookTimer.unref === 'function') autoEventPrebookTimer.unref();
 }
 
+// Registers the command list + a plain "commands" menu button.
+// Kept dependency-free and fully guarded: a Telegram-side hiccup must never
+// stop the bot from serving /start or orders.
+let botMenuReady = false;
+async function setupBotMenu() {
+  if (botMenuReady) return true;
+  try {
+    await bot.telegram.setMyCommands([
+      { command: 'start', description: 'Start a new Swiggy order' },
+      { command: 'help', description: 'How to place an order' },
+      { command: 'cancel', description: 'Cancel the current draft order' }
+    ]);
+  } catch (e) {
+    console.warn('[Menu] setMyCommands skipped:', e?.message || e);
+  }
+  try {
+    await bot.telegram.setChatMenuButton({ menuButton: { type: 'commands' } });
+  } catch (e) {
+    console.warn('[Menu] setChatMenuButton skipped:', e?.message || e);
+  }
+  botMenuReady = true;
+  return true;
+}
+
 // Launch bot with retry resilience for cloud container handover
 console.log('› Connecting to Telegram Bot API...');
 async function startBotWithRetry() {
@@ -9136,7 +9559,8 @@ async function startBotWithRetry() {
   }
 }
 
-export { bot };
+// Exposed for the offline e2e suites (single-card chat behaviour).
+export { bot, renderUserCard, cleanupUserChat, userChatCards, getUserScreen, updateOrderCards };
 
 if (!process.env.TEST_MODE && !process.env.BOT_TEST_MODE) {
   startBotWithRetry();

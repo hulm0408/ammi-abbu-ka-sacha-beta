@@ -5,6 +5,7 @@ import fs from 'fs';
 import puppeteer from 'puppeteer-core';
 import QRCode from 'qrcode';
 import { getDb, updateAccount } from './store.js';
+import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers } from './swiggy-bridge.js';
 
 const CHROME_PATH = findChromePath();
@@ -2086,6 +2087,46 @@ export async function fetchFastRestaurantInfo(restaurantId, lat = '26.8658609', 
   }
 }
 
+// ============================================================================
+// URL-FIRST ADDRESS CONTRACT
+// ----------------------------------------------------------------------------
+// A Swiggy "Share address" message carries a link (`swiggy.onelink.me/JgkQ/...`,
+// `swiggy.com/ofo/address/...`) plus the app's own plain-text block. Anything
+// else in the same Telegram message (order account, cart receipt, signature,
+// forwarded header, ...) is NOT delivery data.
+//
+// Rule enforced everywhere: when the message contains an address share link,
+// delivery name / mobile / street / city / GPS come ONLY from that link. The
+// surrounding text is never parsed — it can belong to a different person and
+// silently change the recipient's phone number or area.
+// ============================================================================
+
+function collectHttpUrls(text) {
+  // Markdown `[label](url)` / duplicated `url](url` pastes yield one clean URL.
+  return extractSharedUrls(text);
+}
+
+// True for links that resolve to a delivery address (never for cart/group-cart).
+export function isAddressShareUrl(rawUrl) {
+  const url = String(rawUrl || '').trim();
+  if (!url || !/^https?:\/\//i.test(url)) return false;
+  // Cart / group-cart links are never address links.
+  if (/\/gc\/|group-cart|group_cart|group-order|groupcartid/i.test(url)) return false;
+  if (/swiggy\.onelink\.me\//i.test(url) || /(?:^|\/\/|\.)onelink\.me\/[A-Za-z0-9]+\/[A-Za-z0-9_-]+/i.test(url)) return true;
+  if (/swiggy\.com\/ofo\/address\//i.test(url)) return true;
+  if (/maps\.app\.goo\.gl\/|google\.[a-z.]+\/maps|goo\.gl\/maps/i.test(url)) return true;
+  return false;
+}
+
+// Returns the first delivery-address share link found in a message, or ''.
+export function extractAddressShareUrl(text) {
+  return collectHttpUrls(text).find(isAddressShareUrl) || '';
+}
+
+export function hasAddressShareUrl(text) {
+  return Boolean(extractAddressShareUrl(text));
+}
+
 // Cleanly extract structured delivery address from Swiggy native share messages, Swiggy World receipts, coordinates, or plain text
 export function parseAddressDetails(text) {
   if (!text) return null;
@@ -2097,6 +2138,12 @@ export function parseAddressDetails(text) {
 
   // Pure single URL with no accompanying text is handled by URL resolvers, not text parser
   if (/^https?:\/\/\S+$/i.test(str)) {
+    return null;
+  }
+
+  // URL-FIRST: an address share link is present -> the link is the only source of
+  // truth. Refuse to copy name / phone / area / PIN from whatever else is pasted.
+  if (hasAddressShareUrl(str)) {
     return null;
   }
 
@@ -2426,12 +2473,10 @@ export async function resolveSwiggyLink(input) {
   if (!input) return { url: input, type: 'UNKNOWN' };
   const rawInput = String(input).trim();
 
-  // Extract first URL from input while STILL keeping full text for address/receipt parsing!
-  const urlMatch = rawInput.match(/(https?:\/\/[^\s]+|www\.[^\s]+|maps\.app\.goo\.gl\/[^\s]+|swig\.gy\/[^\s]+)/i);
-  let primaryUrl = urlMatch ? urlMatch[1].replace(/[,\.;\)]+$/, '') : rawInput;
-  if (primaryUrl.startsWith('www.') || primaryUrl.startsWith('maps.app.goo.gl/') || primaryUrl.startsWith('swig.gy/')) {
-    primaryUrl = 'https://' + primaryUrl;
-  }
+  // Only the URL matters: surrounding share text ("It is a one time use link…")
+  // is never treated as part of the link.
+  const sharedUrls = extractSharedUrls(rawInput);
+  let primaryUrl = sharedUrls[0] || normalizeSharedUrl(rawInput) || rawInput;
 
   let resolved = primaryUrl;
   let restaurantId = null;
@@ -2510,8 +2555,13 @@ export async function resolveSwiggyLink(input) {
     mapCoords = { lat: cMatch[1], lng: cMatch[2] };
   }
 
-  // 6. Structured text parsing on FULL input (preserves "Address: ..." sent alongside JgkQ link!)
-  let parsedAddr = parseAddressDetails(rawInput);
+  // 6. Does this input carry a delivery-address share link?
+  //    If yes, the link is the ONLY source of delivery data (see URL-FIRST contract).
+  const addressShareUrl = extractAddressShareUrl(rawInput) || extractAddressShareUrl(resolved);
+  const addressFromUrl = Boolean(addressShareUrl || ofoToken || ofoUser || mapCoords);
+
+  // Text parsing is allowed ONLY when no address link is present.
+  let parsedAddr = addressFromUrl ? null : parseAddressDetails(rawInput);
 
   const isCart = Boolean(
     groupCartId ||
@@ -2527,6 +2577,7 @@ export async function resolveSwiggyLink(input) {
     ofoToken ||
     ofoUser ||
     mapCoords ||
+    addressShareUrl ||
     combinedForMatch.includes('ofo/address') ||
     combinedForMatch.includes('onelink.me') ||
     combinedForMatch.includes('maps.google') ||
@@ -2535,17 +2586,10 @@ export async function resolveSwiggyLink(input) {
     parsedAddr
   );
 
-  // Resolve full address details cleanly
-  let addressDetails = null;
-  if (parsedAddr) {
-    addressDetails = await geocodeAddressDetails({
-      ...parsedAddr,
-      ...(mapCoords && !parsedAddr.lat ? mapCoords : {}),
-      ...(ofoUser && !parsedAddr.name ? { name: ofoUser } : {})
-    });
-  } else if (mapCoords) {
+  // Resolve full address details — URL first, plain text only when no link exists.
+  const reverseGeocodedDetails = async () => {
     const rev = await reverseGeocodeCoords(mapCoords.lat, mapCoords.lng);
-    addressDetails = {
+    return {
       name: ofoUser || '',
       mobile: '',
       city: rev?.city || 'Delivery',
@@ -2555,24 +2599,44 @@ export async function resolveSwiggyLink(input) {
       lat: String(mapCoords.lat),
       lng: String(mapCoords.lng)
     };
-  } else if (ofoToken) {
-    const socialAddr = await resolveSharedOfoAddress(ofoToken, ofoUser);
-    if (socialAddr) {
-      addressDetails = socialAddr;
-    } else if (isOneLinkShort) {
-      // Bare AppsFlyer OneLink (JgkQ) without Swiggy's accompanying "Address: ..." text line:
-      // NEVER overwrite existing real addresses with a placeholder string — flag cleanly!
-      addressDetails = {
-        name: ofoUser || '',
-        token: ofoToken,
-        unresolvableShortLink: true,
-        city: '',
-        mobile: '',
-        address: '',
-        lat: null,
-        lng: null
-      };
+  };
+  const unresolvedLinkDetails = () => ({
+    name: ofoUser || '',
+    token: ofoToken || '',
+    link: addressShareUrl || primaryUrl,
+    unresolvableShortLink: true,
+    city: '',
+    mobile: '',
+    address: '',
+    lat: null,
+    lng: null
+  });
+
+  let addressDetails = null;
+  let addressSource = null;
+  if (addressFromUrl) {
+    addressSource = 'URL';
+    if (ofoToken) {
+      const socialAddr = await resolveSharedOfoAddress(ofoToken, ofoUser);
+      if (socialAddr) {
+        addressDetails = socialAddr;
+      } else if (mapCoords) {
+        addressDetails = await reverseGeocodedDetails();
+      } else {
+        // Link could not be resolved (expired / not fetchable). Never substitute the
+        // surrounding chat text — flag the link so the caller can ask for a fresh one.
+        addressSource = 'URL_UNRESOLVED';
+        addressDetails = unresolvedLinkDetails();
+      }
+    } else if (mapCoords) {
+      addressDetails = await reverseGeocodedDetails();
+    } else {
+      addressSource = 'URL_UNRESOLVED';
+      addressDetails = unresolvedLinkDetails();
     }
+  } else if (parsedAddr) {
+    addressSource = 'TEXT';
+    addressDetails = await geocodeAddressDetails(parsedAddr);
   }
 
   // Parse structured cart text if present
@@ -2652,6 +2716,8 @@ export async function resolveSwiggyLink(input) {
     hostName,
     ofoUser,
     ofoToken,
+    addressLink: addressShareUrl || '',
+    addressSource,
     addressDetails,
     cartDetails: parsedCart
   };

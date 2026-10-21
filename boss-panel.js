@@ -22,13 +22,18 @@ export async function bossAlert(ctx, message) {
 // Clean short address preview for cards
 function addrPreview(order) {
   const ad = order.addressDetails || {};
-  if (ad && ad.address) {
+  if (ad.unresolvableShortLink) return 'Address link unresolved — send a fresh link/pin';
+  if (ad.address) {
     const a = String(ad.address);
     return a.length > 45 ? a.slice(0, 45) + '…' : a;
   }
-  if (ad && ad.city) return `${ad.city} Address`;
-  if (order.address) return String(order.address).slice(0, 45) + (String(order.address).length > 45 ? '…' : '');
-  return 'Address not received';
+  if (ad.city) return `${ad.city} Address`;
+  // Never echo a pasted chat block; only a short, address-looking string.
+  const raw = String(order.address || '').trim();
+  if (!raw) return 'Address not received';
+  if (/^https?:\/\//i.test(raw)) return 'Address link received';
+  if (/order\s*account|forwarded\s*from|^\s*(?:🧾|📱|🛒)/i.test(raw) || raw.length > 120) return 'Address not verified';
+  return raw.length > 45 ? raw.slice(0, 45) + '…' : raw;
 }
 
 // Monospace bill table inside a bordered section
@@ -143,11 +148,16 @@ export function buildBossOrderCard(order, db = getDb()) {
   ].join('\n'));
   text += billSection(order);
   text += `${paymentNote}\n`;
+  const offerLine = order.autoOptimizeError
+    ? `\n${field('Auto offers', `<i>${esc(order.autoOptimizeError)}</i>`)}`
+    : (order.autoOptimized
+        ? `\n${field('Auto offers', `✓ Best account + max coupon locked${order.orderAccount ? ` (${esc(String(order.orderAccount))})` : ''}`)}`
+        : '');
   text += section('⌖ Cart & delivery', [
     field('Cart', order.cart ? `<a href="${esc(order.cart)}">Open cart link</a>` : '<i>Not added</i>'),
     field('Deliver to', esc(addrPreview(order))),
     field('Time', new Date(order.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })),
-  ].join('\n'));
+  ].join('\n') + offerLine);
   if (order.status === 'COMPLETED') {
     const trackingUrl = getStoredSwiggyTrackingUrl(order);
     text += section('↗ Swiggy tracking', trackingUrl

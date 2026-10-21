@@ -5,9 +5,15 @@ import { PNG } from 'pngjs';
 import { Markup } from 'telegraf';
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
+import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
+// Genuine Swiggy page used as an honest fallback (never a synthesised tracking URL).
+const SWIGGY_ORDERS_PAGE = 'https://www.swiggy.com/orders';
+
 import {
   resolveSwiggyLink,
   parseAddressDetails,
+  extractAddressShareUrl,
+  isAddressShareUrl,
   reverseGeocodeCoords,
   isValidIndianDeliveryCoordinates,
   geocodeAddressDetails,
@@ -52,7 +58,7 @@ export function classifyRawOrderInputFast(rawText = '', location = null) {
   const s = String(rawText || '').trim();
   if (!s) return { hasCart: false, hasAddress: false, primaryCartUrl: '' };
 
-  const allUrls = s.match(/https?:\/\/[^\s]+/gi)?.map(u => u.replace(/[.,;!?)]+$/, '')) || [];
+  const allUrls = extractSharedUrls(s);
   let hasCart = false;
   let hasAddress = false;
   let primaryCartUrl = '';
@@ -76,7 +82,7 @@ export function classifyRawOrderInputFast(rawText = '', location = null) {
     }
   }
 
-  const textWithoutUrls = s.replace(/https?:\/\/[^\s]+/gi, ' ').trim();
+  const textWithoutUrls = stripSharedLinks(s);
   if (!hasCart && /your cart\s*\n|items total\s*:/i.test(s)) {
     hasCart = true;
   }
@@ -91,36 +97,38 @@ export function classifyRawOrderInputFast(rawText = '', location = null) {
 
 // Splits a single mega-message containing 2..N `Cart + Address` order blocks into independent per-order texts!
 export function splitMultipleOrderBlocks(rawText = '') {
-  const s = String(rawText || '').trim();
-  if (!s) return [];
-  const gcMatches = [...s.matchAll(/https?:\/\/[^\s]*(?:swig\.gy\/gc\/|swiggy\.com\/[^\s]*group_cart)[^\s]*/gi)];
-  if (gcMatches.length <= 1) return [s];
+  const raw = String(rawText || '').trim();
+  if (!raw) return [];
+  // Markdown pastes contain the same link twice (`[url](url)`); collapse them so
+  // each cart link is found exactly once before splitting.
+  const normalized = collapseSharedLinks(raw);
+  const gcLinks = extractSharedUrls(normalized).filter((u) => /\/gc\/|group_cart/i.test(u));
+  if (gcLinks.length <= 1) return [raw];
 
-  // Look for natural paragraph splits where each segment carries its own cart link
-  const segments = [];
-  for (let i = 0; i < gcMatches.length; i++) {
-    const curIdx = gcMatches[i].index;
-    const nextIdx = i + 1 < gcMatches.length ? gcMatches[i + 1].index : s.length;
-    // Check if address precedes cart link or follows cart link
-    if (i === 0 && curIdx > 25) {
-      // Format looks like `Address 1 \n Cart 1 \n\n Address 2 \n Cart 2 ...`
-      const endOfCartLine = s.indexOf('\n', curIdx + gcMatches[i][0].length);
-      const cutPoints = gcMatches.map((m, idx) => {
-        const lineEnd = s.indexOf('\n', m.index + m[0].length);
-        return idx === gcMatches.length - 1 ? s.length : (lineEnd === -1 ? m.index + m[0].length : lineEnd);
-      });
-      let start = 0;
-      for (const end of cutPoints) {
-        const chunk = s.slice(start, end).trim();
-        if (chunk) segments.push(chunk);
-        start = end;
-      }
-      return segments.length >= 2 ? segments : [s];
-    }
-    const seg = s.slice(curIdx, nextIdx).trim();
-    if (seg) segments.push(seg);
+  const positions = [];
+  let searchFrom = 0;
+  for (const link of gcLinks) {
+    let idx = normalized.indexOf(link, searchFrom);
+    if (idx === -1) idx = normalized.indexOf(link);
+    positions.push(idx === -1 ? 0 : idx);
+    searchFrom = (idx === -1 ? 0 : idx) + link.length;
   }
-  return segments.length >= 2 ? segments : [s];
+
+  // Cut at the end of each cart's line so the address block travels with its link.
+  const cutPoints = positions.map((pos, i) => {
+    if (i === positions.length - 1) return normalized.length;
+    const lineEnd = normalized.indexOf('\n', pos + gcLinks[i].length);
+    return lineEnd === -1 ? pos + gcLinks[i].length : lineEnd;
+  });
+
+  const segments = [];
+  let start = 0;
+  for (const end of cutPoints) {
+    const chunk = normalized.slice(start, end).trim();
+    if (chunk) segments.push(chunk);
+    start = end;
+  }
+  return segments.length >= 2 ? segments : [raw];
 }
 
 const activePaymentPollers = new Map();
@@ -755,15 +763,109 @@ export function buildTelegramUserBillConfirmationCard(order) {
   return { text, keyboard };
 }
 
+// ---------------------------------------------------------------------------
+// Customer identity + one-time bill summary
+// ---------------------------------------------------------------------------
+// Resolve the customer's Telegram chat for an order. Boss's own orders and
+// orders that only exist in the Boss chat return '' so a summary is never sent
+// back to the Boss by accident.
+export function resolveCustomerChatId(order, bossIds = []) {
+  const target = String(order?.fwdSenderUserId || order?.userId || '').trim();
+  if (!target) return '';
+  if (order?.isDirectBossOrder) return '';
+  const bossSet = new Set((bossIds || []).map(id => String(id)));
+  if (bossSet.has(target)) return '';
+  if (order?.bossChatId && String(order.bossChatId) === target) return '';
+  return target;
+}
+
+// Sends the max-discount bill summary to the customer EXACTLY ONCE.
+// After this the order waits in `APPROVAL_PENDING`: the customer taps
+// "Approve bill" and only then are the official Swiggy payment details sent.
+export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null, force = false, deliver = null } = {}) {
+  if (!telegram?.sendMessage || !order?.id) return { sent: false, reason: 'no-telegram' };
+
+  const liveDb = db || getDb();
+  const customerId = resolveCustomerChatId(order, liveDb?.config?.bossIds || []);
+  if (!customerId) return { sent: false, reason: 'no-customer-chat' };
+
+  if (!force && (order.billSummarySentAt || order.billApprovedByUser)) return { sent: false, reason: 'already-sent' };
+  if (['COMPLETED', 'CANCELLED', 'REJECTED', 'PAYMENT_PENDING'].includes(order.status)) return { sent: false, reason: 'not-awaiting-review' };
+  if (Number(order.finalPayable || 0) <= 0) return { sent: false, reason: 'bill-not-ready' };
+  if (!order.selectedAccount) return { sent: false, reason: 'no-account' };
+
+  const summary = buildTelegramUserBillConfirmationCard({ ...order, userId: customerId });
+
+  // When the customer already has a single live card, the caller can render the
+  // summary into that card instead of sending another chat bubble. `deliver`
+  // returns false when it could not update the card -> normal message is sent.
+  let deliveredOnCard = false;
+  if (typeof deliver === 'function' && !force) {
+    try {
+      deliveredOnCard = (await deliver(summary)) === true;
+    } catch {
+      deliveredOnCard = false;
+    }
+  }
+  if (deliveredOnCard) {
+    order.status = 'APPROVAL_PENDING';
+    order.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
+    order.billSummarySentAt = new Date().toISOString();
+    order.billSummaryAutoSent = true;
+    order.billSummaryDelivery = 'SINGLE_CARD';
+    delete order.billSummarySendError;
+    const cardDb = getDb();
+    cardDb.orders[order.id] = order;
+    saveDb(cardDb);
+    return { sent: true, customerId, viaCard: true };
+  }
+
+  try {
+    await telegram.sendMessage(customerId, summary.text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...summary.keyboard
+    });
+  } catch (error) {
+    order.billSummarySendError = String(error?.message || error).slice(0, 200);
+    const failDb = getDb();
+    if (failDb.orders?.[order.id]) {
+      failDb.orders[order.id].billSummarySendError = order.billSummarySendError;
+      saveDb(failDb);
+    }
+    return { sent: false, reason: 'telegram-error', error: order.billSummarySendError };
+  }
+
+  order.status = 'APPROVAL_PENDING';
+  order.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
+  order.billSummarySentAt = new Date().toISOString();
+  order.billSummaryAutoSent = true;
+  order.billSummaryDelivery = 'MESSAGE';
+  delete order.billSummarySendError;
+
+  const freshDb = getDb();
+  freshDb.orders[order.id] = order;
+  saveDb(freshDb);
+  return { sent: true, customerId };
+}
+
 function summarizeAddressPreview(order) {
   const ad = order.addressDetails || parseAddressDetails(order.address);
-  if (!ad) return escapeHtml(order.address || '');
+  if (!ad) {
+    // Never echo an entire pasted message back as the address. A bare link is
+    // summarised honestly instead of leaking the chat text next to it.
+    const raw = String(order.address || '').trim();
+    if (isAddressShareUrl(raw)) return '<i>Address link received — fetching address from Swiggy…</i>';
+    if (raw && raw.length <= 120 && !/order\s*account|https?:\/\//i.test(raw)) return escapeHtml(raw);
+    return '<i>Not verified yet</i>';
+  }
+  if (ad.unresolvableShortLink) return '<i>Address link could not be resolved — send a fresh address link or GPS pin</i>';
   const parts = [];
   if (ad.city) parts.push(`<b>${escapeHtml(ad.city)}</b>`);
   if (ad.name) parts.push(escapeHtml(ad.name));
   if (ad.address) parts.push(escapeHtml(ad.address.replace(/\s+/g, ' ').trim()));
   if (ad.lat && ad.lng) parts.push(`(${ad.lat}, ${ad.lng})`);
-  return parts.join(' • ') || escapeHtml(order.address || '');
+  return parts.join(' • ') || '<i>Not verified yet</i>';
 }
 
 function summarizeCartPreview(order) {
@@ -1184,18 +1286,25 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
     return { updatedCart, updatedAddress: true };
   }
 
-  const allUrls = trimmed.match(/https?:\/\/[^\s]+/gi)?.map(u => u.replace(/[.,;!?)]+$/, '')) || [];
+  const allUrls = extractSharedUrls(trimmed);
   const swiggyUrls = allUrls.filter(u => /(swiggy\.com|swig\.gy|onelink\.me)/i.test(u));
   const mapsUrls = allUrls.filter(u => /(maps\.app\.goo\.gl|google\.com\/maps|goo\.gl\/maps)/i.test(u));
 
+  // URL-FIRST: if the message carries an address share link, delivery data comes
+  // from that link only. Text sitting next to the link (order account, receipt,
+  // forwarded header, "Address: ..." line) is never used.
+  const addressShareUrl = extractAddressShareUrl(trimmed);
+
   // Pre-extract plain-text street address BEFORE `Promise.all` so links + geocoding run 100% concurrently!
-  const textWithoutUrlsEarly = trimmed.replace(/https?:\/\/[^\s]+/gi, ' ').trim();
-  const earlyPlainAd =
-    allUrls.length === 0 && !isValidCartInput(trimmed) && isValidAddressInput(trimmed)
-      ? parseAddressDetails(trimmed)
-      : textWithoutUrlsEarly.length >= 12 && isValidAddressInput(textWithoutUrlsEarly)
-        ? parseAddressDetails(textWithoutUrlsEarly)
-        : null;
+  // (Only for genuinely text-only messages — never when an address link is present.)
+  const textWithoutUrlsEarly = stripSharedLinks(trimmed);
+  const earlyPlainAd = addressShareUrl
+    ? null
+    : (allUrls.length === 0 && !isValidCartInput(trimmed) && isValidAddressInput(trimmed)
+        ? parseAddressDetails(trimmed)
+        : textWithoutUrlsEarly.length >= 12 && isValidAddressInput(textWithoutUrlsEarly)
+          ? parseAddressDetails(textWithoutUrlsEarly)
+          : null);
   const firstAccEarly = earlyPlainAd && (!earlyPlainAd.lat || !earlyPlainAd.lng)
     ? Object.values(getDb()?.config?.accounts || {}).find(a => a?.isLoggedIn && (a.cookies || a.tid || a.token)) || null
     : null;
@@ -1205,11 +1314,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   // skip external HTTP hop on `onelink.me/JgkQ` (`0ms` instead of `1.9s`!) and reuse `preGeocodedPlainAd` directly!
   const [resolvedSwiggyList, resolvedMapsList, preGeocodedPlainAd] = await Promise.all([
     Promise.all(
-      swiggyUrls.map(url =>
-        earlyPlainAd?.address && /onelink\.me\/jgkq\//i.test(url) && !/\/gc\//i.test(url)
-          ? Promise.resolve({ url, resolved: { linkType: 'ADDRESS' } })
-          : resolveSwiggyLink(url).then(resolved => ({ url, resolved }))
-      )
+      swiggyUrls.map(url => resolveSwiggyLink(url).then(resolved => ({ url, resolved })))
     ),
     Promise.all(mapsUrls.map(mUrl => resolveSwiggyLink(mUrl).then(resolved => ({ mUrl, resolved })))),
     earlyPlainAd && (!earlyPlainAd.lat || !earlyPlainAd.lng)
@@ -1224,14 +1329,23 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       (/save my address on swiggy/i.test(trimmed) && !/\/gc\//i.test(url));
 
     if (looksLikeAddressShare) {
-      const ad = preGeocodedPlainAd || parseAddressDetails(trimmed) || resolved?.addressDetails || parseAddressDetails(url);
-      order.address = trimmed;
-      order.addressOriginalText = trimmed;
-      if (ad) {
+      // The address link is authoritative. `preGeocodedPlainAd` is always null here
+      // when a link is present, and text parsing is never used as a substitute.
+      const ad = resolved?.addressDetails || null;
+      if (ad && !ad.unresolvableShortLink) {
         delete ad.id;
         if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
         order.addressDetails = ad;
+        order.address = ad.address || ad.city || url;
+        order.addressLink = url;
+      } else {
+        // Keep the link (never the surrounding chat text) and let the card ask for
+        // a fresh address/pin if the share link could not be resolved.
+        order.addressDetails = ad || null;
+        order.address = url;
+        order.addressLink = url;
       }
+      order.addressOriginalText = order.address;
       updatedAddress = true;
     } else if (isValidCartInput(url)) {
       if (resolved?.expired || resolved?.groupCartStatus === 'EXPIRED' || resolved?.status === 'EXPIRED') {
@@ -1259,16 +1373,18 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   }
 
   for (const { mUrl, resolved } of resolvedMapsList) {
-    const ad = resolved?.addressDetails || parseAddressDetails(trimmed);
-    order.address = trimmed;
-    order.addressOriginalText = trimmed;
+    // GPS pin / Maps link is authoritative too: reverse-geocoded location only.
+    const ad = resolved?.addressDetails || null;
     if (ad) {
       delete ad.id;
       if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
       order.addressDetails = ad;
+      order.address = ad.address || mUrl;
+      order.addressLink = mUrl;
     } else {
       order.address = mUrl;
     }
+    order.addressOriginalText = order.address;
     updatedAddress = true;
   }
 
@@ -1276,7 +1392,8 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
     if (isValidCartInput(trimmed)) {
       order.cart = trimmed;
       updatedCart = true;
-    } else if (isValidAddressInput(trimmed)) {
+    } else if (!addressShareUrl && isValidAddressInput(trimmed)) {
+      // Plain-text address (no address link in the message) — the text IS the source.
       const ad = preGeocodedPlainAd || parseAddressDetails(trimmed);
       order.address = trimmed;
       order.addressOriginalText = trimmed;
@@ -1287,7 +1404,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       }
       updatedAddress = true;
     }
-  } else if (updatedCart && !updatedAddress) {
+  } else if (updatedCart && !updatedAddress && !addressShareUrl) {
     const textWithoutUrls = trimmed.replace(/https?:\/\/[^\s]+/gi, ' ').trim();
     if (textWithoutUrls.length >= 12 && isValidAddressInput(textWithoutUrls)) {
       const ad = preGeocodedPlainAd || parseAddressDetails(textWithoutUrls);
@@ -1404,15 +1521,20 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
   if (!force && notices[recipientId] === noticeKey) return false;
 
   const lines = [
-    `✓ <b>Swiggy order update</b>`,
+    order.status === 'COMPLETED'
+      ? `✓ <b>Payment received — Swiggy order confirmed</b>`
+      : `✓ <b>Swiggy order update</b>`,
     `Order reference: <code>#${escapeHtml(String(order.id))}</code>`
   ];
-  if (order.swiggyOrderId) lines.push(`Swiggy order ID: <code>${escapeHtml(String(order.swiggyOrderId))}</code>`);
+  if (order.swiggyOrderId) lines.push(`Swiggy order no.: <code>${escapeHtml(String(order.swiggyOrderId))}</code>`);
   if (order.liveOrderStatus) lines.push(`Status: ${escapeHtml(String(order.liveOrderStatus))}`);
+  // Only a link Swiggy itself returned is presented as tracking. The order number
+  // or a bot-side /track/<orderId> URL is never passed off as a tracking link.
   if (trackingUrl) {
-    lines.push(`↗ <b>Tracking link from Swiggy:</b> <a href="${escapeHtml(trackingUrl)}">Open Swiggy tracking</a>`);
+    lines.push(`↗ <b>Live tracking (Swiggy link):</b> <a href="${escapeHtml(trackingUrl)}">Open Swiggy tracking</a>`);
   } else {
-    lines.push('… Swiggy has not shared a tracking link yet. I will send it here when it becomes available.');
+    lines.push(`↗ <b>Live tracking:</b> <a href="${SWIGGY_ORDERS_PAGE}">Swiggy app → Orders</a>`);
+    lines.push('… Swiggy has not shared a tracking link yet. I will send the exact link here as soon as it is published.');
   }
   if (deliveryOtp) {
     lines.push(`⌕ <b>Delivery OTP:</b> <code>${escapeHtml(deliveryOtp)}</code>`);
@@ -1652,8 +1774,22 @@ export async function executeOrderBillSyncOnAccount({
     order.baselineSwiggyOrderId = latestExisting ? String(latestExisting) : '';
   }
 
-  const freshDb = getDb();
+  let freshDb = getDb();
   freshDb.orders[order.id] = order;
+  saveDb(freshDb);
+
+  // Send the max-discount bill summary to the customer once; the QR is generated
+  // only after they explicitly approve it.
+  try {
+    const summarySend = await sendBillSummaryToCustomerOnce(telegram, order, { db: freshDb });
+    if (summarySend?.sent) {
+      console.log(`[BillSummary] Sent to customer ${summarySend.customerId} for Order #${order.id}`);
+    }
+  } catch (summaryErr) {
+    console.warn('[BillSummary] Auto-send skipped:', summaryErr?.message || summaryErr);
+  }
+
+  freshDb = getDb();
   await postOrReplaceForwardedCard(telegram, chatId, order, freshDb, formatOrderBodyFn, { includeQrDelete: true });
   return order;
 }
@@ -2029,7 +2165,9 @@ export async function handleBossForwardedOrderInput(
             accKey: 'BEST',
             formatOrderBodyFn
           });
-          if (shouldAutoQr) {
+          // Never create the payment QR before the customer confirms the bill.
+          const awaitingCustomerApproval = getDb().orders?.[targetOrderId]?.status === 'APPROVAL_PENDING';
+          if (shouldAutoQr && !awaitingCustomerApproval) {
             const tgAdapter = typeof ctx.telegram?.sendPhoto === 'function'
               ? ctx.telegram
               : {
@@ -2460,7 +2598,21 @@ export function registerForwardedOrderHandlers(bot, {
     const order = db.orders?.[orderId];
     if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
     if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
-      return ctx.answerCbQuery('Bill summary is already awaiting customer approval.', { show_alert: true });
+      // The summary is automatic now; this button becomes an explicit resend.
+      if (!order.billSummarySentAt) {
+        return ctx.answerCbQuery('Bill summary is already awaiting customer approval.', { show_alert: true });
+      }
+      const resend = await sendBillSummaryToCustomerOnce(ctx.telegram, order, { db, force: true });
+      if (!resend?.sent) {
+        return ctx.answerCbQuery(
+          `Could not resend the bill summary: ${resend?.reason || 'delivery failed'}.`,
+          { show_alert: true }
+        );
+      }
+      const resentDb = getDb();
+      const resentOrder = resentDb.orders?.[orderId] || order;
+      await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, resentOrder, resentDb, formatOrderBodyFn).catch(() => {});
+      return ctx.answerCbQuery('✓ Bill summary resent to the customer (same bill, same QR later).');
     }
     if (['COMPLETED', 'CANCELLED', 'REJECTED', 'PAYMENT_PENDING'].includes(order.status) || order.billApprovedByUser || !['BILL_READY', 'QR_GENERATED'].includes(order.cardStage)) {
       return ctx.answerCbQuery('Only a verified bill awaiting customer approval can be sent.', { show_alert: true });
