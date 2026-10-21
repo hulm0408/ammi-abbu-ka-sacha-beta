@@ -1,6 +1,6 @@
 {
   "version": 15,
-  "updatedAt": "2026-10-21T00:27:37.088Z",
+  "updatedAt": "2026-10-21T00:28:27.011Z",
   "accounts": {
     "acc_9935123518": {
       "name": "prithvi",
@@ -134,7 +134,9 @@
       "isZeroOrderAccount": true
     }
   },
-  "deletedAccounts": {},
+  "deletedAccounts": {
+    "acc_9999999991": true
+  },
   "sessionVault": {
     "6296591407": {
       "account": "acc_6296591407",
