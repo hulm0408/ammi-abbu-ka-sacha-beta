@@ -31,11 +31,26 @@ A Swiggy "Share address" message is the **only** source of delivery data:
 Order cards render as a compact receipt: `Order Account` → `Your Cart` → `Delivering To` → items →
 `Bill Summary` → `To Pay`.
 
+## 💬 One card per chat (no message spam)
+
+Ammi/Abbu used to get a separate bubble for every step. Now:
+
+* when a cart/address link is accepted, the customer's pasted message **and** the stale prompt bubbles are deleted,
+* a single card is edited in place — it shows the cart, the resolved address, the items and the one
+  `[ › Send to Beta ]` action,
+* after Send to Beta the **same** card is edited: best account + max offer are applied automatically and the
+  card becomes the bill summary with **✓ Approve bill**,
+* the max-discount bill summary is rendered into that card (`billSummaryDelivery: SINGLE_CARD`) instead of
+  another message — a plain message is only used when the card was deleted,
+* approving sends the official Swiggy payment QR, and the verified payment sends the real Swiggy tracking link.
+
+Cart and address data are never shortened or guessed to save messages — only the chat bubbles are reduced.
+
 ## 🧪 Tests
 
 ```bash
 npm test          # 131-scenario behavioural audit suite
-npm run test:guards  # URL-first address intake, receipt card, auto bill summary → QR → real tracking, /start smoke + static undefined-reference guard
+npm run test:guards  # URL-only link intake, single-card chat, auto bill summary → QR → real tracking, /start smoke + static undefined-reference guard
 ```
 
 `test:guards` fails if any bot source references an identifier that is never declared (the class of bug behind

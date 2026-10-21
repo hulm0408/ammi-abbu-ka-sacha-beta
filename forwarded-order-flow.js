@@ -782,7 +782,7 @@ export function resolveCustomerChatId(order, bossIds = []) {
 // Sends the max-discount bill summary to the customer EXACTLY ONCE.
 // After this the order waits in `APPROVAL_PENDING`: the customer taps
 // "Approve bill" and only then are the official Swiggy payment details sent.
-export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null, force = false } = {}) {
+export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null, force = false, deliver = null } = {}) {
   if (!telegram?.sendMessage || !order?.id) return { sent: false, reason: 'no-telegram' };
 
   const liveDb = db || getDb();
@@ -795,6 +795,31 @@ export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null
   if (!order.selectedAccount) return { sent: false, reason: 'no-account' };
 
   const summary = buildTelegramUserBillConfirmationCard({ ...order, userId: customerId });
+
+  // When the customer already has a single live card, the caller can render the
+  // summary into that card instead of sending another chat bubble. `deliver`
+  // returns false when it could not update the card -> normal message is sent.
+  let deliveredOnCard = false;
+  if (typeof deliver === 'function' && !force) {
+    try {
+      deliveredOnCard = (await deliver(summary)) === true;
+    } catch {
+      deliveredOnCard = false;
+    }
+  }
+  if (deliveredOnCard) {
+    order.status = 'APPROVAL_PENDING';
+    order.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
+    order.billSummarySentAt = new Date().toISOString();
+    order.billSummaryAutoSent = true;
+    order.billSummaryDelivery = 'SINGLE_CARD';
+    delete order.billSummarySendError;
+    const cardDb = getDb();
+    cardDb.orders[order.id] = order;
+    saveDb(cardDb);
+    return { sent: true, customerId, viaCard: true };
+  }
+
   try {
     await telegram.sendMessage(customerId, summary.text, {
       parse_mode: 'HTML',
@@ -815,6 +840,7 @@ export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null
   order.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
   order.billSummarySentAt = new Date().toISOString();
   order.billSummaryAutoSent = true;
+  order.billSummaryDelivery = 'MESSAGE';
   delete order.billSummarySendError;
 
   const freshDb = getDb();

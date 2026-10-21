@@ -145,6 +145,91 @@ const bot = installBulletproofTelegramTransport(
 
 const userWaitState = {};
 
+// ---------------------------------------------------------------------------
+// One live card per customer chat
+// ---------------------------------------------------------------------------
+// Ammi/Abbu used to get 3-4 bubbles per link ("verified & saved", "now paste
+// the next one", the screen …). Instead we keep ONE card and edit it in place:
+// when a link is accepted the customer's own message and the stale prompt
+// bubbles are deleted, and the card is refreshed with the next step.
+const userChatCards = new Map();
+
+function userCardState(userId) {
+  const key = String(userId || '');
+  if (!userChatCards.has(key)) userChatCards.set(key, { messageId: null, promptIds: [] });
+  return userChatCards.get(key);
+}
+
+function rememberUserCard(userId, message) {
+  if (!userId || !message?.message_id) return;
+  userCardState(userId).messageId = message.message_id;
+}
+
+function rememberUserPrompt(userId, message) {
+  if (!userId || !message?.message_id) return;
+  const state = userCardState(userId);
+  if (message.message_id === state.messageId) return;
+  state.promptIds.push(message.message_id);
+}
+
+// Deletes the customer's own message plus the old prompt bubbles. The live card
+// is kept (and can be deleted explicitly when an order ends).
+async function cleanupUserChat(telegram, chatId, userId, { deleteIncomingId = null, deleteCard = false } = {}) {
+  const state = userCardState(userId);
+  const safeDelete = async (messageId) => {
+    if (!messageId || messageId === state.messageId) return;
+    try { await telegram.deleteMessage(chatId, messageId); } catch {}
+  };
+  await safeDelete(deleteIncomingId);
+  for (const id of state.promptIds) await safeDelete(id);
+  state.promptIds = [];
+  if (deleteCard && state.messageId) {
+    try { await telegram.deleteMessage(chatId, state.messageId); } catch {}
+    state.messageId = null;
+  }
+  return state;
+}
+
+// Refreshes the single card: edit in place when possible, otherwise post once.
+// `deleteIncoming` removes the customer's pasted link message; `notice` shows a
+// short toast instead of an extra chat bubble.
+async function renderUserCard(ctx, userId, { deleteIncoming = false, notice = '' } = {}) {
+  const chatId = ctx.chat?.id || userId;
+  const telegram = ctx.telegram || ctx.tg;
+  const incomingId = deleteIncoming ? (ctx.message?.message_id || null) : null;
+  const state = await cleanupUserChat(telegram, chatId, userId, { deleteIncomingId: incomingId });
+
+  let screen;
+  try {
+    screen = getUserScreen(userId, ctx.from || { id: userId });
+  } catch (err) {
+    console.error('[UserCard] render failed:', err?.message || err);
+    return null;
+  }
+
+  if (state.messageId) {
+    try {
+      await telegram.editMessageText(chatId, state.messageId, null, screen.text, {
+        parse_mode: 'HTML',
+        ...screen.keyboard
+      });
+      if (notice && ctx.answerCbQuery) await ctx.answerCbQuery(notice).catch(() => {});
+      return state.messageId;
+    } catch {
+      // Card was deleted by the customer or is too old to edit -> post a fresh one.
+      state.messageId = null;
+    }
+  }
+
+  const sent = await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard }).catch(() => null);
+  if (sent?.message_id) {
+    state.messageId = sent.message_id;
+    if (notice && ctx.answerCbQuery) await ctx.answerCbQuery(notice).catch(() => {});
+  }
+  return sent?.message_id || null;
+}
+
+
 // Never let a stray async rejection or an unexpected throw take the whole bot
 // down (Telegram polling, order sync, Swiggy fetches all run concurrently).
 // Every failure is logged with its stack so it can be fixed instead of being
@@ -813,6 +898,12 @@ function getUserScreen(userId, user) {
     promptGuidance = `${heading('Dono links verified hain!')}\n${sub("Niche [ › Send to Beta ] dabayein:")}`;
   }
 
+  // A saved address link that Swiggy has not resolved yet: the card explains it
+  // instead of a separate tip message.
+  if (draft.addressDetails?.unresolvableShortLink) {
+    promptGuidance += `\n${sub('i Address link Swiggy ne abhi resolve nahi kiya — naya address link ya Telegram • Location pin bhej dein.')}`;
+  }
+
   const summaryBlock =
     `${heading(`#${esc(String(userId).slice(-5).padStart(5, '3'))} — ORDER SUMMARY`)} · ${sub(statusTag)}\n` +
     (draft.cart && cd.restaurantName
@@ -865,6 +956,7 @@ function makeFullSessionCopyButton(_ctx, label, accKey, fullValue, fallbackCallb
 // Single card in-place updater for Boss and User
 async function updateOrderCards(order) {
   const db = getDb();
+  const result = { bossCardUpdated: false, userCardUpdated: false };
 
   // 1. Update Boss card in-place
   if (order.bossMessageIds) {
@@ -878,6 +970,7 @@ async function updateOrderCards(order) {
           bossCard.text,
           { parse_mode: 'HTML', ...bossCard.keyboard }
         );
+        result.bossCardUpdated = true;
       } catch (e) {}
     }
   }
@@ -893,8 +986,29 @@ async function updateOrderCards(order) {
         userCard.text,
         { parse_mode: 'HTML', ...userCard.keyboard }
       );
+      result.userCardUpdated = true;
     } catch (e) {}
   }
+  return result;
+}
+
+// The bill summary is rendered INTO the customer's single live card when it
+// exists, so confirming the bill never adds another chat bubble.
+async function deliverBillSummaryIntoSingleCard(order, _summary) {
+  const uid = order?.userChatId || order?.userId;
+  if (!uid) return false;
+  const state = userChatCards.get(String(uid));
+  if (!state?.messageId) return false;
+  const preview = {
+    ...order,
+    status: 'APPROVAL_PENDING',
+    uxStage: 'SCREEN_03_BILL_CONFIRMATION',
+    billSummarySentAt: order.billSummarySentAt || new Date().toISOString(),
+    userChatId: uid,
+    userMessageId: state.messageId
+  };
+  const res = await updateOrderCards(preview).catch(() => null);
+  return Boolean(res?.userCardUpdated);
 }
 
 // Delete order card messages from all boss chats and customer chat
@@ -1225,7 +1339,10 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
       // Still send the one-time bill summary so the customer can confirm the QR.
       let summarySent = false;
       try {
-        const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, { db: getDb() });
+        const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+          db: getDb(),
+          deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary)
+        });
         summarySent = Boolean(summarySend?.sent);
       } catch (summaryErr) {
         console.warn('[AutoOptimize] Bill summary skipped:', summaryErr?.message || summaryErr);
@@ -1279,7 +1396,10 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
     // One-time max-discount bill summary -> customer approves -> QR is generated.
     let summarySent = false;
     try {
-      const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, { db: getDb() });
+      const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+        db: getDb(),
+        deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary)
+      });
       summarySent = Boolean(summarySend?.sent);
       if (summarySent) console.log(`[AutoOptimize] Bill summary sent for Order #${key} -> ${summarySend.customerId}`);
     } catch (summaryErr) {
@@ -1633,7 +1753,8 @@ bot.start(async (ctx) => {
 
     try {
       const screen = getUserScreen(userId, ctx.from);
-      await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+      const screenMsg = await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+      rememberUserCard(userId, screenMsg);
     } catch (screenErr) {
       console.error('[START] user screen render failed:', screenErr?.stack || screenErr?.message || screenErr);
       await ctx.reply('› Cart link ya Address link paste karke order shuru karein.', {
@@ -2830,7 +2951,10 @@ bot.action(/^boss_auto_max_coupon_(.+)$/, async (ctx) => {
 
       saveDb(db);
       try {
-        const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, { db: getDb() });
+        const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+          db: getDb(),
+          deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary)
+        });
         if (summarySend?.sent) console.log(`[MaxCoupon] Bill summary sent for Order #${order.id}`);
       } catch (summaryErr) {
         console.warn('[MaxCoupon] Bill summary skipped:', summaryErr?.message || summaryErr);
@@ -7345,36 +7469,9 @@ bot.on('text', async (ctx) => {
     updateDraft(userId, draftUpdates);
     const curDraft = getDraft(userId);
 
-    if (curDraft.address) {
-      await ctx.reply(
-        `✓ <b>Cart Link verified & saved!</b>\n\n✓ <i>Dono links ready hain! Niche <b>[ › Send to Beta ]</b> dabayein:</i>`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('● Cart: Added ✓', 'action_paste_cart'),
-              Markup.button.callback('● Address: Added ✓', 'action_paste_address')
-            ],
-            [Markup.button.callback('› Send to Beta', 'action_send_to_beta')]
-          ]),
-          ...getUserReplyKeyboard(curDraft)
-        }
-      );
-    } else {
-      userWaitState[userId] = { action: 'waiting_address' };
-      await ctx.reply(
-        `✓ <b>Cart Link verified & saved!</b>\n\n› Ab niche button dabakar <b>Delivery Address</b> paste karein (ya Telegram • <b>Location</b> bhej dein):`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('● Paste Address Link', 'action_paste_address')]
-          ])
-        }
-      );
-    }
-
-    const screen = getUserScreen(userId, ctx.from);
-    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    if (!curDraft.address) userWaitState[userId] = { action: 'waiting_address' };
+    // One card only: the pasted link message is deleted and the card refreshed.
+    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Cart link saved' });
     return;
   }
 
@@ -7434,40 +7531,9 @@ bot.on('text', async (ctx) => {
     updateDraft(userId, draftUpdates);
     const curDraft = getDraft(userId);
 
-    const bareOneLinkNotice = (validAddress && /onelink\.me\/JgkQ/i.test(validAddress) && !resolvedAddrDetails?.address)
-      ? `\n\ni <i>Tip: Agar Swiggy link ke neeche wali <code>Address: ...</code> line delete ho gayi thi, toh aap poora Swiggy message, Google Maps link, ya Telegram • Location Pin bhi bhej sakte hain taaki exact street address auto-fill ho jaye!</i>`
-      : '';
-
-    if (curDraft.cart) {
-      await ctx.reply(
-        `✓ <b>Address Link verified & saved!</b>${bareOneLinkNotice}\n\n✓ <i>Dono links ready hain! Niche <b>[ › Send to Beta ]</b> dabayein:</i>`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('● Cart: Added ✓', 'action_paste_cart'),
-              Markup.button.callback('● Address: Added ✓', 'action_paste_address')
-            ],
-            [Markup.button.callback('› Send to Beta', 'action_send_to_beta')]
-          ]),
-          ...getUserReplyKeyboard(curDraft)
-        }
-      );
-    } else {
-      userWaitState[userId] = { action: 'waiting_cart' };
-      await ctx.reply(
-        `✓ <b>Address Link verified & saved!</b>${bareOneLinkNotice}\n\n› Ab niche button dabakar <b>Swiggy Cart link</b> paste karein:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('● Paste Cart Link', 'action_paste_cart')]
-          ])
-        }
-      );
-    }
-
-    const screen = getUserScreen(userId, ctx.from);
-    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    if (!curDraft.cart) userWaitState[userId] = { action: 'waiting_cart' };
+    // One card only: link message deleted, unresolved-link tip stays on the card.
+    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Address link saved' });
     return;
   }
 
@@ -7554,46 +7620,15 @@ bot.on('text', async (ctx) => {
     }
 
     if (curDraft.cart && curDraft.address) {
-      await ctx.reply(
-        `✓ <b>Cart aur Address dono ready hain!</b>\n\n› Niche <b>[ › Send to Beta ]</b> dabayein:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('● Cart: Added ✓', 'action_paste_cart'),
-              Markup.button.callback('● Address: Added ✓', 'action_paste_address')
-            ],
-            [Markup.button.callback('› Send to Beta', 'action_send_to_beta')]
-          ]),
-          ...getUserReplyKeyboard(curDraft)
-        }
-      );
+      delete userWaitState[userId];
     } else if (addedCart && !curDraft.address) {
       userWaitState[userId] = { action: 'waiting_address' };
-      await ctx.reply(
-        `✓ <b>Cart Link add ho gaya!</b>\n\n› Ab niche button dabakar <b>Delivery Address link</b> paste karein:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('● Paste Address Link', 'action_paste_address')]
-          ])
-        }
-      );
     } else if (addedAddress && !curDraft.cart) {
       userWaitState[userId] = { action: 'waiting_cart' };
-      await ctx.reply(
-        `✓ <b>Address Link add ho gaya!</b>\n\n› Ab niche button dabakar <b>Swiggy Cart link</b> paste karein:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('● Paste Cart Link', 'action_paste_cart')]
-          ])
-        }
-      );
     }
-
-    const screen = getUserScreen(userId, ctx.from);
-    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    // One card only: the pasted link message is deleted, card shows items +
+    // address and Send to Beta becomes the single next action.
+    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Link saved' });
     return;
   }
 
@@ -7805,14 +7840,8 @@ async function handleCartLinkFlow(ctx) {
     );
   }
   userWaitState[userId] = { action: 'waiting_cart' };
-  await ctx.reply(
-    `● <b>Send Swiggy Cart Link (ask to paste the link):</b>\n\n` +
-    `Kripya apna genuine Swiggy cart / group cart link chat me paste karein:`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste cart link...' }
-    }
-  );
+  // No extra bubble: the single card already shows "Cart Link > Not added yet".
+  await renderUserCard(ctx, userId, { notice: 'Cart link chat me paste karein' });
 }
 
 // Address Link Flow (asks confirmation before replacing an already-saved Address Link)
@@ -7835,15 +7864,8 @@ async function handleAddressLinkFlow(ctx) {
     );
   }
   userWaitState[userId] = { action: 'waiting_address' };
-  await ctx.reply(
-    `● <b>Send Delivery Address Link:</b>\n\n` +
-    `Swiggy app se share kiya hua poora address message, Google Maps link, ya Telegram • Location Pin chat me bhejein:\n` +
-    `<i>Example: <code>https://swiggy.onelink.me/JgkQ/52yat6op</code></i>`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste Swiggy address / Google Maps link or send Location...' }
-    }
-  );
+  // Single card only — the customer sees "Address link not received" on it.
+  await renderUserCard(ctx, userId, { notice: 'Address link ya location bhejein' });
 }
 
 // Cancel Order with "Are you sure" Red Confirmation (FigJam Flowchart)
@@ -8113,6 +8135,11 @@ async function handleSendToBoss(ctx) {
   saveDb(db);
   clearDraft(userId);
 
+  // Track the same single card the customer has been using since the links.
+  if (ctx.callbackQuery?.message?.message_id) {
+    rememberUserCard(userId, ctx.callbackQuery.message);
+  }
+
   // Edit User's single card in-place if initiated via inline button, else send and save message ID
   const userCard = formatUserOrderCard(newOrder);
   if (ctx.callbackQuery?.message?.message_id) {
@@ -8158,15 +8185,8 @@ bot.action(['action_paste_cart', 'action_force_change_cart', 'action_change_cart
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_cart' };
-  await ctx.reply(
-    `● <b>Swiggy Cart Link paste karein:</b>\n\n` +
-    `Kripya apna genuine Swiggy cart / group cart link chat me paste karein:\n` +
-    `<i>Example: <code>https://swig.gy/gc/...</code> ya <code>https://www.swiggy.com/restaurants/...</code></i>`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste Swiggy cart link here...' }
-    }
-  );
+  // Keep the chat to one card: just refresh it, no extra prompt bubble.
+  await renderUserCard(ctx, userId, { notice: 'Cart link chat me paste karein' });
 });
 
 bot.action('action_add_address', async (ctx) => {
@@ -8178,23 +8198,14 @@ bot.action(['action_paste_address', 'action_force_change_address', 'action_chang
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
   userWaitState[userId] = { action: 'waiting_address' };
-  await ctx.reply(
-    `● <b>Delivery Address Link paste karein:</b>\n\n` +
-    `Swiggy app se share kiya hua delivery address link chat me paste karein:\n` +
-    `<i>Example: <code>https://swiggy.onelink.me/JgkQ/52yat6op</code></i>\n` +
-    `<i>(Google Maps link bhi chalega)</i>`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: { force_reply: true, input_field_placeholder: 'Paste Swiggy address link (https://swiggy.onelink.me/JgkQ/...)' }
-    }
-  );
+  await renderUserCard(ctx, userId, { notice: 'Address link ya location bhejein' });
 });
 
 bot.action('action_cancel_change_link', async (ctx) => {
   await ctx.answerCbQuery('Link preserved ●').catch(() => {});
   const userId = ctx.from.id;
-  const screen = getUserScreen(userId, ctx.from);
-  await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+  // Keep editing the existing card instead of posting another copy of the screen.
+  await renderUserCard(ctx, userId);
 });
 
 bot.action('boss_prompt_total_slots', async (ctx) => {
@@ -8239,6 +8250,7 @@ bot.action(/^user_confirm_cancel_(.+)$/, async (ctx) => {
 
   if (target === 'draft') {
     clearDraft(userId);
+    userChatCards.delete(String(userId));
     const screen = getUserScreen(userId, ctx.from);
     await ctx.answerCbQuery('Draft Cancelled ●').catch(() => {});
     try {
@@ -8282,6 +8294,7 @@ bot.action(/^user_confirm_cancel_(.+)$/, async (ctx) => {
 
   // 2. Delete card messages from user and boss chats
   await deleteOrderMessages(order);
+  userChatCards.delete(String(userId));
 
   // 3. Notify bosses with View Cancelled Orders button
   for (const bossId of db.config.bossIds) {
@@ -9546,7 +9559,8 @@ async function startBotWithRetry() {
   }
 }
 
-export { bot };
+// Exposed for the offline e2e suites (single-card chat behaviour).
+export { bot, renderUserCard, cleanupUserChat, userChatCards, getUserScreen, updateOrderCards };
 
 if (!process.env.TEST_MODE && !process.env.BOT_TEST_MODE) {
   startBotWithRetry();
