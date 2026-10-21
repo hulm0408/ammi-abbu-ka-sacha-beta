@@ -55,6 +55,8 @@ function isValidAddressInput(input) {
   return false;
 }
 
+function primaryCartFallback(s){ const u=String(s).trim(); try{ new URL(u.startsWith('http')?u:'https://'+u); return u; }catch{ return ''; } }
+
 // Instant 0ms synchronous input classifier so burst multi-order intake pairs FIFO drafts cleanly without overwriting!
 export function classifyRawOrderInputFast(rawText = '', location = null) {
   if (location && location.latitude !== undefined && location.longitude !== undefined) {
@@ -79,7 +81,7 @@ export function classifyRawOrderInputFast(rawText = '', location = null) {
       hasAddress = true;
     } else if (/(swiggy\.com|swig\.gy|onelink\.me)/i.test(u)) {
       // Distinguish Swiggy address share link from cart/group-cart link if whole text has `save my address`
-      if (/\/gc\//i.test(u) || /shared_cart|menu|restaurants/i.test(u)) {
+      if (/\/gc\//i.test(u) || /shared_cart/i.test(u) || (/group[_-]?cart/i.test(u)) || (/\/cart/i.test(u)) || (/restaurant_id=/i.test(u))) {
         hasCart = true;
         if (!primaryCartUrl) primaryCartUrl = u;
       } else if (!/save my address on swiggy/i.test(s)) {
@@ -1425,7 +1427,9 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
 
   if (!updatedCart && !updatedAddress) {
     if (isValidCartInput(trimmed)) {
-      order.cart = trimmed;
+      // Only store the actual cart URL, not the whole message text — prevents address text leaking into cart
+      const urlsForCart = extractSharedUrls(trimmed).filter(u => isValidCartInput(u));
+      order.cart = urlsForCart[0] || primaryCartFallback(trimmed);
       updatedCart = true;
     } else if (!addressShareUrl && isValidAddressInput(trimmed)) {
       // Plain-text address (no address link in the message) — the text IS the source.
@@ -2146,10 +2150,34 @@ export async function handleBossForwardedOrderInput(
         const allUrlsCheck = extractSharedUrls(rawText);
         const isTrackingOnly = allUrlsCheck.some(u => isOfficialSwiggyTrackingUrl(u) || /r\.swiggy\.com.*\/track\//i.test(u));
         if (isTrackingOnly) {
-          // Find most recent order for this sender that needs tracking
+          // Find most recent order for this sender that needs tracking — attach directly and notify
           const recentOrders = Object.values(db.orders || {}).filter(o => o && (o.fwdSenderKey === sender.senderKey || String(o.userId) === String(sender.senderUserId)) && ['COMPLETED','ACCEPTED','PAYMENT_PENDING','APPROVAL_PENDING'].includes(o.status) && !getStoredSwiggyTrackingUrl(o));
           if (recentOrders.length > 0) {
-            // Don't create new order; tracking will be handled via boss_tracking flow
+            recentOrders.sort((a,b)=> new Date(b.createdAt||0)-new Date(a.createdAt||0));
+            const targetOrder = recentOrders[0];
+            const trackingUrl = allUrlsCheck.find(u => isOfficialSwiggyTrackingUrl(u) || /r\.swiggy\.com.*\/track\//i.test(u)) || allUrlsCheck[0];
+            if (trackingUrl) {
+              targetOrder.trackingLink = trackingUrl;
+              targetOrder.trackingLinkSource = 'BOSS_PROVIDED';
+              targetOrder.shareTrackUrl = '';
+              if (!targetOrder.swiggyOrderId && targetOrder.pendingSwiggyOrderId) targetOrder.swiggyOrderId = targetOrder.pendingSwiggyOrderId;
+              upsertOrder(targetOrder.id, targetOrder);
+              // Send SMS + Telegram to recipient immediately
+              sendParentSmsNotification(targetOrder, trackingUrl).catch(()=>{});
+              sendDirectOrderSms(targetOrder).catch(()=>{});
+              // Also try Telegram direct to recipient if telegram available
+              try {
+                const recipId = targetOrder.fwdSenderUserId || targetOrder.userId;
+                if (recipId && ctx?.telegram) {
+                  const bossNameEsc = String(sender.senderName||'Fer aex').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                  const dispId = String(targetOrder.swiggyOrderId || targetOrder.id).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+                  const trackEsc = trackingUrl.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+                  const otpLine = targetOrder.deliveryOtp ? `\n<b>Delivery OTP:</b> <code>${String(targetOrder.deliveryOtp).replace(/&/g,'&amp;')}</code>` : '';
+                  await ctx.telegram.sendMessage(recipId, `${bossNameEsc} has just placed an order (ID: ${dispId}) for you on Swiggy. Click this link to track: <a href=\"${trackEsc}\">${trackEsc}</a>${otpLine}`, { parse_mode: 'HTML' }).catch(()=>{});
+                }
+                await ctx.reply(`✓ Tracking link attached to ${targetOrder.id} and sent to recipient.`).catch(()=>{});
+              } catch(e){}
+            }
             allocatedOrderId = null;
             return;
           }

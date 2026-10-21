@@ -404,8 +404,6 @@ export function isValidSwiggyCartUrl(urlStr) {
     full.includes('group_cart') ||
     full.includes('groupcartid') ||
     full.includes('/cart') ||
-    full.includes('/restaurants/') ||
-    full.includes('/menu') ||
     full.includes('restaurant_id') ||
     (host === 'swig.gy' && path.length >= 4)
   );
