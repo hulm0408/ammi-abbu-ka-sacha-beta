@@ -770,27 +770,6 @@ function getBossPanelKeyboard() {
 
 const PUBLIC_APP_URL = (process.env.RENDER_EXTERNAL_URL || 'https://ammi-abbu-ka-sacha-beta.onrender.com').replace(/\/+$/, '');
 
-// Set a per-user Telegram Mini App menu button. A Telegram API failure must not block /start.
-async function setUserMiniAppButton(userId) {
-  const chatId = Number(userId);
-  if (!Number.isSafeInteger(chatId) || chatId <= 0) return false;
-
-  try {
-    await bot.telegram.setChatMenuButton({
-      chatId,
-      menuButton: {
-        type: 'web_app',
-        text: 'Open Order Portal',
-        web_app: { url: buildUserPortalUrl(chatId) }
-      }
-    });
-    return true;
-  } catch (err) {
-    console.warn(`[MiniApp] Could not set menu button for ${chatId}: ${err.message}`);
-    return false;
-  }
-}
-
 function computeCopyHmac(accKey) {
   return crypto.createHmac('sha256', BOT_TOKEN || 'swiggy_copy_secret').update(`copy:${accKey}`).digest('hex').slice(0, 24);
 }
@@ -1428,7 +1407,7 @@ bot.start(async (ctx) => {
   const userId = ctx.from.id;
   delete userWaitState[userId];
 
-  await setUserMiniAppButton(userId);
+  // The user-facing portal is already available from the inline screen buttons; keep startup replies immediate.
 
   if (isBoss(userId)) {
     await ctx.reply(`★ Welcome back, <b>Boss</b>! Swiggy Family Care Admin Mode is active.`, {
@@ -1461,7 +1440,7 @@ bot.command(['boss', 'admin'], async (ctx) => {
   const args = ctx.message.text.trim().split(' ');
   const password = args[1];
 
-  await setUserMiniAppButton(userId);
+  // The user-facing portal is already available from the inline screen buttons; keep startup replies immediate.
 
   if (isBoss(userId)) {
     delete userWaitState[userId];
