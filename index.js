@@ -1608,6 +1608,7 @@ bot.action(/^resend_otp_(\d{10})$/, async (ctx) => {
         parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
+            [makeSmartPortalButton('📱 Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
             [
               { text: 'Copy Number', copy_text: { text: phone } }
             ],
@@ -2594,6 +2595,7 @@ bot.action(/^relogin_phone_(\d{10})$/, async (ctx) => {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
+              [makeSmartPortalButton('📱 Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [{ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }],
               [
                 { text: '🔄 Re-enter OTP', callback_data: `prompt_reenter_otp_${phone}`, style: 'primary' },
@@ -2665,6 +2667,7 @@ bot.action(/^boss_login_acc_otp_(.+)$/, async (ctx) => {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
+              [makeSmartPortalButton('📱 Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [{ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }],
               [
                 { text: '🔄 Re-enter OTP', callback_data: `prompt_reenter_otp_${phone}`, style: 'primary' },
@@ -3317,6 +3320,7 @@ bot.action([
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
+              [makeSmartPortalButton('📱 Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [{ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }],
               [
                 { text: 'Resend Delete OTP', callback_data: `boss_swiggy_delete_start_${key}`, style: 'primary' },
@@ -6009,6 +6013,7 @@ bot.on('text', async (ctx) => {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
+              [makeSmartPortalButton('📱 Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [
                 { text: 'Copy Number', copy_text: { text: phone } }
               ],
@@ -6234,6 +6239,7 @@ bot.on('text', async (ctx) => {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
+              [makeSmartPortalButton('📱 Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [
                 { text: 'Copy Number', copy_text: { text: phoneToLogin } }
               ],
@@ -6381,6 +6387,7 @@ bot.on('text', async (ctx) => {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
+              [makeSmartPortalButton('📱 Open Verify Portal (Mini App)', buildUserPortalUrl(userId))],
               [
                 { text: 'Copy Number', copy_text: { text: cleanPhone } }
               ],

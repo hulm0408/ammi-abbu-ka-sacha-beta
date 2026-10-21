@@ -1,6 +1,6 @@
 import { Telegraf, Markup } from 'telegraf';
 import { getDb, saveDb, isBoss, canTransitionOrder } from './store.js';
-import { buildBossAccountsPortalUrl } from './order-ux-portal.js';
+import { buildBossAccountsPortalUrl, buildUserPortalUrl, makeSmartPortalButton } from './order-ux-portal.js';
 import {
   esc,
   heading,
@@ -95,6 +95,7 @@ export function buildBossPanelHome(db) {
 
   const keyboard = Markup.inlineKeyboard([
     [mgrButton],
+    [makeSmartPortalButton('📱 Open Portal (Mini App)', buildUserPortalUrl(Number(process.env.BOSS_ID || 6484999726)))],
     [
       { text: '📦 Pending Orders', callback_data: 'boss_view_pending' },
       { text: '🗑️ Cancelled Orders', callback_data: 'boss_view_cancelled_orders' },

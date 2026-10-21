@@ -49,45 +49,17 @@ export function card(title, ...lines) {
   return section(title, lines.filter(Boolean).join('\n'));
 }
 
-// Monospace bordered table (rows = array of column string arrays)
-// Draws full grid borders using Unicode box-drawing characters, matching
-// Telegram's Rich Text Demo table style: bordered rows/columns, bold header.
-// Zero cost, no external APIs — pure <pre> + box-drawing characters.
+// Native HTML table — matches Telegram Rich Text Demo exactly.
+// Uses <table><tr><th>...</th></tr><tr><td>...</td></tr></table> so Telegram renders
+// real bordered grid with bold header rows. Zero cost, no external APIs.
 export function table(rows) {
   if (!rows || rows.length === 0) return '';
-  const colCount = Math.max(...rows.map(r => r.length));
-  const widths = Array(colCount).fill(0);
-  for (const row of rows) {
-    for (let c = 0; c < colCount; c++) {
-      widths[c] = Math.max(widths[c], String(row[c] ?? '').length);
-    }
-  }
-
-  const pad = (s) => ` ${String(s ?? '')} `;
-  const hline = (left, mid, right) => {
-    const segs = widths.map(w => '─'.repeat(w + 2));
-    return [left, ...segs.map((seg, i) => i < colCount - 1 ? seg + mid : seg + right)].join('');
-  };
-
-  const top = hline('┌', '┬', '┐');
-  const mid = hline('├', '┼', '┤');
-  const bot = hline('└', '┴', '┘');
-
-  const rowLine = (cells, isHeader = false) => {
-    const parts = cells.map((cell, c) => pad(isHeader ? `<b>${cell}</b>` : cell).padEnd(widths[c] + 2));
-    return `│${parts.join('│')}│`;
-  };
-
-  const lines = [top];
-  lines.push(rowLine(rows[0], true)); // header row (bold)
-  lines.push(mid);
-  for (let i = 1; i < rows.length; i++) {
-    lines.push(rowLine(rows[i]));
-    if (i < rows.length - 1) lines.push(mid);
-  }
-  lines.push(bot);
-
-  return `<pre>${lines.join('\n')}</pre>\n`;
+  const header = rows[0].map(c => `<th>${esc(c)}</th>`).join('');
+  const body = rows.slice(1).map(r => {
+    const cells = r.map(c => `<td>${esc(c)}</td>`).join('');
+    return `<tr>${cells}</tr>`;
+  }).join('');
+  return `<table>${header}${body}</table>\n`;
 }
 
 // Standalone section divider
