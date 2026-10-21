@@ -16,8 +16,6 @@ services:
         sync: false
       - key: BOSS_ID
         value: "6484999726"
-      - key: APP_BASE_URL
-        value: "https://ammi-abbu-ka-sacha-beta.onrender.com"
       - key: GITHUB_REPO_SLUG
         value: "hulm0408/ammi-abbu-ka-sacha-beta"
       - key: GITHUB_VAULT_TOKEN

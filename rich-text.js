@@ -1,12 +1,11 @@
 // ============================================================================
 // rich-text.js — Free Telegram rich-message helpers (HTML parse_mode)
 // ============================================================================
-// Provides bordered <blockquote> sections, bold <b> headings, monospace
-// <pre> tables, and consistent field labels so every bot message looks clean,
-// structured and professional — matching Telegram's Rich Text Demo style.
-// Zero cost, no external APIs, works with existing telegraf HTML rendering.
+// Provides Telegram blockquote sections, bold headings, and readable field lists.
+// Telegram messages do not support real tables, so data is rendered as compact
+// item/field lines instead of fake monospace grids and separator rules.
 
-export const DIVIDER = '──────────────────────────────';
+export const DIVIDER = '';
 export const SECTION_GAP = '\n';
 
 export function esc(str = '') {
@@ -34,7 +33,7 @@ export function field(label, value) {
 
 // Bullet item
 export function bullet(text) {
-  return `• ${esc(text)}`;
+  return `▪ ${esc(text)}`;
 }
 
 // Bordered section block (Telegram <blockquote> renders as a card with a left border).
@@ -49,39 +48,76 @@ export function card(title, ...lines) {
   return section(title, lines.filter(Boolean).join('\n'));
 }
 
-// Simple text table with dash separators — clean Telegram styling.
-// Uses normal text with icons, <pre> monospace, bold headers, and dash lines.
-// No box-drawing characters. Zero cost, no external APIs.
-export function table(rows) {
-  if (!rows || rows.length === 0) return '';
-  const colCount = Math.max(...rows.map(r => r.length));
-  const widths = Array(colCount).fill(0);
-  for (const row of rows) {
-    for (let c = 0; c < colCount; c++) {
-      widths[c] = Math.max(widths[c], String(row[c] ?? '').length);
-    }
-  }
-
-  const pad = (s, w) => ` ${String(s ?? '')} `.padEnd(w + 2);
-  const totalWidth = widths.reduce((a, b) => a + b, 0) + colCount * 3 + 1;
-  const sep = '─'.repeat(totalWidth);
-
-  const lines = [];
-  lines.push(sep);
-  lines.push(rows[0].map((c, i) => pad(`<b>${esc(c)}</b>`, widths[i])).join('│'));
-  lines.push(sep);
-  for (let i = 1; i < rows.length; i++) {
-    lines.push(rows[i].map((c, i) => pad(esc(c), widths[i])).join('│'));
-    if (i < rows.length - 1) lines.push(sep);
-  }
-  lines.push(sep);
-
-  return `<pre>${lines.join('\n')}</pre>\n`;
+function safeTableCell(value) {
+  const input = String(value ?? '');
+  const allowedTags = [];
+  let safe = input.replace(/<\/?(?:b|i|code|s|u|tg-spoiler)>|<a href="(?:https:\/\/|tg:\/\/)[^"]+">|<\/a>/gi, tag => {
+    const token = `\u0000SAFE_TAG_${allowedTags.length}\u0000`;
+    allowedTags.push(tag);
+    return token;
+  });
+  safe = safe
+    .replace(/&(?!(?:amp|lt|gt|quot|#39|#\d+);)/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return safe.replace(/\u0000SAFE_TAG_(\d+)\u0000/g, (_match, idx) => allowedTags[Number(idx)] || '');
 }
 
-// Standalone section divider
+// Telegram has no table primitive. Render data as readable list entries with no
+// fake columns, dash rules, or monospace border art.
+export function table(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return '';
+  const normalized = rows.map(row => Array.isArray(row) ? row : [row]);
+  const headers = normalized[0].map(value => String(value ?? '').replace(/<[^>]+>/g, '').trim());
+  const isItemList = headers.some(h => /^item$/i.test(h));
+  const hasColumnHeaders = normalized.length > 1 && headers.length >= 3;
+
+  if (hasColumnHeaders && isItemList) {
+    const itemIndex = headers.findIndex(h => /^item$/i.test(h));
+    const qtyIndex = headers.findIndex(h => /^qty|quantity$/i.test(h));
+    const priceIndex = headers.findIndex(h => /^(?:unit )?price$/i.test(h));
+    const totalIndex = headers.findIndex(h => /total/i.test(h) && h !== '#');
+    const numberIndex = headers.findIndex(h => /^#|no\.?$/i.test(h));
+    return normalized.slice(1).map((row, index) => {
+      const item = safeTableCell(row[itemIndex] ?? 'Item');
+      const itemNumber = numberIndex >= 0 ? String(row[numberIndex] || index + 1) : String(index + 1);
+      const details = [];
+      if (qtyIndex >= 0 && row[qtyIndex] !== undefined) details.push(`Qty: ${safeTableCell(row[qtyIndex])}`);
+      if (priceIndex >= 0 && row[priceIndex] !== undefined) details.push(`Unit price: ${safeTableCell(row[priceIndex])}`);
+      if (totalIndex >= 0 && totalIndex !== priceIndex && row[totalIndex] !== undefined) {
+        details.push(`${safeTableCell(headers[totalIndex])}: ${safeTableCell(row[totalIndex])}`);
+      }
+      return `${itemNumber}. <b>${item}</b>${details.length ? `\n  ${details.join(' · ')}` : ''}`;
+    }).join('\n');
+  }
+
+  if (hasColumnHeaders) {
+    const titleIndex = headers.findIndex(h => !/^#|no\.?$/i.test(h));
+    return normalized.slice(1).map(row => {
+      const rawTitle = titleIndex >= 0 ? String(row[titleIndex] ?? '') : '';
+      const title = safeTableCell(rawTitle);
+      const titleMarkup = /<\/?(?:b|i|code|s|u|tg-spoiler)>/i.test(rawTitle) ? title : `<b>${title}</b>`;
+      const details = headers
+        .map((header, idx) => ({ header, value: row[idx], idx }))
+        .filter(({ header, value, idx }) => idx !== titleIndex && !/^#|no\.?$/i.test(header) && value !== undefined && value !== '')
+        .map(({ header, value }) => `  <b>${safeTableCell(header)}:</b> ${safeTableCell(value)}`);
+      return `${title ? `▪ ${titleMarkup}` : '▪'}${details.length ? `\n${details.join('\n')}` : ''}`;
+    }).join('\n');
+  }
+
+  const dataRows = normalized.filter((row, idx) => !(idx === 0 && /^final bill$/i.test(String(row[0] || '').trim()) && !String(row[1] || '').trim()));
+  return dataRows.map(row => {
+    const rawLabel = String(row[0] ?? '');
+    const label = safeTableCell(rawLabel);
+    const labelMarkup = /<\/?(?:b|i|code|s|u|tg-spoiler)>/i.test(rawLabel) ? label : `<b>${label}</b>`;
+    const value = row.length > 1 ? safeTableCell(row[1] ?? '') : '';
+    return `▪ ${labelMarkup}${value ? `: ${value}` : ''}`;
+  }).join('\n');
+}
+
+// Standalone section divider — leave breathing room rather than drawing a fake rule.
 export function divider() {
-  return `${DIVIDER}\n`;
+  return '\n';
 }
 
 // A full clean message wrapper: heading + sections + footer note
@@ -96,29 +132,29 @@ export function message(title, sections = [], footer = '') {
 // Clean OTP Sent card — matches ORDER PLACER style: bold label + value, no ━━━
 export function otpSentCard(phone, extraLines = []) {
   const lines = [
-    `<b>📲 OTP Sent</b>`,
-    `📱 <b>Number:</b> <code>${esc(phone)}</code>`,
+    `<b>☎ OTP Sent</b>`,
+    `☎ <b>Number:</b> <code>${esc(phone)}</code>`,
     ...extraLines
   ];
-  return section('🔐 Swiggy Login OTP', lines.join('\n'));
+  return section('◈ Swiggy Login OTP', lines.join('\n'));
 }
 
 // Clean OTP error / verification failed card — matches ORDER PLACER style
 export function otpErrorCard(phone, swiggyResponse, hint = 'Sahi 6-digit OTP dubara type karein ya neeche Re-enter OTP dabayein:') {
-  return section('❌ OTP Verification Failed', [
-    `📱 <b>Number:</b> <code>${esc(phone)}</code>`,
+  return section('× OTP Request Failed', [
+    `☎ <b>Number:</b> <code>${esc(phone)}</code>`,
     '',
-    `⚠️ <b>Swiggy Response:</b>`,
+    `! <b>Swiggy Response:</b>`,
     `<blockquote>${esc(swiggyResponse)}</blockquote>`,
     '',
-    `👉 <i>${esc(hint)}</i>`,
+    `› <i>${esc(hint)}</i>`,
   ].join('\n'));
 }
 
 // Clean Boss Panel fallback card
 export function bossPanelCard(bodyLines = []) {
-  return section('👑 Boss Panel', [
-    `👋 Boss, use the menu buttons below:`,
+  return section('★ Boss Panel', [
+    `→ Boss, use the menu buttons below:`,
     ...bodyLines,
   ].filter(Boolean).join('\n'));
 }

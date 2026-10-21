@@ -12,7 +12,7 @@ const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
 
 export async function loginWithBrowser(targetAccount = 'ammi', telegramNotifier = null) {
   const accountName = targetAccount.charAt(0).toUpperCase() + targetAccount.slice(1);
-  console.log(`\n🚀 Launching Google Chrome for ${accountName}'s Swiggy Login...`);
+  console.log(`\n› Launching Google Chrome for ${accountName}'s Swiggy Login...`);
 
   if (!fs.existsSync(CHROME_PATH)) {
     throw new Error('Google Chrome was not found at standard path.');
@@ -28,15 +28,15 @@ export async function loginWithBrowser(targetAccount = 'ammi', telegramNotifier 
   const pages = await browser.pages();
   const page = pages[0] || await browser.newPage();
 
-  console.log('🌐 Opening https://www.swiggy.com ...');
+  console.log('◎ Opening https://www.swiggy.com ...');
   await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded' });
 
   if (telegramNotifier) {
-    await telegramNotifier(`🌐 <b>Chrome window opened on your screen!</b>\n\nPlease enter <b>${accountName}</b>'s phone number and OTP on Swiggy screen. The bot will automatically detect login and save it!`);
+    await telegramNotifier(`◎ <b>Chrome window opened on your screen!</b>\n\nPlease enter <b>${accountName}</b>'s phone number and OTP on Swiggy screen. The bot will automatically detect login and save it!`);
   }
 
-  console.log(`\n👉 Please enter ${accountName}'s Phone Number and OTP in the Chrome browser window.`);
-  console.log('⏳ Bot is waiting for successful login...');
+  console.log(`\n› Please enter ${accountName}'s Phone Number and OTP in the Chrome browser window.`);
+  console.log('◷ Bot is waiting for successful login...');
 
   // Poll for login success (checks cookies for _session_id or tid)
   let isLoggedIn = false;
@@ -58,7 +58,7 @@ export async function loginWithBrowser(targetAccount = 'ammi', telegramNotifier 
 
       if (hasSession || userBadge) {
         isLoggedIn = true;
-        console.log(`\n✅ Login detected for ${accountName}!`);
+        console.log(`\n✓ Login detected for ${accountName}!`);
 
         // Grab cookies string
         const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
@@ -70,10 +70,10 @@ export async function loginWithBrowser(targetAccount = 'ammi', telegramNotifier 
           savedAt: new Date().toISOString()
         });
 
-        console.log(`🎉 Saved ${accountName}'s session to db.json!`);
+        console.log(`✓ Saved ${accountName}'s session to db.json!`);
 
         if (telegramNotifier) {
-          await telegramNotifier(`🎉 <b>MUBARAK! ${accountName}'s Swiggy account is successfully LOGGED IN and SAVED!</b>\n\nAb aap Saudi jao ya kahin bhi, is account ka session bot ke andar hamesha ke liye save ho chuka hai!`);
+          await telegramNotifier(`✓ <b>MUBARAK! ${accountName}'s Swiggy account is successfully LOGGED IN and SAVED!</b>\n\nAb aap Saudi jao ya kahin bhi, is account ka session bot ke andar hamesha ke liye save ho chuka hai!`);
         }
 
         await new Promise(r => setTimeout(r, 3000));
@@ -83,7 +83,7 @@ export async function loginWithBrowser(targetAccount = 'ammi', telegramNotifier 
     } catch (e) {
       // Browser might have been closed by user
       if (e.message.includes('Session closed') || e.message.includes('Target closed')) {
-        console.log('⚠️ Browser window closed by user.');
+        console.log('! Browser window closed by user.');
         return { success: false, message: 'Browser window closed.' };
       }
     }

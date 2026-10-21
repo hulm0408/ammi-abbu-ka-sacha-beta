@@ -4,6 +4,7 @@ import os from 'os';
 import crypto from 'crypto';
 import puppeteer from 'puppeteer-core';
 import { updateAccount, getNextAutoUserName, cleanEssentialSwiggyCookies } from './store.js';
+import { normalizeIndianMobileNumber } from './phone-utils.js';
 
 export function findChromePath() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -53,6 +54,37 @@ let prewarmedPage = null;
 let isPrewarming = false;
 let prewarmedAt = 0;
 
+const SWIGGY_WAF_COOKIE_WAIT_MS = 8000;
+const SWIGGY_WAF_COOKIE_POLL_MS = 250;
+const AUTH_PAGE_EVALUATE_TIMEOUT_MS = 9000;
+
+async function waitForSwiggyWafCookie(page, timeoutMs = SWIGGY_WAF_COOKIE_WAIT_MS) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  while (Date.now() < deadline) {
+    const cookies = await page.cookies().catch(() => []);
+    const wafCookie = cookies.find(cookie => cookie.name === 'aws-waf-token' && String(cookie.value || '').length > 50);
+    if (wafCookie) return wafCookie.value;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, Math.min(SWIGGY_WAF_COOKIE_POLL_MS, remainingMs)));
+    }
+  }
+  return '';
+}
+
+async function waitForSwiggyLoginCookies(page, timeoutMs = 800) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  let cookies = [];
+  do {
+    cookies = await page.cookies().catch(() => []);
+    if (checkLoggedInFromCookies(cookies)) return cookies;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await new Promise(resolve => setTimeout(resolve, Math.min(100, remainingMs)));
+  } while (Date.now() < deadline);
+  return cookies;
+}
+
 export function stripStaleWafCookie(cookieStr = '') {
   if (!cookieStr || typeof cookieStr !== 'string') return '';
   return cookieStr
@@ -100,8 +132,8 @@ export function sanitizeSwiggyName(name) {
   if (!name) return 'Rahul Kumar';
   // Strip any previously appended "(User 1)" or "(6296591407)" tag first
   const withoutSlotTag = String(name).replace(/\([^)]*\)/g, ' ');
-  const cleaned = withoutSlotTag.replace(/[^a-zA-Z\s]/g, '').replace(/\s+/g, ' ').trim();
-  if (cleaned.length < 3 || /^user\s*\d*$/i.test(cleaned)) {
+  const cleaned = withoutSlotTag.replace(/[^\p{L}\p{M}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+  if ([...cleaned].length < 2 || !/\p{L}/u.test(cleaned) || /^user\s*\d*$/i.test(cleaned)) {
     return 'Rahul Kumar';
   }
   return cleaned;
@@ -190,10 +222,10 @@ export function checkLoggedInFromCookies(input) {
 // so Swiggy's daily batch cutoff (`18:30 IST` LN / `05:00 IST` BF) NEVER misses crediting Free Cash / Coupons!
 // ---------------------------------------------------------------------------
 export const EVENT_OFFER_OPTIONS = {
-  1: { value: 1, shortLabel: '₹50 Free Cash (>₹199)', fullLabel: '💸 ₹50 Free Cash (MOV ₹199 • Stacks Over Coupons)' },
-  2: { value: 2, shortLabel: '₹150 OFF Coupon (>₹249)', fullLabel: '🎟️ ₹150 OFF Coupon (MOV ₹249)' },
-  3: { value: 3, shortLabel: '₹175 LN / ₹100 BF Coupon', fullLabel: '🔥 ₹175 OFF LN (>₹399) / ₹100 OFF BF' },
-  4: { value: 4, shortLabel: '₹100 OFF Coupon (>₹149)', fullLabel: '⚡ ₹100 OFF Coupon (MOV ₹149)' }
+  1: { value: 1, shortLabel: '₹50 Free Cash (>₹199)', fullLabel: '₹ ₹50 Free Cash (MOV ₹199 • Stacks Over Coupons)' },
+  2: { value: 2, shortLabel: '₹150 OFF Coupon (>₹249)', fullLabel: '# ₹150 OFF Coupon (MOV ₹249)' },
+  3: { value: 3, shortLabel: '₹175 LN / ₹100 BF Coupon', fullLabel: '! ₹175 OFF LN (>₹399) / ₹100 OFF BF' },
+  4: { value: 4, shortLabel: '₹100 OFF Coupon (>₹149)', fullLabel: '! ₹100 OFF Coupon (MOV ₹149)' }
 };
 
 const offerClaimCache = new Map(); // `${accSig}:${offerValue}` -> { result, ts }
@@ -528,17 +560,17 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
       const daysTag = `+${Math.max(0, (isLn ? lnLockedCount : bfLockedCount) - 1)} next days pre-locked`;
 
       if (bookedBeforeCutoff && inRedeemSlotNow) {
-        return { state: 'ACTIVE_NOW', msg: `🟢 LIVE IN CART NOW (${valTag} • ${daysTag})` };
+        return { state: 'ACTIVE_NOW', msg: `● LIVE IN CART NOW (${valTag} • ${daysTag})` };
       }
       if (bookedBeforeCutoff) {
         return {
           state: 'LOCKED_FOR_TODAY',
-          msg: `✅ Booked Before Cutoff (${valTag} • activates ${isLn ? '9:00 PM' : '7:00 AM'} • ${daysTag})`
+          msg: `✓ Booked Before Cutoff (${valTag} • activates ${isLn ? '9:00 PM' : '7:00 AM'} • ${daysTag})`
         };
       }
       return {
         state: 'CUTOFF_PASSED_LOCKED_NEXT_14D',
-        msg: `⏰ Today's ${isLn ? '6:30 PM' : '5:00 AM'} cutoff passed before login — Next 14 Days PRE-LOCKED (${valTag})!`
+        msg: `◷ Today's ${isLn ? '6:30 PM' : '5:00 AM'} cutoff passed before login — Next 14 Days PRE-LOCKED (${valTag})!`
       };
     };
 
@@ -664,31 +696,19 @@ export async function prewarmBrowser() {
     }
 
     const { browser, page } = await launchStealthSwiggyBrowser();
-    await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
 
-    let wafFound = false;
-    for (let i = 0; i < 25; i++) {
-      const cookies = await page.cookies();
-      const waf = cookies.find(c => c.name === 'aws-waf-token');
-      if (waf && waf.value.length > 50) {
-        wafFound = true;
-        break;
-      }
-      await new Promise(r => setTimeout(r, 800));
-    }
-
-    if (!wafFound) {
-      console.warn('⚠️ [SwiggyBridge] Prewarm: AWS WAF token not acquired within 20s. Discarding session.');
+    const wafToken = await waitForSwiggyWafCookie(page, SWIGGY_WAF_COOKIE_WAIT_MS);
+    if (!wafToken) {
+      console.warn('! [SwiggyBridge] Prewarm: Swiggy did not issue its WAF cookie within 8s; stopping prewarm without bypassing the check.');
       await browser.close().catch(() => {});
       return;
     }
 
-    await new Promise(r => setTimeout(r, 1500));
-
     prewarmedBrowser = browser;
     prewarmedPage = page;
     prewarmedAt = Date.now();
-    console.log('⚡ [SwiggyBridge] Pre-warmed Chrome is primed with valid AWS WAF token on swiggy.com! Next OTP will fire in <1s.');
+    console.log('! [SwiggyBridge] Pre-warmed Chrome is primed with valid AWS WAF token on swiggy.com! Next OTP will fire in <1s.');
   } catch (err) {
     console.error('Failed to prewarm Chrome:', err.message);
     if (prewarmedBrowser) {
@@ -701,36 +721,30 @@ export async function prewarmBrowser() {
   }
 }
 
-async function safeEvaluate(page, fn, ...args) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const evalPromise = page.evaluate(fn, ...args);
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('CDP evaluate timeout after 12s')), 12000)
-      );
-      return await Promise.race([evalPromise, timeoutPromise]);
-    } catch (err) {
-      if (
-        err.message.includes('Execution context was destroyed') ||
-        err.message.includes('Cannot find context') ||
-        err.message.includes('target closed') ||
-        err.message.includes('timed out') ||
-        err.message.includes('timeout')
-      ) {
-        console.log(`[SwiggyBridge] Context navigating/reloaded or slow (attempt ${attempt + 1}/3)...`);
-        await new Promise(r => setTimeout(r, 1500));
-      } else {
-        throw err;
-      }
-    }
+export async function safeEvaluateAuthOnce(page, fn, ...args) {
+  let timeoutId;
+  try {
+    // Auth POSTs must execute once only: retrying after a CDP timeout can send a duplicate OTP.
+    return await Promise.race([
+      page.evaluate(fn, ...args),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error(`Auth browser request timed out after ${AUTH_PAGE_EVALUATE_TIMEOUT_MS}ms; no automatic retry was attempted.`)),
+          AUTH_PAGE_EVALUATE_TIMEOUT_MS
+        );
+      })
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
-  throw new Error('Browser evaluate timed out. Please retry.');
 }
 
 export function parseSwiggyOtpError(otpResult) {
   if (!otpResult) {
     return {
-      message: 'Swiggy API dwara koi response nahi mila. Kripya dobara try karein.',
+      code: 'NO_RESPONSE',
+      retryable: true,
+      message: 'Swiggy ne OTP request ka response nahi diya. Network check karke baad mein ek baar retry karein.',
       swiggyStatus: 'No Response',
       details: 'Empty response from Swiggy'
     };
@@ -738,68 +752,82 @@ export function parseSwiggyOtpError(otpResult) {
 
   const swiggyMsg = (otpResult.data?.statusMessage || otpResult.data?.message || '').trim();
   const rawLower = ((otpResult.rawText || '') + ' ' + swiggyMsg).toLowerCase();
-  const status = otpResult.status;
+  const status = Number(otpResult.status || 0);
+  const swiggyCode = Number(otpResult.data?.statusCode);
 
-  if (status === 429 || rawLower.includes('rate limit') || rawLower.includes('too many') || rawLower.includes('limit reached') || rawLower.includes('maximum attempts')) {
+  if (status === 429 || swiggyCode === 429 || /rate limit|too many|limit reached|maximum attempts/.test(rawLower)) {
     return {
-      message: 'Swiggy Rate Limit: Is mobile number ya IP par Swiggy ne OTP limit laga di hai (Too many requests). Kripya 15-30 minute intezaar karein ya doosra number / session JSON paste karein.',
+      code: 'SWIGGY_RATE_LIMIT',
+      retryable: false,
+      message: 'Swiggy ne OTP requests par temporary limit lagayi hai. Abhi dobara request na bhejein; 15–30 minute rukkar official Swiggy app/site se try karein. Repeated attempts limit ko badha sakte hain.',
       swiggyStatus: swiggyMsg || 'Swiggy Rate Limit (429 Too Many Requests)',
-      details: `HTTP ${status || 429} | Rate limit reached on Swiggy`
+      details: `HTTP ${status || 429} | Swiggy rate limit`
     };
   }
 
-  if (status === 403 || rawLower.includes('waf') || rawLower.includes('captcha') || rawLower.includes('challenge') || rawLower.includes('forbidden')) {
+  if (status === 403 || /waf|captcha|challenge|forbidden|security check|access denied|verify you are human|bot verification|automated traffic/.test(rawLower)) {
     return {
-      message: 'Swiggy Anti-Bot Protection (AWS WAF): Swiggy security firewall ne browser request ko verify nahi hone diya. Kripya Retry dabayein ya Session JSON se login karein.',
-      swiggyStatus: swiggyMsg || 'Security Challenge (WAF 403 Forbidden)',
-      details: `HTTP ${status || 403} | AWS WAF Anti-bot challenge`
+      code: 'SWIGGY_SECURITY_CHALLENGE',
+      retryable: false,
+      message: 'Swiggy security verification stopped this OTP request. This bot will not retry or bypass that check. Complete any verification in the official Swiggy app/site, or use an existing session export; try again later only if Swiggy allows it.',
+      swiggyStatus: swiggyMsg || 'Security challenge (HTTP 403)',
+      details: `HTTP ${status || 403} | Swiggy security challenge; no automated retry attempted`
     };
   }
 
-  if (status === 400 || status === 422 || rawLower.includes('invalid mobile') || rawLower.includes('valid 10 digit')) {
+  if (status === 400 || status === 422 || /invalid mobile|valid 10 digit/.test(rawLower)) {
     return {
-      message: `Invalid Mobile Number: Swiggy ne is number ko reject kiya (${swiggyMsg || 'Invalid format'}). Kripya 10-digit valid Indian number daalein.`,
+      code: 'INVALID_MOBILE',
+      retryable: false,
+      message: `Swiggy rejected the number (${swiggyMsg || 'invalid format'}). Send a standalone valid Indian mobile number: 10 digits, or 12 digits beginning with 91.`,
       swiggyStatus: swiggyMsg || 'Invalid Mobile Number',
       details: `HTTP ${status || 400}`
     };
   }
 
-  if (status === 500 || status === 502 || status === 503 || status === 504) {
+  if ([500, 502, 503, 504].includes(status)) {
     return {
-      message: `Swiggy Server Error (${status}): Swiggy backend servers par temporary issue chal raha hai. Kripya 1-2 minute baad dobara koshish karein.`,
-      swiggyStatus: swiggyMsg || `Swiggy Server Down (${status})`,
+      code: 'SWIGGY_SERVER_ERROR',
+      retryable: true,
+      message: `Swiggy returned a temporary server error (HTTP ${status}). Wait a minute or two before retrying.`,
+      swiggyStatus: swiggyMsg || `Swiggy Server Error (${status})`,
       details: `HTTP ${status}`
     };
   }
 
   if (otpResult.error) {
     return {
-      message: `Puppeteer / Browser Error: ${otpResult.error}`,
+      code: 'SYSTEM_ERROR',
+      retryable: true,
+      message: `Could not complete the OTP request: ${otpResult.error}`,
       swiggyStatus: otpResult.error,
-      details: 'Browser context error'
+      details: 'Network or browser context error'
     };
   }
 
   if (swiggyMsg) {
     return {
-      message: `Swiggy Error: "${swiggyMsg}" (HTTP ${status || 200})`,
+      code: 'SWIGGY_ERROR',
+      retryable: false,
+      message: `Swiggy rejected the OTP request: ${swiggyMsg} (HTTP ${status || 200}).`,
       swiggyStatus: swiggyMsg,
       details: `HTTP ${status || 200} | Swiggy Code: ${otpResult.data?.statusCode ?? 'none'}`
     };
   }
 
   return {
-    message: `Swiggy API Error: OTP deliver nahi ho paya (HTTP ${status || 'unknown'}). Kripya Retry ya Session JSON se login karein.`,
-    swiggyStatus: `HTTP ${status || 'unknown'} - OTP Failed`,
+    code: 'SWIGGY_ERROR',
+    retryable: false,
+    message: `Swiggy did not confirm the OTP request (HTTP ${status || 'unknown'}). Check the official Swiggy app/site or try an existing session export.`,
+    swiggyStatus: `HTTP ${status || 'unknown'} - OTP not confirmed`,
     details: `HTTP ${status || 'unknown'}`
   };
 }
-
 export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', targetAccName = null) {
-  const cleanPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
+  const cleanPhone = normalizeIndianMobileNumber(phone) || '';
 
   if (cleanPhone.length !== 10) {
-    return { success: false, message: 'Please enter a valid 10-digit phone number.' };
+    return { success: false, message: 'Send a standalone 10-digit Indian mobile number or a 12-digit number beginning with 91.' };
   }
 
   let browser;
@@ -813,7 +841,7 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
     activeSessions[userId].browser?.connected &&
     activeSessions[userId].page
   ) {
-    console.log(`⚡ [SwiggyBridge] Reusing warm browser session for ${cleanPhone} with name "${targetAccName}"...`);
+    console.log(`! [SwiggyBridge] Reusing warm browser session for ${cleanPhone} with name "${targetAccName}"...`);
     browser = activeSessions[userId].browser;
     page = activeSessions[userId].page;
     isReused = true;
@@ -847,7 +875,7 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       page = prewarmedPage;
       prewarmedBrowser = null;
       prewarmedPage = null;
-      console.log(`⚡ [SwiggyBridge] Using primed Chrome for instantaneous OTP to ${cleanPhone}...`);
+      console.log(`! [SwiggyBridge] Using primed Chrome for instantaneous OTP to ${cleanPhone}...`);
     } else {
       if (prewarmedBrowser) {
         await prewarmedBrowser.close().catch(() => {});
@@ -858,15 +886,11 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       const launched = await launchStealthSwiggyBrowser();
       browser = launched.browser;
       page = launched.page;
-      await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-
-      for (let i = 0; i < 25; i++) {
-        const cookies = await page.cookies();
-        const waf = cookies.find(c => c.name === 'aws-waf-token');
-        if (waf && waf.value.length > 50) break;
-        await new Promise(r => setTimeout(r, 600));
+      await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      const wafToken = await waitForSwiggyWafCookie(page, SWIGGY_WAF_COOKIE_WAIT_MS);
+      if (!wafToken) {
+        console.warn('[SwiggyBridge] No WAF cookie was issued in the normal browser session; the OTP endpoint will be tried once, and any challenge will be honored.');
       }
-      await new Promise(r => setTimeout(r, 1500));
     }
   }
 
@@ -886,7 +910,7 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
     if (isReused && targetAccName) {
       otpResult = { status: 200, data: { statusCode: 1, statusMessage: 'not registered' } };
     } else {
-      otpResult = await safeEvaluate(page, async (mobileNumber, waf) => {
+      otpResult = await safeEvaluateAuthOnce(page, async (mobileNumber, waf) => {
         try {
           const headers = {
             'Content-Type': 'application/json',
@@ -906,8 +930,10 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
           let rawText = await res.text().catch(() => '');
           let data = {};
           try { data = JSON.parse(rawText); } catch (e) {}
+          const responseLower = `${rawText} ${data.statusMessage || data.message || ''}`.toLowerCase();
+          const blockedOrLimited = res.status === 403 || res.status === 429 || /waf|captcha|challenge|forbidden|security check|access denied|verify you are human|bot verification|automated traffic|rate limit|too many|limit reached/.test(responseLower);
 
-          if ((res.status !== 200 && res.status !== 202) || (data.statusCode && data.statusCode !== 0 && data.statusCode !== 1)) {
+          if (!blockedOrLimited && ((res.status !== 200 && res.status !== 202) || (data.statusCode && data.statusCode !== 0 && data.statusCode !== 1))) {
             try {
               const altRes = await fetch('/dapi/auth/otp-generate', {
                 method: 'POST',
@@ -933,16 +959,19 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
 
     console.log('[SwiggyBridge] OTP dispatch raw result for ' + cleanPhone + ':', JSON.stringify(otpResult));
 
-    const msgLower = (otpResult.data?.statusMessage || '').toLowerCase();
+    const msgLower = `${otpResult.data?.statusMessage || ''} ${otpResult.data?.message || ''} ${otpResult.rawText || ''}`.toLowerCase();
     const isRateOrInvalid =
       msgLower.includes('rate limit') ||
       msgLower.includes('too many') ||
       msgLower.includes('limit reached') ||
       msgLower.includes('maximum') ||
       msgLower.includes('valid 10 digit');
+    const isSecurityBlocked = otpResult.status === 403 || /waf|captcha|challenge|forbidden|security check|access denied|verify you are human|bot verification|automated traffic/.test(msgLower);
+    const acceptedOtpResponse = otpResult.status === 200 || otpResult.status === 202;
 
-    // Covers both brand-new numbers AND numbers that were just deleted/archived on Swiggy (`re-login that account` after delete!)
-    const isUnregistered = otpResult.data?.statusCode === 1 && !isRateOrInvalid;
+    // Only treat a confirmed ordinary API response as an unregistered account. A WAF/challenge
+    // response must never fall through to signup or an alternate OTP flow.
+    const isUnregistered = acceptedOtpResponse && otpResult.data?.statusCode === 1 && !isRateOrInvalid && !isSecurityBlocked;
 
     if (isUnregistered) {
       const signupName = sanitizeSwiggyName(targetAccName);
@@ -950,7 +979,7 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       const signupEmail = generateUniqueSwiggyEmail(cleanPhone, signupName);
       console.log(`[SwiggyBridge] Number ${cleanPhone} unregistered/fresh on Swiggy. Triggering signup OTP as "${signupName}" (${signupEmail})...`);
 
-      const signupInitResult = await safeEvaluate(page, async (mobileNumber, name, email, waf) => {
+      const signupInitResult = await safeEvaluateAuthOnce(page, async (mobileNumber, name, email, waf) => {
         try {
           const headers = {
             'Content-Type': 'application/json',
@@ -978,7 +1007,9 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       }, cleanPhone, signupName, signupEmail, wafToken);
 
       console.log('[SwiggyBridge] Signup dispatch raw result:', JSON.stringify(signupInitResult));
-      const signupSent = (signupInitResult.status === 200 || signupInitResult.status === 202) && (
+      const signupResponseLower = `${signupInitResult.rawText || ''} ${signupInitResult.data?.statusMessage || signupInitResult.data?.message || ''}`.toLowerCase();
+      const signupBlocked = signupInitResult.status === 403 || signupInitResult.status === 429 || /waf|captcha|challenge|forbidden|security check|access denied|verify you are human|bot verification|automated traffic|rate limit|too many|limit reached/.test(signupResponseLower);
+      const signupSent = !signupBlocked && (signupInitResult.status === 200 || signupInitResult.status === 202) && (
         signupInitResult.data?.statusCode === 0 || !signupInitResult.data?.statusCode
       );
 
@@ -995,7 +1026,7 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
           page,
           phone: cleanPhone,
           targetAcc: targetAcc || `acc_${cleanPhone}`,
-          targetAccName: signupName,
+          targetAccName: String(targetAccName || signupName).trim() || signupName,
           signupEmail,
           isNewUser: true,
           safetyTimer,
@@ -1015,6 +1046,8 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
         if (process.env.PREWARM_CHROME === 'true') setTimeout(() => prewarmBrowser().catch(() => {}), 1000);
         return {
           success: false,
+          code: parsedErr.code,
+          retryable: parsedErr.retryable,
           message: parsedErr.message,
           swiggyStatus: parsedErr.swiggyStatus,
           details: parsedErr.details
@@ -1022,7 +1055,7 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       }
     }
 
-    const isSent = (otpResult.status === 200 || otpResult.status === 202) && (
+    const isSent = !isRateOrInvalid && !isSecurityBlocked && acceptedOtpResponse && (
       otpResult.data?.statusCode === 0 || !otpResult.data?.statusCode
     );
 
@@ -1058,6 +1091,8 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       if (process.env.PREWARM_CHROME === 'true') setTimeout(() => prewarmBrowser().catch(() => {}), 1000);
       return {
         success: false,
+        code: parsedErr.code,
+        retryable: parsedErr.retryable,
         message: parsedErr.message,
         swiggyStatus: parsedErr.swiggyStatus,
         details: parsedErr.details
@@ -1067,17 +1102,31 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
     if (browser) await browser.close().catch(() => {});
     delete activeSessions[userId];
     if (process.env.PREWARM_CHROME === 'true') setTimeout(() => prewarmBrowser().catch(() => {}), 1000);
+    const lower = String(err.message || '').toLowerCase();
+    const inferredStatus = /429|rate limit|too many requests/.test(lower)
+      ? 429
+      : (/403|waf|captcha|challenge|forbidden|security check|access denied|verify you are human|bot verification|automated traffic/.test(lower) ? 403 : 500);
+    const diagnostic = parseSwiggyOtpError({
+      status: inferredStatus,
+      error: err.message,
+      data: { statusMessage: err.message }
+    });
     return {
       success: false,
-      message: `System / Browser Error: ${err.message}`,
-      swiggyStatus: err.message,
-      details: err.stack ? err.stack.split('\n')[0] : err.message
+      code: diagnostic.code,
+      retryable: diagnostic.retryable,
+      message: diagnostic.message,
+      swiggyStatus: diagnostic.swiggyStatus,
+      details: err.stack ? err.stack.split('\n')[0] : diagnostic.details
     };
   }
 }
 
 export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc = '', targetAccName = null) {
-  const cleanPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
+  const cleanPhone = normalizeIndianMobileNumber(phone) || '';
+  if (!cleanPhone) {
+    return { success: false, code: 'INVALID_MOBILE', message: 'Send a standalone 10-digit Indian mobile number or a 12-digit number beginning with 91.' };
+  }
 
   delete activeDeleteSessions[userId];
 
@@ -1140,50 +1189,24 @@ export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc =
     });
 
     status = res.status;
-    data = await res.json().catch(() => ({}));
+    const rawText = await res.text().catch(() => '');
+    try { data = JSON.parse(rawText); } catch { data = {}; }
+    const responseLower = `${rawText} ${data.statusMessage || data.message || data.error || ''}`.toLowerCase();
     const setCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
     if (setCookies.length > 0) {
       mergedCookies = mergeSetCookiesIntoJar(cookieString, setCookies);
     }
 
-    // Automatic browser fallback if AWS WAF challenged direct HTTP request (403 / 202)
-    if (status === 403 || status === 202) {
-      console.log(`[SwiggyDelete] Direct userCheck got WAF ${status}; retrying inside stealth Chromium...`);
-      let browser = null;
-      try {
-        const launched = await launchStealthSwiggyBrowser();
-        browser = launched.browser;
-        const page = launched.page;
-        await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
-        for (let i = 0; i < 20; i++) {
-          const ck = await page.cookies();
-          if (ck.some(c => c.name === 'aws-waf-token' && c.value.length > 50)) break;
-          await new Promise(r => setTimeout(r, 600));
-        }
-        const cookieObjs = mergedCookies.split(';').map(s => s.trim()).filter(s => s.includes('=')).map(s => {
-          const idx = s.indexOf('=');
-          return { name: s.slice(0, idx).trim(), value: s.slice(idx + 1).trim(), domain: '.swiggy.com', path: '/' };
-        });
-        if (cookieObjs.length > 0) await page.setCookie(...cookieObjs);
-        const wafVal = (await page.cookies()).find(c => c.name === 'aws-waf-token')?.value || '';
-        const brRes = await safeEvaluate(page, async (waf) => {
-          const headers = { 'Accept': 'application/json' };
-          if (waf) headers['aws-waf-token'] = waf;
-          const r = await fetch('https://www.swiggy.com/mapi/auth/delete/userCheck', {
-            method: 'GET',
-            headers,
-            credentials: 'include'
-          });
-          const j = await r.json().catch(() => ({}));
-          return { status: r.status, data: j };
-        }, wafVal);
-        status = brRes.status;
-        data = brRes.data || {};
-        const finalCk = await page.cookies();
-        mergedCookies = stripStaleWafCookie(finalCk.map(c => `${c.name}=${c.value}`).join('; '));
-      } finally {
-        if (browser) await browser.close().catch(() => {});
-      }
+    if (status === 403 || status === 202 || /waf|captcha|challenge|forbidden|security check|access denied|verify you are human|bot verification|automated traffic/.test(responseLower)) {
+      delete activeDeleteSessions[userId];
+      return {
+        success: false,
+        code: 'SWIGGY_SECURITY_CHALLENGE',
+        retryable: false,
+        message: 'Swiggy security verification stopped the deletion OTP request. No automated retry was attempted. Complete any check in the official Swiggy app/site, or remove the account from this bot only.',
+        swiggyStatus: `HTTP ${status} security challenge`,
+        details: `HTTP ${status} | Swiggy security challenge; no automated retry attempted`
+      };
     }
 
     console.log(`[SwiggyDelete] [Request #${reqNum}] Response: HTTP ${status} | SwiggyCode: ${data.statusCode ?? 'none'} | Message: ${data.statusMessage || data.error || 'ok'}`);
@@ -1191,6 +1214,15 @@ export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc =
     const isSent = status === 200 && (data.statusCode === 28 || data.statusCode === 0);
 
     if (!isSent) {
+      if (status === 429 || /rate limit|too many|limit reached|maximum attempts/.test(responseLower)) {
+        return {
+          success: false,
+          code: 'SWIGGY_RATE_LIMIT',
+          retryable: false,
+          message: 'Swiggy rate-limited the deletion OTP request. Wait 15–30 minutes and finish deletion through the official Swiggy app/site; do not retry repeatedly.',
+          details: 'HTTP 429 | Swiggy rate limit'
+        };
+      }
       const isAuthError = status === 401 || data.statusCode === 1 || (data.statusMessage && data.statusMessage.toLowerCase().includes('login'));
       const errMsg = isAuthError
         ? 'Swiggy session has expired on Swiggy servers. Re-login or remove this account from Bot DB.'
@@ -1233,8 +1265,8 @@ export async function verifyAndDeleteSwiggyAccountViaBridge(userId, otp, account
   const session = activeDeleteSessions[userId];
   const cleanOtp = String(otp).replace(/[^0-9]/g, '').trim();
 
-  if (cleanOtp.length < 4) {
-    return { success: false, message: 'Please enter a valid 6-digit OTP.' };
+  if (cleanOtp.length !== 6) {
+    return { success: false, message: 'Please enter the exact 6-digit OTP.' };
   }
 
   const { getDb } = await import('./store.js');
@@ -1277,46 +1309,33 @@ export async function verifyAndDeleteSwiggyAccountViaBridge(userId, otp, account
     });
 
     status = res.status;
-    verifyResult = await res.json().catch(() => ({}));
+    const rawText = await res.text().catch(() => '');
+    try { verifyResult = JSON.parse(rawText); } catch { verifyResult = {}; }
+    const responseLower = `${rawText} ${verifyResult?.statusMessage || verifyResult?.message || verifyResult?.error || ''}`.toLowerCase();
 
-    if (status === 403 || status === 202) {
-      let browser = null;
-      try {
-        const launched = await launchStealthSwiggyBrowser();
-        browser = launched.browser;
-        const page = launched.page;
-        await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
-        for (let i = 0; i < 20; i++) {
-          const ck = await page.cookies();
-          if (ck.some(c => c.name === 'aws-waf-token' && c.value.length > 50)) break;
-          await new Promise(r => setTimeout(r, 600));
-        }
-        const cookieObjs = fullCookieHeader.split(';').map(s => s.trim()).filter(s => s.includes('=')).map(s => {
-          const idx = s.indexOf('=');
-          return { name: s.slice(0, idx).trim(), value: s.slice(idx + 1).trim(), domain: '.swiggy.com', path: '/' };
-        });
-        if (cookieObjs.length > 0) await page.setCookie(...cookieObjs);
-        const wafVal = (await page.cookies()).find(c => c.name === 'aws-waf-token')?.value || '';
-        const brRes = await safeEvaluate(page, async (otpVal, csrfVal, waf) => {
-          const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
-          if (waf) headers['aws-waf-token'] = waf;
-          const r = await fetch('https://www.swiggy.com/mapi/auth/delete/user', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ otp: otpVal, _csrf: csrfVal }),
-            credentials: 'include'
-          });
-          const j = await r.json().catch(() => ({}));
-          return { status: r.status, data: j };
-        }, cleanOtp, csrfToken, wafVal);
-        status = brRes.status;
-        verifyResult = brRes.data || {};
-      } finally {
-        if (browser) await browser.close().catch(() => {});
-      }
+    if (status === 403 || status === 202 || /waf|captcha|challenge|forbidden|security check|access denied|verify you are human|bot verification|automated traffic/.test(responseLower)) {
+      delete activeDeleteSessions[userId];
+      return {
+        success: false,
+        code: 'SWIGGY_SECURITY_CHALLENGE',
+        retryable: false,
+        message: 'Swiggy security verification stopped the deletion request. No automated retry was attempted. Finish account deletion in the official Swiggy app/site.',
+        details: `HTTP ${status} | Swiggy security challenge; no automated retry attempted`
+      };
     }
 
     console.log(`[SwiggyDelete] [Verify #${reqNum}] Response: HTTP ${status} | SwiggyCode: ${verifyResult?.statusCode ?? 'none'} | Message: ${verifyResult?.statusMessage || verifyResult?.error || 'ok'}`);
+
+    if (status === 429 || /rate limit|too many|limit reached|maximum attempts/.test(responseLower)) {
+      delete activeDeleteSessions[userId];
+      return {
+        success: false,
+        code: 'SWIGGY_RATE_LIMIT',
+        retryable: false,
+        message: 'Swiggy rate-limited deletion verification. Wait 15–30 minutes and use the official Swiggy app/site; do not repeatedly resend the OTP.',
+        details: 'HTTP 429 | Swiggy rate limit'
+      };
+    }
 
     if (!verifyResult || verifyResult.error) {
       return {
@@ -1373,8 +1392,8 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
   }
 
   const cleanOtp = String(otp).replace(/[^0-9]/g, '').trim();
-  if (cleanOtp.length < 4) {
-    return { success: false, message: 'Please enter a valid 6-digit OTP.' };
+  if (cleanOtp.length !== 6) {
+    return { success: false, message: 'Please enter the exact 6-digit OTP.' };
   }
 
   const { browser, page, phone, targetAcc } = session;
@@ -1391,7 +1410,7 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
 
     if (!session.isNewUser) {
       try {
-        verifyResult = await safeEvaluate(page, async (mobileNumber, otpCode, waf) => {
+        verifyResult = await safeEvaluateAuthOnce(page, async (mobileNumber, otpCode, waf) => {
           try {
             const headers = {
               'Content-Type': 'application/json',
@@ -1405,20 +1424,40 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
               credentials: 'include',
               signal: AbortSignal.timeout(8000)
             });
-            const data = await res.json().catch(() => ({}));
-            return { status: res.status, data };
+            const rawText = await res.text().catch(() => '');
+            let data = {};
+            try { data = JSON.parse(rawText); } catch {}
+            return { status: res.status, data, rawText };
           } catch (err) {
             return { status: 500, error: err.message };
           }
         }, phone, cleanOtp, wafToken);
       } catch (evalErr) {
         console.log('[SwiggyBridge] Evaluation error during verify:', evalErr.message);
+        verifyResult = { status: 500, error: evalErr.message };
       }
 
       console.log(`[SwiggyBridge] Verify raw result for ${phone}:`, JSON.stringify(verifyResult));
       statusCode = verifyResult?.data?.statusCode;
       statusMsg = (verifyResult?.data?.statusMessage || '').trim();
       isSuccess = (verifyResult?.status === 200 || verifyResult?.status === 202) && statusCode === 0;
+
+      const verifyLower = `${verifyResult?.rawText || ''} ${statusMsg} ${verifyResult?.data?.message || ''}`.toLowerCase();
+      const verificationBlocked = verifyResult?.status === 403 || /waf|captcha|challenge|forbidden|security check|access denied|verify you are human|bot verification|automated traffic/.test(verifyLower);
+      const verificationRateLimited = verifyResult?.status === 429 || /rate limit|too many|limit reached|maximum attempts/.test(verifyLower);
+      if (verificationBlocked || verificationRateLimited) {
+        if (session.safetyTimer) clearTimeout(session.safetyTimer);
+        await browser.close().catch(() => {});
+        delete activeSessions[userId];
+        const diagnostic = parseSwiggyOtpError({ status: verifyResult?.status, data: verifyResult?.data, rawText: verifyResult?.rawText });
+        return {
+          success: false,
+          code: diagnostic.code,
+          retryable: false,
+          swiggyStatus: diagnostic.swiggyStatus,
+          message: diagnostic.message
+        };
+      }
     }
 
     const isUnregistered =
@@ -1452,7 +1491,7 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
 
       let signupResult = null;
       try {
-        signupResult = await safeEvaluate(page, async (mobileNumber, otpCode, name, email, waf) => {
+        signupResult = await safeEvaluateAuthOnce(page, async (mobileNumber, otpCode, name, email, waf) => {
           try {
             const headers = {
               'Content-Type': 'application/json',
@@ -1471,14 +1510,17 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
               credentials: 'include',
               signal: AbortSignal.timeout(8000)
             });
-            const data = await res.json().catch(() => ({}));
-            return { status: res.status, data };
+            const rawText = await res.text().catch(() => '');
+            let data = {};
+            try { data = JSON.parse(rawText); } catch {}
+            return { status: res.status, data, rawText };
           } catch (err) {
             return { status: 500, error: err.message };
           }
         }, phone, cleanOtp, signupName, signupEmail, wafToken);
       } catch (signupErr) {
         console.log('[SwiggyBridge] Signup evaluation error:', signupErr.message);
+        signupResult = { status: 500, error: signupErr.message };
       }
 
       console.log('[SwiggyBridge] Signup raw result:', JSON.stringify(signupResult));
@@ -1488,7 +1530,20 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
         statusMsg = 'done successfully';
         isSuccess = true;
       } else {
-        const errMessage = signupResult?.data?.statusMessage || 'Invalid or expired Signup OTP';
+        const errMessage = signupResult?.data?.statusMessage || signupResult?.error || 'Invalid or expired Signup OTP';
+        const diagnostic = signupResult ? parseSwiggyOtpError(signupResult) : null;
+        if (diagnostic && ['SWIGGY_SECURITY_CHALLENGE', 'SWIGGY_RATE_LIMIT'].includes(diagnostic.code)) {
+          if (session.safetyTimer) clearTimeout(session.safetyTimer);
+          await browser.close().catch(() => {});
+          delete activeSessions[userId];
+          return {
+            success: false,
+            code: diagnostic.code,
+            retryable: false,
+            swiggyStatus: diagnostic.swiggyStatus,
+            message: diagnostic.message
+          };
+        }
         return {
           success: false,
           swiggyStatus: errMessage,
@@ -1497,8 +1552,7 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
       }
     }
 
-    await new Promise(r => setTimeout(r, 700));
-    const cookies = await page.cookies();
+    const cookies = await waitForSwiggyLoginCookies(page, 800);
     const isReallyLoggedIn = checkLoggedInFromCookies(cookies);
 
     if (!isSuccess && !isReallyLoggedIn) {
@@ -1524,11 +1578,13 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
 
     const swiggyActualName = (verifyResult?.data?.data?.name || session.targetAccName || '').trim();
     const swiggyEmail = verifyResult?.data?.data?.email || session.signupEmail || '';
-    const rawSlot = session.targetAccName && /^user\s*\d+$/i.test(session.targetAccName.trim())
-      ? session.targetAccName.trim()
+    const requestedAccountLabel = String(session.targetAccName || '').trim();
+    const rawSlot = requestedAccountLabel && !/^user\s*\d+$/i.test(requestedAccountLabel)
+      ? requestedAccountLabel
       : getNextAutoUserName();
     const cleanActual = swiggyActualName.replace(/\([^)]*\)/g, '').trim();
-    const finalName = cleanActual ? `${cleanActual} (${rawSlot})` : rawSlot;
+    // Keep the bot's chosen account label; Swiggy's profile name is stored separately.
+    const finalName = rawSlot || cleanActual || getNextAutoUserName();
     const accKey = targetAcc || `acc_${phone}`;
 
     const tidCookie = cookies.find(c => c.name === 'tid');
@@ -1625,6 +1681,7 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
 
   const { browser, page, phone, otp } = session;
   const cleanName = sanitizeSwiggyName(enteredName);
+  const accountLabel = String(session.targetAccName || enteredName || cleanName).trim() || cleanName;
   const signupEmail = session.signupEmail || generateUniqueSwiggyEmail(phone, cleanName);
   const accKey = session.targetAcc || `acc_${phone}`;
 
@@ -1633,7 +1690,7 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
     const wafCookie = pageCookies.find(c => c.name === 'aws-waf-token');
     const wafToken = wafCookie?.value || '';
 
-    const signupResult = await safeEvaluate(page, async (mobileNumber, otpCode, name, email, waf) => {
+    const signupResult = await safeEvaluateAuthOnce(page, async (mobileNumber, otpCode, name, email, waf) => {
       try {
         const headers = {
           'Content-Type': 'application/json',
@@ -1649,18 +1706,19 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
             name,
             email
           }),
-          credentials: 'include'
+          credentials: 'include',
+          signal: AbortSignal.timeout(8000)
         });
-        const data = await res.json().catch(() => ({}));
-        return { status: res.status, data };
+        const rawText = await res.text().catch(() => '');
+        let data = {};
+        try { data = JSON.parse(rawText); } catch {}
+        return { status: res.status, data, rawText };
       } catch (err) {
         return { status: 500, error: err.message };
       }
     }, phone, otp, cleanName, signupEmail, wafToken);
 
-    await new Promise(r => setTimeout(r, 1500));
-
-    const cookies = await page.cookies();
+    const cookies = await waitForSwiggyLoginCookies(page, 800);
     const isReallyLoggedIn = checkLoggedInFromCookies(cookies);
 
     if (
@@ -1689,7 +1747,7 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
       });
 
       const savedData = {
-        name: cleanName,
+        name: accountLabel,
         swiggyName: cleanName,
         phone,
         mobile: phone,
@@ -1711,7 +1769,7 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
 
       const exportJson = {
         account: accKey,
-        name: cleanName,
+        name: accountLabel,
         swiggyName: cleanName,
         mobile: phone,
         phone,
@@ -1726,7 +1784,7 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
 
       return {
         success: true,
-        name: cleanName,
+        name: accountLabel,
         swiggyName: cleanName,
         accountKey: accKey,
         phone,
@@ -1740,10 +1798,34 @@ export async function signupSwiggyViaBridge(userId, enteredName) {
         signupResult?.data?.statusMessage ||
         signupResult?.error ||
         'Failed to signup on Swiggy';
+      const diagnostic = parseSwiggyOtpError(signupResult || {});
+      if (['SWIGGY_SECURITY_CHALLENGE', 'SWIGGY_RATE_LIMIT'].includes(diagnostic.code)) {
+        if (session.safetyTimer) clearTimeout(session.safetyTimer);
+        await browser.close().catch(() => {});
+        delete activeSessions[userId];
+        return {
+          success: false,
+          code: diagnostic.code,
+          retryable: false,
+          message: diagnostic.message,
+          swiggyStatus: diagnostic.swiggyStatus
+        };
+      }
       return { success: false, message: errorMsg };
     }
   } catch (err) {
-    return { success: false, message: err.message };
+    const diagnostic = parseSwiggyOtpError({
+      status: /429|rate limit|too many/i.test(err.message || '') ? 429 : (/403|waf|captcha|challenge|forbidden/i.test(err.message || '') ? 403 : 500),
+      error: err.message,
+      data: { statusMessage: err.message }
+    });
+    if (['SWIGGY_SECURITY_CHALLENGE', 'SWIGGY_RATE_LIMIT'].includes(diagnostic.code)) {
+      if (session.safetyTimer) clearTimeout(session.safetyTimer);
+      await browser.close().catch(() => {});
+      delete activeSessions[userId];
+      return { success: false, code: diagnostic.code, retryable: false, message: diagnostic.message };
+    }
+    return { success: false, code: diagnostic.code, retryable: diagnostic.retryable, message: err.message };
   }
 }
 

@@ -313,7 +313,7 @@ try {
           orderStatus: 'Order Confirmed • Preparing',
           etaMinutes: '25',
           deliveryBoy: { name: 'Ramesh Rider', mobile: '9876543210' },
-          swiggyWebTrackUrl: `https://www.swiggy.com/track-order/${ord.pendingSwiggyOrderId}`
+          nativeShareUrl: 'https://swig.gy/live-order-track-demo'
         })
       });
 
@@ -436,7 +436,11 @@ try {
       await clickButton('fwd_check_all_paid', qrOrders10[0].activeCardMessageId);
       const completed10 = Object.values(getDb().orders).filter(o => o.status === 'COMPLETED');
       ok(
-        completed10.length === 10 && completed10.every(o => o.cardStage === 'PAID_CONFIRMED' && o.trackingLink.includes(o.swiggyOrderId)),
+        completed10.length === 10 && completed10.every(o =>
+          o.cardStage === 'PAID_CONFIRMED' &&
+          o.trackingLink === 'https://swig.gy/live-order-track-demo' &&
+          o.trackingLinkSource === 'SWIGGY_API'
+        ),
         `Simultaneous 10x Payment Confirmed: ALL 10/10 orders verified paid & received live Swiggy tracking links at once!`
       );
 
