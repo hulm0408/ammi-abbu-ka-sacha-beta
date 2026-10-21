@@ -6367,7 +6367,8 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
   const pendingPaasId = String(order?.pendingSwiggyPaasId || '');
 
   // Step 1: Non-destructive live gateway check on the exact QR `paas_id` (`transactionId`)
-  if (pendingPaasId.startsWith('2799') && globalThis.fetch === __bootNetworkFetchRef) {
+  // Only block synthetic sandbox TXNs when actually in sandbox; live TXNs must not be blocked
+  if (pendingPaasId.startsWith('2799') && globalThis.fetch === __bootNetworkFetchRef && isZeroSmsTestSandboxActive()) {
     return { paid: false, txnState: 'pending' };
   }
   if (pendingPaasId) {
@@ -6453,27 +6454,40 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
 
   const payTxnState = String(matchedOrder?.payment_info_v2?.payment_transactions?.[0]?.state || '').toUpperCase();
   const statusStr = String(matchedOrder?.order_status || matchedOrder?.post_status || '').toLowerCase();
+  const postStatusLower = String(matchedOrder?.post_status || '').toLowerCase();
+  const gatewaySuccess = ['success', 'completed', 'paid'].includes(gatewayTxnState);
+  // If gateway explicitly says success/completed/paid, treat as paid even if Swiggy internal state is still pending/STATE_PENDING (propagation delay)
+  const isGatewayConfirmed = gatewaySuccess && targetOrderId && pendingPaasId;
   const isPaidAndValid =
-    (payTxnState === 'STATE_SUCCESS' || ['success', 'completed', 'paid'].includes(gatewayTxnState) || (!payTxnState && !/fail|cancel|pending_payment/i.test(statusStr))) &&
-    !/cancel|fail|aborted|pending/i.test(statusStr === 'pending' ? 'pending' : (/cancel|fail|aborted/i.test(statusStr) ? statusStr : ''));
+    (payTxnState === 'STATE_SUCCESS' || isGatewayConfirmed || (!payTxnState && !/fail|cancel|pending_payment/i.test(statusStr))) &&
+    !/cancel|fail|aborted/i.test(statusStr === 'pending' ? (isGatewayConfirmed ? '' : 'pending') : (/cancel|fail|aborted/i.test(statusStr) ? statusStr : ''));
 
-  // Wait: if `post_status === 'pending'` AND payment is NOT `STATE_SUCCESS`, customer hasn't paid yet!
-  if (
-    payTxnState === 'STATE_PENDING' ||
-    payTxnState === 'STATE_FAILED' ||
-    (String(matchedOrder?.post_status || '').toLowerCase() === 'pending' && payTxnState !== 'STATE_SUCCESS')
-  ) {
-    return {
-      paid: false,
-      txnState: gatewayTxnState || payTxnState.toLowerCase() || 'pending'
-    };
-  }
-
-  if (!isPaidAndValid) {
-    return {
-      paid: false,
-      txnState: gatewayTxnState || statusStr || 'pending'
-    };
+  // Wait: if `post_status === 'pending'` AND payment is NOT `STATE_SUCCESS` nor gateway-confirmed, customer hasn't paid yet!
+  if (!isGatewayConfirmed) {
+    if (
+      payTxnState === 'STATE_PENDING' ||
+      payTxnState === 'STATE_FAILED' ||
+      (postStatusLower === 'pending' && payTxnState !== 'STATE_SUCCESS')
+    ) {
+      return {
+        paid: false,
+        txnState: gatewayTxnState || payTxnState.toLowerCase() || 'pending'
+      };
+    }
+    if (!isPaidAndValid) {
+      return {
+        paid: false,
+        txnState: gatewayTxnState || statusStr || 'pending'
+      };
+    }
+  } else {
+    // Gateway confirmed — don't block on transient Swiggy pending state, but still block on explicit cancel/fail
+    if (/cancel|fail|aborted/i.test(statusStr)) {
+      return {
+        paid: false,
+        txnState: gatewayTxnState || statusStr || 'pending'
+      };
+    }
   }
 
   const confirmedOrderId = String(matchedOrder.order_id);
