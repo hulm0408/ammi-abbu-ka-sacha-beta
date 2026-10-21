@@ -1370,7 +1370,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       const ad = resolved?.addressDetails || null;
       if (ad && !ad.unresolvableShortLink) {
         delete ad.id;
-        if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
+        // Never overwrite recipient name with sender's Telegram name — link's contact_name is authoritative (recipient = Ammi/Abbu)
         order.addressDetails = ad;
         order.address = ad.address || ad.city || url;
         order.addressLink = url;
@@ -1409,11 +1409,10 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   }
 
   for (const { mUrl, resolved } of resolvedMapsList) {
-    // GPS pin / Maps link is authoritative too: reverse-geocoded location only.
+    // GPS pin / Maps link is authoritative too: reverse-geocoded location only, never sender's name
     const ad = resolved?.addressDetails || null;
     if (ad) {
       delete ad.id;
-      if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
       order.addressDetails = ad;
       order.address = ad.address || mUrl;
       order.addressLink = mUrl;
@@ -1435,7 +1434,6 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       order.addressOriginalText = trimmed;
       if (ad) {
         delete ad.id;
-        if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
         order.addressDetails = ad;
       }
       updatedAddress = true;
@@ -1446,7 +1444,6 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       const ad = preGeocodedPlainAd || parseAddressDetails(textWithoutUrls);
       if (ad && (ad.address || ad.lat || /\d{6}/.test(textWithoutUrls))) {
         delete ad.id;
-        if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
         order.address = textWithoutUrls;
         order.addressOriginalText = textWithoutUrls;
         order.addressDetails = ad;
