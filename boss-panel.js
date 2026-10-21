@@ -63,7 +63,8 @@ function billSection(order) {
   if (order.taxesAndCharges > 0) rows.push(['GST & Other Charges', `₹${Number(order.taxesAndCharges)}`]);
   if (order.totalSavings > 0) rows.push(['Total Savings', `₹${Number(order.totalSavings)}`]);
   rows.push([`<b>Final Total</b>`, `<b>₹${Number(order.finalPayable || order.subtotal || 0)}</b>`]);
-  return section('₹ Final Bill', table(rows));
+  rows.push(['Payment Options', 'UPI QR, Card, Wallet via Swiggy']);
+  return section('Final Bill', table(rows));
 }
 
 export function buildBossPanelHome(db) {
@@ -81,14 +82,14 @@ export function buildBossPanelHome(db) {
     accBody += `${field(esc(acc.name || key), `<b>${status}</b>`)}\n`;
   }
 
-  const text = section('★ BOSS CARE & SWIGGY PANEL', [
-    section('◉ Connected Swiggy Accounts', accBody || sub('No accounts added yet.')),
-    section('▤ Orders Overview', [
-      field('◷ Pending', `<b>${pending}</b>`),
-      field('● In Progress', `<b>${accepted}</b>`),
-      field('✓ Done', `<b>${completed}</b>`),
+  const text = section('Boss Panel', [
+    section('Swiggy Accounts', accBody || sub('No accounts added yet. Tap Login to add.')),
+    section('Orders', [
+      field('Pending', `<b>${pending}</b>`),
+      field('In Progress', `<b>${accepted}</b>`),
+      field('Completed', `<b>${completed}</b>`),
     ].join('\n')),
-    sub('Clean, structured panel. Sab kuch yahin manage kar sakte ho.'),
+    sub('Manage orders, accounts, and offers from here.'),
   ].join('\n'));
 
   const keyboard = Markup.inlineKeyboard([
@@ -127,11 +128,11 @@ export function buildBossPendingList(db) {
 
 // Full order detail card — state driven, clean buttons only
 export function buildBossOrderCard(order, db = getDb()) {
-  let statusBadge = '… PENDING';
-  if (order.status === 'ACCEPTED') statusBadge = '● ACCEPTED';
-  else if (order.status === 'REJECTED') statusBadge = '! REJECTED';
-  else if (order.status === 'COMPLETED') statusBadge = '✓ ORDER CONFIRMED';
-  else if (order.status === 'CANCELLED') statusBadge = `× ORDER CANCELLED (#${order.id})`;
+  let statusBadge = 'Pending';
+  if (order.status === 'ACCEPTED') statusBadge = 'Accepted';
+  else if (order.status === 'REJECTED') statusBadge = 'Rejected';
+  else if (order.status === 'COMPLETED') statusBadge = 'Confirmed';
+  else if (order.status === 'CANCELLED') statusBadge = `Cancelled (#${order.id})`;
 
   const userProfileUrl = `tg://user?id=${order.userId}`;
   const senderLink = `<a href="${userProfileUrl}">${esc(order.userName || 'Customer')}</a>`;
@@ -145,10 +146,18 @@ export function buildBossOrderCard(order, db = getDb()) {
       : '';
 
   let text = `${heading(`[ ORDER #${order.id} ] · ${statusBadge}`)}\n`;
-  text += section('◉ Customer', [
+  text += section('Ordered By', [
     field('Name', senderLink),
     field('User ID', idLink),
   ].join('\n'));
+  const ad = order.addressDetails || {};
+  if (ad.name || ad.mobile || ad.address) {
+    const rLines = [];
+    if (ad.name) rLines.push(field('Name', esc(ad.name)));
+    if (ad.mobile) rLines.push(field('Phone', `<code>${esc(ad.mobile)}</code> (delivery contact)`));
+    if (ad.address) rLines.push(field('Address', esc(ad.address.length>80?ad.address.slice(0,80)+'…':ad.address)));
+    if (rLines.length) text += section('Deliver To (Recipient)', rLines.join('\n') + '\n' + sub('Order placed on recipient\'s name & phone — rider will call them, not you.'));
+  }
   text += billSection(order);
   text += `${paymentNote}\n`;
   const offerLine = order.autoOptimizeError
@@ -156,17 +165,21 @@ export function buildBossOrderCard(order, db = getDb()) {
     : (order.autoOptimized
         ? `\n${field('Auto offers', `✓ Best account + max coupon locked${order.orderAccount ? ` (${esc(String(order.orderAccount))})` : ''}`)}`
         : '');
-  text += section('⌖ Cart & delivery', [
+  text += section('Cart & Delivery', [
     field('Cart', order.cart ? `<a href="${esc(order.cart)}">Open cart link</a>` : '<i>Not added</i>'),
     field('Deliver to', esc(addrPreview(order))),
     field('Time', new Date(order.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })),
   ].join('\n') + offerLine);
   if (order.status === 'COMPLETED') {
     const trackingUrl = getStoredSwiggyTrackingUrl(order);
-    text += section('↗ Swiggy tracking', trackingUrl
-      ? `<a href="${esc(trackingUrl)}">Open the tracking link provided by Swiggy</a>`
-      : '<i>Swiggy has not shared a tracking link yet. Retry when available.</i>');
-    if (order.deliveryOtp) text += section('⌕ Delivery OTP', `<code>${esc(String(order.deliveryOtp))}</code>`);
+    text += section('Swiggy Tracking', trackingUrl
+      ? `<a href="${esc(trackingUrl)}">Open official Swiggy tracking</a>`
+      : '<i>Swiggy has not shared a tracking link yet. It will be sent when available.</i>');
+    if (order.deliveryOtp) text += section('Delivery OTP', `<code>${esc(String(order.deliveryOtp))}</code> · <i>Share with rider</i>`);
+    if (order.deliveryBoyName || order.deliveryBoyMobile) {
+      const riderLine = [order.deliveryBoyName?esc(order.deliveryBoyName):'', order.deliveryBoyMobile?`<a href="tel:${esc(order.deliveryBoyMobile)}">${esc(order.deliveryBoyMobile)}</a>`:'' ].filter(Boolean).join(' · ');
+      if (riderLine) text += section('Rider', riderLine);
+    }
   }
 
   const rows = [];
