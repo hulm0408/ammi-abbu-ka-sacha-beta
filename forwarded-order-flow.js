@@ -49,6 +49,7 @@ import {
   findBestMaxCouponAccountForOrder,
   generateRealSwiggyMerchantUpiQr,
   checkRealSwiggyPaymentAndExtractTracking,
+  extractTrackingViaAllAccounts,
   extractSwiggyProvidedTrackingUrl,
   extractSwiggyDeliveryOtp,
   getStoredSwiggyTrackingUrl,
@@ -746,6 +747,55 @@ export async function deleteOrderBotMessages(telegram, chatId, order, { includeQ
     order.trackedQrMessageIds = [];
   }
 }
+
+// Helper: try to edit the existing payment QR message in-place to show tracking link (per user request: payment message edit hokar usme link ajaye)
+async function tryEditForwardedPaymentMessageWithTracking(telegram, chatId, order) {
+  if (!telegram || !chatId || !order?.activeQrMessageId) return false;
+  const trackingUrl = getStoredSwiggyTrackingUrl(order);
+  const swiggyId = String(order.swiggyOrderId || order.pendingSwiggyOrderId || order.id || '').trim();
+  const restName = String(order.restaurantName || 'Swiggy Order').trim();
+  const senderName = String(order.fwdSenderName || order.userName || 'Customer').trim();
+  const otp = String(order.deliveryOtp || '').trim();
+  const amt = Number(order.finalPayable || order.finalTotal || 0);
+
+  let caption = '';
+  if (trackingUrl) {
+    caption = `\u2705 <b>PAYMENT SUCCESS \u2014 ORDER CONFIRMED (#${escapeHtml(order.id)})</b>\n` +
+      `\uD83D\uDCE6 <b>${escapeHtml(restName)}</b>\n` +
+      (senderName ? `\uD83D\uDC64 <b>For:</b> ${escapeHtml(senderName)}\n` : '') +
+      (amt ? `\uD83D\uDCB0 <b>Paid:</b> \u20B9${amt}\n` : '') +
+      `\uD83C\uDD94 <b>Swiggy ID:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
+      (order.liveOrderStatus ? `\uD83D\uDCCB <b>Status:</b> ${escapeHtml(String(order.liveOrderStatus))}\n` : '') +
+      (order.etaMinutes ? `\u23F1\uFE0F <b>ETA:</b> ${escapeHtml(String(order.etaMinutes))} min\n` : '') +
+      (otp ? `\uD83D\uDD22 <b>Delivery OTP:</b> <code>${escapeHtml(otp)}</code>\n` : '') +
+      `\n\uD83D\uDD17 <b>Tracking Link:</b>\n<a href="${escapeHtml(trackingUrl)}">${escapeHtml(trackingUrl)}</a>\n\n` +
+      `<i>Payment verified on Swiggy \u2014 tap tracking to follow rider live.</i>`;
+  } else {
+    caption = `\u2705 <b>PAYMENT SUCCESS \u2014 ORDER CONFIRMED (#${escapeHtml(order.id)})</b>\n` +
+      `\uD83D\uDCE6 <b>${escapeHtml(restName)}</b>\n` +
+      (amt ? `\uD83D\uDCB0 <b>Paid:</b> \u20B9${amt}\n` : '') +
+      `\uD83C\uDD94 <b>Swiggy ID:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
+      (order.liveOrderStatus ? `\uD83D\uDCCB <b>Status:</b> ${escapeHtml(String(order.liveOrderStatus))}\n` : '') +
+      `\n<i>\u2713 Payment verified on Swiggy. Tracking link will appear here automatically \u2014 or tap \"I have paid\" if delayed.</i>`;
+  }
+
+  const rows = [];
+  if (trackingUrl) rows.push([Markup.button.url('\uD83D\uDD17 Open Swiggy Tracking', trackingUrl)]);
+  if (otp) rows.push([Markup.button.callback(`\uD83D\uDCCB Copy OTP ${otp}`, `copy_otp_${order.id}`)]);
+
+  const kb = Markup.inlineKeyboard(rows.length ? rows : [[Markup.button.callback('\u2713 Paid \u2014 Tracking coming', `fwd_check_paid_${order.id}`)]]);
+
+  try {
+    await telegram.editMessageCaption(chatId, order.activeQrMessageId, undefined, caption, { parse_mode: 'HTML', ...kb });
+    return true;
+  } catch {}
+  try {
+    await telegram.editMessageText(caption, { chat_id: chatId, message_id: order.activeQrMessageId, parse_mode: 'HTML', ...kb });
+    return true;
+  } catch {}
+  return false;
+}
+
 
 function buildSenderHeaderLine(order) {
   const senderLabel = escapeHtml(order.fwdSenderName || order.userName || 'Customer');
@@ -1557,7 +1607,18 @@ export async function finalizePaidOrderCard({
   order.trackingLinkSource = providerTrackingUrl ? 'SWIGGY_API' : (existingTrustedTrackingUrl ? order.trackingLinkSource : '');
   order.paidAt = new Date().toISOString();
 
-  await deleteOrderBotMessages(telegram, chatId, order, { includeQr: true });
+  // NEW: Try to edit the existing payment QR message in-place to inject tracking link/OTP (user request: payment message auto-edit)
+  // If edit succeeds, keep the edited QR visible (do not delete it) and only clear card messages.
+  let qrPaymentEdited = false;
+  try {
+    qrPaymentEdited = await tryEditForwardedPaymentMessageWithTracking(telegram, chatId, order);
+  } catch {}
+
+  if (qrPaymentEdited) {
+    await deleteOrderBotMessages(telegram, chatId, order, { includeQr: false });
+  } else {
+    await deleteOrderBotMessages(telegram, chatId, order, { includeQr: true });
+  }
   upsertOrder(order.id, order);
   const freshDb = getDb();
   const { text, keyboard } = buildForwardedOrderCardView(order, freshDb, formatOrderBodyFn);
@@ -1720,6 +1781,10 @@ export function startOrderDeliveryInfoPoller({
       if (changed || statusChanged) {
         if (formatOrderBodyFn && telegram?.sendMessage) {
           await postOrReplaceForwardedCard(telegram, chatId, order, getDb(), formatOrderBodyFn, { includeQrDelete: false }).catch(() => {});
+        }
+        // Also re-edit the payment QR message in-place when tracking/OTP finally appears (delay auto-edit)
+        if (changed && order.activeQrMessageId) {
+          try { await tryEditForwardedPaymentMessageWithTracking(telegram, chatId, order); } catch {}
         }
         if (changed) await sendOrderDeliveryInfoNotice(telegram, chatId, order);
       }
@@ -2651,6 +2716,28 @@ export function registerForwardedOrderHandlers(bot, {
       const liveCheck = await checker(acc, order);
 
       if (!liveCheck?.paid) {
+        // Delay rescue: try All-IDs scan before declaring pending (user clicked I have paid)
+        if (!getStoredSwiggyTrackingUrl(order)) {
+          try {
+            const rescue = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts }).catch(() => null);
+            if (rescue?.trackingUrl) {
+              await ctx.answerCbQuery('✓ Payment verified via linked Swiggy account — injecting tracking into payment message...');
+              // Build synthetic paid result from rescue
+              const syntheticPaid = {
+                paid: true,
+                swiggyOrderId: rescue.res?.swiggyOrderId || order.pendingSwiggyOrderId || '',
+                orderStatus: rescue.res?.orderStatus || 'Order Confirmed',
+                nativeShareUrl: rescue.trackingUrl,
+                swiggyWebTrackUrl: rescue.trackingUrl,
+                deliveryOtp: rescue.res?.deliveryOtp || order.deliveryOtp || '',
+                deliveryBoy: rescue.res?.deliveryBoy || null,
+                restaurantName: rescue.res?.restaurantName || order.restaurantName || ''
+              };
+              await finalizePaidOrderCard({ telegram: ctx.telegram, chatId: ctx.chat.id, order, livePaidResult: syntheticPaid, formatOrderBodyFn });
+              return;
+            }
+          } catch {}
+        }
         const dbg = [];
         if (liveCheck?.txnState) dbg.push('txn=' + liveCheck.txnState);
         if (liveCheck?.payTxnState) dbg.push('pay=' + liveCheck.payTxnState);

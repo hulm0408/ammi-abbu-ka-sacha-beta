@@ -78,6 +78,7 @@ import {
   inspectAccountOrderHistoryAndOffers,
   generateRealSwiggyMerchantUpiQr,
   checkRealSwiggyPaymentAndExtractTracking,
+  extractTrackingViaAllAccounts,
   releaseSwiggyAccountReservation,
   startWafKeepWarmLoop
 } from './swiggy-cart.js';
@@ -10053,6 +10054,62 @@ async function rejectUserOrderBillAction(uidStr, orderId) {
   return { ok: true, message: 'Order returned to your Telegram order screen so you can edit the Cart or Address.' };
 }
 
+
+// Helper: auto-edit the customer payment message in-place to inject tracking link/OTP after Swiggy payment (user request: payment message edit hokar usme link ajaye)
+async function tryEditCustomerPaymentMessageWithTracking(order) {
+  if (!order || !bot?.telegram) return false;
+  const msgId = order.customerPaymentMessageId || order.activeQrMessageId || null;
+  if (!msgId) return false;
+  const chatId = String(order.userChatId || order.userId || order.fwdSenderUserId || '').trim();
+  if (!chatId) return false;
+  const trackingUrl = getStoredSwiggyTrackingUrl(order);
+  const swiggyId = String(order.swiggyOrderId || order.pendingSwiggyOrderId || order.id || '').trim();
+  const restName = String(order.restaurantName || 'Swiggy Order').trim();
+  const amt = Number(order.finalPayable || order.finalTotal || 0);
+  const otp = String(order.deliveryOtp || '').trim();
+
+  // Build success caption — same style as forwarded edit helper
+  let caption = '';
+  if (trackingUrl) {
+    caption = `\u2705 <b>PAYMENT VERIFIED \u2014 ORDER CONFIRMED (#${escapeHtml(order.id)})</b>\n` +
+      `\uD83D\uDCE6 <b>${escapeHtml(restName)}</b>\n` +
+      (amt ? `\uD83D\uDCB0 <b>Paid:</b> \u20B9${amt}\n` : '') +
+      `\uD83C\uDD94 <b>Swiggy ID:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
+      (order.liveOrderStatus ? `\uD83D\uDCCB <b>Status:</b> ${escapeHtml(String(order.liveOrderStatus))}\n` : '') +
+      (order.etaMinutes ? `\u23F1\uFE0F <b>ETA:</b> ${escapeHtml(String(order.etaMinutes))} min\n` : '') +
+      (otp ? `\uD83D\uDD22 <b>Delivery OTP:</b> <code>${escapeHtml(otp)}</code>\n` : '') +
+      `\n\uD83D\uDD17 <b>Live Tracking Link:</b>\n<a href="${escapeHtml(trackingUrl)}">${escapeHtml(trackingUrl)}</a>\n\n` +
+      `<i>Swiggy payment confirmed — tap tracking to follow rider live.</i>`;
+  } else {
+    caption = `\u2705 <b>PAYMENT VERIFIED \u2014 ORDER CONFIRMED (#${escapeHtml(order.id)})</b>\n` +
+      `\uD83D\uDCE6 <b>${escapeHtml(restName)}</b>\n` +
+      (amt ? `\uD83D\uDCB0 <b>Paid:</b> \u20B9${amt}\n` : '') +
+      `\uD83C\uDD94 <b>Swiggy ID:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
+      (order.liveOrderStatus ? `\uD83D\uDCCB <b>Status:</b> ${escapeHtml(String(order.liveOrderStatus))}\n` : '') +
+      `\n<i>\u2713 Payment verified on Swiggy. Tracking link will be injected here automatically when Swiggy publishes it.</i>`;
+  }
+
+  const rows = [];
+  if (trackingUrl) rows.push([Markup.button.url('\uD83D\uDD17 Track Order Live', trackingUrl)]);
+  if (otp) rows.push([Markup.button.callback(`\uD83D\uDCCB Copy OTP ${otp}`, `copy_otp_${order.id}`)]);
+  if (trackingUrl && otp) rows.push([Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]);
+  else if (!trackingUrl) rows.push([Markup.button.callback('Check payment status (Refresh Tracking)', `user_paid_status_${order.id}`)]);
+  else rows.push([Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]);
+
+  const kb = Markup.inlineKeyboard(rows.length ? rows : [[Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]]);
+
+  try {
+    await bot.telegram.editMessageCaption(chatId, msgId, undefined, caption, { parse_mode: 'HTML', ...kb });
+    return true;
+  } catch {}
+  try {
+    await bot.telegram.editMessageText(caption, { chat_id: chatId, message_id: msgId, parse_mode: 'HTML', ...kb });
+    return true;
+  } catch {}
+  return false;
+}
+
+
 async function checkOrderPaidStatusOnly(orderId) {
   const db = getDb();
   const order = db.orders?.[orderId];
@@ -10060,7 +10117,24 @@ async function checkOrderPaidStatusOnly(orderId) {
   const wasAlreadyCompleted = order.status === 'COMPLETED';
   const acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
   if (!acc) {
+    // Try All-IDs extract as fallback when selected account missing but order already paid (delay case: I have paid click)
+    if (wasAlreadyCompleted && !getStoredSwiggyTrackingUrl(order)) {
+      try {
+        const fallback = typeof extractTrackingViaAllAccounts === 'function'
+          ? await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts }).catch(() => null)
+          : null;
+        if (fallback?.trackingUrl) {
+          // persisted inside extractTrackingViaAllAccounts; reload
+          const fresh = getDb().orders?.[orderId];
+          if (fresh) { order.trackingLink = fresh.trackingLink; order.trackingLinkSource = fresh.trackingLinkSource; }
+        }
+      } catch {}
+    }
     const trackingLink = getStoredSwiggyTrackingUrl(order);
+    if (wasAlreadyCompleted) {
+      // Auto-edit payment message to inject link on delayed I-have-paid click
+      try { await tryEditCustomerPaymentMessageWithTracking(order); } catch {}
+    }
     return wasAlreadyCompleted
       ? { paid: true, trackingLink, deliveryOtp: order.deliveryOtp || '', message: trackingLink ? '✓ Swiggy tracking is available.' : '… Swiggy has not shared a tracking link yet.' }
       : { paid: false, message: 'Waiting for verified payment on the Swiggy gateway (status check only).' };
@@ -10079,13 +10153,61 @@ async function checkOrderPaidStatusOnly(orderId) {
   }
   if (!check?.paid) {
     if (wasAlreadyCompleted) {
+      // Delay case: I have paid already true but tracking still pending — try All-IDs live extract before responding
+      if (!getStoredSwiggyTrackingUrl(order)) {
+        try {
+          const fallback = typeof extractTrackingViaAllAccounts === 'function'
+            ? await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts }).catch(() => null)
+            : null;
+          if (fallback?.trackingUrl) {
+            const fresh2 = getDb().orders?.[orderId];
+            if (fresh2) { order.trackingLink = fresh2.trackingLink; order.trackingLinkSource = fresh2.trackingLinkSource; order.deliveryOtp = fresh2.deliveryOtp || order.deliveryOtp; }
+          }
+        } catch {}
+      }
       const trackingLink = getStoredSwiggyTrackingUrl(order);
+      try { await tryEditCustomerPaymentMessageWithTracking(order); } catch {}
       return {
         paid: true,
         trackingLink,
         deliveryOtp: order.deliveryOtp || '',
         message: trackingLink ? '✓ Payment is verified; Swiggy tracking is available.' : '✓ Payment is verified. Swiggy has not published tracking yet.'
       };
+    }
+    // Delay rescue: primary ID says pending but payment may have settled on another saved account — try All-IDs before declaring pending
+    // This satisfies user request: "I have paid" click par turant link aa jaye even if gateway delayed
+    if (!getStoredSwiggyTrackingUrl(order)) {
+      try {
+        const rescue = typeof extractTrackingViaAllAccounts === 'function'
+          ? await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts }).catch(() => null)
+          : null;
+        if (rescue?.trackingUrl) {
+          const freshRescue = getDb().orders?.[orderId];
+          if (freshRescue) {
+            order.trackingLink = freshRescue.trackingLink || rescue.trackingUrl;
+            order.trackingLinkSource = freshRescue.trackingLinkSource || 'SWIGGY_API';
+            order.deliveryOtp = freshRescue.deliveryOtp || rescue.res?.deliveryOtp || order.deliveryOtp;
+            order.swiggyOrderId = freshRescue.swiggyOrderId || rescue.res?.swiggyOrderId || order.swiggyOrderId;
+            order.liveOrderStatus = freshRescue.liveOrderStatus || rescue.res?.orderStatus || order.liveOrderStatus;
+          } else {
+            order.trackingLink = rescue.trackingUrl;
+            order.trackingLinkSource = 'SWIGGY_API';
+            order.deliveryOtp = rescue.res?.deliveryOtp || order.deliveryOtp;
+            order.swiggyOrderId = rescue.res?.swiggyOrderId || order.swiggyOrderId;
+          }
+          order.status = 'COMPLETED';
+          order.cardStage = 'PAID_CONFIRMED';
+          order.paidAt = new Date().toISOString();
+          order.uxStage = 'SCREEN_05_TRACKING_READY';
+          saveDb(getDb());
+          try { await tryEditCustomerPaymentMessageWithTracking(order); } catch {}
+          const firstBossChatId2 = getDb().config?.bossIds?.[0] || Number(process.env.BOSS_ID || 0);
+          try { await sendOrderDeliveryInfoNotice(bot.telegram, firstBossChatId2, order); } catch {}
+          try { startOrderDeliveryInfoPoller({ telegram: bot.telegram, chatId: firstBossChatId2, orderId: order.id, formatOrderBodyFn: formatUserOrderCardText }); } catch {}
+          const t2 = getStoredSwiggyTrackingUrl(order);
+          return { paid: true, trackingLink: t2, deliveryOtp: order.deliveryOtp || '', message: t2 ? '✓ Payment verified via linked Swiggy account. Swiggy tracking is available.' : '✓ Payment verified via linked account. Tracking will be sent when available.' };
+        }
+      } catch {}
     }
     const dbg = [];
     if (check?.txnState) dbg.push('txn=' + check.txnState);
@@ -10116,6 +10238,9 @@ async function checkOrderPaidStatusOnly(orderId) {
   order.deliveryBoyMobile = check.deliveryBoy?.mobile || order.deliveryBoyMobile || '';
   order.uxStage = getStoredSwiggyTrackingUrl(order) ? 'SCREEN_05_TRACKING_READY' : 'SCREEN_05_PAID_TRACKING_DELAYED';
   saveDb(db);
+
+  // Auto-edit the customer's payment QR message in-place to inject tracking link/OTP (Swiggy payment hote hi edit)
+  try { await tryEditCustomerPaymentMessageWithTracking(order); } catch {}
 
   const firstBossChatId = db.config?.bossIds?.[0] || Number(process.env.BOSS_ID || 0);
   await sendOrderDeliveryInfoNotice(bot.telegram, firstBossChatId, order);
