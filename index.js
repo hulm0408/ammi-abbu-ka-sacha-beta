@@ -473,26 +473,23 @@ function getUserReplyKeyboard(draft = {}) {
   ]).resize();
 }
 
-// Boss Bottom Menu - Clean minimal panel entry points
+// Boss Bottom Menu - Single dedicated Extract Tracking button (all dummy buttons removed per user request)
 function getBossReplyKeyboard() {
   return Markup.keyboard([
     [
-      { text: '★ Boss Panel', style: 'primary' },
-      { text: '▣ Pending Orders', style: 'primary' }
-    ],
-    [
-      { text: '📦 Orders Done', style: 'success' },
-      { text: '▤ Order History', style: 'success' }
-    ],
-    [
-      { text: '× Cancelled Orders', style: 'danger' },
-      { text: '◈ Account Manager', style: 'primary' }
-    ],
-    [
-      { text: '× Close', style: 'danger' }
+      { text: '🔗 Extract Tracking Link' }
     ]
-  ]).resize().persistent(false);
+  ]).resize().persistent(false).oneTime(false).selective(false);
 }
+
+bot.hears(['🔗 Extract Tracking Link', 'Extract Tracking Link', 'extract tracking', '/extract'], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return;
+  userWaitState[ctx.from.id] = { action: 'waiting_boss_extract_tracking' };
+  await ctx.reply(
+    '🔗 <b>Extract Tracking Link — All IDs scan</b>\nSend the <b>Order ID</b> (e.g. <code>FWD9670</code>) or Swiggy Order ID. I will check every logged-in Swiggy ID for its tracking link.',
+    { parse_mode: 'HTML', reply_markup: { force_reply: true, input_field_placeholder: 'Enter Order ID' } }
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Order card renderer — compact Swiggy-style receipt:

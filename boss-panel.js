@@ -98,44 +98,22 @@ export function buildBossPanelHome(db) {
     sub('Manage orders, accounts, and offers from here.'),
   ].join('\n'));
 
+  // Clean minimal Boss Panel — only necessary buttons, all dummy buttons removed
   const keyboard = Markup.inlineKeyboard([
-    // ===== ALAG TYPE KE RARE BUTTONS — bahut kam log jaante hain (no Mini App) =====
     [
-      { text: '✨ Ultra Card Preview', callback_data: 'rare_ultra_card' },
-      { text: '📋 Copy Bot Link', copy_text: { text: PUBLIC_SERVICE_URL } },
+      { text: '🔗 Extract Tracking Link', callback_data: 'boss_extract_tracking_prompt' }
     ],
     [
-      { text: '↗️ Share Bot', switch_inline_query: 'Try this Ultra Swiggy Bot — rare buttons!' },
-      { text: '👥 Add to Group', switch_inline_query_chosen_chat: { query: 'Swiggy Ultra', allow_user_chats: false, allow_group_chats: true, allow_channel_chats: true } },
-    ],
-    [
-      { text: '💳 Pay Instant', url: 'https://www.swiggy.com/payments' },
-      { text: '📦 Orders History', callback_data: 'boss_view_archive' },
-    ],
-    [
-      { text: '📦 Orders Done (All IDs)', callback_data: 'boss_view_orders_done' },
-      { text: '▣ Pending Orders', callback_data: 'boss_view_pending' },
-    ],
-    [
-      { text: '🔗 Extract Delivery Link (All IDs)', callback_data: 'boss_extract_tracking_prompt' },
-      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' },
-    ],
-    [
-      { text: '☎ Login with Number', callback_data: 'boss_login_with_number' },
-      { text: '▤ Login with JSON', callback_data: 'boss_login_with_json' },
+      { text: '📦 Orders Done', callback_data: 'boss_view_orders_done' },
+      { text: '▣ Pending Orders', callback_data: 'boss_view_pending' }
     ],
     [
       { text: '◉ Connected Accounts', callback_data: 'boss_view_accounts' },
-      { text: '▤ Order History', callback_data: 'boss_view_archive' },
+      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' }
     ],
     [
-      { text: '× Cancelled Orders', callback_data: 'boss_view_cancelled_orders' },
-      { text: '▣ Claim Offers (All Accounts)', callback_data: 'boss_claim_all_event_offers' },
-    ],
-    [
-      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' },
-      { text: '× Close Panel', callback_data: 'close_menu' },
-    ],
+      { text: '× Close', callback_data: 'close_menu' }
+    ]
   ]);
 
   return { text, keyboard };
