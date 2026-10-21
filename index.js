@@ -398,7 +398,6 @@ export function formatUserOrderCardText(order, isBossView = false) {
     }
     if (order.packingCharges > 0) billRows.push(['Packing Charges', `₹${order.packingCharges}`]);
     if (order.taxesAndCharges > 0) billRows.push(['GST & Other Charges', `₹${order.taxesAndCharges}`]);
-    billRows.push([DIVIDER, '']);
     if (order.totalSavings > 0) billRows.push(['Total Savings', `₹${order.totalSavings}`]);
     if (order.finalPayable) billRows.push([`<b>Final Total</b>`, `<b>₹${order.finalPayable}</b>`]);
     billPart = section('💰 Final Bill', table(billRows));
@@ -517,8 +516,7 @@ function formatBossAccountReviewCard(order) {
   const accName = acc?.name || accPhone;
 
   let text = `${heading(`📱 [ SWIGGY ACCOUNT: ${esc(accName)} (${esc(accPhone)}) ]`)}` +
-    `\n${heading(`🌸 Order #${order.id} Review & Approval Screen`)}` +
-    `\n${divider()}\n`;
+    `\n${heading(`🌸 Order #${order.id} Review & Approval Screen`)}`;
 
   const ad = order.addressDetails || parseAddressDetails(order.address);
 
@@ -592,7 +590,6 @@ function formatBossAccountReviewCard(order) {
   }
   if (order.packingCharges > 0) billRows.push(['Packing Charges', `₹${order.packingCharges}`]);
   if (order.taxesAndCharges > 0) billRows.push(['GST & Other Charges', `₹${order.taxesAndCharges}`]);
-  billRows.push([DIVIDER, '']);
   if (order.totalSavings > 0) billRows.push(['Total Savings', `₹${order.totalSavings}`]);
   billRows.push([`<b>Final Total</b>`, `<b>₹${order.finalPayable || order.subtotal || 0}</b>`]);
   text += section('💰 Final Bill', table(billRows));
@@ -607,7 +604,6 @@ function formatBossAccountReviewCard(order) {
   if (order.swiggyPaymentUrl) {
     payBody += `🔗 Link: <a href="${esc(order.swiggyPaymentUrl)}">Open Swiggy Checkout</a>\n`;
   }
-  payBody += divider();
   if (order.paymentSentToUser) {
     payBody += `🟢 <b>Status:</b> <b>Delivered to Customer (Awaiting Payment)</b>`;
   } else {
