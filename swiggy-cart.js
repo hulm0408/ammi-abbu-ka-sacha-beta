@@ -3756,8 +3756,8 @@ export async function fetchAccountOrders(cookiesOrAcc) {
         }
 
         const nativeTrackingUrl = extractSwiggyProvidedTrackingUrl(o, trkData);
-        const officialFallbackUrl = orderId ? `https://www.swiggy.com/orders/track/${orderId}` : 'https://www.swiggy.com/orders';
-        const finalTrackingUrl = nativeTrackingUrl || officialFallbackUrl;
+        // Only real Swiggy-provided tracking links are ever shown. No synthetic /track/<orderId> fallback.
+        const finalTrackingUrl = nativeTrackingUrl || '';
 
         const deliveryOtp = extractSwiggyDeliveryOtp(o, trkData, { delivery: deData });
         const liveStatus = trkData?.order_status_details?.status_message || o.order_status || 'Delivered';
