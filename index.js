@@ -100,6 +100,14 @@ import {
   buildCleanUserPaymentPendingCard,
   createOrderUxHttpHandler
 } from './order-ux-portal.js';
+import {
+  buildBossPanelHome,
+  buildBossPendingList,
+  buildBossOrderCard as formatBossOrderCard,
+  buildBossArchiveList,
+  buildBossCancelledList,
+  bossAlert,
+} from './boss-panel.js';
 
 dotenv.config();
 
@@ -270,36 +278,20 @@ function getUserReplyKeyboard(draft = {}) {
   ]).resize();
 }
 
-// Boss Bottom Menu - Pure Admin Controls (Never customer buttons)
+// Boss Bottom Menu - Clean minimal panel entry points
 function getBossReplyKeyboard() {
   return Markup.keyboard([
     [
-      { text: 'Order Screen', style: 'primary' },
-      { text: 'Pending Orders', style: 'primary' }
+      { text: '👑 Boss Panel', style: 'primary' },
+      { text: '📦 Pending Orders', style: 'primary' }
     ],
     [
-      { text: '🏆 Success Archive', style: 'success' },
-      { text: '🗑️ Cancelled Orders', style: 'danger' }
+      { text: '🗑️ Cancelled Orders', style: 'danger' },
+      { text: '📜 Order History', style: 'success' }
     ],
     [
-      { text: 'Connected Accounts', style: 'primary' },
-      { text: 'Claim Free Cash', style: 'success' }
-    ],
-    [
-      { text: 'Login with JSON', style: 'primary' },
-      { text: 'Login with Number', style: 'primary' }
-    ],
-    [
-      { text: 'Slot Status', style: 'primary' },
-      { text: 'Total Slots', style: 'primary' }
-    ],
-    [
-      { text: 'Total Left', style: 'primary' },
-      { text: 'Main Menu', style: 'primary' }
-    ],
-    [
-      { text: 'Set UPI ID', style: 'primary' },
-      { text: 'Close', style: 'danger' }
+      { text: '🔐 Account Manager', style: 'primary' },
+      { text: '❌ Close', style: 'danger' }
     ]
   ]).resize().persistent(false);
 }
@@ -748,72 +740,17 @@ function getUserScreen(userId, user) {
   return { text, keyboard: Markup.inlineKeyboard(inlineButtons) };
 }
 
-// Boss Panel Text
+// Boss Panel Home — clean Apple-style panel (built in boss-panel.js)
+function getBossPanelHome() {
+  return buildBossPanelHome(getDb());
+}
+
 function getBossPanelText() {
-  const db = getDb();
-  const pendingCount = Object.values(db.orders).filter(o => o.status === 'PENDING').length;
-  const acceptedCount = Object.values(db.orders).filter(o => o.status === 'ACCEPTED').length;
-  const completedCount = Object.values(db.orders).filter(o => o.status === 'COMPLETED').length;
-
-  const accounts = db.config.accounts || {};
-  let accText = '';
-  for (const [key, acc] of Object.entries(accounts)) {
-    const status = acc.isLoggedIn ? `🟢 Logged In (${acc.phone || 'Ready'})` : '⚪ Not Logged In';
-    accText += `• ${acc.name || key}: <b>${status}</b>\n`;
-  }
-
-  return `👑 <b>BOSS CARE & SWIGGY PANEL</b>\n\n` +
-    `👥 <b>Connected Swiggy Accounts (${Object.keys(accounts).length}):</b>\n` +
-    (accText || '<i>No accounts added yet. Tap [ ➕ Add Account ] below.</i>\n') + '\n' +
-    `📊 <b>Orders Overview:</b>\n` +
-    `• ⏳ Pending: <b>${pendingCount}</b> | 🟢 In Progress: <b>${acceptedCount}</b> | 🏁 Done: <b>${completedCount}</b>\n\n` +
-    `<i>Tap "➕ Add New Account" or "🔑 Login an Account" to manage accounts independently!</i>`;
+  return buildBossPanelHome(getDb()).text;
 }
 
 function getBossPanelKeyboard() {
-  const defaultBossId = Number(process.env.BOSS_ID || 6484999726);
-  const accMgrUrl = buildBossAccountsPortalUrl(defaultBossId);
-  return {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          /^https:\/\//i.test(accMgrUrl)
-            ? { text: '🔐 Account Manager (OTP + JSON Vault)', web_app: { url: accMgrUrl } }
-            : { text: '🔐 Account Manager (OTP + JSON Vault)', url: accMgrUrl }
-        ],
-        [
-          { text: 'Login with Number', callback_data: 'boss_login_with_number', style: 'primary' },
-          { text: 'Login with JSON', callback_data: 'boss_login_with_json', style: 'primary' }
-        ],
-        [
-          { text: 'View Accounts', callback_data: 'boss_view_accounts', style: 'primary' },
-          { text: 'Refresh All Accounts', callback_data: 'boss_refresh_all_accounts', style: 'primary' }
-        ],
-        [
-          { text: 'Export Accounts', callback_data: 'boss_export_picker', style: 'primary' },
-          { text: 'Pending Orders', callback_data: 'boss_view_pending', style: 'primary' }
-        ],
-        [
-          { text: '🗑️ Cancelled Orders', callback_data: 'boss_view_cancelled_orders', style: 'danger' }
-        ],
-        [
-          { text: 'Total Slots', callback_data: 'boss_prompt_total_slots', style: 'primary' },
-          { text: 'Total Left', callback_data: 'boss_prompt_slots_left', style: 'primary' }
-        ],
-        [
-          { text: '🎁 Claim ₹50 Off Offers (All Accounts)', callback_data: 'boss_claim_all_event_offers', style: 'success' }
-        ],
-        [
-          { text: 'Claim Free Cash', callback_data: 'boss_claim_freecash', style: 'success' },
-          { text: 'Set UPI ID', callback_data: 'boss_prompt_set_upi', style: 'primary' }
-        ],
-        [
-          { text: 'Refresh Status', callback_data: 'boss_refresh', style: 'primary' },
-          { text: 'Close', callback_data: 'close_menu', style: 'danger' }
-        ]
-      ]
-    }
-  };
+  return { reply_markup: buildBossPanelHome(getDb()).keyboard };
 }
 
 const PUBLIC_APP_URL = (process.env.RENDER_EXTERNAL_URL || 'https://ammi-abbu-ka-sacha-beta.onrender.com').replace(/\/+$/, '');
@@ -846,127 +783,6 @@ function makeFullSessionCopyButton(ctx, label, accKey, fullValue, fallbackCallba
     return { text: label, web_app: { url: buildFullCodeCopyWebAppUrl(accKey) }, style };
   }
   return { text: label, callback_data: fallbackCallback || `copy_code_${accKey}`, style };
-}
-
-// Format Order Card for Boss (Ultra Compact, Clean & State-Driven)
-function formatBossOrderCard(order) {
-  let statusBadge = '⏳ PENDING';
-  if (order.status === 'ACCEPTED') statusBadge = '🟢 ACCEPTED';
-  else if (order.status === 'REJECTED') statusBadge = '❌ REJECTED';
-  else if (order.status === 'COMPLETED') statusBadge = '🏁 ORDER SUCCESS';
-  else if (order.status === 'CANCELLED') statusBadge = `🗑️ ORDER CANCELLED (#${order.id})`;
-
-  const userProfileUrl = `tg://user?id=${order.userId}`;
-  const senderLink = `<a href="${userProfileUrl}">${escapeHtml(order.userName || 'Customer')}</a>`;
-  const idLink = `<a href="${userProfileUrl}">${order.userId}</a>`;
-  const handleText = order.handle ? ` (@${escapeHtml(order.handle.replace(/^@/, ''))})` : '';
-
-  const paymentStepNote = order.qrSent
-    ? `\n💳 <i>Status: waiting for user payment (if user confirms, send tracking link)</i>\n`
-    : (order.paymentSentToUser ? `\n⏳ <i>Status: waiting for user confirmation — get qr here once confirmed</i>\n` : '');
-
-  let text = `🌸 <b>[ ORDER #${order.id} ] — ${statusBadge}</b>\n\n` +
-    `👤 <b>Customer:</b> ${senderLink}${handleText}\n` +
-    `🆔 <b>User ID:</b> ${idLink}\n\n` +
-    formatUserOrderCardText(order) + '\n' +
-    paymentStepNote + '\n';
-
-  if (order.cart) text += `🛒 <b>Cart Link:</b>\n<code>${escapeHtml(order.cart)}</code>\n\n`;
-  if (order.address) text += `📍 <b>Address Link / Location:</b>\n<code>${escapeHtml(order.address)}</code>\n`;
-
-  text += `⏰ <b>Time:</b> ${new Date(order.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}\n`;
-
-  const rows = [];
-  const db = getDb();
-  const accounts = db.config?.accounts || {};
-  const accEntries = Object.entries(accounts);
-
-  // STATE 1: PENDING Order -> Boss can immediately auto-pick Max Coupon Account, choose account, Accept/Reject, open links, and send genuine payment QR
-  if (order.status === 'PENDING') {
-    rows.push([
-      Markup.button.callback('🏆 Auto Max Coupon (Best Account)', `boss_auto_max_coupon_${order.id}`)
-    ]);
-
-    // 1. ACCOUNT PICKER ROW(S) DIRECTLY ON ORDER CARD
-    if (order.selectedAccount && accounts[order.selectedAccount]) {
-      const curAcc = accounts[order.selectedAccount];
-      const curPhone = curAcc.phone || curAcc.mobile || curAcc.name || order.selectedAccount;
-      rows.push([
-        Markup.button.callback(`📱 Active Acc: ${curPhone} ✅`, `boss_choose_acc_picker_${order.id}`),
-        Markup.button.callback('🔄 Switch Acc', `boss_choose_acc_picker_${order.id}`)
-      ]);
-    } else {
-      // Order just arrived! Give Boss immediate account choice buttons!
-      const loggedInAccs = accEntries.filter(([k, a]) => a.isLoggedIn || a.cookies);
-      const topAccs = loggedInAccs.length > 0 ? loggedInAccs.slice(0, 4) : accEntries.slice(0, 4);
-
-      for (let i = 0; i < topAccs.length; i += 2) {
-        const row = [];
-        const [k1, a1] = topAccs[i];
-        const p1 = a1.phone || a1.mobile || a1.name || k1;
-        row.push(Markup.button.callback(`📱 Use: ${p1}`, `boss_select_acc_${order.id}_${k1}`));
-        if (topAccs[i + 1]) {
-          const [k2, a2] = topAccs[i + 1];
-          const p2 = a2.phone || a2.mobile || a2.name || k2;
-          row.push(Markup.button.callback(`📱 Use: ${p2}`, `boss_select_acc_${order.id}_${k2}`));
-        }
-        rows.push(row);
-      }
-      if (accEntries.length > 4) {
-        rows.push([
-          Markup.button.callback(`👥 Choose Other Acc (${accEntries.length} Total)`, `boss_choose_acc_picker_${order.id}`)
-        ]);
-      }
-    }
-
-    rows.push([
-      Markup.button.callback('✅ Accept Order', `boss_action_accept_${order.id}`),
-      Markup.button.callback('❌ Reject Order', `boss_action_sorry_${order.id}`)
-    ]);
-    rows.push([
-      makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
-      makeCopyButton('🔵 Copy Address', order.address || '', `boss_copy_addr_${order.id}`)
-    ]);
-    rows.push([
-      Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`)
-    ]);
-  }
-  // STATE 2: ACCEPTED Order -> Tracking, Done, Reject, Copy, Message User
-  else if (order.status === 'ACCEPTED') {
-    if (order.selectedAccount && accounts[order.selectedAccount]) {
-      const curAcc = accounts[order.selectedAccount];
-      const curPhone = curAcc.phone || curAcc.mobile || curAcc.name || order.selectedAccount;
-      rows.push([
-        Markup.button.callback(`📱 Active Acc: ${curPhone} ✅`, `boss_choose_acc_picker_${order.id}`),
-        Markup.button.callback('🔄 Switch Acc', `boss_choose_acc_picker_${order.id}`)
-      ]);
-    }
-
-    rows.push([
-      makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
-      makeCopyButton('🔵 Copy Address', order.address || '', `boss_copy_addr_${order.id}`)
-    ]);
-    rows.push([
-      Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`),
-      Markup.button.callback('🛵 Send Tracking', `boss_tracking_${order.id}`)
-    ]);
-    rows.push([
-      Markup.button.callback('🟢 Mark Done', `boss_action_done_${order.id}`),
-      Markup.button.callback('❌ Reject Order', `boss_action_sorry_${order.id}`)
-    ]);
-  }
-  // OTHER STATES (REJECTED / CANCELLED / COMPLETED)
-  else {
-    rows.push([
-      Markup.button.callback('💬 Message User', `boss_text_user_${order.id}`)
-    ]);
-    rows.push([
-      makeCopyButton('🟣 Copy Cart', order.cart || '', `boss_copy_cart_${order.id}`),
-      makeCopyButton('🔵 Copy Address', order.address || '', `boss_copy_addr_${order.id}`)
-    ]);
-  }
-
-  return { text, keyboard: Markup.inlineKeyboard(rows) };
 }
 
 // Single card in-place updater for Boss and User
@@ -1332,16 +1148,15 @@ async function sendCardSafe(chatIdOrCtx, card) {
 
 async function sendPendingOrdersToBoss(bossId) {
   const db = getDb();
-  const pendingOrders = Object.values(db.orders).filter(o => o.status === 'PENDING');
+  const { header, cards } = buildBossPendingList(db);
 
-  if (pendingOrders.length === 0) {
+  if (cards.length === 0) {
     await bot.telegram.sendMessage(bossId, '📭 <i>No pending requests right now.</i>', { parse_mode: 'HTML' });
     return;
   }
 
-  await bot.telegram.sendMessage(bossId, `📬 <b>Pending Requests (${pendingOrders.length}):</b>`, { parse_mode: 'HTML' });
-  for (const order of pendingOrders) {
-    const card = formatBossOrderCard(order);
+  await bot.telegram.sendMessage(bossId, header, { parse_mode: 'HTML' });
+  for (const card of cards) {
     await sendCardSafe(bossId, card);
   }
 }
@@ -1556,10 +1371,8 @@ bot.start(async (ctx) => {
       parse_mode: 'HTML',
       ...getBossReplyKeyboard()
     });
-    await ctx.reply(getBossPanelText(), {
-      parse_mode: 'HTML',
-      ...getBossPanelKeyboard()
-    });
+    const home = getBossPanelHome();
+    await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
     await sendPendingOrdersToBoss(userId);
     return;
   }
@@ -1590,10 +1403,8 @@ bot.command(['boss', 'admin'], async (ctx) => {
       parse_mode: 'HTML',
       ...getBossReplyKeyboard()
     });
-    await ctx.reply(getBossPanelText(), {
-      parse_mode: 'HTML',
-      ...getBossPanelKeyboard()
-    });
+    const home = getBossPanelHome();
+    await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
     await sendPendingOrdersToBoss(userId);
     return;
   }
@@ -1604,10 +1415,8 @@ bot.command(['boss', 'admin'], async (ctx) => {
       parse_mode: 'HTML',
       ...getBossReplyKeyboard()
     });
-    await ctx.reply(getBossPanelText(), {
-      parse_mode: 'HTML',
-      ...getBossPanelKeyboard()
-    });
+    const home = getBossPanelHome();
+    await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
     await sendPendingOrdersToBoss(userId);
     return;
   }
@@ -2101,12 +1910,11 @@ bot.action(['boss_panel_home', 'boss_refresh'], async (ctx) => {
   delete userWaitState[ctx.from.id];
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
-  const text = getBossPanelText();
-  const keyboard = getBossPanelKeyboard();
+  const home = getBossPanelHome();
   try {
-    await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+    await ctx.editMessageText(home.text, { parse_mode: 'HTML', ...home.keyboard });
   } catch (e) {
-    await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+    await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
   }
 });
 
@@ -5841,7 +5649,10 @@ bot.hears(['Saved Addresses', '🔵 Saved Addresses', '📍 Saved Addresses'], a
 });
 
 bot.hears(['Slot Status', '🟢 Slot Status', '🎰 Slot Status'], async (ctx) => {
-  if (isBoss(ctx.from.id)) await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+  if (isBoss(ctx.from.id)) {
+    const home = getBossPanelHome();
+    await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
+  }
 });
 
 bot.hears(['Total Slots', 'Total slots', '📊 Total slots'], async (ctx) => {
@@ -6000,7 +5811,8 @@ bot.on('text', async (ctx) => {
     if (['❌ Cancel', 'Cancel', 'cancel', 'Close', 'close', 'back', 'Back', '❌ Close'].includes(rawText)) {
       if (isBoss(userId)) {
         await ctx.reply('❌ Action cancelled.', getBossReplyKeyboard());
-        await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+        const home = getBossPanelHome();
+    await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
       } else {
         await ctx.reply('❌ Action cancelled.', getUserReplyKeyboard());
         const screen = getUserScreen(userId, ctx.from);
@@ -7900,7 +7712,8 @@ bot.action('user_back_to_main', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
   if (isBoss(userId)) {
-    await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+    const home = getBossPanelHome();
+    await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
   } else {
     const screen = getUserScreen(userId, ctx.from);
     try {

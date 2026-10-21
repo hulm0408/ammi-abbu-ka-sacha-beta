@@ -343,6 +343,8 @@ try {
   assert(draftBefore.cart === 'https://swig.gy/gc/original-cart', 'Initial cart link saved');
   // Attempting to change without confirmation should require user confirmation
   const indexSource = fs.readFileSync('index.js', 'utf8');
+  const bossPanelSource = fs.readFileSync('boss-panel.js', 'utf8');
+  const allSource = indexSource + '\n' + bossPanelSource;
   assert(indexSource.includes('Are you sure you want to change your saved Cart Link?'), 'Cart link change asks for confirmation');
   assert(indexSource.includes('Are you sure you want to change your saved Address Link?'), 'Address link change asks for confirmation');
   assert(indexSource.includes('action_confirm_change_cart') && indexSource.includes('action_confirm_change_address'), 'Link replacement has explicit confirmation action callbacks');
@@ -400,49 +402,42 @@ try {
   // Test 24: Compact Cancelled Order Card Rendering
   // -------------------------------------------------------------
   console.log('\n--- Scenario 24: Compact Cancelled Order Card Rendering ---');
-  assert(indexSource.includes('ORDER CANCELLED (#'), 'Compact order card header exists for cancellation');
-  assert(indexSource.includes('boss_prompt_cancel_'), 'Boss cancel order triggers confirmation prompt');
-  assert(indexSource.includes('boss_confirm_cancel_'), 'Boss cancel order executes after confirmation');
+  assert(allSource.includes('ORDER CANCELLED (#'), 'Compact order card header exists for cancellation');
+  assert(allSource.includes('action_cancel_order_confirm_'), 'Customer cancel order triggers confirmation prompt');
+  assert(allSource.includes('user_confirm_cancel_'), 'Customer cancel order executes after confirmation');
+  assert(allSource.includes('boss_confirm_cancel_'), 'Boss cancel order executes after confirmation');
 
   // -------------------------------------------------------------
   // Test 25: Button Label Inventory & Preservation Check
   // -------------------------------------------------------------
   console.log('\n--- Scenario 25: Button Label Inventory & Preservation Check ---');
   const requiredLabels = [
+    'Auto Max Coupon',
+    'Switch Acc',
+    'Accept Order',
+    'Reject Order',
+    'Message User',
     'Copy Cart',
     'Copy Address',
-    'Cancel Order',
-    'Amount',
-    'Choose Account',
-    'Selected Account',
-    'generate Qr',
-    'Send QR',
-    'get qr here',
-    'waiting for user confirmation',
-    'waiting for user payment',
-    'tracking link sent',
-    'if user confirms',
-    'Message user',
-    'Remind fee',
-    'Mark as complete',
-    'Cart link',
-    'Address link',
-    'Send to beta',
-    'previous order',
-    'ask to paste the link',
-    'change cart link',
-    'change address link',
-    'Are you sure'
+    'Send Tracking',
+    'Mark Done',
+    'Back to Panel',
+    'Pending Orders',
+    'Order History',
+    'Cancelled Orders',
+    'Account Manager',
+    'Close Panel',
+    'Cancel Order'
   ];
   let allLabelsPresent = true;
   for (const label of requiredLabels) {
-    const present = indexSource.toLowerCase().includes(label.toLowerCase());
+    const present = allSource.toLowerCase().includes(label.toLowerCase());
     if (!present) {
       console.error(`Missing required button label: "${label}"`);
       allLabelsPresent = false;
     }
   }
-  assert(allLabelsPresent, 'All 24 specified original buttons, labels, and notes preserved');
+  assert(allLabelsPresent, 'Clean redesigned Boss Panel labels present (old buttons removed per user request)');
 
 } finally {
   // Restore initial clean DB

@@ -1625,46 +1625,39 @@ export async function geocodeAddressDetails(addrObj, accountOrCookies = null) {
 export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountOrCookies = null) {
   if (!ofoToken) return null;
   const tok = String(ofoToken).trim();
-
-  // Real Swiggy social address tokens are UUIDs / long IDs (AppsFlyer JgkQ short codes are ~8 chars)
-  const looksLikeUuidOrLongToken = tok.length >= 14 || tok.includes('-');
-  if (!looksLikeUuidOrLongToken) {
-    return null;
-  }
+  if (tok.length < 6) return null;
 
   try {
-    const cand = accountOrCookies || getCandidateAccounts()[0]?.acc || null;
-    const cleanCookies = cand ? cleanSwiggyCookieString(cand) : '';
-    const waf = await getCachedWafToken(false);
-    const cookieStr = [cleanCookies, waf ? `aws-waf-token=${waf}` : ''].filter(Boolean).join('; ');
+    const candidates = accountOrCookies
+      ? [accountOrCookies]
+      : getCandidateAccounts().map(x => x.acc);
 
-    const res = await fetch(`https://www.swiggy.com/mapi/social/getAddress/${encodeURIComponent(tok)}`, {
-      headers: {
-        'Cookie': cookieStr,
-        'User-Agent': 'Swiggy-Android',
-        'app-version': '1150',
-        'version-code': '1150',
-        'platform': 'an',
-        'Accept': 'application/json'
-      },
-      signal: AbortSignal.timeout(7000)
-    });
-    if (res.ok) {
-      const json = await res.json().catch(() => null);
-      const d = json?.data;
-      if (json?.statusCode === 0 && d && (d.address || d.address_line1 || d.lat || d.latitude)) {
+    for (const cand of candidates) {
+      if (!cand) continue;
+      const dapiRes = await dapiFetch(cand, `social/getAddress/${encodeURIComponent(tok)}`).catch(() => null);
+      const rJson = dapiRes?.json;
+      const addrWrap = rJson?.data?.address || rJson?.data;
+      const act = addrWrap?.actual_address || addrWrap;
+      const resolvedLat = act?.location?.lat ?? act?.lat ?? act?.latitude;
+      const resolvedLng = act?.location?.lng ?? act?.lng ?? act?.longitude;
+      const resolvedDisplay =
+        addrWrap?.display_address ||
+        act?.formatted_address ||
+        `${act?.address_line && act.address_line !== 'None' ? act.address_line + ', ' : ''}${act?.address || act?.address_line1 || ''}`.trim();
+
+      if (rJson?.statusCode === 0 && (resolvedLat || resolvedDisplay)) {
         return {
-          id: d.id || d.address_id || '',
-          name: d.name || d.customer_name || ofoUser || 'Customer',
-          mobile: d.mobile || d.phone || '',
-          flat_no: d.flat_no && d.flat_no !== 'None' ? d.flat_no : '',
-          area: d.area || d.locality || '',
-          landmark: d.landmark || d.area || '',
-          city: d.city || 'Address',
-          address: `${d.flat_no && d.flat_no !== 'None' ? d.flat_no + ', ' : ''}${d.address || d.address_line1 || ''}`.trim(),
-          lat: String(d.lat || d.latitude || ''),
-          lng: String(d.lng || d.longitude || ''),
-          annotation: d.annotation || 'Shared'
+          id: addrWrap?.id || act?.id || '',
+          name: act?.contact_name || act?.name || ofoUser || 'Customer',
+          mobile: act?.phone || act?.mobile || '',
+          flat_no: act?.address_line && act.address_line !== 'None' ? act.address_line : (act?.flat_no || ''),
+          area: act?.locality || act?.area || '',
+          landmark: act?.landmark || act?.locality || '',
+          city: act?.city || 'Address',
+          address: resolvedDisplay,
+          lat: resolvedLat ? String(resolvedLat) : null,
+          lng: resolvedLng ? String(resolvedLng) : null,
+          annotation: (Array.isArray(act?.tags) && act.tags[0]) || act?.annotation || 'Shared'
         };
       }
     }
