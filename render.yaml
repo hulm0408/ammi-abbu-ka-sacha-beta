@@ -1,14 +1,24 @@
 services:
   - type: web
     name: ammi-abbu-ka-sacha-beta
-    env: docker
+    runtime: node
     plan: free
-    dockerfilePath: Dockerfile
+    region: singapore
+    branch: main
+    autoDeploy: true
+    buildCommand: npm install
+    startCommand: npm start
     healthCheckPath: /
     envVars:
+      - key: NODE_ENV
+        value: production
       - key: BOT_TOKEN
         sync: false
-      - key: BOSS_SECRET
-        value: boss123
-      - key: HEADLESS
-        value: "true"
+      - key: BOSS_ID
+        value: "6484999726"
+      - key: APP_BASE_URL
+        value: "https://ammi-abbu-ka-sacha-beta.onrender.com"
+      - key: GITHUB_REPO_SLUG
+        value: "hulm0408/ammi-abbu-ka-sacha-beta"
+      - key: GITHUB_VAULT_TOKEN
+        sync: false

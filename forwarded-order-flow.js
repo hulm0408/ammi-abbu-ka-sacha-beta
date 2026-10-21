@@ -3,7 +3,12 @@ import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { PNG } from 'pngjs';
 import { Markup } from 'telegraf';
-import { getDb, saveDb, upsertOrder } from './store.js';
+import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
+import {
+  buildBossOrderPortalUrl,
+  makeSmartPortalButton,
+  buildCleanUserBillConfirmationCard
+} from './order-ux-portal.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import {
   resolveSwiggyLink,
@@ -776,7 +781,7 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
   const hasCart = Boolean(order.cart);
   const cancelBtn = Markup.button.callback('❌ Cancel Order', `fwd_cancel_${order.id}`);
 
-  // Stage 4: Paid & Confirmed with REAL Live Tracking Links
+  // Stage 4A: Paid & Confirmed with REAL Live Tracking Links
   if (order.status === 'COMPLETED' && order.trackingLink) {
     const bodyHtml = formatOrderBodyFn(order, true);
     const swiggyIdLine = order.swiggyOrderId
@@ -807,6 +812,28 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
       [cancelBtn]
     ];
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
+  }
+
+  // Stage 4B (Screen 05): Paid Confirmed, Tracking Delayed -> Retry tracking ONLY, NEVER create 2nd QR!
+  if (order.status === 'COMPLETED' && !order.trackingLink) {
+    const paidAmt = Number(order.finalTotal || order.finalPayable || 0);
+    const text =
+      `✅ <b>Provider confirmed ₹${paidAmt} ✓</b>\n` +
+      `<i>No second charge requested.</i>\n\n` +
+      `<b>#${escapeHtml(order.id)} — ORDER SUMMARY</b> · 🟡 <b>Tracking delayed</b>\n` +
+      `${senderLine}\n\n` +
+      `🍽 <b>${escapeHtml(order.restaurantName || 'Swiggy Order')}</b>\n` +
+      `<i>Swiggy did not return tracking yet. Retry tracking only.</i>\n\n` +
+      `⚠️ <b>Paid is final. Retry tracking only.</b>\n` +
+      `<i>🔒 Never create another payment QR.</i>`;
+
+    return {
+      text,
+      keyboard: Markup.inlineKeyboard([
+        [Markup.button.callback('🔄 Retry tracking link', `fwd_retry_track_${order.id}`)],
+        [makeSmartPortalButton('📱 Open Order Card ›', buildBossOrderPortalUrl(order.id))]
+      ])
+    };
   }
 
   // Stage 3: Account Selected & Live Bill Fetched -> [Generate QR] [Paid] [Parallel Batch Buttons] [Re-Scan Offers] [Switch Account] [Cancel]
@@ -872,6 +899,12 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     rows.push([
       Markup.button.callback('🎁 Re-Scan Max Offer', `fwd_rescan_max_${order.id}`),
       Markup.button.callback('🔄 Change Account', `fwd_rechoose_acc_${order.id}`)
+    ]);
+    rows.push([
+      ...(order.fwdSenderUserId && !order.isDirectBossOrder
+        ? [Markup.button.callback('📤 Send Bill Summary ›', `fwd_send_summary_${order.id}`)]
+        : []),
+      makeSmartPortalButton('📝 Review / Edit Card ›', buildBossOrderPortalUrl(order.id))
     ]);
     rows.push([cancelBtn]);
     return { text, keyboard: Markup.inlineKeyboard(rows) };
@@ -986,9 +1019,20 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     `${senderLine}\n\n` +
     `📍 <b>Address:</b>\n${addrStatus}\n\n` +
     `🛒 <b>Cart:</b>\n${cartStatus}\n\n` +
-    `<i>${actionHint}</i>`;
+    `<i>${actionHint}</i>\n` +
+    `<i>🔒 No account allocated; QR is blocked.</i>`;
 
-  return { text, keyboard: Markup.inlineKeyboard([[cancelBtn]]) };
+  const portalBtnLabel = !hasAddress && hasCart
+    ? '📍 Enter Missing Address & Verify ›'
+    : (hasAddress && !hasCart ? '🛒 Enter Missing Cart & Verify ›' : '📝 Open Cart + Address Verify Box ›');
+
+  return {
+    text,
+    keyboard: Markup.inlineKeyboard([
+      [makeSmartPortalButton(portalBtnLabel, buildBossOrderPortalUrl(order.id))],
+      [cancelBtn]
+    ])
+  };
 }
 
 export async function postOrReplaceForwardedCard(telegram, chatId, order, db, formatOrderBodyFn, { includeQrDelete = false } = {}) {
@@ -1341,6 +1385,11 @@ export async function executeRealQrGenerationForOrder({
   const db = getDb();
   const order = db.orders?.[orderId];
   if (!order) throw new Error(`Order #${orderId} not found.`);
+  if (order.status === 'COMPLETED') {
+    const err = new Error('Paid is final — never create another payment QR.');
+    err.code = 'PAID_IS_FINAL_NO_NEW_QR';
+    throw err;
+  }
 
   let accKey = order.selectedAccount;
   let acc = accKey ? db.config?.accounts?.[accKey] : null;
@@ -1394,11 +1443,14 @@ export async function executeRealQrGenerationForOrder({
   if (payable > 0) order.finalPayable = payable;
 
   order.pendingSwiggyUpiUri = realQr.upiIntentUrl;
+  order.realUpiIntentUri = realQr.upiIntentUrl;
+  order.qrGeneratedAt = new Date().toISOString();
   order.pendingSwiggyOrderId = String(realQr.swiggyOrderId || '');
   order.pendingSwiggyPaasId = String(realQr.paymentTxnId || '');
   if (realQr.slaMinutes) order.etaMinutes = String(realQr.slaMinutes);
   order.cardStage = 'QR_GENERATED';
   upsertOrder(order.id, order);
+  appendAuditEvent('qr_created', { orderId: order.id, amount: payable, account: maskAccountCode(acc || accKey) });
 
   const qrBuffer = await generateNamedUpiQrPngBuffer({
     upiUri: realQr.upiIntentUrl,
@@ -2100,4 +2152,128 @@ export function registerForwardedOrderHandlers(bot, {
       await sendBossDiagnosticError(ctx, ctx.chat.id, err, { stage: 'RESCAN_MAX_OFFER', orderId: order.id, accountKey: accKey });
     }
   });
+
+  // 7. Screen 02 -> Screen 03: Send Clean Bill Confirmation Summary to Customer (Sending summary is NOT approval!)
+  bot.action(/^fwd_send_summary_([A-Za-z0-9_]+)$/, async (ctx) => {
+    if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
+    const orderId = ctx.match[1];
+    const db = getDb();
+    const order = db.orders?.[orderId];
+    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    const targetUserId = order.fwdSenderUserId || order.userId;
+    if (!targetUserId) {
+      return ctx.answerCbQuery('Customer chat ID not available — share portal link instead.', { show_alert: true });
+    }
+    order.status = 'APPROVAL_PENDING';
+    order.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
+    upsertOrder(order.id, order);
+    const summaryView = buildCleanUserBillConfirmationCard({ ...order, userId: targetUserId });
+    await ctx.telegram.sendMessage(targetUserId, summaryView.text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...summaryView.keyboard
+    });
+    await ctx.answerCbQuery('✅ Bill summary sent — awaiting explicit approval!');
+  });
+
+  // 8. Screen 05: Paid Is Final -> Retry Tracking Link ONLY (NEVER creates another payment QR!)
+  bot.action(/^fwd_retry_track_([A-Za-z0-9_]+)$/, async (ctx) => {
+    if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
+    const orderId = ctx.match[1];
+    const db = getDb();
+    const order = db.orders?.[orderId];
+    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    const acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
+    if (acc && order.swiggyOrderId) {
+      const trkRes = await dapiFetch(acc, `order/trackV4?order_id=${encodeURIComponent(order.swiggyOrderId)}&type=full&version=V2`).catch(() => null);
+      if (trkRes?.json?.data) {
+        order.trackingLink = `https://www.swiggy.com/track-order/${order.swiggyOrderId}`;
+        order.shareTrackUrl = buildLiveShareableTrackUrl(order.id);
+        order.liveOrderStatus = trkRes.json.data?.order_status || 'Order Placed';
+        upsertOrder(order.id, order);
+        await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn, { includeQrDelete: false });
+        return ctx.answerCbQuery('✅ Live tracking link ready!');
+      }
+    }
+    return ctx.answerCbQuery('⏳ Swiggy has not published tracking yet — safe to retry anytime.', { show_alert: true });
+  });
 }
+
+// =========================================================================
+// LIVE TWO-BOX [VERIFY] HANDLER FOR BOSS FORWARDED / DIRECT ORDERS
+// =========================================================================
+export async function applyBossPortalVerification({
+  telegram,
+  bossChatId,
+  orderId,
+  cart = '',
+  address = '',
+  formatOrderBodyFn
+}) {
+  const db = getDb();
+  const order = db?.orders?.[orderId];
+  if (!order) return { ok: false, error: `Order #${orderId} not found.` };
+  if (!cart && !address) {
+    return { ok: false, error: 'Please fill at least one box before clicking Verify.' };
+  }
+
+  let updatedCart = false;
+  let updatedAddr = false;
+
+  if (cart && cart !== order.cart) {
+    const resCart = await ingestForwardedContentIntoOrder(order, { rawText: cart });
+    if (!resCart.updatedCart && !order.cart) {
+      return { ok: false, error: 'Invalid Swiggy Cart link — paste a valid https://swig.gy/gc/... or Swiggy cart link.' };
+    }
+    updatedCart = true;
+  }
+
+  if (address && address !== order.address && address !== order.addressOriginalText) {
+    const resAddr = await ingestForwardedContentIntoOrder(order, { rawText: address });
+    if (!resAddr.updatedAddress && address.trim().length >= 12) {
+      // Accept clean street address typed directly in the Boss form box
+      const plainGeo = await geocodeAddressDetails({ address: address.trim(), raw: address.trim() }).catch(() => ({ address: address.trim() }));
+      order.address = plainGeo.address || address.trim();
+      order.addressOriginalText = address.trim();
+      order.addressDetails = plainGeo;
+      updatedAddr = true;
+    } else if (!resAddr.updatedAddress && !order.address) {
+      return { ok: false, error: 'Invalid Delivery Address — paste a Swiggy/Google Maps link or complete street address.' };
+    } else {
+      updatedAddr = true;
+    }
+  }
+
+  upsertOrder(order.id, order);
+
+  const hasBothNow = Boolean(order.cart && order.address);
+  if (hasBothNow) {
+    // Auto-select best unused 0-order account & fetch real Swiggy bill + max offer!
+    try {
+      await executeOrderBillSyncOnAccount({
+        telegram,
+        chatId: bossChatId,
+        orderId: order.id,
+        accKey: order.selectedAccount || 'BEST',
+        formatOrderBodyFn
+      });
+      return {
+        ok: true,
+        message: 'Cart ✓ & Address ✓ verified — Live Swiggy Bill & Best Unused Account ready!'
+      };
+    } catch (syncErr) {
+      await postOrReplaceForwardedCard(telegram, bossChatId, order, getDb(), formatOrderBodyFn).catch(() => {});
+      return {
+        ok: true,
+        message: `Cart ✓ & Address ✓ saved (manual account select ready: ${syncErr.message}).`
+      };
+    }
+  }
+
+  await postOrReplaceForwardedCard(telegram, bossChatId, order, getDb(), formatOrderBodyFn).catch(() => {});
+  return {
+    ok: true,
+    message: `${updatedCart ? 'Cart ✓' : 'Address ✓'} verified — fill the other box to complete!`
+  };
+}
+

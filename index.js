@@ -70,6 +70,7 @@ import {
   inspectAccountOrderHistoryAndOffers,
   generateRealSwiggyMerchantUpiQr,
   checkRealSwiggyPaymentAndExtractTracking,
+  releaseSwiggyAccountReservation,
   startWafKeepWarmLoop
 } from './swiggy-cart.js';
 import {
@@ -82,11 +83,23 @@ import {
   dispatchAllReadyOrdersInParallel,
   handleBossForwardedOrderInput,
   registerForwardedOrderHandlers,
+  executeRealQrGenerationForOrder,
+  applyBossPortalVerification,
   generateNamedUpiQrPngBuffer,
   sanitizeUpiUriForQr,
   safeTelegramCaption,
   truncateDisplayField
 } from './forwarded-order-flow.js';
+import {
+  buildUserPortalUrl,
+  buildBossOrderPortalUrl,
+  buildBossAccountsPortalUrl,
+  makeSmartPortalButton,
+  buildCleanUserIntakeCard,
+  buildCleanUserBillConfirmationCard,
+  buildCleanUserPaymentPendingCard,
+  createOrderUxHttpHandler
+} from './order-ux-portal.js';
 
 dotenv.config();
 
@@ -677,8 +690,14 @@ function getUserScreen(userId, user) {
 
   const cartBtnText = draft.cart ? '🟣 Cart: Added ✅' : '🟣 Paste Cart Link';
   const addressBtnText = draft.address ? '🔵 Address: Added ✅' : '🔵 Paste Address Link';
+  const verifyBoxBtnLabel = draft.cart && !draft.address
+    ? '📍 Enter Address & Verify ›'
+    : (!draft.cart && draft.address ? '🛒 Enter Cart & Verify ›' : '📝 Open Cart + Address Verify Box ›');
 
   const inlineButtons = [
+    [
+      makeSmartPortalButton(verifyBoxBtnLabel, buildUserPortalUrl(userId))
+    ],
     [
       Markup.button.callback(cartBtnText, 'action_paste_cart'),
       Markup.button.callback(addressBtnText, 'action_paste_address')
@@ -694,21 +713,36 @@ function getUserScreen(userId, user) {
     ]);
   }
 
+  const cd = draft.cartDetails || {};
+  const itemRows = Array.isArray(cd.items) ? cd.items : [];
+  const qtyCount = itemRows.reduce((s, it) => s + Number(it.qty || it.quantity || 1), 0);
+  const subVal = Number(cd.subtotal || itemRows.reduce((s, it) => s + Number(it.lineTotal || (Number(it.price || 0) * Number(it.qty || 1)) || 0), 0));
+  const statusTag = !draft.cart && !draft.address
+    ? 'Cart &amp; address needed'
+    : (draft.cart && !draft.address ? 'Address needed' : (!draft.cart && draft.address ? 'Cart needed' : 'Ready to validate'));
+
   let promptGuidance = '';
   if (!draft.cart && !draft.address) {
-    promptGuidance = `👉 <i>Niche diye gaye buttons se link add karein:</i>`;
+    promptGuidance = `👉 <i>Open the <b>Verify Box</b> below (or paste in chat) — either can arrive first.</i>`;
   } else if (draft.cart && !draft.address) {
-    promptGuidance = `👉 <i>Cart link add ho gaya! Ab <b>[ 🔵 Paste Address Link ]</b> dabakar address link share karein.</i>`;
+    promptGuidance = `📍 <b>Add a valid address link to continue.</b>\n<i>🔒 No account allocated; QR is blocked.</i>`;
   } else if (!draft.cart && draft.address) {
-    promptGuidance = `👉 <i>Address link add ho gaya! Ab <b>[ 🟣 Paste Cart Link ]</b> dabakar Swiggy cart link share karein.</i>`;
+    promptGuidance = `🛒 <b>Add a valid Swiggy cart link to continue.</b>\n<i>🔒 No account allocated; QR is blocked.</i>`;
   } else {
     promptGuidance = `🎉 <b>Dono links verified hain!</b>\n👉 Niche <b>[ 🚀 Send to Beta ]</b> dabayein:`;
   }
 
+  const summaryBlock =
+    `<b>#${escapeHtml(String(userId).slice(-5).padStart(5, '3'))} — ORDER SUMMARY</b> · <i>${statusTag}</i>\n` +
+    (draft.cart && cd.restaurantName
+      ? `🍽 <b>${escapeHtml(cd.restaurantName)}</b> (${qtyCount || 1} items · subtotal ₹${subVal})\n`
+      : '');
+
   const text = `╔═════════════════════════╗\n   🟡  <b>Slots Left: ${slotsLeft}/${totalSlots}</b>  🟡\n╚═════════════════════════╝\n\n` +
-    `👋 <b>Swiggy Food Order</b>\n\n` +
+    `${summaryBlock}` +
+    `👋 <b>Swiggy Food Order</b> · <i>Send cart + address. Either can arrive first.</i>\n\n` +
     `🟣 <b>Cart Link:</b> ${draft.cart ? '✅ <code>' + escapeHtml(draft.cart) + '</code>' : '<i>Not added yet</i>'}\n` +
-    `🔵 <b>Address Link:</b> ${draft.address ? '✅ <code>' + escapeHtml(draft.address) + '</code>' : '<i>Not added yet</i>'}\n\n` +
+    `🔵 <b>Address Link:</b> ${draft.address ? '✅ <code>' + escapeHtml(draft.address) + '</code>' : '<i>Address link not received</i>'}\n\n` +
     promptGuidance;
 
   return { text, keyboard: Markup.inlineKeyboard(inlineButtons) };
@@ -737,9 +771,16 @@ function getBossPanelText() {
 }
 
 function getBossPanelKeyboard() {
+  const defaultBossId = Number(process.env.BOSS_ID || 6484999726);
+  const accMgrUrl = buildBossAccountsPortalUrl(defaultBossId);
   return {
     reply_markup: {
       inline_keyboard: [
+        [
+          /^https:\/\//i.test(accMgrUrl)
+            ? { text: '🔐 Account Manager (OTP + JSON Vault)', web_app: { url: accMgrUrl } }
+            : { text: '🔐 Account Manager (OTP + JSON Vault)', url: accMgrUrl }
+        ],
         [
           { text: 'Login with Number', callback_data: 'boss_login_with_number', style: 'primary' },
           { text: 'Login with JSON', callback_data: 'boss_login_with_json', style: 'primary' }
@@ -8364,6 +8405,234 @@ bot.catch(async (err, ctx) => {
   } catch (e) {}
 });
 
+// =========================================================================
+// V16 ONE-CARD STATE MACHINE + TWO-BOX [VERIFY] PORTAL & TELEGRAM ACTIONS
+// =========================================================================
+
+async function submitDraftAsCleanOrderForPortal(uidStr) {
+  const uid = Number(uidStr);
+  const draft = getDraft(uid);
+  if (!draft?.cart || !draft?.address) {
+    return { ok: false, error: 'Please verify both Cart Link and Delivery Address first.' };
+  }
+  const db = getDb();
+  const bossTargetId = Number(process.env.BOSS_ID || db.bosses?.[0] || 6484999726);
+  const orderId = `ORD${Math.floor(10000 + Math.random() * 89999)}`;
+  const cd = draft.cartDetails || {};
+  const newOrder = {
+    id: orderId,
+    userId: uid,
+    userName: db.autoUserNames?.[uid] || `User ${String(uid).slice(-4)}`,
+    fwdSenderUserId: uid,
+    fwdSenderName: db.autoUserNames?.[uid] || `User ${String(uid).slice(-4)}`,
+    isForwardedOrder: true,
+    isDirectBossOrder: false,
+    cart: '',
+    address: '',
+    status: 'PENDING',
+    cardStage: 'COLLECTING',
+    uxStage: 'SCREEN_02_VALIDATING',
+    createdAt: new Date().toISOString()
+  };
+
+  if (!db.orders) db.orders = {};
+  db.orders[orderId] = newOrder;
+  saveDb(db);
+  const submittedCart = draft.cart;
+  const submittedAddr = draft.addressOriginalText || draft.address;
+  clearDraft(uid);
+
+  // Run full live link & address ingestion + best unused 0-order account sync!
+  try {
+    const syncRes = await applyBossPortalVerification({
+      telegram: bot.telegram,
+      bossChatId: bossTargetId,
+      orderId,
+      cart: submittedCart,
+      address: submittedAddr,
+      formatOrderBodyFn: formatUserOrderCardText
+    });
+    const refreshed = getDb().orders?.[orderId];
+    if (refreshed && Number(refreshed.finalPayable || refreshed.finalTotal || 0) > 0) {
+      refreshed.finalTotal = Number(refreshed.finalPayable || refreshed.finalTotal || 0);
+      refreshed.status = 'APPROVAL_PENDING';
+      refreshed.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
+      const saveTarget = getDb();
+      saveTarget.orders[orderId] = refreshed;
+      saveDb(saveTarget);
+    }
+    return {
+      ok: true,
+      orderId,
+      message: syncRes?.message || 'Order validated — review your final total below!'
+    };
+  } catch {
+    return { ok: true, orderId, message: 'Order submitted — Boss is validating your bill.' };
+  }
+}
+
+async function approveUserOrderBillAction(uidStr, orderId) {
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  if (!order) return { ok: false, error: 'Order not found.' };
+  order.billApprovedByUser = true;
+  order.billApprovedAt = new Date().toISOString();
+  order.status = 'PAYMENT_PENDING';
+  order.uxStage = 'SCREEN_04_PAYMENT_PENDING';
+  saveDb(db);
+
+  const bossTargetId = Number(process.env.BOSS_ID || db.bosses?.[0] || 6484999726);
+  // Idempotent single QR creation — never creates a 2nd QR if one already exists!
+  if (!order.pendingSwiggyUpiUri && !order.realUpiIntentUri) {
+    try {
+      await executeRealQrGenerationForOrder({
+        telegram: bot.telegram,
+        chatId: bossTargetId,
+        orderId: order.id,
+        formatOrderBodyFn: formatUserOrderCardText
+      });
+    } catch {}
+  }
+
+  const updated = getDb().orders?.[orderId] || order;
+  const payCard = buildCleanUserPaymentPendingCard(updated);
+  if (uidStr) {
+    await bot.telegram.sendMessage(uidStr, payCard.text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...payCard.keyboard
+    }).catch(() => {});
+  }
+  return { ok: true, orderId, message: 'Bill approved — single payment QR ready!' };
+}
+
+async function rejectUserOrderBillAction(uidStr, orderId) {
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  if (!order) return { ok: false, error: 'Order not found.' };
+  if (order.selectedAccount) {
+    releaseSwiggyAccountReservation(order.selectedAccount, order.id);
+  }
+  order.status = 'CANCELLED';
+  order.cancelledReason = 'USER_SOMETHING_IS_WRONG';
+  saveDb(db);
+  updateDraft(uidStr, {
+    cart: order.cart || '',
+    address: order.address || '',
+    addressOriginalText: order.addressOriginalText || order.address || '',
+    cartDetails: order.cartDetails || { restaurantName: order.restaurantName, items: order.items, subtotal: order.subtotal },
+    addressDetails: order.addressDetails || null
+  });
+  return { ok: true, message: 'Order returned to your Verify Box — edit Cart or Address and re-verify.' };
+}
+
+async function checkOrderPaidStatusOnly(orderId) {
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  if (!order) return { paid: false, message: 'Order not found.' };
+  if (order.status === 'COMPLETED') {
+    if (order.selectedAccount) {
+      releaseSwiggyAccountReservation(order.selectedAccount, order.id);
+    }
+    return {
+      paid: true,
+      trackingLink: order.shareTrackUrl || order.trackingLink || '',
+      message: order.trackingLink
+        ? 'Payment verified ✓ — live tracking ready!'
+        : 'Provider confirmed payment ✓ — waiting for Swiggy tracking link (no second charge).'
+    };
+  }
+  const acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
+  if (!acc) {
+    return { paid: false, message: 'Waiting for verified payment on gateway (status check only).' };
+  }
+  const check = await checkRealSwiggyPaymentAndExtractTracking(acc, order).catch(() => ({ paid: false }));
+  if (!check?.paid) {
+    return {
+      paid: false,
+      message: 'Waiting for verified payment — "I\'ve paid" runs a status check only (no duplicate QR).'
+    };
+  }
+  if (order.selectedAccount) {
+    releaseSwiggyAccountReservation(order.selectedAccount, order.id);
+  }
+  order.status = 'COMPLETED';
+  order.swiggyOrderId = check.swiggyOrderId || order.pendingSwiggyOrderId || '';
+  order.liveOrderStatus = check.orderStatus || 'Order Confirmed';
+  order.trackingLink = check.swiggyWebTrackUrl || '';
+  order.shareTrackUrl = check.swiggyWebTrackUrl ? buildLiveShareableTrackUrl(order.id) : '';
+  order.uxStage = order.trackingLink ? 'SCREEN_05_TRACKING_READY' : 'SCREEN_05_PAID_TRACKING_DELAYED';
+  saveDb(db);
+  return {
+    paid: true,
+    trackingLink: order.shareTrackUrl || order.trackingLink || '',
+    message: 'Provider confirmed payment ✓!'
+  };
+}
+
+bot.action(/^user_approve_bill_([A-Za-z0-9_]+)$/, async (ctx) => {
+  await ctx.answerCbQuery('✅ Approving bill & issuing single payment QR...').catch(() => {});
+  await approveUserOrderBillAction(String(ctx.from.id), ctx.match[1]);
+});
+
+bot.action(/^user_bill_issue_([A-Za-z0-9_]+)$/, async (ctx) => {
+  await ctx.answerCbQuery('✏️ Returned to your Verify Box so you can edit Cart or Address!').catch(() => {});
+  await rejectUserOrderBillAction(String(ctx.from.id), ctx.match[1]);
+  const intake = buildCleanUserIntakeCard(ctx.from.id, getDraft(ctx.from.id));
+  await ctx.reply(intake.text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...intake.keyboard });
+});
+
+bot.action(/^user_paid_status_([A-Za-z0-9_]+)$/, async (ctx) => {
+  const res = await checkOrderPaidStatusOnly(ctx.match[1]);
+  await ctx.answerCbQuery(res.message, { show_alert: true }).catch(() => {});
+});
+
+export const handleOrderUxPortalHttp = createOrderUxHttpHandler({
+  bot,
+  isBoss,
+  extractAllLinks,
+  isValidSwiggyCartUrl,
+  isValidDeliveryAddressUrl,
+  parseCartDetails,
+  parseAddressDetails,
+  geocodeAddressDetails,
+  resolveSwiggyLink,
+  formatUserOrderCardText,
+  submitDraftAsCleanOrder: submitDraftAsCleanOrderForPortal,
+  approveUserOrderBill: approveUserOrderBillAction,
+  rejectUserOrderBill: rejectUserOrderBillAction,
+  checkOrderPaidStatus: checkOrderPaidStatusOnly,
+  ingestBossPortalUpdate: (orderId, fields) => {
+    const db = getDb();
+    const bossTargetId = Number(process.env.BOSS_ID || db.bosses?.[0] || 6484999726);
+    return applyBossPortalVerification({
+      telegram: bot.telegram,
+      bossChatId: bossTargetId,
+      orderId,
+      cart: fields.cart,
+      address: fields.address,
+      formatOrderBodyFn: formatUserOrderCardText
+    });
+  },
+  sendBossBillSummaryToCustomer: async (orderId) => {
+    const db = getDb();
+    const order = db.orders?.[orderId];
+    if (!order) return { ok: false, error: 'Order not found.' };
+    const targetUid = order.fwdSenderUserId || order.userId;
+    order.status = 'APPROVAL_PENDING';
+    order.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
+    saveDb(db);
+    if (targetUid) {
+      const card = buildCleanUserBillConfirmationCard({ ...order, userId: targetUid });
+      await bot.telegram.sendMessage(targetUid, card.text, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        ...card.keyboard
+      }).catch(() => {});
+    }
+    return { ok: true, message: 'Clean Bill Summary sent to family member ✓ (awaiting approval).' };
+  }
+});
 
 // Lightweight health check server + Zero-Login Live Swiggy Order Tracker + 1-Click Session Copy WebApp + 24x7 Keep-Alive
 const healthPort = Number(process.env.PORT || 0);
@@ -8541,6 +8810,11 @@ setInterval(refresh, 8000);
         return res.end(trackHtml);
       }
 
+      // V16 One-Card + Two-Box [Verify] Mini App & Owner Account Manager HTTP Router
+      if (await handleOrderUxPortalHttp(req, res, reqUrl)) {
+        return;
+      }
+
       if (reqUrl.pathname === '/copy') {
         const accKey = reqUrl.searchParams.get('acc') || '';
         const sig = reqUrl.searchParams.get('sig') || '';
@@ -8647,8 +8921,10 @@ window.addEventListener('load', () => { setTimeout(copyAll, 40); });
     res.end(JSON.stringify({
       status: 'ok',
       bot: 'online',
-      build: 'v15-zero-otp-bulk-json-cloud-vault',
+      build: 'v16-zero-sms-one-card-miniapp-verify',
       ipv4Shield: true,
+      zeroSmsShield: true,
+      twoBoxVerifyPortal: true,
       zeroChromiumOrderFlow: true,
       tenOrderParallelAutoDispatch: true,
       zeroOtpCartIntake: true,
@@ -8770,7 +9046,11 @@ async function startBotWithRetry() {
   }
 }
 
-startBotWithRetry();
+export { bot };
+
+if (!process.env.TEST_MODE && !process.env.BOT_TEST_MODE) {
+  startBotWithRetry();
+}
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));

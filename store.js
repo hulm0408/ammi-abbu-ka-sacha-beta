@@ -1119,5 +1119,133 @@ export function permanentLogoutAccount(key) {
 
   saveDb(db);
   syncAccountsJsonMirror(db);
+  appendAuditEvent('logout', { accountKey: key, phone: acc.phone || '' });
   return acc;
 }
+
+// =========================================================================
+// V16 SECURITY, MASKING, OTP 3-STRIKE LOCK & STRUCTURED AUDIT LOG HELPERS
+// =========================================================================
+
+export function maskPhoneStars(phone = '') {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length >= 4) return `****${digits.slice(-4)}`;
+  return '****0000';
+}
+
+export function maskAccountCode(accOrKey = '') {
+  if (accOrKey && typeof accOrKey === 'object') {
+    const digits = String(accOrKey.phone || accOrKey.mobile || accOrKey.id || '').replace(/\D/g, '');
+    if (digits.length >= 4) return `AC-${digits.slice(-4)}`;
+  }
+  const digits = String(accOrKey || '').replace(/\D/g, '');
+  if (digits.length >= 4) return `AC-${digits.slice(-4)}`;
+  return `AC-${String(accOrKey || '0000').slice(-4).toUpperCase()}`;
+}
+
+export function redactSensitiveText(input = '') {
+  return String(input || '')
+    .replace(/(_session_tid\s*=\s*)[^;\s"'}]+/gi, '$1[REDACTED]')
+    .replace(/(["']?(?:_session_tid|session_id|token|tid|jwt|cookies|cookie)["']?\s*:\s*["'])[^"']+(["'])/gi, '$1[REDACTED]$2');
+}
+
+export function exportSafeRedactedSessionJson(key) {
+  const db = getDb();
+  const acc = db?.config?.accounts?.[key] || db?.sessionVault?.[String(key || '').replace(/^acc_/, '')];
+  if (!acc) return null;
+  const payload = {
+    account_code: maskAccountCode(acc),
+    phone: maskPhoneStars(acc.phone || acc.mobile || key),
+    session_id: '[REDACTED]',
+    token: '[REDACTED]',
+    is_logged_in: Boolean(acc.isLoggedIn),
+    previous_orders: Number(acc.totalOrdersCount || 0),
+    zero_order_eligible: Boolean(acc.isZeroOrderAccount || Number(acc.totalOrdersCount || 0) === 0),
+    saved_at: acc.savedAt || new Date().toISOString()
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
+const otpAttemptTracker = new Map();
+
+export function getOtpLockStatus(phone = '') {
+  const clean = String(phone || '').replace(/\D/g, '').slice(-10);
+  if (!clean) return { locked: false, failures: 0, remainingAttempts: 3, unlockAt: null };
+  const entry = otpAttemptTracker.get(clean);
+  if (!entry) return { locked: false, failures: 0, remainingAttempts: 3, unlockAt: null };
+  if (entry.lockedUntil && Date.now() < entry.lockedUntil) {
+    return {
+      locked: true,
+      failures: entry.failures,
+      remainingAttempts: 0,
+      unlockAt: new Date(entry.lockedUntil).toISOString(),
+      retryAfterSec: Math.ceil((entry.lockedUntil - Date.now()) / 1000)
+    };
+  }
+  if (entry.lockedUntil && Date.now() >= entry.lockedUntil) {
+    otpAttemptTracker.delete(clean);
+    return { locked: false, failures: 0, remainingAttempts: 3, unlockAt: null };
+  }
+  return {
+    locked: false,
+    failures: entry.failures,
+    remainingAttempts: Math.max(0, 3 - entry.failures),
+    unlockAt: null
+  };
+}
+
+export function recordOtpAttempt(phone = '', succeeded = false, { lockMs = 15 * 60 * 1000 } = {}) {
+  const clean = String(phone || '').replace(/\D/g, '').slice(-10);
+  if (!clean) return { locked: false, failures: 0, remainingAttempts: 3 };
+  if (succeeded) {
+    otpAttemptTracker.delete(clean);
+    appendAuditEvent('otp_verified', { phone: maskPhoneStars(clean) });
+    return { locked: false, failures: 0, remainingAttempts: 3 };
+  }
+  const prev = getOtpLockStatus(clean);
+  if (prev.locked) return prev;
+  const failures = prev.failures + 1;
+  const lockedUntil = failures >= 3 ? Date.now() + lockMs : null;
+  otpAttemptTracker.set(clean, { failures, lockedUntil });
+  if (lockedUntil) {
+    appendAuditEvent('otp_locked', { phone: maskPhoneStars(clean), failures });
+  } else {
+    appendAuditEvent('otp_failed', { phone: maskPhoneStars(clean), failures });
+  }
+  return getOtpLockStatus(clean);
+}
+
+export function resetOtpLock(phone = '') {
+  const clean = String(phone || '').replace(/\D/g, '').slice(-10);
+  otpAttemptTracker.delete(clean);
+}
+
+export function appendAuditEvent(action, meta = {}) {
+  try {
+    const db = getDb();
+    if (!Array.isArray(db.auditLog)) db.auditLog = [];
+    const safeMeta = {};
+    for (const [k, v] of Object.entries(meta || {})) {
+      if (/cookie|token|tid|secret|password/i.test(k)) {
+        safeMeta[k] = '[REDACTED]';
+      } else if (/phone|mobile/i.test(k) && v) {
+        safeMeta[k] = String(v).startsWith('****') ? String(v) : maskPhoneStars(v);
+      } else if (typeof v === 'string') {
+        safeMeta[k] = redactSensitiveText(v).slice(0, 240);
+      } else {
+        safeMeta[k] = v;
+      }
+    }
+    db.auditLog.push({
+      id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      action: String(action || 'event'),
+      meta: safeMeta,
+      at: new Date().toISOString()
+    });
+    if (db.auditLog.length > 300) {
+      db.auditLog = db.auditLog.slice(-300);
+    }
+    saveDb(db);
+  } catch {}
+}
+
