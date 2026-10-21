@@ -470,6 +470,9 @@ function getUserReplyKeyboard(draft = {}) {
     [
       { text: '📦 Orders Done' },
       { text: '● Cancel Draft' }
+    ],
+    [
+      { text: '🔗 Extract Tracking Link' }
     ]
   ]).resize();
 }
@@ -483,8 +486,7 @@ function getBossReplyKeyboard() {
   ]).resize().persistent(false).oneTime(false).selective(false);
 }
 
-bot.hears(['🔗 Extract Tracking Link', 'Extract Tracking Link', 'extract tracking', '/extract'], async (ctx) => {
-  if (!isBoss(ctx.from.id)) return;
+bot.hears(['🔗 Extract Tracking Link', 'Extract Tracking Link', 'extract tracking', '/extract', '🔗 extract', '/extractlink', '/tracking'], async (ctx) => {
   userWaitState[ctx.from.id] = { action: 'waiting_boss_extract_tracking' };
   await ctx.reply(
     '🔗 <b>Extract Tracking Link — All IDs scan</b>\nSend the <b>Order ID</b> (e.g. <code>FWD9670</code>) or Swiggy Order ID. I will check every logged-in Swiggy ID for its tracking link.',
@@ -5557,6 +5559,43 @@ bot.action(/^boss_confirm_paid_(.+)$/, async (ctx) => {
   await handleConfirmOrderPaid(ctx, orderId, 'Boss');
 });
 
+// Universal Extract Now — any user pastes Order ID and taps this button → scan All IDs
+bot.action(/^extract_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const q = String(ctx.match[1] || '').trim();
+  await ctx.answerCbQuery('Extracting — scanning all Swiggy IDs...').catch(()=>{});
+  const db2 = getDb();
+  let order = db2.orders?.[q] || db2.orders?.[q.toLowerCase()] || db2.orders?.[q.toUpperCase()];
+  if (!order) {
+    const qL = q.toLowerCase();
+    for (const oo of Object.values(db2.orders||{})) {
+      if (String(oo.id||'').toLowerCase()===qL || String(oo.swiggyOrderId||'')===q || String(oo.pendingSwiggyOrderId||'')===q) { order = oo; break; }
+    }
+  }
+  // Stub for pure numeric Swiggy ID
+  if (!order && /^\d{9,20}$/.test(q)) {
+    const stub = { id: q, swiggyOrderId: q, pendingSwiggyOrderId: q, restaurantName:'Swiggy Order', status:'COMPLETED', cardStage:'PAID_CONFIRMED', addressDetails:{}, createdAt:new Date().toISOString(), userId:String(ctx.from.id), fwdSenderUserId:String(ctx.from.id), userName:ctx.from?.first_name||'Customer', fwdSenderName:ctx.from?.first_name||'Customer', selectedAccount:'', trackingLink:'', deliveryOtp:'', liveOrderStatus:'Order Confirmed', isSwiggyIdStub:true };
+    try {
+      await ctx.reply('⏳ <i>Scanning ' + Object.keys(db2.config?.accounts||{}).length + ' IDs for Swiggy Order <code>' + escapeHtml(q) + '</code>...</i>', { parse_mode:'HTML' });
+      const r2 = await extractTrackingViaAllAccounts(stub, { getAccountsFn: () => getDb().config.accounts });
+      if (!r2?.trackingUrl) { await ctx.reply('❌ No tracking found for <code>' + escapeHtml(q) + '</code> yet.', { parse_mode:'HTML' }); return; }
+      stub.trackingLink = r2.trackingUrl; stub.trackingLinkSource='SWIGGY_API'; stub.deliveryOtp = r2.res?.deliveryOtp||''; stub.liveOrderStatus = r2.res?.orderStatus||'Order Confirmed'; if (r2.accKey) stub.selectedAccount=r2.accKey; stub.paidAt=new Date().toISOString(); stub.completedAt=new Date().toISOString();
+      const fresh = getDb(); fresh.orders[stub.id]=stub; saveDb(fresh);
+      await ctx.reply('✅ <b>Tracking for #' + escapeHtml(q) + '</b>\n🔗 <a href="' + escapeHtml(r2.trackingUrl) + '">Open Swiggy tracking</a>' + (r2.res?.deliveryOtp ? '\n🔢 OTP: <code>' + escapeHtml(String(r2.res.deliveryOtp)) + '</code>' : ''), { parse_mode:'HTML', link_preview_options:{is_disabled:true}, ...Markup.inlineKeyboard([[Markup.button.url('🔗 Open Swiggy Tracking', r2.trackingUrl)]]) });
+      return;
+    } catch(e){ await ctx.reply('❌ ' + escapeHtml(String(e?.message||e)), { parse_mode:'HTML' }); return; }
+  }
+  if (!order) { await ctx.reply('❌ Order <code>' + escapeHtml(q) + '</code> not found.', { parse_mode:'HTML' }); return; }
+  try {
+    await ctx.reply('⏳ <i>Scanning ' + Object.keys(db2.config?.accounts||{}).length + ' IDs for order #' + escapeHtml(order.id) + '...</i>', { parse_mode:'HTML' });
+    const result = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts });
+    if (!result?.trackingUrl) { await ctx.reply('❌ No tracking yet for this order. Swiggy may not have published it.', { parse_mode:'HTML' }); return; }
+    order.trackingLink = result.trackingUrl; order.trackingLinkSource='SWIGGY_API'; order.shareTrackUrl=''; if (result.res?.deliveryOtp) order.deliveryOtp=result.res.deliveryOtp; if (result.res?.orderStatus) order.liveOrderStatus=result.res.orderStatus; if (result.res?.swiggyOrderId) order.swiggyOrderId=result.res.swiggyOrderId; if (result.accKey) order.selectedAccount=result.accKey; if (order.status!=='COMPLETED') { order.status='COMPLETED'; order.completedAt=new Date().toISOString(); order.paidAt=order.paidAt||new Date().toISOString(); } saveDb(getDb());
+    // Auto-edit payment message so I-have-paid disappears
+    try { if (order.customerPaymentMessageId||order.activeQrMessageId) { await tryEditCustomerPaymentMessageWithTracking(order).catch(()=>{}); if (order.activeQrMessageId) { const tel=ctx.telegram; const cid=order.bossChatId||ctx.chat?.id; if(tel&&cid) try{ await tryEditForwardedPaymentMessageWithTracking(tel,cid,order);}catch{} } } } catch{}
+    await ctx.reply('✅ <b>Tracking extracted!</b>\nFound on <b>' + escapeHtml(String(result.acc?.phone||result.accKey)) + '</b>\n🔗 <a href="' + escapeHtml(result.trackingUrl) + '">Open tracking</a>' + (result.res?.deliveryOtp ? '\n🔢 OTP: <code>' + escapeHtml(String(result.res.deliveryOtp)) + '</code>' : ''), { parse_mode:'HTML', link_preview_options:{is_disabled:true}, ...Markup.inlineKeyboard([[Markup.button.url('🔗 Open Swiggy Tracking', result.trackingUrl)], ...(result.res?.deliveryOtp ? [[Markup.button.callback('📋 Copy OTP ' + String(result.res.deliveryOtp), `copy_otp_${order.id}`)]] : [])]) });
+  } catch(e){ await ctx.reply('❌ ' + escapeHtml(String(e?.message||e)), { parse_mode:'HTML' }); }
+});
+
 // View Family Accounts
 bot.action('boss_extract_tracking_prompt', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
@@ -7928,24 +7967,90 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Boss sending Swiggy's actual tracking link to the parent
+  // Extract Tracking — works for ANY user (boss or customer) : Swiggy ki tarah orderId se direct scan
   if (state && state.action === 'waiting_boss_extract_tracking') {
-    const q = String(ctx.message.text || '').trim();
+    const rawQ = String(ctx.message.text || '').trim();
+    // Accept plain Order ID even if pasted with extra spaces/lines — take first token that looks like ID
+    const tokens = rawQ.split(/\s+/).filter(Boolean);
+    let q = rawQ;
+    // Prefer numeric Swiggy ID (9-20 digits) or FWD/ORD/... style; fallback to raw
+    for (const t of tokens) {
+      const clean = t.replace(/[^A-Za-z0-9_-]/g,'').trim();
+      if (/^\d{9,20}$/.test(clean) || /^(FWD|ORD|FWD_|ORD_)/i.test(clean) || /^[A-Za-z0-9_-]{6,}$/.test(clean)) { q = clean; break; }
+    }
+    q = q.replace(/[^A-Za-z0-9_-]/g,'').trim() || rawQ.trim();
     const db2 = getDb();
-    // Try orderId direct, or swiggyOrderId search
-    let order = db2.orders?.[q];
+    // Try orderId direct, or swiggyOrderId search (case-insensitive + substring for last6)
+    let order = db2.orders?.[q] || db2.orders?.[q.toLowerCase()] || db2.orders?.[q.toUpperCase()];
     if (!order) {
-      // search by swiggyOrderId
+      const qLower = q.toLowerCase();
+      const qLast6 = q.slice(-6);
       for (const o of Object.values(db2.orders||{})) {
-        if (String(o.swiggyOrderId) === q || String(o.pendingSwiggyOrderId) === q || String(o.id) === q) { order = o; break; }
+        const idMatch = String(o.id||'').toLowerCase() === qLower;
+        const swiggyMatch = String(o.swiggyOrderId||'') === q || String(o.pendingSwiggyOrderId||'') === q;
+        const pendingMatch = String(o.swiggyOrderId||'').toLowerCase() === qLower || String(o.pendingSwiggyOrderId||'').toLowerCase() === qLower;
+        const shortMatch = qLast6 && (String(o.swiggyOrderId||'').endsWith(qLast6) || String(o.id||'').toLowerCase().endsWith(qLower.slice(-6)));
+        if (idMatch || swiggyMatch || pendingMatch || shortMatch) { order = o; break; }
+      }
+    }
+    // If still not found but q looks like Swiggy numeric order ID — create stub and scan All IDs (user pasted Swiggy order ID directly)
+    if (!order && /^\d{9,20}$/.test(q)) {
+      const stub = {
+        id: q,
+        swiggyOrderId: q,
+        pendingSwiggyOrderId: q,
+        pendingSwiggyPaasId: '',
+        restaurantName: 'Swiggy Order',
+        status: 'COMPLETED',
+        cardStage: 'PAID_CONFIRMED',
+        addressDetails: {},
+        createdAt: new Date().toISOString(),
+        userId: String(ctx.from.id),
+        fwdSenderUserId: String(ctx.from.id),
+        userName: ctx.from?.first_name || 'Customer',
+        fwdSenderName: ctx.from?.first_name || 'Customer',
+        selectedAccount: '',
+        trackingLink: '',
+        deliveryOtp: '',
+        liveOrderStatus: 'Order Confirmed',
+        // marker so we know this was stub-extracted
+        isSwiggyIdStub: true
+      };
+      await ctx.reply('⏳ <i>Order not in bot DB — scanning ' + Object.keys(db2.config?.accounts||{}).length + ' Swiggy accounts for Swiggy Order <code>' + escapeHtml(q) + '</code>...</i>', { parse_mode: 'HTML' });
+      try {
+        const result2 = await extractTrackingViaAllAccounts(stub, { getAccountsFn: () => getDb().config.accounts });
+        if (!result2?.trackingUrl) {
+          await ctx.reply('❌ No tracking found on any ID for Swiggy Order <code>' + escapeHtml(q) + '</code>. Swiggy may not have published it yet or ID is wrong.', { parse_mode: 'HTML' });
+          delete userWaitState[ctx.from.id];
+          return;
+        }
+        // Save stub as real order for future / extract + always-save like Swiggy
+        stub.trackingLink = result2.trackingUrl;
+        stub.trackingLinkSource = 'SWIGGY_API';
+        stub.deliveryOtp = result2.res?.deliveryOtp || '';
+        stub.liveOrderStatus = result2.res?.orderStatus || 'Order Confirmed';
+        stub.etaMinutes = result2.res?.etaMinutes || '';
+        if (result2.accKey) stub.selectedAccount = result2.accKey;
+        stub.paidAt = new Date().toISOString();
+        stub.completedAt = new Date().toISOString();
+        const freshDb2 = getDb();
+        freshDb2.orders[stub.id] = stub;
+        saveDb(freshDb2);
+        await ctx.reply('✅ <b>Tracking extracted for Swiggy Order #' + escapeHtml(q) + '!</b>\nFound on <b>' + escapeHtml(String(result2.acc?.phone || result2.accKey || 'Swiggy')) + '</b>\n🔗 <a href="' + escapeHtml(result2.trackingUrl) + '">Open Swiggy tracking</a>' + (result2.res?.deliveryOtp ? '\n🔢 <b>OTP:</b> <code>' + escapeHtml(String(result2.res.deliveryOtp)) + '</code>' : ''), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard([[Markup.button.url('🔗 Open Swiggy Tracking', result2.trackingUrl)], ...(result2.res?.deliveryOtp ? [[Markup.button.callback('📋 Copy OTP ' + String(result2.res.deliveryOtp), `copy_otp_${stub.id}`)]] : [])]) });
+        delete userWaitState[ctx.from.id];
+        return;
+      } catch (e2) {
+        await ctx.reply('❌ Failed to scan Swiggy ID <code>' + escapeHtml(q) + '</code>: ' + escapeHtml(String(e2?.message||e2)), { parse_mode: 'HTML' });
+        delete userWaitState[ctx.from.id];
+        return;
       }
     }
     if (!order) {
-      await ctx.reply('❌ Order <code>' + q + '</code> not found in bot DB. Check Order ID.', { parse_mode: 'HTML' });
+      await ctx.reply('❌ Order <code>' + escapeHtml(q) + '</code> not found in bot DB. Check Order ID.<br>Tip: Paste the exact <b>Swiggy numeric Order ID</b> (e.g. 188123456789) — I will scan every Swiggy account for it.', { parse_mode: 'HTML' });
       delete userWaitState[ctx.from.id];
       return;
     }
-    await ctx.reply('⏳ <i>Scanning ' + Object.keys(db2.config?.accounts||{}).length + ' IDs for order #' + order.id + '...</i>', { parse_mode: 'HTML' });
+    await ctx.reply('⏳ <i>Scanning ' + Object.keys(db2.config?.accounts||{}).length + ' IDs for order #' + escapeHtml(order.id) + '...</i>', { parse_mode: 'HTML' });
     try {
       const result = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts });
       if (!result?.trackingUrl) {
@@ -7957,15 +8062,26 @@ bot.on('text', async (ctx) => {
         if (result.res?.deliveryOtp) order.deliveryOtp = result.res.deliveryOtp;
         if (result.res?.orderStatus) order.liveOrderStatus = result.res.orderStatus;
         if (result.res?.swiggyOrderId) order.swiggyOrderId = result.res.swiggyOrderId;
+        if (result.res?.etaMinutes) order.etaMinutes = String(result.res.etaMinutes);
         if (result.accKey) order.selectedAccount = result.accKey;
-        if (order.status !== 'COMPLETED') { order.status='COMPLETED'; order.completedAt=new Date().toISOString(); }
+        // Always-save Swiggy orderId like Swiggy does (for future extract via ID)
+        if (!order.swiggyOrderId && result.res?.swiggyOrderId) order.swiggyOrderId = String(result.res.swiggyOrderId);
+        if (!order.pendingSwiggyOrderId && result.res?.swiggyOrderId) order.pendingSwiggyOrderId = String(result.res.swiggyOrderId);
+        if (order.status !== 'COMPLETED') { order.status='COMPLETED'; order.completedAt=new Date().toISOString(); order.paidAt = order.paidAt || new Date().toISOString(); }
         saveDb(getDb());
-        await ctx.reply('✅ <b>Tracking extracted!</b>\\nFound on <b>' + (result.acc?.phone || result.accKey) + '</b>\\n🔗 <a href="' + result.trackingUrl + '">Open Swiggy tracking</a>' + (result.res?.deliveryOtp ? '\\n🔢 OTP: <code>' + result.res.deliveryOtp + '</code>' : ''), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard([[Markup.button.url('↗ Open tracking', result.trackingUrl)]]) });
-        // also push to boss panel
-        const bossCard = formatBossOrderCard(order);
-        await ctx.reply(bossCard.text, { parse_mode: 'HTML', ...bossCard.keyboard }).catch(()=>{});
+        // Auto-edit payment message if exists so I-have-paid button disappears and tracking appears in same message
+        try { if (order.customerPaymentMessageId || order.activeQrMessageId) { await tryEditCustomerPaymentMessageWithTracking(order).catch(()=>{}); if (order.activeQrMessageId) { const tel = ctx.telegram; const cid = order.bossChatId || ctx.chat?.id; if (tel && cid) try { await tryEditForwardedPaymentMessageWithTracking(tel, cid, order); } catch {} } } } catch {}
+        await ctx.reply('✅ <b>Tracking extracted!</b>\nFound on <b>' + escapeHtml(String(result.acc?.phone || result.accKey)) + '</b>\n🔗 <a href="' + escapeHtml(result.trackingUrl) + '">Open Swiggy tracking</a>' + (result.res?.deliveryOtp ? '\n🔢 OTP: <code>' + escapeHtml(String(result.res.deliveryOtp)) + '</code>' : ''), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard([[Markup.button.url('🔗 Open Swiggy Tracking', result.trackingUrl)], ...(result.res?.deliveryOtp ? [[Markup.button.callback('📋 Copy OTP ' + String(result.res.deliveryOtp), `copy_otp_${order.id}`)]] : [])]) });
+        // also push to boss panel if requester is boss; otherwise just show user card
+        if (isBoss(ctx.from.id)) {
+          const bossCard = formatBossOrderCard(order);
+          await ctx.reply(bossCard.text, { parse_mode: 'HTML', ...bossCard.keyboard }).catch(()=>{});
+        } else {
+          const userCard = formatUserOrderCard(order);
+          await ctx.reply(userCard.text, { parse_mode: 'HTML', ...userCard.keyboard }).catch(()=>{});
+        }
       }
-    } catch (e) { await ctx.reply('❌ Failed: ' + (e?.message||e), { parse_mode: 'HTML' }); }
+    } catch (e) { await ctx.reply('❌ Failed: ' + escapeHtml(String(e?.message||e)), { parse_mode: 'HTML' }); }
     delete userWaitState[ctx.from.id];
     return;
   }
@@ -8061,6 +8177,41 @@ bot.on('text', async (ctx) => {
       nonBlockingAutoSync: true
     }).catch(e => console.error('[BossDirectOrderIntake]', e));
     return;
+  }
+
+  // Direct Order ID paste → instant Extract Tracking offer (user enters Swiggy/Bot order ID anywhere)
+  // Fires when text is just an order ID (FWD..., ORD..., or 9-20 digit Swiggy ID) and no active multi-step flow
+  {
+    const t = String(rawText || '').trim();
+    const compact = t.replace(/\s+/g,'');
+    const isPlainOrderId = /^\d{9,20}$/.test(compact) || /^(FWD|ORD|FWD_|ORD_|ORD-)[A-Za-z0-9_-]{3,}$/i.test(compact);
+    // Only trigger if not already handling cart/address/boss input and text is exactly the ID (not a cart/address URL)
+    if (isPlainOrderId && !extractAllLinks(t).length && !isBoss(userId) || isPlainOrderId && isBoss(userId) && !looksLikeBossOrderInput(rawText)) {
+      // Avoid double-fire when user is in waiting_boss_extract_tracking (already handled above)
+      if (!state || state.action !== 'waiting_boss_extract_tracking') {
+        const dbTmp = getDb();
+        let found = dbTmp.orders?.[compact] || dbTmp.orders?.[compact.toUpperCase()] || dbTmp.orders?.[compact.toLowerCase()];
+        if (!found) {
+          const qL = compact.toLowerCase();
+          for (const oo of Object.values(dbTmp.orders||{})) {
+            if (String(oo.id||'').toLowerCase()===qL || String(oo.swiggyOrderId||'')===compact || String(oo.pendingSwiggyOrderId||'')===compact) { found = oo; break; }
+          }
+        }
+        // If found or looks like Swiggy numeric ID, offer Extract button (don't auto-scan to avoid spam; button triggers scan)
+        if (found || /^\d{9,20}$/.test(compact)) {
+          const labelId = found ? found.id : compact;
+          const displayId = found ? (found.swiggyOrderId || found.id) : compact;
+          const existingTrack = found ? getStoredSwiggyTrackingUrl(found) : '';
+          if (existingTrack) {
+            await ctx.reply(`🔗 <b>Order #${escapeHtml(String(displayId))} — Tracking already available</b>\n<a href="${escapeHtml(existingTrack)}">${escapeHtml(existingTrack)}</a>` + (found?.deliveryOtp ? `\n🔢 OTP: <code>${escapeHtml(String(found.deliveryOtp))}</code>` : ''), { parse_mode:'HTML', link_preview_options:{is_disabled:true}, ...Markup.inlineKeyboard([[Markup.button.url('🔗 Open Swiggy Tracking', existingTrack)] , [Markup.button.callback('🔄 Refresh Tracking', `extract_now_${labelId}`)]]) }).catch(()=>{});
+          } else {
+            await ctx.reply(`📦 <b>Order #${escapeHtml(String(displayId))} detected</b>\nTap below to extract its live Swiggy tracking link (scans all logged-in Swiggy IDs):`, { parse_mode:'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('🔗 Extract Tracking Link', `extract_now_${labelId}`)], [Markup.button.callback('📋 Copy Order ID', `copy_text_${labelId}`)]]) }).catch(()=>{});
+          }
+          // Don't return — let normal flow continue if this was actually a cart? But plain ID is not cart, so stop here
+          if (isPlainOrderId) return;
+        }
+      }
+    }
   }
 
   // Handle waiting_cart state
@@ -10092,11 +10243,9 @@ async function tryEditCustomerPaymentMessageWithTracking(order) {
   const rows = [];
   if (trackingUrl) rows.push([Markup.button.url('\uD83D\uDD17 Track Order Live', trackingUrl)]);
   if (otp) rows.push([Markup.button.callback(`\uD83D\uDCCB Copy OTP ${otp}`, `copy_otp_${order.id}`)]);
-  if (trackingUrl && otp) rows.push([Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]);
-  else if (!trackingUrl) rows.push([Markup.button.callback('Check payment status (Refresh Tracking)', `user_paid_status_${order.id}`)]);
-  else rows.push([Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]);
-
-  const kb = Markup.inlineKeyboard(rows.length ? rows : [[Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]]);
+  // Per user request: after auto-edit, "I have paid" button disappears (gayab) — only tracking/OTP remain
+  // No Check payment status button is kept after edit; user can still use 🔗 Extract Tracking Link reply button for refresh
+  const kb = rows.length ? Markup.inlineKeyboard(rows) : { reply_markup: { inline_keyboard: [] } };
 
   try {
     await bot.telegram.editMessageCaption(chatId, msgId, undefined, caption, { parse_mode: 'HTML', ...kb });

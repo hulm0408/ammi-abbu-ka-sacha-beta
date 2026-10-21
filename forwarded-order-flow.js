@@ -782,8 +782,8 @@ async function tryEditForwardedPaymentMessageWithTracking(telegram, chatId, orde
   const rows = [];
   if (trackingUrl) rows.push([Markup.button.url('\uD83D\uDD17 Open Swiggy Tracking', trackingUrl)]);
   if (otp) rows.push([Markup.button.callback(`\uD83D\uDCCB Copy OTP ${otp}`, `copy_otp_${order.id}`)]);
-
-  const kb = Markup.inlineKeyboard(rows.length ? rows : [[Markup.button.callback('\u2713 Paid \u2014 Tracking coming', `fwd_check_paid_${order.id}`)]]);
+  // Per user request: after auto-edit, I-have-paid / fwd_check_paid button disappears (gayab) — only tracking/OTP remain
+  const kb = rows.length ? Markup.inlineKeyboard(rows) : { reply_markup: { inline_keyboard: [] } };
 
   try {
     await telegram.editMessageCaption(chatId, order.activeQrMessageId, undefined, caption, { parse_mode: 'HTML', ...kb });
