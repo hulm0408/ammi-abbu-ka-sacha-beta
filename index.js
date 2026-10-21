@@ -44,7 +44,7 @@ import {
   createBulkDocumentBatchCollector,
 } from './account-vault-intake.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
-import { sendParentSmsNotification } from './sms-notify.js';
+import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
   verifyAndInspectSwiggyLink,
@@ -68,6 +68,7 @@ import {
   findBestMaxCouponAccountForOrder,
   applyMaxOfferToOrder,
   generatePersonalizedQrCard,
+  generateUltraPremiumCard,
   reverseGeocodeCoords,
   isValidIndianDeliveryCoordinates,
   geocodeAddressDetails,
@@ -1024,6 +1025,52 @@ function getBossPanelKeyboard() {
   return { reply_markup: buildBossPanelHome(getDb()).keyboard };
 }
 
+// ===== RARE TELEGRAM BUTTONS — jo bahut kam log jaante hain (ekdam alag type) =====
+export function buildRareInlineButtons(order){
+  const orderId = String(order?.swiggyOrderId || order?.id || '').trim();
+  const trackUrl = getStoredSwiggyTrackingUrl(order) || order?.trackingLink || order?.shareTrackUrl || 'https://www.swiggy.com/';
+  const payUrl = String(order?.swiggyPaymentUrl || order?.pendingSwiggyUpiUri || order?.realUpiIntentUri || 'https://www.swiggy.com/payments').trim();
+  const phone = String(order?.addressDetails?.mobile || order?.addressDetails?.phone || '').replace(/\D/g,'').slice(-10);
+  const otp = String(order?.deliveryOtp || '').trim();
+  const shortId = orderId ? orderId.slice(-6) : 'ID';
+  // Rare buttons: copy_text (Bot API 7.4), switch_inline_query, switch_inline_query_chosen_chat
+  const rows = [];
+  rows.push([
+    { text: `📋 Copy ID ${shortId}`, copy_text: { text: orderId || 'no-id' } },
+    { text: '🔗 Open Tracking', url: trackUrl.startsWith('http')? trackUrl : 'https://www.swiggy.com/' }
+  ]);
+  rows.push([
+    { text: '↗️ Share to Chat', switch_inline_query: `Swiggy ${orderId} ${order?.restaurantName||''}`.trim() },
+    { text: '👥 Share to Group', switch_inline_query_chosen_chat: { query: `order ${orderId}`, allow_user_chats: true, allow_group_chats: true, allow_channel_chats: true } }
+  ]);
+  const payRow = [];
+  if (otp) payRow.push({ text: `🔢 Copy OTP ${otp}`, copy_text: { text: otp } });
+  payRow.push({ text: '💳 Pay Instantly', url: payUrl });
+  rows.push(payRow);
+  if (phone) rows.push([{ text: `📞 Copy Phone ${phone.slice(-4)}`, copy_text: { text: phone } }, Markup.button.url('☎️ Support', 'https://t.me/Its_life_001')]);
+  else rows.push([Markup.button.url('☎️ Support', 'https://t.me/Its_life_001')]);
+  rows.push([Markup.button.callback('🔄 Refresh Status', `user_refresh_status_${order.id}`), Markup.button.callback('❌ Cancel', `action_cancel_order_confirm_${order.id}`)]);
+  return Markup.inlineKeyboard(rows);
+}
+
+export function getRareReplyKeyboard(){
+  // Rare KeyboardButtons: request_contact, request_location, request_poll, request_users, request_chat
+  return Markup.keyboard([
+    [Markup.button.contactRequest('📱 Send My Contact ✅'), Markup.button.locationRequest('📍 Share Live Location 📡')],
+    [Markup.button.pollRequest('📊 Create Delivery Poll', 'regular'), Markup.button.text('🛒 New Order')],
+    [{ text: '👤 Share User', request_users: { request_id: 1, user_is_bot: false } }, { text: '🏢 Share Group', request_chat: { request_id: 2, chat_is_channel: false, chat_is_forum: false } }],
+    ['📦 My Orders', '◉ Family Accounts']
+  ]).resize().persistent();
+}
+
+function getRareBotMainButtons(){
+  return [
+    [{ text: '✨ Ultra Card Pay', callback_data: 'rare_ultra_card' }, { text: '🔗 Open Tracking', url: PUBLIC_SERVICE_URL }],
+    [{ text: '📋 Copy Bot Link', copy_text: { text: PUBLIC_SERVICE_URL } }, { text: '↗️ Share Bot', switch_inline_query: 'Try this Swiggy Bot' }],
+    [{ text: '📱 Verify Phone (Rare)', request_contact: true }, { text: '📍 Share Location (Rare)', request_location: true }]
+  ];
+}
+
 const PUBLIC_SERVICE_URL = (process.env.RENDER_EXTERNAL_URL || 'https://ammi-abbu-ka-sacha-beta.onrender.com').replace(/\/+$/, '');
 
 function makeCopyButton(label, value, fallbackCallback, style = 'primary') {
@@ -1182,7 +1229,10 @@ async function sendPaymentQrToUser(order) {
     const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
     const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
     try {
-      const generatedBuf = await generatePersonalizedQrCard({
+      // Try ultra premium holographic card first (alag type ka card), fallback to classic
+      let generatedBuf = null;
+      try { generatedBuf = await generateUltraPremiumCard({ customerName: custDisplayName, restaurantName: order.restaurantName || 'Swiggy Food Order', amount: order.finalPayable || order.subtotal || 0, savings: order.totalSavings || 0, upiUrl: upiUri, orderId: order.id, address: order.addressDetails?.address || order.address || '', deliveryOtp: order.deliveryOtp || '' }); } catch(e){}
+      if (!generatedBuf) generatedBuf = await generatePersonalizedQrCard({
         customerName: custDisplayName,
         restaurantName: order.restaurantName || 'Swiggy Food Order',
         amount: order.finalPayable || order.subtotal || 0,
@@ -1203,6 +1253,11 @@ async function sendPaymentQrToUser(order) {
     try {
       const payable = order.finalPayable ? `₹${order.finalPayable}` : 'As shown on Swiggy';
       const photoSource = order.customQrFileId || { source: Buffer.from(order.genuineQrBuffer) };
+      const rarePayRow = [];
+      const _otp = String(order.deliveryOtp||'').trim();
+      if (_otp) rarePayRow.push({ text: `📋 Copy OTP ${_otp}`, copy_text: { text: _otp } });
+      const _payUrl = String(order.swiggyPaymentUrl||'https://www.swiggy.com/payments');
+      rarePayRow.push({ text: '💳 Pay Link', url: _payUrl.startsWith('http')? _payUrl : 'https://www.swiggy.com/payments' });
       await bot.telegram.sendPhoto(targetChat, photoSource, {
         caption: safeTelegramCaption(
           `● <b>Official Swiggy Payment QR (Order #${order.id})</b>\n\n` +
@@ -1214,12 +1269,16 @@ async function sendPaymentQrToUser(order) {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)],
-          [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
+          [{ text: '↗️ Share Order', switch_inline_query: `Order #${order.id} ${order.restaurantName||''}` }, { text: '👥 Share to Group', switch_inline_query_chosen_chat: { query: `order ${order.id}`, allow_user_chats: true, allow_group_chats: true, allow_channel_chats: true } }],
+          rarePayRow,
+          [{ text: `📋 Copy Order ${String(order.id).slice(-4)}`, copy_text: { text: String(order.id) } }, Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
         ])
       });
       order.qrSent = true;
       order.qrDelivered = true;
       saveDb(getDb());
+      // Direct SMS to registered mobile with payment link (rare bot feature)
+      sendPaymentLinkSms(order, order.swiggyPaymentUrl || `upi://pay?pa=${getDb().config?.bossUpiId||'6296591407@ybl'}&am=${order.finalPayable||0}`).catch(()=>{});
       return;
     } catch (e) {
       console.error(`Failed to send custom QR photo: ${e.message}`);
@@ -1229,6 +1288,7 @@ async function sendPaymentQrToUser(order) {
   // 2. If genuine Swiggy payment URL was generated by Swiggy / Boss
   if (order.swiggyPaymentUrl) {
     try {
+      const _rareUrlRow = [{ text: `📋 Copy Link`, copy_text: { text: String(order.swiggyPaymentUrl) } }, { text: '💳 Pay Link', url: String(order.swiggyPaymentUrl) }];
       await bot.telegram.sendMessage(
         targetChat,
         `₹ <b>Official Swiggy Payment Link (Order #${order.id})</b>\n\n` +
@@ -1240,6 +1300,8 @@ async function sendPaymentQrToUser(order) {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [Markup.button.url('₹ Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)],
+            [{ text: '↗️ Share Link', switch_inline_query: `${order.swiggyPaymentUrl}` }, { text: '👥 To Group', switch_inline_query_chosen_chat: { query: `pay ${order.id}`, allow_user_chats: true, allow_group_chats: true, allow_channel_chats: true } }],
+            _rareUrlRow,
             [Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)],
             [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
           ])
@@ -1247,6 +1309,7 @@ async function sendPaymentQrToUser(order) {
       );
       order.qrSent = true;
       saveDb(getDb());
+      sendPaymentLinkSms(order, order.swiggyPaymentUrl).catch(()=>{});
       return;
     } catch (e) {
       console.error(`Failed to send payment URL: ${e.message}`);
@@ -3722,6 +3785,9 @@ bot.action('boss_add_new_account_menu', async (ctx) => {
 
 // State map for multi-select export checklist per user
 const exportSelections = {};
+// State for Export & Logout (1+ orders) picker
+const exportLogoutSelections = {};
+const exportLogoutOrderCounts = {};
 
 // 1A. Remove Account Locally from Bot DB (works immediately even if session is logged out or expired!)
 bot.action(/^boss_remove_local_(.+)$/, async (ctx) => {
@@ -4296,6 +4362,363 @@ bot.action('boss_logout_all_exec', async (ctx) => {
       ...getBossPanelKeyboard()
     }
   );
+});
+
+// ===== 3B. Export & Logout (only accounts with minimum 1 order) =====
+async function buildExportLogoutChecklist(ctx, orderCounts, selections) {
+  const db = getDb();
+  const accounts = db.config.accounts || {};
+  const eligibleKeys = Object.keys(accounts).filter(k => {
+    const cnt = orderCounts[k] ?? -1;
+    return cnt >= 1 && (accounts[k]?.isLoggedIn || exportSessionJson(k));
+  });
+  const ineligibleKeys = Object.keys(accounts).filter(k => !eligibleKeys.includes(k));
+
+  const selectedCount = eligibleKeys.filter(k => selections[k]).length;
+  const totalEligible = eligibleKeys.length;
+
+  const buttons = [];
+  if (totalEligible > 0) {
+    const allSelected = eligibleKeys.every(k => selections[k]);
+    buttons.push([{ text: allSelected ? 'Deselect All Eligible' : 'Select All Eligible', callback_data: allSelected ? 'boss_exlo_deselect_all' : 'boss_exlo_select_all', style: 'primary' }]);
+  }
+
+  for (const k of eligibleKeys) {
+    const acc = accounts[k];
+    const cnt = orderCounts[k] ?? 0;
+    const isChecked = Boolean(selections[k]);
+    const checkIcon = isChecked ? '✓' : '□';
+    const liveBadge = acc.isLoggedIn ? '●' : '○';
+    const label = `${checkIcon} ${liveBadge} ${acc.name || k} (${acc.phone || ''}) — ${cnt} order${cnt>1?'s':''}`;
+    buttons.push([{ text: label, callback_data: `boss_exlo_toggle_${k}`, style: isChecked ? 'success' : 'primary' }]);
+  }
+  for (const k of ineligibleKeys) {
+    const acc = accounts[k];
+    const cnt = orderCounts[k] ?? 0;
+    const liveBadge = acc.isLoggedIn ? '●' : '○';
+    const label = `○ ${liveBadge} ${acc.name || k} (${acc.phone || ''}) — ${cnt} orders (skipped)`;
+    buttons.push([{ text: label, callback_data: `boss_exlo_skip_${k}`, style: 'primary' }]);
+  }
+
+  if (totalEligible > 0) {
+    buttons.push([{ text: `Confirm Export & Logout (${selectedCount}/${totalEligible})`, callback_data: 'boss_exlo_confirm', style: 'success' }]);
+  }
+  buttons.push([{ text: 'Back to Accounts', callback_data: 'boss_view_accounts', style: 'primary' }]);
+
+  const checklistText =
+    `<blockquote>⇧ <b>EXPORT & LOGOUT (1+ ORDERS)</b></blockquote>\n\n` +
+    `Sirf wahi accounts export & logout honge jinme <b>minimum 1 order</b> hai.\n` +
+    `• <b>Eligible:</b> <b>${totalEligible} accounts</b> (1+ orders) — selectable\n` +
+    `• <b>Skipped:</b> <b>${ineligibleKeys.length} accounts</b> (0 orders) — not exported/logged out\n` +
+    `• <b>Selected:</b> <b>${selectedCount}/${totalEligible}</b>\n\n` +
+    (totalEligible === 0 ? `<i>⚠️ Koi bhi account me 1+ orders nahi mile — export & logout ke liye koi eligible account nahi hai.</i>` : `<i>Select karein, confirm karte hi har eligible account ki full <code>.json</code> + logout ek saath hoga!</i>`);
+
+  try {
+    await ctx.editMessageText(checklistText, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
+  } catch (e) {
+    await ctx.reply(checklistText, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
+  }
+}
+
+bot.action('boss_export_logout_picker', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const userId = ctx.from.id;
+  const db = getDb();
+  const accounts = db.config.accounts || {};
+  const accKeys = Object.keys(accounts);
+  if (accKeys.length === 0) {
+    await ctx.answerCbQuery('Koi account nahi mila!', { show_alert: true }).catch(() => {});
+    return ctx.reply('! No accounts found to export.');
+  }
+
+  await ctx.answerCbQuery('Checking orders for 1+ filter... ⏳').catch(() => {});
+  let statusMsg = null;
+  try {
+    statusMsg = await ctx.reply('⏳ <i>Har logged-in ID ke orders check ho rahe hain (1+ filter)... Isme 5-8 sec lag sakte hain</i>', { parse_mode: 'HTML' });
+  } catch (e) {}
+
+  // Fetch order counts in parallel with timeout
+  const orderCounts = {};
+  const loggedInEntries = Object.entries(accounts).filter(([, a]) => a && (a.isLoggedIn || a.cookies || a.tid));
+  if (loggedInEntries.length === 0) {
+    if (statusMsg) try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+    return ctx.reply('! <b>Koi bhi logged-in account nahi hai!</b> Pehle login karein.', { parse_mode: 'HTML' });
+  }
+
+  const results = await Promise.allSettled(
+    loggedInEntries.map(async ([key, acc]) => {
+      try {
+        const orders = await Promise.race([
+          fetchAccountOrders(acc),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 9000))
+        ]);
+        const cnt = Array.isArray(orders) ? orders.length : 0;
+        return { key, cnt };
+      } catch (err) {
+        // Fallback to cached totalOrdersCount if available
+        const cached = typeof acc.totalOrdersCount === 'number' ? acc.totalOrdersCount : (typeof acc.cachedTotalOrdersCount === 'number' ? acc.cachedTotalOrdersCount : 0);
+        return { key, cnt: cached || 0, error: err?.message };
+      }
+    })
+  );
+
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value) {
+      orderCounts[r.value.key] = r.value.cnt;
+    }
+  }
+  // For non-logged-in / not fetched accounts, default 0
+  for (const k of accKeys) if (!(k in orderCounts)) orderCounts[k] = 0;
+
+  // Also consider db-tracked completed orders as valid (bot ke andar 1+ order ka proof)
+  const dbOrders = Object.values(db.orders || {}).filter(o => o.status === 'COMPLETED' || o.swiggyOrderId);
+  for (const dbo of dbOrders) {
+    if (dbo.selectedAccount && !(dbo.selectedAccount in orderCounts)) orderCounts[dbo.selectedAccount] = 1;
+    else if (dbo.selectedAccount && orderCounts[dbo.selectedAccount] === 0) orderCounts[dbo.selectedAccount] = Math.max(orderCounts[dbo.selectedAccount], 1);
+    if (dbo.orderAccount) {
+      for (const [k, a] of Object.entries(accounts)) {
+        if (a.phone && String(dbo.orderAccount).includes(a.phone) && orderCounts[k] === 0) orderCounts[k] = 1;
+      }
+    }
+  }
+
+  if (statusMsg) try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+
+  if (!exportLogoutSelections[userId]) exportLogoutSelections[userId] = {};
+  if (!exportLogoutOrderCounts[userId]) exportLogoutOrderCounts[userId] = {};
+  exportLogoutOrderCounts[userId] = orderCounts;
+
+  const eligibleKeys = accKeys.filter(k => (orderCounts[k] ?? 0) >= 1 && (accounts[k]?.isLoggedIn || exportSessionJson(k)));
+  // Preselect all eligible by default
+  for (const k of accKeys) {
+    if (eligibleKeys.includes(k)) {
+      if (!(k in exportLogoutSelections[userId])) exportLogoutSelections[userId][k] = true;
+    } else {
+      exportLogoutSelections[userId][k] = false;
+    }
+  }
+
+  await buildExportLogoutChecklist(ctx, orderCounts, exportLogoutSelections[userId]);
+});
+
+// Toggle / Select All / Skip info for Export & Logout
+bot.action(['boss_exlo_select_all', 'boss_exlo_deselect_all', /^boss_exlo_toggle_(.+)$/, /^boss_exlo_skip_(.+)$/], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const userId = ctx.from.id;
+  const db = getDb();
+  const accounts = db.config.accounts || {};
+  const accKeys = Object.keys(accounts);
+  if (!exportLogoutSelections[userId]) exportLogoutSelections[userId] = {};
+  if (!exportLogoutOrderCounts[userId]) exportLogoutOrderCounts[userId] = {};
+
+  const data = ctx.callbackQuery?.data || '';
+  if (data === 'boss_exlo_select_all') {
+    for (const k of accKeys) if ((exportLogoutOrderCounts[userId][k] ?? 0) >= 1) exportLogoutSelections[userId][k] = true;
+    await ctx.answerCbQuery('All eligible selected ✓').catch(() => {});
+  } else if (data === 'boss_exlo_deselect_all') {
+    for (const k of accKeys) exportLogoutSelections[userId][k] = false;
+    await ctx.answerCbQuery('All deselected ○').catch(() => {});
+  } else if (data.startsWith('boss_exlo_toggle_')) {
+    const toggleKey = data.replace('boss_exlo_toggle_', '');
+    const cnt = exportLogoutOrderCounts[userId][toggleKey] ?? 0;
+    if (cnt < 1) {
+      await ctx.answerCbQuery(`Skipped: ${accounts[toggleKey]?.phone || toggleKey} me 0 orders — minimum 1 chahiye!`, { show_alert: true }).catch(() => {});
+      return;
+    }
+    exportLogoutSelections[userId][toggleKey] = !exportLogoutSelections[userId][toggleKey];
+    await ctx.answerCbQuery().catch(() => {});
+  } else if (data.startsWith('boss_exlo_skip_')) {
+    const k = data.replace('boss_exlo_skip_', '');
+    await ctx.answerCbQuery(`Not eligible: ${accounts[k]?.phone || k} has 0 orders — skipped`, { show_alert: true }).catch(() => {});
+    return;
+  }
+
+  await buildExportLogoutChecklist(ctx, exportLogoutOrderCounts[userId], exportLogoutSelections[userId]);
+});
+
+// Confirm Export & Logout (only 1+ orders)
+bot.action('boss_exlo_confirm', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const userId = ctx.from.id;
+  const db0 = getDb();
+  const accounts0 = db0.config.accounts || {};
+  const selections = exportLogoutSelections[userId] || {};
+  const orderCounts = exportLogoutOrderCounts[userId] || {};
+
+  const selectedKeys = Object.keys(accounts0).filter(k => selections[k] && (orderCounts[k] ?? 0) >= 1);
+
+  if (selectedKeys.length === 0) {
+    return ctx.answerCbQuery('Koi eligible account select nahi hai! (1+ orders chahiye)', { show_alert: true }).catch(() => {});
+  }
+
+  await ctx.answerCbQuery(`Exporting & logging out ${selectedKeys.length} accounts... ⇧`).catch(() => {});
+  await ctx.reply(`⏳ <b>Export & Logout shuru:</b> ${selectedKeys.length} accounts (1+ orders) — pehle export, phir logout...`, { parse_mode: 'HTML' });
+
+  let exportedCount = 0;
+  let loggedOutCount = 0;
+  let skippedZero = 0;
+  const skippedDetails = [];
+
+  for (const key of selectedKeys) {
+    const acc = getDb().config.accounts?.[key];
+    if (!acc) {
+      skippedDetails.push(`${key}: not found`);
+      continue;
+    }
+    const cnt = orderCounts[key] ?? 0;
+    if (cnt < 1) {
+      skippedZero++;
+      skippedDetails.push(`${acc.phone || key}: 0 orders — skipped`);
+      continue;
+    }
+
+    // Double-check live orders before final logout (safety: re-verify minimum 1 order still holds)
+    try {
+      const liveOrders = await Promise.race([
+        fetchAccountOrders(acc),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 7000))
+      ]);
+      const liveCnt = Array.isArray(liveOrders) ? liveOrders.length : cnt;
+      if (liveCnt < 1 && cnt < 1) {
+        skippedZero++;
+        skippedDetails.push(`${acc.phone || key}: live check 0 orders — skipped`);
+        continue;
+      }
+    } catch (e) {
+      // If live check fails, trust cached cnt >=1
+    }
+
+    const exported = exportSessionJson(key) || acc;
+    if (!exported || (!exported.cookies && !acc.cookies)) {
+      skippedDetails.push(`${acc.phone || key}: export failed (no session)`);
+      continue;
+    }
+
+    const jsonStr = JSON.stringify(exported, null, 2);
+    const compactStr = JSON.stringify(exported);
+    const phone = acc.phone || acc.mobile || key.replace(/^acc_/, '');
+    const fileName = `swiggy_${phone}.json`;
+    const codeBlock = jsonStr.length <= 3700 ? jsonStr : compactStr;
+
+    try {
+      await ctx.replyWithDocument(
+        { source: Buffer.from(jsonStr, 'utf-8'), filename: fileName },
+        { caption: `⇧ <b>Exported:</b> <code>${fileName}</code> (${cnt} orders) — ${escapeHtml(acc.name || key)}`, parse_mode: 'HTML' }
+      );
+      await ctx.reply(
+        `<b>${escapeHtml(acc.name || key)}</b> (<code>${phone}</code>) — <b>${cnt} orders</b>\n` +
+        `<pre><code class="language-json">${escapeHtml(codeBlock)}</code></pre>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [ makeFullSessionCopyButton(ctx, 'Copy Code', key, compactStr, `copy_code_${key}`, 'primary'), { text: 'Copy Number', copy_text: { text: phone }, style: 'primary' } ]
+            ]
+          }
+        }
+      );
+      exportedCount++;
+    } catch (err) {
+      await ctx.reply(`× Export failed for ${escapeHtml(acc.phone || key)}: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+      continue;
+    }
+
+    // Now logout only after successful export
+    try {
+      await deactivateSwiggyAccountViaBridge(ctx.from.id, key, false).catch(() => {});
+      permanentLogoutAccount(key);
+      loggedOutCount++;
+    } catch (e) {
+      await ctx.reply(`⚠️ Export hua par logout fail for ${escapeHtml(phone)}: ${escapeHtml(e.message)}`, { parse_mode: 'HTML' });
+    }
+
+    // Small delay to avoid flood
+    await new Promise(r => setTimeout(r, 400));
+  }
+
+  await ctx.reply(
+    `<blockquote>⇧ <b>EXPORT & LOGOUT COMPLETE</b></blockquote>\n\n` +
+    `• <b>Exported:</b> ${exportedCount} accounts\n` +
+    `• <b>Logged out:</b> ${loggedOutCount} accounts\n` +
+    (skippedZero ? `• <b>Skipped (0 orders):</b> ${skippedZero}\n` : ``) +
+    (skippedDetails.length ? `\n<i>${skippedDetails.map(s=>escapeHtml(s)).join('\n')}</i>` : ``) +
+    `\n\n<i>Note: Sirf 1+ orders wale accounts hi export & logout hue — 0 orders wale automatically skipped rahe.</i>`,
+    {
+      parse_mode: 'HTML',
+      ...getBossPanelKeyboard()
+    }
+  );
+
+  // Clear selections after done
+  delete exportLogoutSelections[userId];
+  delete exportLogoutOrderCounts[userId];
+});
+
+// ===== RARE ULTRA CARD PREVIEW — alag hi type ka card (jo kam log jaante hain) =====
+bot.action('rare_ultra_card', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(()=>{});
+  await ctx.answerCbQuery('Ultra Premium Holographic Card bana raha hoon... ✨').catch(()=>{});
+  try {
+    const db = getDb();
+    const sampleOrder = {
+      id: `DEMO-${Date.now().toString().slice(-6)}`,
+      swiggyOrderId: `2515765${Math.floor(10000+Math.random()*90000)}`,
+      restaurantName: 'Thinsane Pizza by Oven Story • Sec 4 Bhilai',
+      finalPayable: 341,
+      totalSavings: 128,
+      addressDetails: { name: 'Panu', mobile: '9157600711', address: 'Sector 4, Bhilai, Chhattisgarh 490001' },
+      swiggyPaymentUrl: 'https://www.swiggy.com/payments',
+      trackingLink: 'https://www.swiggy.com/track',
+      deliveryOtp: `${Math.floor(1000+Math.random()*9000)}`,
+      registeredMobile: '9157600711'
+    };
+    const upiUri = `upi://pay?pa=${db.config?.bossUpiId||'6296591407@ybl'}&pn=Swiggy&am=${sampleOrder.finalPayable}&cu=INR&tn=Ultra_${sampleOrder.id}`;
+    const buf = await generateUltraPremiumCard({
+      customerName: sampleOrder.addressDetails.name,
+      restaurantName: sampleOrder.restaurantName,
+      amount: sampleOrder.finalPayable,
+      savings: sampleOrder.totalSavings,
+      upiUrl: upiUri,
+      orderId: sampleOrder.swiggyOrderId,
+      address: sampleOrder.addressDetails.address,
+      deliveryOtp: sampleOrder.deliveryOtp
+    });
+    // Direct SMS demo to registered mobile with payment link
+    sendDirectOrderSms(sampleOrder).catch(()=>{});
+    sendPaymentLinkSms(sampleOrder, sampleOrder.swiggyPaymentUrl).catch(()=>{});
+    await ctx.replyWithPhoto({ source: buf }, {
+      caption: `<b>✨ ULTRA PREMIUM HOLOGRAPHIC CARD</b>\n\n` +
+        `🆔 <b>Order:</b> <code>${sampleOrder.swiggyOrderId}</code>\n` +
+        `🏪 <b>Restaurant:</b> ${sampleOrder.restaurantName}\n` +
+        `💰 <b>Pay:</b> <b>₹${sampleOrder.finalPayable}</b> • <b>Saved ₹${sampleOrder.totalSavings}</b>\n` +
+        `📍 <b>Deliver to:</b> ${sampleOrder.addressDetails.address}\n` +
+        `📱 <b>Registered Mobile:</b> <code>${sampleOrder.registeredMobile}</code> — <i>Direct SMS sent! ✅</i>\n\n` +
+        `<i>🔔 Order karte hi direct SMS registered number par jaata hai — neeche rare buttons try karo (copy_text, switch_inline_query jo bahut kam log jaante hain)</i>`,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: `📋 Copy Order ${sampleOrder.swiggyOrderId.slice(-6)}`, copy_text: { text: sampleOrder.swiggyOrderId } }, { text: '🔗 Open Tracking', url: sampleOrder.trackingLink }],
+          [{ text: '↗️ Share Order', switch_inline_query: `Order ${sampleOrder.swiggyOrderId} — ${sampleOrder.restaurantName}` }, { text: '👥 Share to Group', switch_inline_query_chosen_chat: { query: `order ${sampleOrder.swiggyOrderId}`, allow_user_chats: true, allow_group_chats: true, allow_channel_chats: true } }],
+          [{ text: `🔢 Copy OTP ${sampleOrder.deliveryOtp}`, copy_text: { text: sampleOrder.deliveryOtp } }, { text: '💳 Pay Instantly', url: sampleOrder.swiggyPaymentUrl }],
+          [{ text: `📞 Copy Phone ${sampleOrder.registeredMobile.slice(-4)}`, copy_text: { text: sampleOrder.registeredMobile } }, { text: '☎️ Support', url: 'https://t.me/Its_life_001' }],
+          [{ text: '🔄 Refresh Rare', callback_data: 'rare_ultra_card' }, { text: '◉ Family Accounts', callback_data: 'boss_view_accounts' }]
+        ]
+      }
+    });
+    await ctx.reply(`<i>Rare Reply Keyboard neeche activate — <b>📱 Send My Contact</b> aur <b>📍 Share Live Location</b> jaise rare buttons try karo!</i>`, { parse_mode: 'HTML', ...getRareReplyKeyboard() });
+  } catch(e){ await ctx.reply(`❌ Ultra card error: ${e.message}`); }
+});
+
+// Rare: handle contact/location shared via reply keyboard
+bot.on('contact', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return;
+  const phone = ctx.message?.contact?.phone_number || '';
+  await ctx.reply(`✅ <b>Rare Button Success!</b>\n\n📱 <b>Contact received:</b> <code>${phone}</code>\n<i>Yeh request_contact rare keyboard se aaya — bahut kam bots iska use karte hain!</i>`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+});
+bot.on('location', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return;
+  const loc = ctx.message?.location;
+  await ctx.reply(`✅ <b>Location received!</b>\n📍 <b>Lat:</b> <code>${loc.latitude}</code> <b>Lng:</b> <code>${loc.longitude}</code>\n<i>Rare request_location button se — alag type ka bot!</i>`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
 });
 
 // 4. Refresh All Accounts (Audit Session WITHOUT stale AWS WAF false-403 bug!)
@@ -5165,6 +5588,9 @@ async function showFamilyAccounts(ctx) {
   buttons.push([
     { text: 'Refresh All Accounts', callback_data: 'boss_refresh_all_accounts', style: 'primary' },
     { text: 'Export Session JSON', callback_data: 'boss_export_picker', style: 'primary' }
+  ]);
+  buttons.push([
+    { text: '⇧ Export & Logout (1+ Orders)', callback_data: 'boss_export_logout_picker', style: 'success' }
   ]);
   buttons.push([
     { text: 'Logout Accounts', callback_data: 'boss_logout_picker', style: 'danger' },
@@ -8942,6 +9368,8 @@ async function handleAllOrdersDone(ctx) {
 
     let totalOrdersFound = 0;
     const buttons = [];
+    const emptyAccounts = [];
+    const matchedDbOrderIds = new Set();
     let text = `<blockquote>📦 <b>ORDERS DONE — LOGGED IN SWIGGY IDs</b></blockquote>\n\n`;
 
     for (const res of accountResults) {
@@ -8960,6 +9388,7 @@ async function handleAllOrdersDone(ctx) {
           const swiggyId = String(dbo.swiggyOrderId || dbo.id || '');
           const existing = orders.find(o => String(o.orderId || '') === swiggyId);
           if (existing) {
+            matchedDbOrderIds.add(String(dbo.id || dbo.swiggyOrderId));
             if (!existing.trackingUrl && dbo.trackingLink) {
               existing.trackingUrl = dbo.trackingLink;
             }
@@ -8967,6 +9396,7 @@ async function handleAllOrdersDone(ctx) {
               existing.deliveryOtp = dbo.deliveryOtp;
             }
           } else if (dbo.status === 'COMPLETED' || dbo.swiggyOrderId) {
+            matchedDbOrderIds.add(String(dbo.id || dbo.swiggyOrderId));
             // Never synthesize a tracking URL — only real Swiggy links are shown
             const realTrack = dbo.trackingLink && isOfficialSwiggyTrackingUrl(dbo.trackingLink, { allowProviderShortLink: true }) ? dbo.trackingLink : '';
             orders.unshift({
@@ -8988,10 +9418,13 @@ async function handleAllOrdersDone(ctx) {
       text += `${badge} <b>${escapeHtml(accName)}</b> ${phoneStr ? `(${phoneStr})` : ''}\n`;
 
       if (!orders || orders.length === 0) {
-        text += `<i>Is ID se Swiggy par abhi koi orders nahi mile (0 orders).</i>\n\n`;
+        // collect empty accounts, don't spam per-account — summary after loop
+        emptyAccounts.push({ name: accName, phone: acc.phone || '' });
         continue;
       }
 
+      text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      text += `${badge} <b>${escapeHtml(accName)}</b> ${phoneStr ? `(${phoneStr})` : ''}\n`;
       totalOrdersFound += orders.length;
       text += `<i>Total Orders: <b>${orders.length}</b></i>\n\n`;
 
@@ -8999,7 +9432,9 @@ async function handleAllOrdersDone(ctx) {
         const o = orders[i];
         const rawTrackLink2 = o.trackingUrl ? String(o.trackingUrl).trim() : '';
         const validTrackUrl = isOfficialSwiggyTrackingUrl(rawTrackLink2, { allowProviderShortLink: true }) ? rawTrackLink2 : '';
-        const trackingDisplay = validTrackUrl ? `<a href="${escapeHtml(validTrackUrl)}">${escapeHtml(validTrackUrl)}</a>` : '<i>Swiggy has not shared a tracking link yet — will be sent when available</i>';
+        const statusRaw = String(o.status || 'COMPLETED');
+        const isDeliveredLike = /delivered|completed|cancelled|refused/i.test(statusRaw);
+        const trackingDisplay = validTrackUrl ? `<a href="${escapeHtml(validTrackUrl)}">${escapeHtml(validTrackUrl)}</a>` : (isDeliveredLike ? '<i>Tracking not needed — order Delivered</i>' : '<i>Swiggy has not shared a tracking link yet — will be sent when available</i>');
         const statusStr = escapeHtml(o.status || 'COMPLETED');
         const restName = escapeHtml(o.restaurantName || 'Swiggy Food');
 
@@ -9022,6 +9457,42 @@ async function handleAllOrdersDone(ctx) {
 
     if (notLoggedInCount > 0) {
       text += `━━━━━━━━━━━━━━━━━━━━\n<i>⚠️ ${notLoggedInCount} other account(s) login required.</i>\n\n`;
+    }
+
+    // Summary for empty accounts instead of spamming per-account 0-orders blocks
+    if (emptyAccounts.length > 0) {
+      if (totalOrdersFound > 0) {
+        const emptyList = emptyAccounts.map(a => `${escapeHtml(a.name)} (${escapeHtml(a.phone)})`).join(', ');
+        text += `━━━━━━━━━━━━━━━━━━━━\n<i>ℹ️ ${emptyAccounts.length} ID(s) me koi orders nahi mile: ${emptyList}</i>\n\n`;
+      } else {
+        const emptyList = emptyAccounts.map(a => `${escapeHtml(a.name)} (${escapeHtml(a.phone)})`).join(', ');
+        text += `━━━━━━━━━━━━━━━━━━━━\n<i>ℹ️ ${emptyAccounts.length} ID(s) me koi orders nahi mile: ${emptyList}</i>\n`;
+      }
+    }
+
+    // Show unmatched bot orders that didn't associate to any logged-in ID (so user never sees contradictory 0-orders)
+    const unmatchedBotOrders = dbCompletedOrders.filter(dbo => !matchedDbOrderIds.has(String(dbo.id || dbo.swiggyOrderId)));
+    if (unmatchedBotOrders.length > 0) {
+      text += `━━━━━━━━━━━━━━━━━━━━\n<b>📦 Bot-tracked Orders (unmatched account)</b>\n\n`;
+      for (let i = 0; i < unmatchedBotOrders.length; i++) {
+        const dbo = unmatchedBotOrders[i];
+        const validTrackUrl = dbo.trackingLink && isOfficialSwiggyTrackingUrl(dbo.trackingLink, { allowProviderShortLink: true }) ? dbo.trackingLink : '';
+        const statusRaw = String(dbo.liveOrderStatus || dbo.status || 'COMPLETED');
+        const isDeliveredLike = /delivered|completed|cancelled|refused/i.test(statusRaw);
+        const trackingDisplay = validTrackUrl ? `<a href=\"` + escapeHtml(validTrackUrl) + `\">` + escapeHtml(validTrackUrl) + `</a>` : (isDeliveredLike ? '<i>Tracking not needed — order Delivered</i>' : '<i>Swiggy has not shared a tracking link yet — will be sent when available</i>');
+        text += `<b>${i + 1}. ${escapeHtml(dbo.restaurantName || 'Swiggy Food')}</b>\n` +
+          `• 🆔 <b>Order ID:</b> <code>#\${escapeHtml(String(dbo.swiggyOrderId || dbo.id))}</code>\n` +
+          `• 💰 <b>Total:</b> <b>₹${dbo.finalPayable || 0}</b> • <b>Status:</b> <code>${escapeHtml(statusRaw)}</code>\n` +
+          (dbo.items && dbo.items.length ? `• 🍽️ <b>Items:</b> <i>\${escapeHtml(dbo.items.map(it=>it.name).join(', '))}</i>\n` : '') +
+          (dbo.addressDetails?.address || dbo.address ? `• 📍 <b>Address:</b> <code>\${escapeHtml(dbo.addressDetails?.address || dbo.address)}</code>\n` : '') +
+          (dbo.deliveryOtp ? `• 🔢 <b>Delivery OTP:</b> <code>\${escapeHtml(String(dbo.deliveryOtp))}</code>\n` : '') +
+          (dbo.completedAt ? `• 🕒 <b>Time:</b> <i>\${escapeHtml(new Date(dbo.completedAt).toLocaleString('en-IN'))}</i>\n` : '') +
+          `• 🔗 <b>Tracking Link:</b> \${trackingDisplay}\n\n`;
+        totalOrdersFound += 1;
+        if (validTrackUrl && buttons.length < 25) {
+          buttons.push([Markup.button.url(`↗ Track #${dbo.swiggyOrderId || dbo.id} (${truncateDisplayField(dbo.restaurantName || 'Order', 18)})`, validTrackUrl)]);
+        }
+      }
     }
 
     if (totalOrdersFound === 0) {

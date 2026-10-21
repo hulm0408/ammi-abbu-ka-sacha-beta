@@ -1966,6 +1966,84 @@ export async function generatePersonalizedQrCard({
   }
 }
 
+// ===== ALAG HI TYPE KA CARD — Ultra Premium Holographic (rare, few know) =====
+export async function generateUltraPremiumCard({
+  customerName = 'Abbu & Ammi',
+  restaurantName = 'Swiggy Food Order',
+  amount = 0,
+  savings = 0,
+  upiUrl = null,
+  qrBuffer = null,
+  orderId = '',
+  address = '',
+  deliveryOtp = ''
+}) {
+  let qrDataUrl = '';
+  if (qrBuffer) {
+    qrDataUrl = `data:image/png;base64,${Buffer.isBuffer(qrBuffer) ? qrBuffer.toString('base64') : qrBuffer}`;
+  } else if (upiUrl) {
+    qrDataUrl = await QRCode.toDataURL(upiUrl, { margin: 1, width: 400, errorCorrectionLevel: 'H', color: { dark: '#000000', light: '#ffffff' } });
+  }
+  const browser = await puppeteer.launch({ executablePath: CHROME_PATH, headless: PUPPETEER_HEADLESS, args: ['--no-sandbox','--disable-gpu','--disable-dev-shm-usage'] });
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 640, height: 900, deviceScaleFactor: 2 });
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:transparent;font-family:'SF Pro Display',-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;display:flex;justify-content:center;align-items:center;padding:16px}
+.shell{width:520px;background:linear-gradient(135deg,#0f0c29 0%,#302b63 50%,#24243e 100%);border-radius:28px;padding:2px;box-shadow:0 20px 60px rgba(48,43,99,0.6),0 0 0 1px rgba(255,255,255,0.08) inset;position:relative;overflow:hidden}
+.shell::before{content:'';position:absolute;inset:-2px;background:linear-gradient(120deg,transparent 20%,rgba(0,255,255,0.3) 30%,rgba(255,0,255,0.3) 45%,transparent 60%);animation:holo 3s ease-in-out infinite;pointer-events:none}
+@keyframes holo{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+.inner{background:radial-gradient(1200px 600px at 50% -10%,rgba(255,255,255,0.12),transparent 60%),linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.02));border-radius:26px;padding:22px 20px;backdrop-filter:blur(16px);position:relative}
+.top-pill{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.pill-left{background:linear-gradient(90deg,#00f5ff,#a855f7);color:#0a0a0a;font-weight:900;font-size:11px;letter-spacing:1.2px;padding:6px 12px;border-radius:999px;box-shadow:0 4px 14px rgba(168,85,247,0.4)}
+.pill-right{color:rgba(255,255,255,0.7);font-size:11px;letter-spacing:0.8px;text-transform:uppercase}
+.brand{color:#fff;font-size:22px;font-weight:900;letter-spacing:-0.5px;margin-bottom:4px;text-align:center;text-shadow:0 2px 12px rgba(168,85,247,0.6)}
+.sub{color:rgba(255,255,255,0.68);font-size:12px;text-align:center;margin-bottom:14px;letter-spacing:0.6px}
+.qr-shell{background:#fff;border-radius:20px;padding:10px;display:flex;justify-content:center;align-items:center;box-shadow:0 12px 30px rgba(0,0,0,0.35),0 0 0 1px rgba(0,0,0,0.06)}
+.qr-wrap{position:relative;width:280px;height:280px}
+.qr-wrap img{width:280px;height:280px;border-radius:12px;display:block}
+.center-badge{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,#0f0c29,#302b63);border:2px solid rgba(255,255,255,0.9);border-radius:14px;padding:6px 14px;box-shadow:0 8px 20px rgba(0,0,0,0.4);max-width:150px}
+.center-badge span{color:#00f5ff;font-weight:900;font-size:12px;letter-spacing:0.4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;text-align:center}
+.meta{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.meta-box{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:10px 12px;backdrop-filter:blur(8px)}
+.meta-label{color:rgba(255,255,255,0.62);font-size:10px;letter-spacing:1px;text-transform:uppercase}
+.meta-value{color:#fff;font-weight:800;font-size:13px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.amount-row{margin-top:14px;background:linear-gradient(135deg,rgba(0,245,255,0.14),rgba(168,85,247,0.14));border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center}
+.amount-left .lbl{color:rgba(255,255,255,0.7);font-size:11px;letter-spacing:1px;text-transform:uppercase}
+.amount-left .val{color:#facc15;font-size:28px;font-weight:900;margin-top:2px;text-shadow:0 2px 10px rgba(250,204,21,0.5)}
+.amount-save{background:linear-gradient(90deg,#10b981,#06b6d4);color:#001010;font-weight:900;font-size:12px;padding:7px 10px;border-radius:999px;box-shadow:0 6px 14px rgba(16,185,129,0.35)}
+.addr{margin-top:12px;background:rgba(0,0,0,0.22);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:10px 12px}
+.addr-title{color:rgba(255,255,255,0.7);font-size:10px;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px}
+.addr-text{color:#e5e7eb;font-size:11px;line-height:1.4}
+.otp-row{margin-top:10px;display:flex;justify-content:center}
+.otp-pill{background:linear-gradient(90deg,#f97316,#facc15);color:#111827;font-weight:900;letter-spacing:2px;padding:8px 16px;border-radius:999px;box-shadow:0 6px 16px rgba(249,115,22,0.4);font-size:14px}
+.footer{margin-top:12px;text-align:center;color:rgba(255,255,255,0.55);font-size:10px;letter-spacing:0.8px}
+</style></head><body>
+<div class="shell"><div class="inner" id="card">
+  <div class="top-pill"><div class="pill-left">✨ ULTRA PREMIUM • SWIGGY PAY</div><div class="pill-right">${orderId ? `#${orderId.slice(-8)}` : 'SECURE PAY'}</div></div>
+  <div class="brand">${restaurantName}</div>
+  <div class="sub">Scan with any UPI App • ${customerName}</div>
+  <div class="qr-shell"><div class="qr-wrap"><img src="${qrDataUrl}" alt="QR"/><div class="center-badge"><span>${customerName}</span></div></div></div>
+  <div class="meta">
+    <div class="meta-box"><div class="meta-label">Order ID</div><div class="meta-value">${orderId || '—'}</div></div>
+    <div class="meta-box"><div class="meta-label">Customer</div><div class="meta-value">${customerName}</div></div>
+  </div>
+  <div class="amount-row">
+    <div class="amount-left"><div class="lbl">Amount To Pay</div><div class="val">₹${amount}</div></div>
+    ${savings>0?`<div class="amount-save">✓ Saved ₹${savings}</div>`:''}
+  </div>
+  ${address?`<div class="addr"><div class="addr-title">Deliver To</div><div class="addr-text">${address.slice(0,120)}</div></div>`:''}
+  ${deliveryOtp?`<div class="otp-row"><div class="otp-pill">OTP: ${deliveryOtp}</div></div>`:''}
+  <div class="footer">⚡ Holographic Secure • Swiggy Official Checkout • ${new Date().toLocaleDateString('en-IN')}</div>
+</div></div></body></html>`;
+    await page.setContent(html,{waitUntil:'load'});
+    const el=await page.$('#card');
+    const buf=await el.screenshot({type:'png'});
+    return buf;
+  } finally { await browser.close().catch(()=>{}); }
+}
+
 // Fast fetch verified restaurant info & menu directly from Swiggy's API with WAF token support
 const fastRestaurantCache = new Map();
 

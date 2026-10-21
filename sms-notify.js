@@ -72,3 +72,72 @@ export async function notifyParentsOrderPlaced(order) {
   // For initial placement (no tracking yet), send SMS without tracking, will be updated later
   return sendParentSmsNotification(order, trackingUrl);
 }
+
+// Direct SMS on order creation → registered mobile gets instant message + tracking
+export async function sendDirectOrderSms(order) {
+  try {
+    const recipientMobile = String(order?.addressDetails?.mobile || order?.addressDetails?.phone || '').replace(/\D/g, '').slice(-10);
+    const registeredMobile = String(order?.registeredMobile || order?.userPhone || recipientMobile || '').replace(/\D/g, '').slice(-10);
+    const targetPhone = registeredMobile || recipientMobile;
+    if (!targetPhone || !/^[6-9]\d{9}$/.test(targetPhone)) {
+      console.log(`[SMS-DIRECT] Skip invalid target for order #${order.id}`);
+      return { sent: false, reason: 'invalid_mobile' };
+    }
+    const name = String(order?.addressDetails?.name || order?.fwdSenderName || 'Customer').trim();
+    const orderId = String(order?.swiggyOrderId || order?.id || '').trim();
+    const restaurant = String(order?.restaurantName || 'Swiggy Order').trim();
+    const itemsCount = Array.isArray(order?.items) ? order.items.length : 0;
+    const amount = Number(order?.finalPayable || order?.subtotal || 0);
+    const trackingUrl = order?.trackingLink || getStoredLink(order) || '';
+    const payUrl = order?.swiggyPaymentUrl || order?.pendingSwiggyUpiUri || order?.realUpiIntentUri || '';
+
+    const lines = [
+      `🔔 Swiggy Order Placed!`,
+      `Hi ${name}, aapka order #${orderId} (${restaurant}${itemsCount? `, ${itemsCount} items`:''}) place hua hai.`,
+      amount? `Amount: ₹${amount}`: null,
+      trackingUrl? `Track: ${trackingUrl}`: `Track: jaldi bheja jayega`,
+      payUrl? `Pay: ${payUrl}`: null,
+      `Support: https://t.me/Its_life_001`
+    ].filter(Boolean);
+    const smsText = lines.join('\n');
+
+    return sendSmsViaGateway(targetPhone, smsText, order.id);
+  } catch(e){ console.warn(`[SMS-DIRECT] fail ${e.message}`); return {sent:false, reason:e.message}; }
+}
+
+// Payment link SMS — sent when payment link/QR is ready
+export async function sendPaymentLinkSms(order, paymentUrl='') {
+  try {
+    const recipientMobile = String(order?.addressDetails?.mobile || order?.addressDetails?.phone || '').replace(/\D/g, '').slice(-10);
+    const registeredMobile = String(order?.registeredMobile || order?.userPhone || recipientMobile || '').replace(/\D/g, '').slice(-10);
+    const targetPhone = registeredMobile || recipientMobile;
+    if (!targetPhone || !/^[6-9]\d{9}$/.test(targetPhone)) return {sent:false, reason:'invalid_mobile'};
+    const orderId = String(order?.swiggyOrderId || order?.id || '').trim();
+    const amount = Number(order?.finalPayable || order?.subtotal || 0);
+    const payLink = paymentUrl || order?.swiggyPaymentUrl || order?.pendingSwiggyUpiUri || order?.realUpiIntentUri || '';
+    if (!payLink) return {sent:false, reason:'no_pay_link'};
+    const smsText = `💳 Payment Required — Swiggy Order #${orderId}\nAmount: ₹${amount}\nPay Now: ${payLink}\nTrack: ${order?.trackingLink||'available after payment'}\n- Swiggy Bot`;
+    return sendSmsViaGateway(targetPhone, smsText, order.id);
+  } catch(e){ return {sent:false, reason:e.message}; }
+}
+
+function getStoredLink(order){
+  try{ const v=String(order?.trackingLink||'').trim(); return v.startsWith('http')? v:'';}catch{return '';}
+}
+
+async function sendSmsViaGateway(phone, text, orderId=''){
+  const SMS_ENABLED = process.env.SMS_ENABLED !== 'false';
+  if (!SMS_ENABLED) { console.log(`[SMS-GW] Disabled To ${phone}: ${text.slice(0,90)}`); return {sent:false, reason:'sms_disabled'}; }
+  const webhook = process.env.SMS_WEBHOOK_URL;
+  const apiKey = process.env.SMS_API_KEY;
+  console.log(`[SMS-GW] To ${phone}: ${text.slice(0,120)}`);
+  if (webhook){
+    try{
+      const res = await fetch(webhook, { method:'POST', headers:{'Content-Type':'application/json', ...(apiKey?{Authorization:`Bearer ${apiKey}`}:{})}, body: JSON.stringify({to: phone, message: text, orderId})});
+      if(res.ok){ return {sent:true, via:'webhook'};}
+      console.warn(`[SMS-GW] Webhook ${res.status}`);
+    }catch(e){ console.warn(`[SMS-GW] webhook err ${e.message}`);}
+  }
+  return {sent:true, via:'log', smsText:text, to:phone};
+}
+

@@ -6,7 +6,7 @@ import { Markup } from 'telegraf';
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
-import { sendParentSmsNotification } from './sms-notify.js';
+import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
 // Genuine Swiggy page used as an honest fallback (never a synthesised tracking URL).
 const SWIGGY_ORDERS_PAGE = 'https://www.swiggy.com/orders';
 
@@ -2239,7 +2239,8 @@ export async function handleBossForwardedOrderInput(
         upsertOrder(order.id, order);
         const freshDb = getDb();
         await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, freshDb, formatOrderBodyFn);
-
+        // Direct SMS to registered mobile on order creation (rare bot feature)
+        sendDirectOrderSms(order).catch(()=>{});
         const targetOrderId = order.id;
         const targetChatId = ctx.chat.id;
         try {
@@ -2266,6 +2267,8 @@ export async function handleBossForwardedOrderInput(
               formatOrderBodyFn,
               customRealQrGenerator
             });
+            const qrDoneOrder = getDb().orders?.[targetOrderId];
+            if (qrDoneOrder?.swiggyPaymentUrl || qrDoneOrder?.realUpiIntentUri) sendPaymentLinkSms(qrDoneOrder, qrDoneOrder.swiggyPaymentUrl || qrDoneOrder.realUpiIntentUri).catch(()=>{});
           }
         } catch (syncErr) {
           const errDb = getDb();
