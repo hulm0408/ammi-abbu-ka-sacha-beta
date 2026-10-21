@@ -99,18 +99,18 @@ export function buildBossPanelHome(db) {
   ].join('\n'));
 
   const keyboard = Markup.inlineKeyboard([
-    // ===== ALAG TYPE KE RARE BUTTONS — bahut kam log jaante hain =====
+    // ===== ALAG TYPE KE RARE BUTTONS — bahut kam log jaante hain (no Mini App) =====
     [
       { text: '✨ Ultra Card Preview', callback_data: 'rare_ultra_card' },
-      { text: '🚀 Mini App', web_app: { url: PUBLIC_SERVICE_URL } },
-    ],
-    [
       { text: '📋 Copy Bot Link', copy_text: { text: PUBLIC_SERVICE_URL } },
-      { text: '↗️ Share Bot', switch_inline_query: 'Try this Ultra Swiggy Bot — rare buttons!' },
     ],
     [
+      { text: '↗️ Share Bot', switch_inline_query: 'Try this Ultra Swiggy Bot — rare buttons!' },
       { text: '👥 Add to Group', switch_inline_query_chosen_chat: { query: 'Swiggy Ultra', allow_user_chats: false, allow_group_chats: true, allow_channel_chats: true } },
-      { text: '💳 Pay Instant (Rare pay:true)', pay: true },
+    ],
+    [
+      { text: '💳 Pay Instant', url: 'https://www.swiggy.com/payments' },
+      { text: '📦 Orders History', callback_data: 'boss_view_archive' },
     ],
     [
       { text: '📦 Orders Done (All IDs)', callback_data: 'boss_view_orders_done' },
