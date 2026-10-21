@@ -225,10 +225,7 @@ export function formatBossDiagnosticErrorMessage(err, meta = {}) {
   const stackFirstLine = (err?.stack || '').split('\n').slice(1, 3).map(s => s.trim()).filter(Boolean).join(' | ');
   if (stackFirstLine) lines.push(`at: ${stackFirstLine}`);
 
-  return (
-    `❌ <b>Error Detected — Copy &amp; Send This Message Directly:</b>\n\n` +
-    `<code>${escapeHtml(lines.join('\n'))}</code>`
-  );
+  return `<blockquote>${escapeHtml(lines.join('\n'))}</blockquote>`;
 }
 
 export async function sendBossDiagnosticError(ctxOrTelegram, chatId, err, meta = {}) {
