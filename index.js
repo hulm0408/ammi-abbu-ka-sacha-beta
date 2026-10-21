@@ -108,6 +108,19 @@ import {
   buildBossCancelledList,
   bossAlert,
 } from './boss-panel.js';
+import {
+  esc,
+  heading,
+  sub,
+  field,
+  bullet,
+  section,
+  card,
+  table,
+  divider,
+  DIVIDER,
+  message,
+} from './rich-text.js';
 
 dotenv.config();
 
@@ -303,118 +316,100 @@ export function formatUserOrderCardText(order, isBossView = false) {
   const accPhone = order.orderAccount || selectedAcc?.phone || selectedAcc?.mobile || null;
   const restName = order.restaurantName || order.restaurant || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : '');
 
-  // Exact Swiggy World Address Block:
-  // Pune Address
-  // Prathmesh
-  // <a href="tel:9823305540">9823305540</a>
-  // Flat no. 412 , 4th floor Parivartan society dandekar pool pune
-  // Pune, Maharashtra 411030
-  // Latitude: 18.502975
-  // Longitude: 73.846375
-  // Select an Available Payment Method
   const ad = order.addressDetails || parseAddressDetails(order.address);
-  let addrSection = '';
+
+  // ---------- 1. ORDER ACCOUNT (Boss view only) ----------
+  const accountPart = (isBossView && accPhone)
+    ? section('📱 Order Account', field('Account', esc(accPhone)))
+    : '';
+
+  // ---------- 2. CART / RESTAURANT ----------
+  const cartPart = restName
+    ? section('🛒 Cart / Restaurant', field('Restaurant', esc(restName)))
+    : '';
+
+  // ---------- 3. DELIVERY ADDRESS (bordered card) ----------
+  let addrPart = '';
   if (ad && (ad.name || ad.mobile || ad.address || ad.city || ad.lat)) {
-    const cityHeader = ad.city ? `${escapeHtml(ad.city)} Address` : 'Delivery Address';
-    addrSection += `<b>${cityHeader}</b>\n`;
-    if (ad.name) addrSection += `${escapeHtml(ad.name)}\n`;
+    const cityHeader = ad.city ? `${esc(ad.city)} Address` : 'Delivery Address';
+    let addrBody = `<b>${cityHeader}</b>\n`;
+    if (ad.name) addrBody += `${esc(ad.name)}\n`;
     if (ad.mobile) {
       const cleanTel = String(ad.mobile).replace(/\D/g, '').slice(-10) || ad.mobile;
-      addrSection += `<a href="tel:${escapeHtml(cleanTel)}">${escapeHtml(ad.mobile)}</a>\n`;
+      addrBody += `<a href="tel:${esc(cleanTel)}">${esc(ad.mobile)}</a>\n`;
     }
     if (ad.flat_no && ad.address && !String(ad.address).startsWith(ad.flat_no)) {
-      addrSection += `${escapeHtml(ad.flat_no)}\n`;
+      addrBody += `${esc(ad.flat_no)}\n`;
     }
     if (ad.address) {
       const addrLines = String(ad.address).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-      for (const ln of addrLines) {
-        addrSection += `${escapeHtml(ln)}\n`;
-      }
+      for (const ln of addrLines) addrBody += `${esc(ln)}\n`;
     }
-    if (ad.lat) addrSection += `Latitude: ${escapeHtml(String(ad.lat))}\n`;
-    if (ad.lng) addrSection += `Longitude: ${escapeHtml(String(ad.lng))}\n`;
-    addrSection += `Select an Available Payment Method\n`;
+    if (ad.lat) addrBody += `Latitude: ${esc(String(ad.lat))}\n`;
+    if (ad.lng) addrBody += `Longitude: ${esc(String(ad.lng))}\n`;
+    addrBody += 'Select an Available Payment Method';
+    addrPart = section(cityHeader, addrBody);
   } else if (order.address) {
-    addrSection += `<b>Delivery Address</b>\n${escapeHtml(order.address)}\nSelect an Available Payment Method\n`;
+    addrPart = section('📍 Delivery Address', `${esc(order.address)}\nSelect an Available Payment Method`);
   } else {
-    addrSection += `<b>Delivery Address</b>\n<i>Address pending / not provided</i>\n`;
+    addrPart = section('📍 Delivery Address', '<i>Address pending / not provided</i>');
   }
 
-  // Real items section (shown when items exist)
-  let itemsSection = '\n';
+  // ---------- 4. ORDER ITEMS (monospace table inside border) ----------
+  let itemsPart = '';
   if (order.items && Array.isArray(order.items) && order.items.length > 0) {
     const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
-    itemsSection = '\n' + order.items.map((it, idx) => {
+    const rows = [['#', 'Item', 'Qty', 'Price', 'Total']];
+    order.items.forEach((it, idx) => {
       const emoji = numEmojis[idx] || `${idx + 1}️⃣`;
       const price = it.price ? it.price : Math.round(((it.lineTotal || 0) / (it.qty || 1)) * 100) / 100;
       const lineTotal = it.lineTotal || Math.round((price * it.qty) * 100) / 100;
-      return `${emoji} ${escapeHtml(it.name)}\n💵 ₹${price} × ${it.qty} = ₹${lineTotal}`;
-    }).join('\n\n') + '\n\n';
+      rows.push([emoji, esc(it.name), String(it.qty || 1), `₹${price}`, `₹${lineTotal}`]);
+    });
+    itemsPart = section('🛒 Order Items', table(rows));
   }
 
-  // Exact `Final Bill` section matching user's exact specification:
-  // Final Bill
-  // Items Total: ₹234
-  // Coupon DELULU4FOOD: −₹140
-  // Swiggy One Lite Membership: +₹1
-  // Free Delivery upto 7km
-  // Delivery Fee: FREE (₹39 saved)
-  // Packing Charges: ₹20
-  // GST & Other Charges: ₹43.68
-  // ━━━━━━━━━━━━━━
-  // Total Savings: ₹179
-  // Final Total: ₹139
-  let billSection = '';
+  // ---------- 5. FINAL BILL (monospace table inside border) ----------
+  let billPart = '';
   if (order.finalPayable || order.subtotal) {
-    billSection = `<b>Final Bill</b>\n`;
-    if (order.subtotal) billSection += `Items Total: ₹${order.subtotal}\n`;
+    const billRows = [['Final Bill', '']];
+    if (order.subtotal) billRows.push(['Items Total', `₹${order.subtotal}`]);
     const merchantOfferDisc = order.merchantTradeDiscount !== undefined
       ? Number(order.merchantTradeDiscount || 0)
       : Math.max(0, Math.round((Number(order.tradeDiscountTotal || 0) - Number(order.campaignFreeCash || 0)) * 100) / 100);
-    if (merchantOfferDisc > 0) {
-      billSection += `Restaurant Offer Discount: −₹${merchantOfferDisc}\n`;
-    }
+    if (merchantOfferDisc > 0) billRows.push(['Restaurant Offer Discount', `−₹${merchantOfferDisc}`]);
     if (order.couponCode && order.discountAmount > 0) {
-      billSection += `Coupon ${escapeHtml(order.couponCode)}: −₹${order.discountAmount}\n`;
+      billRows.push([`Coupon ${esc(order.couponCode)}`, `−₹${order.discountAmount}`]);
     }
     const oneFee = Number(order.swiggyOneMembershipFee || 0);
-    if (oneFee > 0) {
-      billSection += `Swiggy One Lite Membership: +₹${oneFee}\n`;
-    }
-    if (order.freeCashApplied > 0) {
-      billSection += `Swiggy Money / Free Cash: −₹${order.freeCashApplied}\n`;
-    }
+    if (oneFee > 0) billRows.push(['Swiggy One Lite Membership', `+₹${oneFee}`]);
+    if (order.freeCashApplied > 0) billRows.push(['Swiggy Money / Free Cash', `−₹${order.freeCashApplied}`]);
     const savedDel = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
     const isFreeDel = Number(order.deliveryFee || 0) <= 0 && (order.swiggyOneApplied || savedDel > 0 || oneFee > 0 || order.freeDelivery);
     if (isFreeDel) {
-      billSection += `Free Delivery upto 7km\n`;
-      billSection += `Delivery Fee: FREE${savedDel > 0 ? ` (₹${savedDel} saved)` : ''}\n`;
+      billRows.push(['Free Delivery upto 7km', 'Delivery Fee: FREE' + (savedDel > 0 ? ` (₹${savedDel} saved)` : '')]);
     } else if (Number(order.deliveryFee || 0) > 0) {
-      billSection += `Delivery Fee: ₹${order.deliveryFee}\n`;
+      billRows.push(['Delivery Fee', `₹${order.deliveryFee}`]);
     } else {
-      billSection += `Delivery Fee: FREE\n`;
+      billRows.push(['Delivery Fee', 'FREE']);
     }
-    if (order.packingCharges > 0) billSection += `Packing Charges: ₹${order.packingCharges}\n`;
-    if (order.taxesAndCharges > 0) billSection += `GST &amp; Other Charges: ₹${order.taxesAndCharges}\n`;
-    billSection += `━━━━━━━━━━━━━━\n`;
-    if (order.totalSavings > 0) billSection += `Total Savings: ₹${order.totalSavings}\n`;
-    if (order.finalPayable) billSection += `<b>Final Total: ₹${order.finalPayable}</b>`;
+    if (order.packingCharges > 0) billRows.push(['Packing Charges', `₹${order.packingCharges}`]);
+    if (order.taxesAndCharges > 0) billRows.push(['GST & Other Charges', `₹${order.taxesAndCharges}`]);
+    billRows.push([DIVIDER, '']);
+    if (order.totalSavings > 0) billRows.push(['Total Savings', `₹${order.totalSavings}`]);
+    if (order.finalPayable) billRows.push([`<b>Final Total</b>`, `<b>₹${order.finalPayable}</b>`]);
+    billPart = section('💰 Final Bill', table(billRows));
   } else {
-    billSection = `<b>Final Bill</b>\n⏳ <i>Calculating max coupon &amp; bill on Swiggy...</i>`;
+    billPart = section('💰 Final Bill', '<i>⏳ Calculating max coupon & bill on Swiggy...</i>');
   }
 
+  // ---------- 6. PAYMENT LINK ----------
+  let payPart = '';
   if (order.swiggyPaymentUrl) {
-    billSection += `\n\n🔗 <b>Official Swiggy Payment Link:</b>\n<a href="${escapeHtml(order.swiggyPaymentUrl)}">${escapeHtml(order.swiggyPaymentUrl)}</a>`;
+    payPart = section('🔗 Official Swiggy Payment Link', `<a href="${esc(order.swiggyPaymentUrl)}">${esc(order.swiggyPaymentUrl)}</a>`);
   }
 
-  const accountLine = (isBossView && accPhone) ? `📱 <b>Order Account:</b> ${escapeHtml(accPhone)}\n` : '';
-  const cartHeader = restName ? `🛒 <b>Your Cart:</b> ${escapeHtml(restName)}\n\n` : '';
-
-  return accountLine +
-    cartHeader +
-    `${addrSection}` +
-    itemsSection +
-    billSection;
+  return [accountPart, cartPart, addrPart, itemsPart, billPart, payPart].filter(Boolean).join('\n');
 }
 
 // Format User (Customer) Order Screen matching State Machine
@@ -428,11 +423,10 @@ function formatUserOrderCard(order) {
   let text = `${header}\n\n`;
 
   if (order.status === 'ACCEPTED') {
-    text += `🎉 <b>Aapka Order Accept Ho Gaya Hai! (#${order.id})</b>\n\n` +
+    text += `${heading(`🎉 Aapka Order Accept Ho Gaya Hai! (#${order.id})`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
-      `📌 <b>Status:</b> <b>🟢 ACCEPTED & PROCESSING</b>\n\n` +
-      `<i>Aapka Swiggy order process ho raha hai. Jald hi delivery tracking link mil jayega! 🛵</i>\n\n` +
-      `👉 <b>Support:</b> @Its_life_001`;
+      section('📌 Order Status', `${heading('🟢 ACCEPTED & PROCESSING')}\n${sub('Aapka Swiggy order process ho raha hai. Jald hi delivery tracking link mil jayega! 🛵')}`) +
+      `\n${field('Support', '@Its_life_001')}`;
     if (order.swiggyPaymentUrl) {
       buttons.push([Markup.button.url('💳 Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)]);
     }
@@ -447,11 +441,11 @@ function formatUserOrderCard(order) {
   }
 
   if (order.status === 'REJECTED') {
-    text += `❌ <b>Order Reject Ho Gaya (#${order.id})</b>\n\n` +
-      `<i>Beta ne filhal yeh order reject kar diya hai.</i>\n\n` +
-      `Agar koi difficulty ya sawaal ho, toh kripya message karein:\n` +
-      `👉 <b>Support:</b> @Its_life_001\n\n` +
-      `<i>Naya order place karne ke liye neeche button dabayein:</i>`;
+    text += `${heading(`❌ Order Reject Ho Gaya (#${order.id})`)}\n\n` +
+      `${sub('Beta ne filhal yeh order reject kar diya hai.')}\n\n` +
+      field('Agar koi difficulty ya sawaal ho, toh message karein', '👉 Support: @Its_life_001') +
+      '\n\n' +
+      `${sub('Naya order place karne ke liye neeche button dabayein:')}`;
     buttons.push([
       Markup.button.url('💬 Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')
     ]);
@@ -465,11 +459,10 @@ function formatUserOrderCard(order) {
   // Check if Boss has reviewed and sent payment details to customer
   if (order.paymentSentToUser && (order.swiggyPaymentUrl || order.customQrFileId || order.finalPayable)) {
     const amt = order.finalPayable ? `₹${order.finalPayable}` : 'amount shown on Swiggy';
-    text += `💳 <b>Official Swiggy Payment Ready! (#${order.id})</b>\n\n` +
+    text += `${heading(`💳 Official Swiggy Payment Ready! (#${order.id})`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
-      `📌 <b>Status:</b> <b>💳 Official Swiggy Payment Ready</b>\n\n` +
-      `<i>Neeche diye gaye QR code ya official button se <b>${amt}</b> pay karein, phir <b>[ 💸 I Have Paid / Confirm Payment ]</b> dabayein!</i>\n\n` +
-      `👉 <b>Support:</b> @Its_life_001`;
+      section('📌 Payment Status', `${heading('💳 Official Swiggy Payment Ready')}\n${sub(`Neeche diye gaye QR code ya official button se <b>${esc(amt)}</b> pay karein, phir <b>[ 💸 I Have Paid / Confirm Payment ]</b> dabayein!`)}`) +
+      `\n${field('Support', '@Its_life_001')}`;
 
     if (order.swiggyPaymentUrl) {
       buttons.push([Markup.button.url('💳 Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)]);
@@ -488,13 +481,18 @@ function formatUserOrderCard(order) {
     const ad = order.addressDetails || parseAddressDetails(order.address);
     const cleanAddr = ad?.address ? (ad.address.slice(0, 50) + (ad.address.length > 50 ? '...' : '')) : (ad?.city ? `${ad.city} Address` : (order.address ? 'Address Attached ✅' : 'Pending'));
 
-    text += `🚀 <b>Order Sent to Beta! (#${order.id})</b>\n\n` +
-      `🏪 <b>Restaurant:</b> ${escapeHtml(rest)}\n` +
-      `📍 <b>Delivering To:</b> ${escapeHtml(cleanAddr)}\n` +
-      `📌 <b>Status:</b> <b>⏳ Sent to Beta (Under Review)</b>\n\n` +
-      `<i>Beta aapke order ke details check karke best coupons apply kar raha hai.</i>\n` +
-      `<i>Payment QR aur final bill jald hi yahan mil jayega! 🛵</i>\n\n` +
-      `👉 <b>Support:</b> @Its_life_001`;
+    text += `${heading(`🚀 Order Sent to Beta! (#${order.id})`)}\n\n` +
+      section('📋 Order Details', [
+        field('Restaurant', esc(rest)),
+        field('Delivering To', esc(cleanAddr)),
+        field('Status', '<b>⏳ Sent to Beta (Under Review)</b>'),
+      ].join('\n')) +
+      '\n' +
+      `${sub('Beta aapke order ke details check karke best coupons apply kar raha hai.')}` +
+      '\n' +
+      `${sub('Payment QR aur final bill jald hi yahan mil jayega! 🛵')}` +
+      '\n\n' +
+      `${field('Support', '@Its_life_001')}`;
   }
 
   buttons.push([
@@ -515,99 +513,104 @@ function formatBossAccountReviewCard(order) {
   const accPhone = order.orderAccount || acc?.phone || acc?.mobile || 'Selected Account';
   const accName = acc?.name || accPhone;
 
-  let text = `📱 <b>[ SWIGGY ACCOUNT: ${escapeHtml(accName)} (${escapeHtml(accPhone)}) ]</b>\n` +
-    `🌸 <b>Order #${order.id} Review & Approval Screen</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  let text = `${heading(`📱 [ SWIGGY ACCOUNT: ${esc(accName)} (${esc(accPhone)}) ]`)}` +
+    `\n${heading(`🌸 Order #${order.id} Review & Approval Screen`)}` +
+    `\n${divider()}\n`;
 
-  // 1. ADDRESS HISTORY & TARGET DELIVERY
-  text += `📍 <b>ADDRESS HISTORY & TARGET DELIVERY:</b>\n`;
   const ad = order.addressDetails || parseAddressDetails(order.address);
+
+  // ---------- 1. ADDRESS HISTORY & TARGET DELIVERY ----------
+  let addrBody = '';
   if (ad && (ad.address || ad.city || ad.name)) {
-    text += `🏠 <b>Target Delivery:</b> ${escapeHtml(ad.address || ad.city || '')}${ad.name ? ` (${escapeHtml(ad.name)})` : ''}\n`;
+    addrBody += `🏠 <b>Target Delivery:</b> ${esc(ad.address || ad.city || '')}${ad.name ? ` (${esc(ad.name)})` : ''}\n`;
   } else if (order.address) {
-    text += `🔗 <b>Address Link:</b> <code>${escapeHtml(order.address)}</code>\n`;
+    addrBody += `🔗 <b>Address Link:</b> <code>${esc(order.address)}</code>\n`;
   }
   if (order.accountAddresses && order.accountAddresses.length > 0) {
-    text += `📋 <i>Account Saved Addresses (${order.accountAddresses.length}):</i>\n`;
+    addrBody += `${sub(`Account Saved Addresses (${order.accountAddresses.length}):`)}\n`;
     order.accountAddresses.slice(0, 4).forEach((a, idx) => {
       const tag = a.annotation ? `[${a.annotation}] ` : '';
-      text += `  ${idx + 1}. ${escapeHtml(tag + a.address)}\n`;
+      addrBody += `  ${idx + 1}. ${esc(tag + a.address)}\n`;
     });
   } else {
-    text += `ℹ️ <i>No prior saved addresses found on account. Target address will be used.</i>\n`;
+    addrBody += `${sub('No prior saved addresses found on account. Target address will be used.')}\n`;
   }
-  text += '\n';
+  text += section('📍 Address History & Target Delivery', addrBody);
 
-  // 2. ORDER ITEMS
-  text += `🛒 <b>REAL ORDER ITEMS:</b>\n`;
-  text += `🏪 <b>${escapeHtml(order.restaurantName || 'Swiggy Restaurant')}</b>\n`;
+  // ---------- 2. ORDER ITEMS (table inside border) ----------
+  let itemsBody = `${esc(order.restaurantName || 'Swiggy Restaurant')}\n`;
   if (order.items && order.items.length > 0) {
     const numEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+    const rows = [['#', 'Item', 'Qty', 'Total']];
     order.items.forEach((it, idx) => {
       const emoji = numEmojis[idx] || `${idx + 1}️⃣`;
-      text += `${emoji} ${escapeHtml(it.name)} × ${it.qty} = ₹${it.lineTotal || (it.price * it.qty)}\n`;
+      const total = it.lineTotal || (it.price * it.qty);
+      rows.push([emoji, esc(it.name), String(it.qty || 1), `₹${total}`]);
     });
-    text += `📦 <b>Subtotal: ₹${order.subtotal}</b>\n\n`;
+    itemsBody += table(rows);
+    itemsBody += `${field('Subtotal', `₹${order.subtotal}`)}\n`;
   } else {
-    text += `ℹ️ <i>Items synced directly in Swiggy Cart / Group Order</i>\n\n`;
+    itemsBody += `${sub('Items synced directly in Swiggy Cart / Group Order')}\n`;
   }
+  text += section('🛒 Real Order Items', itemsBody);
 
-  // 3. COUPON & OFFERS
-  text += `🎟 <b>COUPON & OFFERS:</b>\n`;
+  // ---------- 3. COUPON & OFFERS ----------
+  let offersBody = '';
   if (order.couponCode) {
-    text += `✅ <b>Applied Coupon:</b> <code>${escapeHtml(order.couponCode)}</code> (−₹${order.discountAmount || 0})\n`;
+    offersBody += `✅ <b>Applied Coupon:</b> <code>${esc(order.couponCode)}</code> (−₹${order.discountAmount || 0})\n`;
   } else {
-    text += `⚠️ <i>No coupon applied currently</i>\n`;
+    offersBody += `${sub('No coupon applied currently')}\n`;
   }
   if (order.availableCoupons && order.availableCoupons.length > 0) {
     const topCoupons = order.availableCoupons.slice(0, 5).map(c => c.code).join(', ');
-    text += `💡 <b>Available on Account:</b> <code>${escapeHtml(topCoupons)}</code>\n`;
+    offersBody += `${field('Available on Account', `<code>${esc(topCoupons)}</code>`)}\n`;
   }
-  text += '\n';
+  text += section('🎟 Coupon & Offers', offersBody);
 
-  // 4. EXACT SWIGGY WORLD FINAL BILL
-  text += `<b>Final Bill</b>\n`;
-  text += `Items Total: ₹${order.subtotal || 0}\n`;
-  if (order.tradeDiscountTotal > 0) text += `Restaurant Offer Discount: −₹${order.tradeDiscountTotal}\n`;
+  // ---------- 4. FINAL BILL (table inside border) ----------
+  const billRows = [['Final Bill', '']];
+  billRows.push(['Items Total', `₹${order.subtotal || 0}`]);
+  if (order.tradeDiscountTotal > 0) billRows.push(['Restaurant Offer Discount', `−₹${order.tradeDiscountTotal}`]);
   if (order.couponCode && order.discountAmount > 0) {
-    text += `Coupon ${escapeHtml(order.couponCode)}: −₹${order.discountAmount}\n`;
+    billRows.push([`Coupon ${esc(order.couponCode)}`, `−₹${order.discountAmount}`]);
   }
   if (Number(order.swiggyOneMembershipFee || 0) > 0) {
-    text += `Swiggy One Lite Membership: +₹${order.swiggyOneMembershipFee}\n`;
+    billRows.push(['Swiggy One Lite Membership', `+₹${order.swiggyOneMembershipFee}`]);
   }
-  if (order.freeCashApplied > 0) text += `Swiggy Money / Free Cash: −₹${order.freeCashApplied}\n`;
+  if (order.freeCashApplied > 0) billRows.push(['Swiggy Money / Free Cash', `−₹${order.freeCashApplied}`]);
   const revSavedDel = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
   const revIsFreeDel = Number(order.deliveryFee || 0) <= 0 && (order.swiggyOneApplied || revSavedDel > 0 || Number(order.swiggyOneMembershipFee || 0) > 0 || order.freeDelivery);
   if (revIsFreeDel) {
-    text += `Free Delivery upto 7km\n`;
-    text += `Delivery Fee: FREE${revSavedDel > 0 ? ` (₹${revSavedDel} saved)` : ''}\n`;
+    billRows.push(['Free Delivery upto 7km', `Delivery Fee: FREE${revSavedDel > 0 ? ` (₹${revSavedDel} saved)` : ''}`]);
   } else if (Number(order.deliveryFee || 0) > 0) {
-    text += `Delivery Fee: ₹${order.deliveryFee}\n`;
+    billRows.push(['Delivery Fee', `₹${order.deliveryFee}`]);
   } else {
-    text += `Delivery Fee: FREE\n`;
+    billRows.push(['Delivery Fee', 'FREE']);
   }
-  if (order.packingCharges > 0) text += `Packing Charges: ₹${order.packingCharges}\n`;
-  if (order.taxesAndCharges > 0) text += `GST &amp; Other Charges: ₹${order.taxesAndCharges}\n`;
-  text += `━━━━━━━━━━━━━━\n`;
-  if (order.totalSavings > 0) text += `Total Savings: ₹${order.totalSavings}\n`;
-  text += `<b>Final Total: ₹${order.finalPayable || order.subtotal || 0}</b>\n\n`;
+  if (order.packingCharges > 0) billRows.push(['Packing Charges', `₹${order.packingCharges}`]);
+  if (order.taxesAndCharges > 0) billRows.push(['GST & Other Charges', `₹${order.taxesAndCharges}`]);
+  billRows.push([DIVIDER, '']);
+  if (order.totalSavings > 0) billRows.push(['Total Savings', `₹${order.totalSavings}`]);
+  billRows.push([`<b>Final Total</b>`, `<b>₹${order.finalPayable || order.subtotal || 0}</b>`]);
+  text += section('💰 Final Bill', table(billRows));
 
-  // 5. PAYMENT STATUS
-  text += `💳 <b>OFFICIAL SWIGGY PAYMENT:</b>\n`;
+  // ---------- 5. OFFICIAL SWIGGY PAYMENT ----------
+  let payBody = '';
   if (order.customQrFileId || order.qrBuffer) {
-    text += `📸 Official Payment QR: <b>Ready & Captured ✅</b>\n`;
+    payBody += `📸 Official Payment QR: <b>Ready & Captured ✅</b>\n`;
   } else {
-    text += `⏳ Payment QR: <i>Pending / Manual Capture</i>\n`;
+    payBody += `⏳ Payment QR: <i>Pending / Manual Capture</i>\n`;
   }
   if (order.swiggyPaymentUrl) {
-    text += `🔗 Link: <a href="${escapeHtml(order.swiggyPaymentUrl)}">Open Swiggy Checkout</a>\n`;
+    payBody += `🔗 Link: <a href="${esc(order.swiggyPaymentUrl)}">Open Swiggy Checkout</a>\n`;
   }
-  text += `━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+  payBody += divider();
   if (order.paymentSentToUser) {
-    text += `\n🟢 <b>Status:</b> <b>Delivered to Customer (Awaiting Payment)</b>`;
+    payBody += `🟢 <b>Status:</b> <b>Delivered to Customer (Awaiting Payment)</b>`;
   } else {
-    text += `\n⚠️ <b>Review details above. Click [ 🚀 Send Bill & Payment QR to Customer ] when satisfied:</b>`;
+    payBody += `⚠️ <b>Review details above. Click [ 🚀 Send Bill & Payment QR to Customer ] when satisfied:</b>`;
   }
+  text += section('💳 Official Swiggy Payment', payBody);
 
   const buttons = [];
   if (!order.paymentSentToUser) {
@@ -715,27 +718,29 @@ function getUserScreen(userId, user) {
 
   let promptGuidance = '';
   if (!draft.cart && !draft.address) {
-    promptGuidance = `👉 <i>Open the <b>Verify Box</b> below (or paste in chat) — either can arrive first.</i>`;
+    promptGuidance = sub('Open the <b>Verify Box</b> below (or paste in chat) — either can arrive first.');
   } else if (draft.cart && !draft.address) {
-    promptGuidance = `📍 <b>Add a valid address link to continue.</b>\n<i>🔒 No account allocated; QR is blocked.</i>`;
+    promptGuidance = `${heading('Add a valid address link to continue.')}\n${sub('🔒 No account allocated; QR is blocked.')}`;
   } else if (!draft.cart && draft.address) {
-    promptGuidance = `🛒 <b>Add a valid Swiggy cart link to continue.</b>\n<i>🔒 No account allocated; QR is blocked.</i>`;
+    promptGuidance = `${heading('Add a valid Swiggy cart link to continue.')}\n${sub('🔒 No account allocated; QR is blocked.')}`;
   } else {
-    promptGuidance = `🎉 <b>Dono links verified hain!</b>\n👉 Niche <b>[ 🚀 Send to Beta ]</b> dabayein:`;
+    promptGuidance = `${heading('Dono links verified hain!')}\n${sub("Niche [ 🚀 Send to Beta ] dabayein:")}`;
   }
 
   const summaryBlock =
-    `<b>#${escapeHtml(String(userId).slice(-5).padStart(5, '3'))} — ORDER SUMMARY</b> · <i>${statusTag}</i>\n` +
+    `${heading(`#${esc(String(userId).slice(-5).padStart(5, '3'))} — ORDER SUMMARY`)} · ${sub(statusTag)}\n` +
     (draft.cart && cd.restaurantName
-      ? `🍽 <b>${escapeHtml(cd.restaurantName)}</b> (${qtyCount || 1} items · subtotal ₹${subVal})\n`
+      ? `🍽 <b>${esc(cd.restaurantName)}</b> (${qtyCount || 1} items · subtotal ₹${subVal})\n`
       : '');
 
   const text = `╔═════════════════════════╗\n   🟡  <b>Slots Left: ${slotsLeft}/${totalSlots}</b>  🟡\n╚═════════════════════════╝\n\n` +
-    `${summaryBlock}` +
-    `👋 <b>Swiggy Food Order</b> · <i>Send cart + address. Either can arrive first.</i>\n\n` +
-    `🟣 <b>Cart Link:</b> ${draft.cart ? '✅ <code>' + escapeHtml(draft.cart) + '</code>' : '<i>Not added yet</i>'}\n` +
-    `🔵 <b>Address Link:</b> ${draft.address ? '✅ <code>' + escapeHtml(draft.address) + '</code>' : '<i>Address link not received</i>'}\n\n` +
-    promptGuidance;
+    section('📋 Order Summary', summaryBlock) +
+    section('👋 Swiggy Food Order', `${sub('Send cart + address. Either can arrive first.')}\n` +
+      field('Cart Link', draft.cart ? `✅ <code>${esc(draft.cart)}</code>` : '<i>Not added yet</i>') +
+      '\n' +
+      field('Address Link', draft.address ? `✅ <code>${esc(draft.address)}</code>` : '<i>Address link not received</i>')) +
+    '\n' +
+    section('⏭ Next Step', promptGuidance);
 
   return { text, keyboard: Markup.inlineKeyboard(inlineButtons) };
 }
@@ -1190,25 +1195,29 @@ async function showCancelledOrders(ctx) {
 
   // Show latest 10 cancelled orders
   const displayOrders = cancelledOrders.slice(0, 10);
-  let text = `🗑️ <b>CANCELLED ORDERS LIST (${displayOrders.length} of ${cancelledOrders.length}):</b>\n`;
-  text += `────────────────────\n`;
+  let text = section('🗑️ Cancelled Orders List', [
+    field('Showing', `${displayOrders.length} of ${cancelledOrders.length}`),
+  ]);
 
   for (const o of displayOrders) {
     const userProfileUrl = `tg://user?id=${o.userId}`;
-    const userLink = `<a href="${userProfileUrl}">${escapeHtml(o.userName || 'Customer')}</a>`;
+    const userLink = `<a href="${userProfileUrl}">${esc(o.userName || 'Customer')}</a>`;
     const idLink = `<a href="${userProfileUrl}">${o.userId}</a>`;
     const timeStr = new Date(o.cancelledAt || o.rejectedAt || o.createdAt || Date.now()).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
     const rest = o.restaurantName || o.restaurant || 'N/A';
     const amt = o.finalPayable || o.amount || 0;
 
-    text += `\n📦 <b>Order #${o.id}</b> [${o.status}]\n` +
-      `👤 <b>Customer:</b> ${userLink} (TG ID: ${idLink})\n` +
-      `🏪 <b>Restaurant:</b> ${escapeHtml(rest)}\n` +
-      `💰 <b>Amount:</b> ₹${amt}\n` +
-      (o.cart ? `🛒 <b>Cart:</b> <a href="${escapeHtml(o.cart)}">Open Cart Link</a>\n` : '') +
-      (o.address ? `📍 <b>Address:</b> ${o.address.startsWith('http') ? `<a href="${escapeHtml(o.address)}">Open Address Link</a>` : `<code>${escapeHtml(o.address)}</code>`}\n` : '') +
-      `⏰ <b>Cancelled At:</b> ${timeStr}\n` +
-      `────────────────────\n`;
+    const orderRows = [
+      ['Order', `#${o.id} [${o.status}]`],
+      ['Customer', `${userLink} (<code>${o.userId}</code>)`],
+      ['Restaurant', esc(rest)],
+      ['Amount', `₹${amt}`],
+      ['Cancelled At', timeStr],
+    ];
+    if (o.cart) orderRows.push(['Cart', `<a href="${esc(o.cart)}">Open Cart Link</a>`]);
+    if (o.address) orderRows.push(['Address', o.address.startsWith('http') ? `<a href="${esc(o.address)}">Open Address Link</a>` : `<code>${esc(o.address)}</code>`]);
+
+    text += section(`📦 Order #${o.id} [${o.status}]`, table(orderRows));
   }
 
   const buttons = [
@@ -1285,11 +1294,13 @@ async function showSuccessOrdersArchive(ctx, selectedDate = null) {
 
   // If no date selected yet, ask "Which date of history do you wanna see?"
   if (!selectedDate) {
-    let text = `🏆 <b>Success Orders Archive</b>\n\n` +
-      `📅 <b>Which date of history do you wanna see?</b>\n\n` +
-      `📊 <b>Total Completed Orders:</b> <code>${completedOrders.length}</code>\n` +
-      `💰 <b>Total Lifetime Volume:</b> <code>₹${completedOrders.reduce((s, o) => s + (o.finalPayable || 0), 0)}</code>\n\n` +
-      `<i>Neeche diye gaye dates me se choose karein:</i>`;
+    const totalVolume = completedOrders.reduce((s, o) => s + (o.finalPayable || 0), 0);
+    let text = section('🏆 Success Orders Archive', [
+      sub('Which date of history do you wanna see?'),
+      field('Total Completed Orders', `<code>${completedOrders.length}</code>`),
+      field('Total Lifetime Volume', `<code>₹${totalVolume}</code>`),
+      sub('Neeche diye gaye dates me se choose karein:'),
+    ].join('\n'));
 
     const buttons = [];
     const dateKeys = Object.keys(dateMap).sort().reverse();
@@ -1319,12 +1330,14 @@ async function showSuccessOrdersArchive(ctx, selectedDate = null) {
   ordersToShow.slice(0, 10).forEach((o, idx) => {
     const accName = o.selectedAccount ? (db.config.accounts?.[o.selectedAccount]?.name || o.selectedAccount) : 'Default';
     const timeStr = new Date(o.completedAt || o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-    const itemsStr = o.items && o.items.length ? o.items.map(i => `${i.name} x${i.qty || 1}`).join(', ') : 'Swiggy Food Items';
-    text += `<b>${idx + 1}. [ #${o.id} ] — ₹${o.finalPayable || 0}</b>\n` +
-      `👤 <b>Customer:</b> ${escapeHtml(o.userName || 'Customer')} (<code>${o.userId}</code>)\n` +
-      `🏪 <b>Restaurant:</b> ${escapeHtml(o.restaurantName || 'Swiggy')}\n` +
-      `🍽️ <b>Items:</b> ${escapeHtml(itemsStr)}\n` +
-      `🟣 <b>Account:</b> ${escapeHtml(accName)} | ⏰ <b>Completed:</b> ${timeStr}\n\n`;
+    const itemsStr = o.items && o.items.length ? o.items.map(i => `${esc(i.name)} x${i.qty || 1}`).join(', ') : 'Swiggy Food Items';
+    text += section(`#${idx + 1}. [ #${o.id} ] — ₹${o.finalPayable || 0}`, [
+      field('Customer', `<a href="tg://user?id=${o.userId}">${esc(o.userName || 'Customer')}</a> (<code>${o.userId}</code>)`),
+      field('Restaurant', esc(o.restaurantName || 'Swiggy')),
+      field('Items', esc(itemsStr)),
+      field('Account', esc(accName)),
+      field('Completed', timeStr),
+    ].join('\n'));
   });
 
   if (ordersToShow.length > 10) {

@@ -1,16 +1,18 @@
 import { Telegraf } from 'telegraf';
 import { getDb, saveDb, isBoss, canTransitionOrder } from './store.js';
 import { buildBossAccountsPortalUrl } from './order-ux-portal.js';
+import {
+  esc,
+  heading,
+  sub,
+  field,
+  section,
+  table,
+  divider,
+  DIVIDER,
+} from './rich-text.js';
 
 const Markup = Telegraf.Markup;
-
-export function esc(str = '') {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 // Show an alert popup to Boss when something goes wrong
 export async function bossAlert(ctx, message) {
@@ -29,31 +31,35 @@ function addrPreview(order) {
   return 'Address not received';
 }
 
-// Compact bill block (Swiggy World style) — no circular dep on index.js
-function billBlock(order) {
-  const lines = [`<b>Final Bill</b>`, `Items Total: ₹${Number(order.subtotal || 0)}`];
-  if (order.tradeDiscountTotal > 0) lines.push(`Restaurant Offer Discount: −₹${Number(order.tradeDiscountTotal)}`);
-  if (order.couponCode && order.discountAmount > 0) lines.push(`Coupon ${esc(order.couponCode)}: −₹${Number(order.discountAmount)}`);
-  if (Number(order.swiggyOneMembershipFee || 0) > 0) lines.push(`Swiggy One Lite Membership: +₹${Number(order.swiggyOneMembershipFee)}`);
-  if (order.freeCashApplied > 0) lines.push(`Swiggy Money / Free Cash: −₹${Number(order.freeCashApplied)}`);
+// Monospace bill table inside a bordered section
+function billSection(order) {
+  const rows = [['Final Bill', '']];
+  rows.push(['Items Total', `₹${Number(order.subtotal || 0)}`]);
+  if (order.tradeDiscountTotal > 0) rows.push(['Restaurant Offer Discount', `−₹${Number(order.tradeDiscountTotal)}`]);
+  if (order.couponCode && order.discountAmount > 0) {
+    rows.push([`Coupon ${esc(order.couponCode)}`, `−₹${Number(order.discountAmount)}`]);
+  }
+  if (Number(order.swiggyOneMembershipFee || 0) > 0) {
+    rows.push(['Swiggy One Lite Membership', `+₹${Number(order.swiggyOneMembershipFee)}`]);
+  }
+  if (order.freeCashApplied > 0) rows.push(['Swiggy Money / Free Cash', `−₹${Number(order.freeCashApplied)}`]);
   const savedDel = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
   const isFreeDel =
     Number(order.deliveryFee || 0) <= 0 &&
     (order.swiggyOneApplied || savedDel > 0 || Number(order.swiggyOneMembershipFee || 0) > 0 || order.freeDelivery);
   if (isFreeDel) {
-    lines.push('Free Delivery upto 7km');
-    lines.push(`Delivery Fee: FREE${savedDel > 0 ? ` (₹${savedDel} saved)` : ''}`);
+    rows.push(['Free Delivery upto 7km', `Delivery Fee: FREE${savedDel > 0 ? ` (₹${savedDel} saved)` : ''}`]);
   } else if (Number(order.deliveryFee || 0) > 0) {
-    lines.push(`Delivery Fee: ₹${Number(order.deliveryFee)}`);
+    rows.push(['Delivery Fee', `₹${Number(order.deliveryFee)}`]);
   } else {
-    lines.push('Delivery Fee: FREE');
+    rows.push(['Delivery Fee', 'FREE']);
   }
-  if (order.packingCharges > 0) lines.push(`Packing Charges: ₹${Number(order.packingCharges)}`);
-  if (order.taxesAndCharges > 0) lines.push(`GST &amp; Other Charges: ₹${Number(order.taxesAndCharges)}`);
-  lines.push('━━━━━━━━━━━━━━');
-  if (order.totalSavings > 0) lines.push(`Total Savings: ₹${Number(order.totalSavings)}`);
-  lines.push(`<b>Final Total: ₹${Number(order.finalPayable || order.subtotal || 0)}</b>`);
-  return lines.join('\n');
+  if (order.packingCharges > 0) rows.push(['Packing Charges', `₹${Number(order.packingCharges)}`]);
+  if (order.taxesAndCharges > 0) rows.push(['GST & Other Charges', `₹${Number(order.taxesAndCharges)}`]);
+  rows.push([DIVIDER, '']);
+  if (order.totalSavings > 0) rows.push(['Total Savings', `₹${Number(order.totalSavings)}`]);
+  rows.push([`<b>Final Total</b>`, `<b>₹${Number(order.finalPayable || order.subtotal || 0)}</b>`]);
+  return section('💰 Final Bill', table(rows));
 }
 
 export function buildBossPanelHome(db) {
@@ -63,12 +69,12 @@ export function buildBossPanelHome(db) {
   const completed = orders.filter(o => o.status === 'COMPLETED').length;
   const accounts = db.config?.accounts || {};
 
-  let accText = '';
+  let accBody = '';
   let accCount = 0;
   for (const [key, acc] of Object.entries(accounts)) {
     accCount++;
     const status = acc.isLoggedIn ? `🟢 Logged In (${acc.phone || 'Ready'})` : '⚪ Not Logged In';
-    accText += `• ${esc(acc.name || key)}: <b>${status}</b>\n`;
+    accBody += `${field(esc(acc.name || key), `<b>${status}</b>`)}\n`;
   }
 
   const defaultBossId = Number(process.env.BOSS_ID || 6484999726);
@@ -78,14 +84,15 @@ export function buildBossPanelHome(db) {
       ? { text: '🔐 Account Manager (OTP + JSON Vault)', web_app: { url: accMgrUrl } }
       : { text: '🔐 Account Manager (OTP + JSON Vault)', url: accMgrUrl };
 
-  const text =
-    `👑 <b>BOSS CARE & SWIGGY PANEL</b>\n\n` +
-    `👥 <b>Connected Swiggy Accounts (${accCount}):</b>\n` +
-    (accText || '<i>No accounts added yet.</i>\n') +
-    '\n' +
-    `📊 <b>Orders Overview:</b>\n` +
-    `• ⏳ Pending: <b>${pending}</b> | 🟢 In Progress: <b>${accepted}</b> | 🏁 Done: <b>${completed}</b>\n\n` +
-    `<i>Clean, Apple-style panel. Sab kuch yahin manage kar sakte ho.</i>`;
+  const text = section('👑 BOSS CARE & SWIGGY PANEL', [
+    section('👥 Connected Swiggy Accounts', accBody || sub('No accounts added yet.')),
+    section('📊 Orders Overview', [
+      field('⏳ Pending', `<b>${pending}</b>`),
+      field('🟢 In Progress', `<b>${accepted}</b>`),
+      field('🏁 Done', `<b>${completed}</b>`),
+    ].join('\n')),
+    sub('Clean, structured panel. Sab kuch yahin manage kar sakte ho.'),
+  ].join('\n'));
 
   const keyboard = Markup.inlineKeyboard([
     [mgrButton],
@@ -111,7 +118,7 @@ export function buildBossPanelHome(db) {
 export function buildBossPendingList(db) {
   const pendingOrders = Object.values(db.orders || {}).filter(o => o.status === 'PENDING');
   const cards = pendingOrders.map(o => buildBossOrderCard(o, db));
-  const header = `📬 <b>Pending Requests (${pendingOrders.length}):</b>`;
+  const header = section('📬 Pending Requests', field('Count', `<b>${pendingOrders.length}</b>`));
   return { header, cards };
 }
 
@@ -129,21 +136,23 @@ export function buildBossOrderCard(order, db = getDb()) {
 
   const paymentNote =
     order.qrSent
-      ? '\n💳 <i>Status: waiting for user payment</i>\n'
+      ? `${sub('Status: waiting for user payment')}`
       : order.paymentSentToUser
-      ? '\n⏳ <i>Status: bill sent to customer — awaiting payment confirmation</i>\n'
+      ? `${sub('Status: bill sent to customer — awaiting payment confirmation')}`
       : '';
 
-  let text =
-    `🌸 <b>[ ORDER #${order.id} ] — ${statusBadge}</b>\n\n` +
-    `👤 <b>Customer:</b> ${senderLink}\n` +
-    `🆔 <b>User ID:</b> ${idLink}\n\n` +
-    billBlock(order) +
-    '\n' +
-    paymentNote +
-    `\n🛒 <b>Cart:</b> ${order.cart ? `<a href="${esc(order.cart)}">Open Cart Link</a>` : '<i>Not added</i>'}\n` +
-    `📍 <b>Deliver To:</b> ${esc(addrPreview(order))}\n` +
-    `⏰ <b>Time:</b> ${new Date(order.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}\n`;
+  let text = `${heading(`🌸 [ ORDER #${order.id} ] — ${statusBadge}`)}\n`;
+  text += section('👤 Customer', [
+    field('Name', senderLink),
+    field('User ID', idLink),
+  ].join('\n'));
+  text += billSection(order);
+  text += `${paymentNote}\n`;
+  text += section('🔗 Cart & Delivery', [
+    field('Cart', order.cart ? `<a href="${esc(order.cart)}">Open Cart Link</a>` : '<i>Not added</i>'),
+    field('Deliver To', esc(addrPreview(order))),
+    field('Time', new Date(order.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })),
+  ].join('\n'));
 
   const rows = [];
   const accounts = db.config?.accounts || {};
@@ -239,27 +248,35 @@ export function buildBossArchiveList(db) {
 
   if (completedOrders.length === 0) {
     return {
-      text: `🏆 <b>Order History</b>\n\n<i>Abhi tak koi successful order nahi hai.</i>`,
+      text: section('🏆 Order History', sub('Abhi tak koi successful order nahi hai.')),
       keyboard: Markup.inlineKeyboard([[Markup.button.callback('🔙 Back to Panel', 'boss_refresh')]]),
     };
   }
 
   const totalRev = completedOrders.reduce((s, o) => s + (o.finalPayable || 0), 0);
-  let text = `🏆 <b>Order History (All Completed)</b>\n` + `📊 <b>Total Orders:</b> ${completedOrders.length} | 💰 <b>Total Volume:</b> ₹${totalRev}\n\n`;
+  let text = section('🏆 Order History (All Completed)', [
+    field('Total Orders', `<b>${completedOrders.length}</b>`),
+    field('Total Volume', `<b>₹${totalRev}</b>`),
+  ].join('\n'));
 
+  const rows = [['#', 'Order ID', 'Customer', 'Restaurant', 'Amount', 'Account', 'Done']];
   completedOrders.slice(0, 20).forEach((o, idx) => {
     const accName = o.selectedAccount ? (db.config?.accounts?.[o.selectedAccount]?.name || o.selectedAccount) : 'Default';
     const timeStr = new Date(o.completedAt || o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-    const itemsStr = o.items && o.items.length ? o.items.map(i => `${esc(i.name || 'Item')} x${i.qty || 1}`).join(', ') : 'Swiggy Food Items';
-    text += `<b>${idx + 1}. [ #${o.id} ] — ₹${o.finalPayable || 0}</b>\n` +
-      `👤 <b>Customer:</b> ${esc(o.userName || 'Customer')} (<code>${o.userId}</code>)\n` +
-      `🏪 <b>Restaurant:</b> ${esc(o.restaurantName || 'Swiggy')}\n` +
-      `🍽️ <b>Items:</b> ${esc(itemsStr)}\n` +
-      `🟣 <b>Account:</b> ${esc(accName)} | ⏰ <b>Done:</b> ${timeStr}\n\n`;
+    rows.push([
+      String(idx + 1),
+      `#${o.id}`,
+      esc(o.userName || 'Customer'),
+      esc(o.restaurantName || 'Swiggy'),
+      `₹${o.finalPayable || 0}`,
+      esc(accName),
+      timeStr,
+    ]);
   });
+  text += table(rows);
 
   if (completedOrders.length > 20) {
-    text += `<i>...and ${completedOrders.length - 20} more completed orders.</i>\n`;
+    text += `\n${sub(`...and ${completedOrders.length - 20} more completed orders.`)}`;
   }
 
   return {
@@ -279,13 +296,13 @@ export function buildBossCancelledList(db) {
 
   if (cancelledOrders.length === 0) {
     return {
-      text: `🗑️ <b>Cancelled Orders</b>\n\n<i>Koi bhi order cancel ya reject nahi hua hai.</i>`,
+      text: section('🗑️ Cancelled Orders', sub('Koi bhi order cancel ya reject nahi hua hai.')),
       keyboard: Markup.inlineKeyboard([[Markup.button.callback('🔙 Back to Panel', 'boss_refresh')]]),
     };
   }
 
   const displayOrders = cancelledOrders.slice(0, 15);
-  let text = `🗑️ <b>Cancelled Orders List (${displayOrders.length} of ${cancelledOrders.length}):</b>\n` + `────────────────────\n`;
+  let text = section('🗑️ Cancelled Orders List', field('Showing', `${displayOrders.length} of ${cancelledOrders.length}`));
 
   for (const o of displayOrders) {
     const userProfileUrl = `tg://user?id=${o.userId}`;
@@ -295,14 +312,17 @@ export function buildBossCancelledList(db) {
     const rest = o.restaurantName || o.restaurant || 'N/A';
     const amt = o.finalPayable || o.amount || 0;
 
-    text += `\n📦 <b>Order #${o.id}</b> [${o.status}]\n` +
-      `👤 <b>Customer:</b> ${userLink} (TG ID: ${idLink})\n` +
-      `🏪 <b>Restaurant:</b> ${esc(rest)}\n` +
-      `💰 <b>Amount:</b> ₹${amt}\n` +
-      (o.cart ? `🛒 <b>Cart:</b> <a href="${esc(o.cart)}">Open Cart Link</a>\n` : '') +
-      (o.address ? `📍 <b>Address:</b> ${o.address.startsWith('http') ? `<a href="${esc(o.address)}">Open Address Link</a>` : `<code>${esc(o.address)}</code>`}\n` : '') +
-      `⏰ <b>Cancelled At:</b> ${timeStr}\n` +
-      `────────────────────\n`;
+    const orderRows = [
+      ['Order', `#${o.id} [${o.status}]`],
+      ['Customer', `${userLink} (<code>${o.userId}</code>)`],
+      ['Restaurant', esc(rest)],
+      ['Amount', `₹${amt}`],
+      ['Cancelled At', timeStr],
+    ];
+    if (o.cart) orderRows.push(['Cart', `<a href="${esc(o.cart)}">Open Cart Link</a>`]);
+    if (o.address) orderRows.push(['Address', o.address.startsWith('http') ? `<a href="${esc(o.address)}">Open Address Link</a>` : `<code>${esc(o.address)}</code>`]);
+
+    text += section(`📦 Order #${o.id} [${o.status}]`, table(orderRows));
   }
 
   return {
