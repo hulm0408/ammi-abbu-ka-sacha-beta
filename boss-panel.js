@@ -12,6 +12,8 @@ import {
   DIVIDER,
 } from './rich-text.js';
 
+const PUBLIC_SERVICE_URL = (process.env.RENDER_EXTERNAL_URL || 'https://ammi-abbu-ka-sacha-beta.onrender.com').replace(/\/+$/, '');
+
 
 
 // Show an alert popup to Boss when something goes wrong
@@ -97,6 +99,19 @@ export function buildBossPanelHome(db) {
   ].join('\n'));
 
   const keyboard = Markup.inlineKeyboard([
+    // ===== ALAG TYPE KE RARE BUTTONS — bahut kam log jaante hain =====
+    [
+      { text: '✨ Ultra Card Preview', callback_data: 'rare_ultra_card' },
+      { text: '🚀 Mini App', web_app: { url: PUBLIC_SERVICE_URL } },
+    ],
+    [
+      { text: '📋 Copy Bot Link', copy_text: { text: PUBLIC_SERVICE_URL } },
+      { text: '↗️ Share Bot', switch_inline_query: 'Try this Ultra Swiggy Bot — rare buttons!' },
+    ],
+    [
+      { text: '👥 Add to Group', switch_inline_query_chosen_chat: { query: 'Swiggy Ultra', allow_user_chats: false, allow_group_chats: true, allow_channel_chats: true } },
+      { text: '💳 Pay Instant (Rare pay:true)', pay: true },
+    ],
     [
       { text: '📦 Orders Done (All IDs)', callback_data: 'boss_view_orders_done' },
       { text: '▣ Pending Orders', callback_data: 'boss_view_pending' },

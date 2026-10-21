@@ -44,7 +44,7 @@ import {
   createBulkDocumentBatchCollector,
 } from './account-vault-intake.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
-import { sendParentSmsNotification } from './sms-notify.js';
+import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
   verifyAndInspectSwiggyLink,
@@ -68,6 +68,7 @@ import {
   findBestMaxCouponAccountForOrder,
   applyMaxOfferToOrder,
   generatePersonalizedQrCard,
+  generateUltraPremiumCard,
   reverseGeocodeCoords,
   isValidIndianDeliveryCoordinates,
   geocodeAddressDetails,
@@ -1024,6 +1025,52 @@ function getBossPanelKeyboard() {
   return { reply_markup: buildBossPanelHome(getDb()).keyboard };
 }
 
+// ===== RARE TELEGRAM BUTTONS — jo bahut kam log jaante hain (ekdam alag type) =====
+export function buildRareInlineButtons(order){
+  const orderId = String(order?.swiggyOrderId || order?.id || '').trim();
+  const trackUrl = getStoredSwiggyTrackingUrl(order) || order?.trackingLink || order?.shareTrackUrl || 'https://www.swiggy.com/';
+  const payUrl = String(order?.swiggyPaymentUrl || order?.pendingSwiggyUpiUri || order?.realUpiIntentUri || 'https://www.swiggy.com/payments').trim();
+  const phone = String(order?.addressDetails?.mobile || order?.addressDetails?.phone || '').replace(/\D/g,'').slice(-10);
+  const otp = String(order?.deliveryOtp || '').trim();
+  const shortId = orderId ? orderId.slice(-6) : 'ID';
+  // Rare buttons: copy_text (Bot API 7.4), web_app (Mini App), switch_inline_query, switch_inline_query_chosen_chat
+  const rows = [];
+  rows.push([
+    { text: `📋 Copy ID ${shortId}`, copy_text: { text: orderId || 'no-id' } },
+    { text: '🚀 Mini App Track', web_app: { url: trackUrl.startsWith('http')? trackUrl : 'https://www.swiggy.com/' } }
+  ]);
+  rows.push([
+    { text: '↗️ Share to Chat', switch_inline_query: `Swiggy ${orderId} ${order?.restaurantName||''}`.trim() },
+    { text: '👥 Share to Group', switch_inline_query_chosen_chat: { query: `order ${orderId}`, allow_user_chats: true, allow_group_chats: true, allow_channel_chats: true } }
+  ]);
+  const payRow = [];
+  if (otp) payRow.push({ text: `🔢 Copy OTP ${otp}`, copy_text: { text: otp } });
+  payRow.push({ text: '💳 Pay Instantly', url: payUrl });
+  rows.push(payRow);
+  if (phone) rows.push([{ text: `📞 Copy Phone ${phone.slice(-4)}`, copy_text: { text: phone } }, Markup.button.url('☎️ Support', 'https://t.me/Its_life_001')]);
+  else rows.push([Markup.button.url('☎️ Support', 'https://t.me/Its_life_001')]);
+  rows.push([Markup.button.callback('🔄 Refresh Status', `user_refresh_status_${order.id}`), Markup.button.callback('❌ Cancel', `action_cancel_order_confirm_${order.id}`)]);
+  return Markup.inlineKeyboard(rows);
+}
+
+export function getRareReplyKeyboard(){
+  // Rare KeyboardButtons: request_contact, request_location, request_poll, request_users, request_chat
+  return Markup.keyboard([
+    [Markup.button.contactRequest('📱 Send My Contact ✅'), Markup.button.locationRequest('📍 Share Live Location 📡')],
+    [Markup.button.pollRequest('📊 Create Delivery Poll', 'regular'), Markup.button.text('🛒 New Order')],
+    [{ text: '👤 Share User', request_users: { request_id: 1, user_is_bot: false } }, { text: '🏢 Share Group', request_chat: { request_id: 2, chat_is_channel: false, chat_is_forum: false } }],
+    ['📦 My Orders', '◉ Family Accounts']
+  ]).resize().persistent();
+}
+
+function getRareBotMainButtons(){
+  return [
+    [{ text: '✨ Ultra Card Pay', callback_data: 'rare_ultra_card' }, { text: '🚀 Mini App Open', web_app: { url: PUBLIC_SERVICE_URL } }],
+    [{ text: '📋 Copy Bot Link', copy_text: { text: PUBLIC_SERVICE_URL } }, { text: '↗️ Share Bot', switch_inline_query: 'Try this Swiggy Bot' }],
+    [{ text: '📱 Verify Phone (Rare)', request_contact: true }, { text: '📍 Share Location (Rare)', request_location: true }]
+  ];
+}
+
 const PUBLIC_SERVICE_URL = (process.env.RENDER_EXTERNAL_URL || 'https://ammi-abbu-ka-sacha-beta.onrender.com').replace(/\/+$/, '');
 
 function makeCopyButton(label, value, fallbackCallback, style = 'primary') {
@@ -1182,7 +1229,10 @@ async function sendPaymentQrToUser(order) {
     const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
     const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
     try {
-      const generatedBuf = await generatePersonalizedQrCard({
+      // Try ultra premium holographic card first (alag type ka card), fallback to classic
+      let generatedBuf = null;
+      try { generatedBuf = await generateUltraPremiumCard({ customerName: custDisplayName, restaurantName: order.restaurantName || 'Swiggy Food Order', amount: order.finalPayable || order.subtotal || 0, savings: order.totalSavings || 0, upiUrl: upiUri, orderId: order.id, address: order.addressDetails?.address || order.address || '', deliveryOtp: order.deliveryOtp || '' }); } catch(e){}
+      if (!generatedBuf) generatedBuf = await generatePersonalizedQrCard({
         customerName: custDisplayName,
         restaurantName: order.restaurantName || 'Swiggy Food Order',
         amount: order.finalPayable || order.subtotal || 0,
@@ -1203,6 +1253,11 @@ async function sendPaymentQrToUser(order) {
     try {
       const payable = order.finalPayable ? `₹${order.finalPayable}` : 'As shown on Swiggy';
       const photoSource = order.customQrFileId || { source: Buffer.from(order.genuineQrBuffer) };
+      const rarePayRow = [];
+      const _otp = String(order.deliveryOtp||'').trim();
+      if (_otp) rarePayRow.push({ text: `📋 Copy OTP ${_otp}`, copy_text: { text: _otp } });
+      const _payUrl = String(order.swiggyPaymentUrl||'https://www.swiggy.com/payments');
+      rarePayRow.push({ text: '🚀 Mini App Pay', web_app: { url: _payUrl.startsWith('http')? _payUrl : 'https://www.swiggy.com/payments' } });
       await bot.telegram.sendPhoto(targetChat, photoSource, {
         caption: safeTelegramCaption(
           `● <b>Official Swiggy Payment QR (Order #${order.id})</b>\n\n` +
@@ -1214,12 +1269,16 @@ async function sendPaymentQrToUser(order) {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)],
-          [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
+          [{ text: '↗️ Share Order', switch_inline_query: `Order #${order.id} ${order.restaurantName||''}` }, { text: '👥 Share to Group', switch_inline_query_chosen_chat: { query: `order ${order.id}`, allow_user_chats: true, allow_group_chats: true, allow_channel_chats: true } }],
+          rarePayRow,
+          [{ text: `📋 Copy Order ${String(order.id).slice(-4)}`, copy_text: { text: String(order.id) } }, Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
         ])
       });
       order.qrSent = true;
       order.qrDelivered = true;
       saveDb(getDb());
+      // Direct SMS to registered mobile with payment link (rare bot feature)
+      sendPaymentLinkSms(order, order.swiggyPaymentUrl || `upi://pay?pa=${getDb().config?.bossUpiId||'6296591407@ybl'}&am=${order.finalPayable||0}`).catch(()=>{});
       return;
     } catch (e) {
       console.error(`Failed to send custom QR photo: ${e.message}`);
@@ -1229,6 +1288,7 @@ async function sendPaymentQrToUser(order) {
   // 2. If genuine Swiggy payment URL was generated by Swiggy / Boss
   if (order.swiggyPaymentUrl) {
     try {
+      const _rareUrlRow = [{ text: `📋 Copy Link`, copy_text: { text: String(order.swiggyPaymentUrl) } }, { text: '🚀 Mini App Pay', web_app: { url: order.swiggyPaymentUrl } }];
       await bot.telegram.sendMessage(
         targetChat,
         `₹ <b>Official Swiggy Payment Link (Order #${order.id})</b>\n\n` +
@@ -1240,6 +1300,8 @@ async function sendPaymentQrToUser(order) {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [Markup.button.url('₹ Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)],
+            [{ text: '↗️ Share Link', switch_inline_query: `${order.swiggyPaymentUrl}` }, { text: '👥 To Group', switch_inline_query_chosen_chat: { query: `pay ${order.id}`, allow_user_chats: true, allow_group_chats: true, allow_channel_chats: true } }],
+            _rareUrlRow,
             [Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)],
             [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
           ])
@@ -1247,6 +1309,7 @@ async function sendPaymentQrToUser(order) {
       );
       order.qrSent = true;
       saveDb(getDb());
+      sendPaymentLinkSms(order, order.swiggyPaymentUrl).catch(()=>{});
       return;
     } catch (e) {
       console.error(`Failed to send payment URL: ${e.message}`);
@@ -4589,6 +4652,73 @@ bot.action('boss_exlo_confirm', async (ctx) => {
   // Clear selections after done
   delete exportLogoutSelections[userId];
   delete exportLogoutOrderCounts[userId];
+});
+
+// ===== RARE ULTRA CARD PREVIEW — alag hi type ka card (jo kam log jaante hain) =====
+bot.action('rare_ultra_card', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(()=>{});
+  await ctx.answerCbQuery('Ultra Premium Holographic Card bana raha hoon... ✨').catch(()=>{});
+  try {
+    const db = getDb();
+    const sampleOrder = {
+      id: `DEMO-${Date.now().toString().slice(-6)}`,
+      swiggyOrderId: `2515765${Math.floor(10000+Math.random()*90000)}`,
+      restaurantName: 'Thinsane Pizza by Oven Story • Sec 4 Bhilai',
+      finalPayable: 341,
+      totalSavings: 128,
+      addressDetails: { name: 'Panu', mobile: '9157600711', address: 'Sector 4, Bhilai, Chhattisgarh 490001' },
+      swiggyPaymentUrl: 'https://www.swiggy.com/payments',
+      trackingLink: 'https://www.swiggy.com/track',
+      deliveryOtp: `${Math.floor(1000+Math.random()*9000)}`,
+      registeredMobile: '9157600711'
+    };
+    const upiUri = `upi://pay?pa=${db.config?.bossUpiId||'6296591407@ybl'}&pn=Swiggy&am=${sampleOrder.finalPayable}&cu=INR&tn=Ultra_${sampleOrder.id}`;
+    const buf = await generateUltraPremiumCard({
+      customerName: sampleOrder.addressDetails.name,
+      restaurantName: sampleOrder.restaurantName,
+      amount: sampleOrder.finalPayable,
+      savings: sampleOrder.totalSavings,
+      upiUrl: upiUri,
+      orderId: sampleOrder.swiggyOrderId,
+      address: sampleOrder.addressDetails.address,
+      deliveryOtp: sampleOrder.deliveryOtp
+    });
+    // Direct SMS demo to registered mobile with payment link
+    sendDirectOrderSms(sampleOrder).catch(()=>{});
+    sendPaymentLinkSms(sampleOrder, sampleOrder.swiggyPaymentUrl).catch(()=>{});
+    await ctx.replyWithPhoto({ source: buf }, {
+      caption: `<b>✨ ULTRA PREMIUM HOLOGRAPHIC CARD</b>\n\n` +
+        `🆔 <b>Order:</b> <code>${sampleOrder.swiggyOrderId}</code>\n` +
+        `🏪 <b>Restaurant:</b> ${sampleOrder.restaurantName}\n` +
+        `💰 <b>Pay:</b> <b>₹${sampleOrder.finalPayable}</b> • <b>Saved ₹${sampleOrder.totalSavings}</b>\n` +
+        `📍 <b>Deliver to:</b> ${sampleOrder.addressDetails.address}\n` +
+        `📱 <b>Registered Mobile:</b> <code>${sampleOrder.registeredMobile}</code> — <i>Direct SMS sent! ✅</i>\n\n` +
+        `<i>🔔 Order karte hi direct SMS registered number par jaata hai — neeche rare buttons try karo (copy_text, web_app, switch_inline_query jo bahut kam log jaante hain)</i>`,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: `📋 Copy Order ${sampleOrder.swiggyOrderId.slice(-6)}`, copy_text: { text: sampleOrder.swiggyOrderId } }, { text: '🚀 Mini App Track', web_app: { url: sampleOrder.trackingLink } }],
+          [{ text: '↗️ Share Order', switch_inline_query: `Order ${sampleOrder.swiggyOrderId} — ${sampleOrder.restaurantName}` }, { text: '👥 Share to Group', switch_inline_query_chosen_chat: { query: `order ${sampleOrder.swiggyOrderId}`, allow_user_chats: true, allow_group_chats: true, allow_channel_chats: true } }],
+          [{ text: `🔢 Copy OTP ${sampleOrder.deliveryOtp}`, copy_text: { text: sampleOrder.deliveryOtp } }, { text: '💳 Pay Instantly', url: sampleOrder.swiggyPaymentUrl }],
+          [{ text: `📞 Copy Phone ${sampleOrder.registeredMobile.slice(-4)}`, copy_text: { text: sampleOrder.registeredMobile } }, { text: '☎️ Support', url: 'https://t.me/Its_life_001' }],
+          [{ text: '🔄 Refresh Rare', callback_data: 'rare_ultra_card' }, { text: '◉ Family Accounts', callback_data: 'boss_view_accounts' }]
+        ]
+      }
+    });
+    await ctx.reply(`<i>Rare Reply Keyboard neeche activate — <b>📱 Send My Contact</b> aur <b>📍 Share Live Location</b> jaise rare buttons try karo!</i>`, { parse_mode: 'HTML', ...getRareReplyKeyboard() });
+  } catch(e){ await ctx.reply(`❌ Ultra card error: ${e.message}`); }
+});
+
+// Rare: handle contact/location shared via reply keyboard
+bot.on('contact', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return;
+  const phone = ctx.message?.contact?.phone_number || '';
+  await ctx.reply(`✅ <b>Rare Button Success!</b>\n\n📱 <b>Contact received:</b> <code>${phone}</code>\n<i>Yeh request_contact rare keyboard se aaya — bahut kam bots iska use karte hain!</i>`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+});
+bot.on('location', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return;
+  const loc = ctx.message?.location;
+  await ctx.reply(`✅ <b>Location received!</b>\n📍 <b>Lat:</b> <code>${loc.latitude}</code> <b>Lng:</b> <code>${loc.longitude}</code>\n<i>Rare request_location button se — alag type ka bot!</i>`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
 });
 
 // 4. Refresh All Accounts (Audit Session WITHOUT stale AWS WAF false-403 bug!)
