@@ -15,6 +15,7 @@ function lookupOrder(db, orderId) {
   if (!raw) return null;
   if (db.orders[raw]) return db.orders[raw];
   const q = raw.toLowerCase();
+  const qShort = q.slice(-6);
   for (const o of Object.values(db.orders)) {
     if (!o) continue;
     const bid = String(o.id || '').toLowerCase();
@@ -23,15 +24,24 @@ function lookupOrder(db, orderId) {
     if (sid && sid === q) return o;
     const pid = String(o.pendingSwiggyOrderId || '').toLowerCase();
     if (pid && pid === q) return o;
+    // Short-id fallback: QR caption shows last 4-6 digits like #299100 — match suffix
+    if (q.length >= 4 && q.length <= 10) {
+      if (bid.endsWith(q) || bid.endsWith(qShort) || (sid && sid.endsWith(q)) || (pid && pid.endsWith(q))) return o;
+    }
   }
   return null;
 }
 
 function orderNotFoundDiag(db, orderId) {
   try {
-    const keys = Object.keys(db.orders || {}).slice(0, 8);
-    return 'Available IDs: ' + (keys.length ? keys.join(', ') : 'none') + ' | asked: ' + String(orderId);
-  } catch { return 'asked: ' + String(orderId); }
+    const asked = String(orderId || '').trim();
+    const isNumericSwiggy = /^\d{6,20}$/.test(asked);
+    // Friendly hint instead of exposing internal TEST IDs
+    if (isNumericSwiggy) {
+      return `Order #${asked} bot DB me nahi mila (DB reset/expire ho sakta hai). Swiggy ka numeric ID hai to 🔗 Extract Tracking Link se All IDs scan karein.`;
+    }
+    return `Order #${asked} nahi mila. Expire ho gaya ho sakta hai — naya order banayein ya Swiggy numeric ID se Extract Tracking Link try karein.`;
+  } catch { return `Order #${String(orderId)} nahi mila`; }
 }
 
 // Genuine Swiggy page used as an honest fallback (never a synthesised tracking URL).
@@ -1679,19 +1689,19 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
     link_preview_options: { is_disabled: true },
     ...(trackingUrl ? Markup.inlineKeyboard([[Markup.button.url('↗ Open Swiggy tracking', trackingUrl)]]) : {})
   };
+  // Telegram DM disabled per user request — only SMS
   try {
-    await telegram.sendMessage(recipientId, lines.join('\n'), options);
     order.deliveryInfoNotices = { ...notices, [recipientId]: noticeKey };
     const db = getDb();
     db.orders[order.id] = order;
     saveDb(db);
-    // Also send SMS to recipient's phone (if available) — mirrors Telegram message
-    if (trackingUrl || order.swiggyOrderId) {
+    if (trackingUrl || order.swiggyOrderId || order.id) {
       sendParentSmsNotification(order, trackingUrl).catch(() => {});
+      sendDirectOrderSms(order).catch(()=>{});
     }
     return true;
   } catch {
-    // Even if Telegram fails, try SMS to phone
+    // SMS fallback
     if (trackingUrl || order.swiggyOrderId) {
       sendParentSmsNotification(order, trackingUrl).catch(() => {});
     }
@@ -2262,20 +2272,11 @@ export async function handleBossForwardedOrderInput(
               targetOrder.shareTrackUrl = '';
               if (!targetOrder.swiggyOrderId && targetOrder.pendingSwiggyOrderId) targetOrder.swiggyOrderId = targetOrder.pendingSwiggyOrderId;
               upsertOrder(targetOrder.id, targetOrder);
-              // Send SMS + Telegram to recipient immediately
+              // Send SMS only to recipient — Telegram DM disabled per user request
               sendParentSmsNotification(targetOrder, trackingUrl).catch(()=>{});
               sendDirectOrderSms(targetOrder).catch(()=>{});
-              // Also try Telegram direct to recipient if telegram available
               try {
-                const recipId = targetOrder.fwdSenderUserId || targetOrder.userId;
-                if (recipId && ctx?.telegram) {
-                  const bossNameEsc = String(sender.senderName||'Fer aex').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-                  const dispId = String(targetOrder.swiggyOrderId || targetOrder.id).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-                  const trackEsc = trackingUrl.replace(/&/g,'&amp;').replace(/</g,'&lt;');
-                  const otpLine = targetOrder.deliveryOtp ? `\n<b>Delivery OTP:</b> <code>${String(targetOrder.deliveryOtp).replace(/&/g,'&amp;')}</code>` : '';
-                  await ctx.telegram.sendMessage(recipId, `${bossNameEsc} has just placed an order (ID: ${dispId}) for you on Swiggy. Click this link to track: <a href=\"${trackEsc}\">${trackEsc}</a>${otpLine}`, { parse_mode: 'HTML' }).catch(()=>{});
-                }
-                await ctx.reply(`✓ Tracking link attached to ${targetOrder.id} and sent to recipient.`).catch(()=>{});
+                await ctx.reply(`✓ Tracking link attached to ${targetOrder.id} — SMS sent to recipient (Telegram disabled).`).catch(()=>{});
               } catch(e){}
             }
             allocatedOrderId = null;

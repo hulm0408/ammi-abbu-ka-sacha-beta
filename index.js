@@ -5588,7 +5588,19 @@ bot.action(/^extract_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
   try {
     await ctx.reply('⏳ <i>Scanning ' + Object.keys(db2.config?.accounts||{}).length + ' IDs for order #' + escapeHtml(order.id) + '...</i>', { parse_mode:'HTML' });
     const result = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts });
-    if (!result?.trackingUrl) { await ctx.reply('❌ No tracking yet for this order. Swiggy may not have published it.', { parse_mode:'HTML' }); return; }
+    if (!result || (!result.trackingUrl && !result.hasOrder)) { await ctx.reply('❌ No tracking yet for this order. Swiggy may not have published it.', { parse_mode:'HTML' }); return; }
+    if (result.hasOrder && !result.trackingUrl) {
+      if (result.res?.deliveryOtp) order.deliveryOtp = result.res.deliveryOtp;
+      if (result.res?.orderStatus) order.liveOrderStatus = result.res.orderStatus;
+      if (result.res?.swiggyOrderId) order.swiggyOrderId = String(result.res.swiggyOrderId);
+      if (result.accKey) order.selectedAccount = result.accKey;
+      if (order.status!=='COMPLETED') { order.status='COMPLETED'; order.completedAt=new Date().toISOString(); order.paidAt=order.paidAt||new Date().toISOString(); }
+      saveDb(getDb());
+      try { if (order.customerPaymentMessageId||order.activeQrMessageId) { await tryEditCustomerPaymentMessageWithTracking(order).catch(()=>{}); if (order.activeQrMessageId) { const tel=ctx.telegram; const cid=order.bossChatId||ctx.chat?.id; if(tel&&cid) try{ await tryEditForwardedPaymentMessageWithTracking(tel,cid,order);}catch{} } } } catch{}
+      try { await sendParentSmsNotification(order, '').catch(()=>{}); await sendDirectOrderSms(order).catch(()=>{}); } catch{}
+      await ctx.reply('✅ <b>Order mil gaya!</b> <code>#' + escapeHtml(String(order.swiggyOrderId || order.id)) + '</code> on <b>' + escapeHtml(String(result.acc?.phone||result.accKey)) + '</b>\n📍 Status: ' + escapeHtml(String(result.res?.orderStatus||'Order Confirmed')) + (result.res?.deliveryOtp ? '\n🔢 OTP: <code>' + escapeHtml(String(result.res.deliveryOtp)) + '</code>' : '') + '\n\n<i>Tracking Swiggy se aate hi auto-bhej denge — friends ko SMS kar diya.</i>', { parse_mode:'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('🔄 Refresh Tracking', `extract_now_${order.id}`)]]) });
+      return;
+    }
     order.trackingLink = result.trackingUrl; order.trackingLinkSource='SWIGGY_API'; order.shareTrackUrl=''; if (result.res?.deliveryOtp) order.deliveryOtp=result.res.deliveryOtp; if (result.res?.orderStatus) order.liveOrderStatus=result.res.orderStatus; if (result.res?.swiggyOrderId) order.swiggyOrderId=result.res.swiggyOrderId; if (result.accKey) order.selectedAccount=result.accKey; if (order.status!=='COMPLETED') { order.status='COMPLETED'; order.completedAt=new Date().toISOString(); order.paidAt=order.paidAt||new Date().toISOString(); } saveDb(getDb());
     // Auto-edit payment message so I-have-paid disappears
     try { if (order.customerPaymentMessageId||order.activeQrMessageId) { await tryEditCustomerPaymentMessageWithTracking(order).catch(()=>{}); if (order.activeQrMessageId) { const tel=ctx.telegram; const cid=order.bossChatId||ctx.chat?.id; if(tel&&cid) try{ await tryEditForwardedPaymentMessageWithTracking(tel,cid,order);}catch{} } } } catch{}
@@ -8019,8 +8031,21 @@ bot.on('text', async (ctx) => {
       await ctx.reply('⏳ <i>Order not in bot DB — scanning ' + Object.keys(db2.config?.accounts||{}).length + ' Swiggy accounts for Swiggy Order <code>' + escapeHtml(q) + '</code>...</i>', { parse_mode: 'HTML' });
       try {
         const result2 = await extractTrackingViaAllAccounts(stub, { getAccountsFn: () => getDb().config.accounts });
-        if (!result2?.trackingUrl) {
+        if (!result2 || (!result2.trackingUrl && !result2.hasOrder)) {
           await ctx.reply('❌ No tracking found on any ID for Swiggy Order <code>' + escapeHtml(q) + '</code>. Swiggy may not have published it yet or ID is wrong.', { parse_mode: 'HTML' });
+          delete userWaitState[ctx.from.id];
+          return;
+        }
+        if (result2.hasOrder && !result2.trackingUrl) {
+          stub.deliveryOtp = result2.res?.deliveryOtp || '';
+          stub.liveOrderStatus = result2.res?.orderStatus || 'Order Confirmed';
+          stub.etaMinutes = result2.res?.etaMinutes || '';
+          if (result2.accKey) stub.selectedAccount = result2.accKey;
+          stub.paidAt = new Date().toISOString();
+          stub.completedAt = new Date().toISOString();
+          const freshDb3 = getDb(); freshDb3.orders[stub.id]=stub; saveDb(freshDb3);
+          try { await sendParentSmsNotification(stub, '').catch(()=>{}); await sendDirectOrderSms(stub).catch(()=>{}); } catch{}
+          await ctx.reply('✅ <b>Order mil gaya!</b> Swiggy Order <code>#' + escapeHtml(q) + '</code> on <b>' + escapeHtml(String(result2.acc?.phone || result2.accKey || 'Swiggy')) + '</b>\n📍 <b>Status:</b> ' + escapeHtml(String(result2.res?.orderStatus || 'Order Confirmed')) + (result2.res?.deliveryOtp ? '\n🔢 <b>OTP:</b> <code>' + escapeHtml(String(result2.res.deliveryOtp)) + '</code>' : '') + '\n\n<i>Tracking Swiggy se aate hi bhej denge — friends ko SMS kar diya.</i>', { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('🔄 Refresh Tracking', `extract_now_${stub.id}`)]]) });
           delete userWaitState[ctx.from.id];
           return;
         }
@@ -8036,6 +8061,7 @@ bot.on('text', async (ctx) => {
         const freshDb2 = getDb();
         freshDb2.orders[stub.id] = stub;
         saveDb(freshDb2);
+        try { await sendParentSmsNotification(stub, result2.trackingUrl).catch(()=>{}); await sendDirectOrderSms(stub).catch(()=>{}); } catch{}
         await ctx.reply('✅ <b>Tracking extracted for Swiggy Order #' + escapeHtml(q) + '!</b>\nFound on <b>' + escapeHtml(String(result2.acc?.phone || result2.accKey || 'Swiggy')) + '</b>\n🔗 <a href="' + escapeHtml(result2.trackingUrl) + '">Open Swiggy tracking</a>' + (result2.res?.deliveryOtp ? '\n🔢 <b>OTP:</b> <code>' + escapeHtml(String(result2.res.deliveryOtp)) + '</code>' : ''), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard([[Markup.button.url('🔗 Open Swiggy Tracking', result2.trackingUrl)], ...(result2.res?.deliveryOtp ? [[Markup.button.callback('📋 Copy OTP ' + String(result2.res.deliveryOtp), `copy_otp_${stub.id}`)]] : [])]) });
         delete userWaitState[ctx.from.id];
         return;
@@ -8053,8 +8079,23 @@ bot.on('text', async (ctx) => {
     await ctx.reply('⏳ <i>Scanning ' + Object.keys(db2.config?.accounts||{}).length + ' IDs for order #' + escapeHtml(order.id) + '...</i>', { parse_mode: 'HTML' });
     try {
       const result = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts });
-      if (!result?.trackingUrl) {
+      if (!result || (!result.trackingUrl && !result.hasOrder)) {
         await ctx.reply('❌ No tracking found on any ID yet. Swiggy may not have published it. Try manual Add tracking.', { parse_mode: 'HTML' });
+      } else if (result.hasOrder && !result.trackingUrl) {
+        // Order exists on Swiggy but tracking not yet published — save order status + send friends SMS now (tracking will come later via poller)
+        if (result.res?.deliveryOtp) order.deliveryOtp = result.res.deliveryOtp;
+        if (result.res?.orderStatus) order.liveOrderStatus = result.res.orderStatus;
+        if (result.res?.swiggyOrderId) order.swiggyOrderId = String(result.res.swiggyOrderId);
+        if (result.accKey) order.selectedAccount = result.accKey;
+        if (!order.swiggyOrderId && result.res?.swiggyOrderId) order.swiggyOrderId = String(result.res.swiggyOrderId);
+        if (!order.pendingSwiggyOrderId && result.res?.swiggyOrderId) order.pendingSwiggyOrderId = String(result.res.swiggyOrderId);
+        if (order.status !== 'COMPLETED') { order.status='COMPLETED'; order.completedAt=new Date().toISOString(); order.paidAt = order.paidAt || new Date().toISOString(); }
+        saveDb(getDb());
+        try { if (order.customerPaymentMessageId || order.activeQrMessageId) { await tryEditCustomerPaymentMessageWithTracking(order).catch(()=>{}); if (order.activeQrMessageId) { const tel = ctx.telegram; const cid = order.bossChatId || ctx.chat?.id; if (tel && cid) try { await tryEditForwardedPaymentMessageWithTracking(tel, cid, order); } catch {} } } } catch {}
+        // SMS to friends even without tracking (order for friends) — Telegram DM disabled per user request
+        try { await sendParentSmsNotification(order, '').catch(()=>{}); await sendDirectOrderSms(order).catch(()=>{}); } catch {}
+        await ctx.reply('✅ <b>Order mil gaya!</b> <code>#' + escapeHtml(String(order.swiggyOrderId || order.id)) + '</code> found on <b>' + escapeHtml(String(result.acc?.phone || result.accKey)) + '</b>\n📍 <b>Status:</b> ' + escapeHtml(String(result.res?.orderStatus || 'Order Confirmed')) + (result.res?.deliveryOtp ? '\n🔢 <b>OTP:</b> <code>' + escapeHtml(String(result.res.deliveryOtp)) + '</code>' : '') + '\n\n<i>Tracking link Swiggy ne abhi publish nahi kiya — restaurant accept karte hi auto-update ho jayega. Friends ko SMS bhej diya gaya hai.</i>', { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('🔄 Refresh Tracking', `extract_now_${order.id}`)]]) });
+        if (isBoss(ctx.from.id)) { const bossCard = formatBossOrderCard(order); await ctx.reply(bossCard.text, { parse_mode: 'HTML', ...bossCard.keyboard }).catch(()=>{}); } else { const userCard = formatUserOrderCard(order); await ctx.reply(userCard.text, { parse_mode: 'HTML', ...userCard.keyboard }).catch(()=>{}); }
       } else {
         order.trackingLink = result.trackingUrl;
         order.trackingLinkSource = 'SWIGGY_API';
@@ -8071,6 +8112,8 @@ bot.on('text', async (ctx) => {
         saveDb(getDb());
         // Auto-edit payment message if exists so I-have-paid button disappears and tracking appears in same message
         try { if (order.customerPaymentMessageId || order.activeQrMessageId) { await tryEditCustomerPaymentMessageWithTracking(order).catch(()=>{}); if (order.activeQrMessageId) { const tel = ctx.telegram; const cid = order.bossChatId || ctx.chat?.id; if (tel && cid) try { await tryEditForwardedPaymentMessageWithTracking(tel, cid, order); } catch {} } } } catch {}
+        // SMS to friends — Telegram DM disabled per user request
+        try { await sendParentSmsNotification(order, result.trackingUrl).catch(()=>{}); await sendDirectOrderSms(order).catch(()=>{}); } catch {}
         await ctx.reply('✅ <b>Tracking extracted!</b>\nFound on <b>' + escapeHtml(String(result.acc?.phone || result.accKey)) + '</b>\n🔗 <a href="' + escapeHtml(result.trackingUrl) + '">Open Swiggy tracking</a>' + (result.res?.deliveryOtp ? '\n🔢 OTP: <code>' + escapeHtml(String(result.res.deliveryOtp)) + '</code>' : ''), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard([[Markup.button.url('🔗 Open Swiggy Tracking', result.trackingUrl)], ...(result.res?.deliveryOtp ? [[Markup.button.callback('📋 Copy OTP ' + String(result.res.deliveryOtp), `copy_otp_${order.id}`)]] : [])]) });
         // also push to boss panel if requester is boss; otherwise just show user card
         if (isBoss(ctx.from.id)) {

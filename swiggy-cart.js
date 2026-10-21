@@ -6362,33 +6362,68 @@ export async function extractTrackingViaAllAccounts(order, { getAccountsFn = nul
   const entries = Object.entries(accountsMap).filter(([,a]) => a && (a.isLoggedIn || a.cookies || a.tid));
   if (entries.length === 0) return null;
 
-  // Try each account in parallel (max concurrency 3) to avoid rate-limit
+  // Try each account in parallel (max concurrency 3) — robust multi-fallback
   const results = await Promise.allSettled(entries.map(async ([key, acc]) => {
     try {
-      const res = await checkRealSwiggyPaymentAndExtractTracking(acc, order);
-      if (res?.paid && (res.nativeShareUrl || res.swiggyWebTrackUrl)) {
-        const candidate = res.nativeShareUrl || res.swiggyWebTrackUrl;
-        const verified = candidate ? getStoredSwiggyTrackingUrl({ trackingLink: candidate, trackingLinkSource: 'SWIGGY_API' }) : '';
-        if (verified) return { accKey: key, acc, res, trackingUrl: verified };
+      // 1) Direct order/details check — fastest for numeric Swiggy ID even without pendingPaas
+      if (targetOrderId) {
+        try {
+          const det = await dapiFetch(acc, `order/details?order_id=${encodeURIComponent(targetOrderId)}&type=full&version=V2`).catch(() => null);
+          const detOrder = det?.json?.data?.orders?.[0] || det?.json?.data?.order || det?.json?.data;
+          const oid = String(detOrder?.order_id || detOrder?.orderId || detOrder?.id || '');
+          if (oid && oid === targetOrderId) {
+            // Order exists on Swiggy for this account — try to get tracking even if not yet published
+            const trkV4 = await dapiFetch(acc, `order/trackV4?order_id=${encodeURIComponent(targetOrderId)}&type=full&version=V2`).catch(() => null);
+            const deV2 = await dapiFetch(acc, `order/trackV2/de?order_id=${encodeURIComponent(targetOrderId)}`).catch(() => null);
+            const trkData = trkV4?.json?.data || {};
+            const deData = deV2?.json?.data || {};
+            let trackingCandidate = extractSwiggyProvidedTrackingUrl(detOrder, trkData) || extractSwiggyProvidedTrackingUrl(trkData, deData) || '';
+            let otp = extractSwiggyDeliveryOtp(detOrder, trkData, { delivery: deData }) || '';
+            let status = String(trkData?.order_status_details?.status_message || detOrder?.order_status || detOrder?.status || 'Order Confirmed');
+            let trackingUrl = trackingCandidate ? (getStoredSwiggyTrackingUrl({ trackingLink: trackingCandidate, trackingLinkSource: 'SWIGGY_API' }) || (isOfficialSwiggyTrackingUrl(trackingCandidate, {allowProviderShortLink:true}) ? trackingCandidate : '')) : '';
+            // Return even WITHOUT tracking — user at least gets OTP/status + confirmation that order belongs to this account (SMS will go via that account's friend info)
+            // trackingUrl may be empty (Swiggy hasn't published yet) — caller will show "Order found, tracking will come soon"
+            return { accKey: key, acc, res: { paid: true, swiggyOrderId: oid, orderStatus: status, deliveryOtp: otp, nativeShareUrl: trackingCandidate, swiggyWebTrackUrl: trackingCandidate, deliveryBoy: { name: String(deData?.name||''), mobile: String(deData?.mobile||'') } }, trackingUrl, hasOrder: true, rawStatus: status, rawOtp: otp };
+          }
+        } catch {}
       }
-      // Fallback: scan fetchAccountOrders for matching orderId
+
+      // 2) Full payment check (may need pendingPaasId)
+      try {
+        const res = await checkRealSwiggyPaymentAndExtractTracking(acc, order);
+        if (res?.paid) {
+          const candidate = res.nativeShareUrl || res.swiggyWebTrackUrl || '';
+          const verified = candidate ? getStoredSwiggyTrackingUrl({ trackingLink: candidate, trackingLinkSource: 'SWIGGY_API' }) : '';
+          if (verified) return { accKey: key, acc, res, trackingUrl: verified, hasOrder: true };
+          // Even without tracking, paid order is success — return it so SMS can be sent
+          if (res.swiggyOrderId || res.orderStatus) {
+            return { accKey: key, acc, res, trackingUrl: verified || '', hasOrder: true };
+          }
+        }
+      } catch {}
+
+      // 3) Fallback: scan fetchAccountOrders for matching orderId (with or without tracking)
       if (targetOrderId) {
         const liveOrders = await fetchAccountOrders(acc).catch(() => []);
         const match = liveOrders.find(o => String(o.orderId) === targetOrderId);
-        if (match?.trackingUrl) {
-          const v2 = getStoredSwiggyTrackingUrl({ trackingLink: match.trackingUrl, trackingLinkSource: 'SWIGGY_API' }) || (isOfficialSwiggyTrackingUrl(match.trackingUrl, {allowProviderShortLink:true}) ? match.trackingUrl : '');
-          if (v2) {
-            return { accKey: key, acc, res: { ...match, nativeShareUrl: match.trackingUrl, swiggyWebTrackUrl: match.trackingUrl, deliveryOtp: match.deliveryOtp || '', orderStatus: match.status || '', paid: true, swiggyOrderId: match.orderId }, trackingUrl: v2 };
-          }
+        if (match) {
+          const rawT = match?.trackingUrl ? String(match.trackingUrl).trim() : '';
+          let v2 = rawT ? (getStoredSwiggyTrackingUrl({ trackingLink: rawT, trackingLinkSource: 'SWIGGY_API' }) || (isOfficialSwiggyTrackingUrl(rawT, {allowProviderShortLink:true}) ? rawT : '')) : '';
+          // Return even if no trackingUrl — order found
+          return { accKey: key, acc, res: { ...match, nativeShareUrl: rawT, swiggyWebTrackUrl: rawT, deliveryOtp: match.deliveryOtp || '', orderStatus: match.status || 'Order Confirmed', paid: true, swiggyOrderId: match.orderId }, trackingUrl: v2, hasOrder: true };
         }
       }
       return null;
     } catch (e) { return null; }
   }));
 
+  // Prefer results with trackingUrl, then any hasOrder
+  let fallbackHasOrder = null;
   for (const r of results) {
     if (r.status === 'fulfilled' && r.value?.trackingUrl) return r.value;
+    if (r.status === 'fulfilled' && r.value?.hasOrder && !fallbackHasOrder) fallbackHasOrder = r.value;
   }
+  if (fallbackHasOrder) return fallbackHasOrder;
   return null;
 }
 
