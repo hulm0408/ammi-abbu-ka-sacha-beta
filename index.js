@@ -1375,6 +1375,8 @@ bot.start(async (ctx) => {
   const userId = ctx.from.id;
   delete userWaitState[userId];
 
+  await setUserMiniAppButton(userId);
+
   if (isBoss(userId)) {
     await ctx.reply(`👑 Welcome back, <b>Boss</b>! Swiggy Family Care Admin Mode is active.`, {
       parse_mode: 'HTML',
@@ -1405,6 +1407,8 @@ bot.command(['boss', 'admin'], async (ctx) => {
   const userId = ctx.from.id;
   const args = ctx.message.text.trim().split(' ');
   const password = args[1];
+
+  await setUserMiniAppButton(userId);
 
   if (isBoss(userId)) {
     delete userWaitState[userId];
@@ -8897,6 +8901,7 @@ async function startBotWithRetry() {
           prewarmBrowser().catch(e => console.log('Prewarm init note:', e.message));
         }
         await bot.launch({ dropPendingUpdates: true });
+        try { await setupBotMenu(); } catch (e) { console.error('Menu setup error:', e.message); }
         break;
       } catch (err) {
         if ((err.message?.includes('409') || err.description?.includes('Conflict')) && attempt < 10) {
