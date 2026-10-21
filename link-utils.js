@@ -83,12 +83,25 @@ export function extractSharedUrls(text) {
 // remains — used when deciding "is this message just a link?".
 export function stripSharedLinks(text) {
   if (!text) return '';
-  return String(text)
+  const cleaned = String(text)
     .replace(MARKDOWN_LINK_RE, ' ')
     .replace(PLAIN_URL_RE, ' ')
     .replace(/\[\s*\]|\(\s*\)/g, ' ')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  // Nested pastes like `[[url](url)](url](url))` leave pure bracket tokens
+  // behind (`](` , `[` , `))`). Drop any token made only of brackets/punctuation.
+  return cleaned
+    .split(/\n/)
+    .map((line) => line
+      .split(' ')
+      .filter((token) => !/^[\[\]()\{\}.,;:'"\-]+$/.test(token))
+      .join(' ')
+      .trim())
+    .filter((line, index, lines) => line.length > 0 || (index > 0 && lines[index - 1].length > 0))
+    .join('\n')
     .trim();
 }
 

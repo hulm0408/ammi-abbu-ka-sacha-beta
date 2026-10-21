@@ -90,6 +90,24 @@ console.log('\n--- Scenario 1: link extraction takes only the URL ---');
 }
 
 // ---------------------------------------------------------------------------
+// 1b. Nested / triple-wrapped markdown (Telegram double paste)
+// ---------------------------------------------------------------------------
+console.log('\n--- Scenario 1b: nested markdown wrappers ---');
+{
+  const nested = `Hey! Save my address on Swiggy using the link:[[${ADDRESS_LINK}](${ADDRESS_LINK})](${ADDRESS_LINK}](${ADDRESS_LINK})).    \n    \nAddress: Shyam Baba Mandir, Nearby Kalshul Factory, Shivaji Nagar, Gullowara, Darbhanga, Bihar, India    \n    \nIt is a one time use link and will be valid for 24 hours.`;
+  const urls = extractSharedUrls(nested);
+  check('nested markdown still yields exactly one link', urls.length === 1 && urls[0] === ADDRESS_LINK);
+  check('nested markdown link has no bracket debris', !/[\[\]()]/.test(urls[0]));
+
+  const stripped = stripSharedLinks(nested);
+  check('stripping removes leftover bracket tokens', !/\]\(|^\[|\)$/.test(stripped.trim()));
+  check('stripping keeps the human readable address line', /Shyam Baba Mandir/.test(stripped));
+  check('nested address paste is classified as address only',
+    extractAddressShareUrl(nested) === ADDRESS_LINK &&
+    classifyRawOrderInputFast(nested).hasCart === false);
+}
+
+// ---------------------------------------------------------------------------
 // 2. Address share message -> only the link is delivery data
 // ---------------------------------------------------------------------------
 console.log('\n--- Scenario 2: address share message keeps only the link ---');
