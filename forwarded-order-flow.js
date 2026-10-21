@@ -8,6 +8,8 @@ import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import {
   resolveSwiggyLink,
   parseAddressDetails,
+  extractAddressShareUrl,
+  isAddressShareUrl,
   reverseGeocodeCoords,
   isValidIndianDeliveryCoordinates,
   geocodeAddressDetails,
@@ -757,13 +759,21 @@ export function buildTelegramUserBillConfirmationCard(order) {
 
 function summarizeAddressPreview(order) {
   const ad = order.addressDetails || parseAddressDetails(order.address);
-  if (!ad) return escapeHtml(order.address || '');
+  if (!ad) {
+    // Never echo an entire pasted message back as the address. A bare link is
+    // summarised honestly instead of leaking the chat text next to it.
+    const raw = String(order.address || '').trim();
+    if (isAddressShareUrl(raw)) return '<i>Address link received — fetching address from Swiggy…</i>';
+    if (raw && raw.length <= 120 && !/order\s*account|https?:\/\//i.test(raw)) return escapeHtml(raw);
+    return '<i>Not verified yet</i>';
+  }
+  if (ad.unresolvableShortLink) return '<i>Address link could not be resolved — send a fresh address link or GPS pin</i>';
   const parts = [];
   if (ad.city) parts.push(`<b>${escapeHtml(ad.city)}</b>`);
   if (ad.name) parts.push(escapeHtml(ad.name));
   if (ad.address) parts.push(escapeHtml(ad.address.replace(/\s+/g, ' ').trim()));
   if (ad.lat && ad.lng) parts.push(`(${ad.lat}, ${ad.lng})`);
-  return parts.join(' • ') || escapeHtml(order.address || '');
+  return parts.join(' • ') || '<i>Not verified yet</i>';
 }
 
 function summarizeCartPreview(order) {
@@ -1188,14 +1198,21 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   const swiggyUrls = allUrls.filter(u => /(swiggy\.com|swig\.gy|onelink\.me)/i.test(u));
   const mapsUrls = allUrls.filter(u => /(maps\.app\.goo\.gl|google\.com\/maps|goo\.gl\/maps)/i.test(u));
 
+  // URL-FIRST: if the message carries an address share link, delivery data comes
+  // from that link only. Text sitting next to the link (order account, receipt,
+  // forwarded header, "Address: ..." line) is never used.
+  const addressShareUrl = extractAddressShareUrl(trimmed);
+
   // Pre-extract plain-text street address BEFORE `Promise.all` so links + geocoding run 100% concurrently!
+  // (Only for genuinely text-only messages — never when an address link is present.)
   const textWithoutUrlsEarly = trimmed.replace(/https?:\/\/[^\s]+/gi, ' ').trim();
-  const earlyPlainAd =
-    allUrls.length === 0 && !isValidCartInput(trimmed) && isValidAddressInput(trimmed)
-      ? parseAddressDetails(trimmed)
-      : textWithoutUrlsEarly.length >= 12 && isValidAddressInput(textWithoutUrlsEarly)
-        ? parseAddressDetails(textWithoutUrlsEarly)
-        : null;
+  const earlyPlainAd = addressShareUrl
+    ? null
+    : (allUrls.length === 0 && !isValidCartInput(trimmed) && isValidAddressInput(trimmed)
+        ? parseAddressDetails(trimmed)
+        : textWithoutUrlsEarly.length >= 12 && isValidAddressInput(textWithoutUrlsEarly)
+          ? parseAddressDetails(textWithoutUrlsEarly)
+          : null);
   const firstAccEarly = earlyPlainAd && (!earlyPlainAd.lat || !earlyPlainAd.lng)
     ? Object.values(getDb()?.config?.accounts || {}).find(a => a?.isLoggedIn && (a.cookies || a.tid || a.token)) || null
     : null;
@@ -1205,11 +1222,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   // skip external HTTP hop on `onelink.me/JgkQ` (`0ms` instead of `1.9s`!) and reuse `preGeocodedPlainAd` directly!
   const [resolvedSwiggyList, resolvedMapsList, preGeocodedPlainAd] = await Promise.all([
     Promise.all(
-      swiggyUrls.map(url =>
-        earlyPlainAd?.address && /onelink\.me\/jgkq\//i.test(url) && !/\/gc\//i.test(url)
-          ? Promise.resolve({ url, resolved: { linkType: 'ADDRESS' } })
-          : resolveSwiggyLink(url).then(resolved => ({ url, resolved }))
-      )
+      swiggyUrls.map(url => resolveSwiggyLink(url).then(resolved => ({ url, resolved })))
     ),
     Promise.all(mapsUrls.map(mUrl => resolveSwiggyLink(mUrl).then(resolved => ({ mUrl, resolved })))),
     earlyPlainAd && (!earlyPlainAd.lat || !earlyPlainAd.lng)
@@ -1224,14 +1237,23 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       (/save my address on swiggy/i.test(trimmed) && !/\/gc\//i.test(url));
 
     if (looksLikeAddressShare) {
-      const ad = preGeocodedPlainAd || parseAddressDetails(trimmed) || resolved?.addressDetails || parseAddressDetails(url);
-      order.address = trimmed;
-      order.addressOriginalText = trimmed;
-      if (ad) {
+      // The address link is authoritative. `preGeocodedPlainAd` is always null here
+      // when a link is present, and text parsing is never used as a substitute.
+      const ad = resolved?.addressDetails || null;
+      if (ad && !ad.unresolvableShortLink) {
         delete ad.id;
         if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
         order.addressDetails = ad;
+        order.address = ad.address || ad.city || url;
+        order.addressLink = url;
+      } else {
+        // Keep the link (never the surrounding chat text) and let the card ask for
+        // a fresh address/pin if the share link could not be resolved.
+        order.addressDetails = ad || null;
+        order.address = url;
+        order.addressLink = url;
       }
+      order.addressOriginalText = order.address;
       updatedAddress = true;
     } else if (isValidCartInput(url)) {
       if (resolved?.expired || resolved?.groupCartStatus === 'EXPIRED' || resolved?.status === 'EXPIRED') {
@@ -1259,16 +1281,18 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   }
 
   for (const { mUrl, resolved } of resolvedMapsList) {
-    const ad = resolved?.addressDetails || parseAddressDetails(trimmed);
-    order.address = trimmed;
-    order.addressOriginalText = trimmed;
+    // GPS pin / Maps link is authoritative too: reverse-geocoded location only.
+    const ad = resolved?.addressDetails || null;
     if (ad) {
       delete ad.id;
       if (!ad.name && order.fwdSenderName) ad.name = order.fwdSenderName;
       order.addressDetails = ad;
+      order.address = ad.address || mUrl;
+      order.addressLink = mUrl;
     } else {
       order.address = mUrl;
     }
+    order.addressOriginalText = order.address;
     updatedAddress = true;
   }
 
@@ -1276,7 +1300,8 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
     if (isValidCartInput(trimmed)) {
       order.cart = trimmed;
       updatedCart = true;
-    } else if (isValidAddressInput(trimmed)) {
+    } else if (!addressShareUrl && isValidAddressInput(trimmed)) {
+      // Plain-text address (no address link in the message) — the text IS the source.
       const ad = preGeocodedPlainAd || parseAddressDetails(trimmed);
       order.address = trimmed;
       order.addressOriginalText = trimmed;
@@ -1287,7 +1312,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       }
       updatedAddress = true;
     }
-  } else if (updatedCart && !updatedAddress) {
+  } else if (updatedCart && !updatedAddress && !addressShareUrl) {
     const textWithoutUrls = trimmed.replace(/https?:\/\/[^\s]+/gi, ' ').trim();
     if (textWithoutUrls.length >= 12 && isValidAddressInput(textWithoutUrls)) {
       const ad = preGeocodedPlainAd || parseAddressDetails(textWithoutUrls);

@@ -6,6 +6,7 @@ node_modules/
 *.bak
 *.audit_bak
 test_*.mjs
+!test_v16_url_only_address_and_order_card_e2e.mjs
 probe_*.mjs
 inspect_*.mjs
 find_*.mjs

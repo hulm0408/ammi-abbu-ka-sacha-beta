@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node index.js",
     "test": "node test_comprehensive_audit_suite.mjs",
-    "test:live": "node test_live_address_and_cart_e2e.mjs"
+    "test:live": "node test_live_address_and_cart_e2e.mjs",
+    "test:guards": "node test_v16_url_only_address_and_order_card_e2e.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
@@ -17,6 +18,8 @@
     "telegraf": "^4.16.3"
   },
   "devDependencies": {
-    "@railway/cli": "^5.69.0"
+    "@railway/cli": "^5.69.0",
+    "acorn": "^8.19.0",
+    "acorn-walk": "^8.3.5"
   }
 }

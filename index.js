@@ -59,6 +59,8 @@ import {
   fetchSwiggyProfileFromCookies,
   parseAddressDetails,
   parseCartDetails,
+  extractAddressShareUrl,
+  isAddressShareUrl,
   syncGroupCartAndCheckoutForAccount,
   findBestMaxCouponAccountForOrder,
   applyMaxOfferToOrder,
@@ -139,6 +141,20 @@ const bot = installBulletproofTelegramTransport(
 );
 
 const userWaitState = {};
+
+// Never let a stray async rejection or an unexpected throw take the whole bot
+// down (Telegram polling, order sync, Swiggy fetches all run concurrently).
+// Every failure is logged with its stack so it can be fixed instead of being
+// reported to users as "[AI-DIAG] UNEXPECTED_ERROR".
+process.on('unhandledRejection', (reason) => {
+  const text = reason?.stack || reason?.message || String(reason);
+  console.error('× Unhandled promise rejection:', text);
+});
+process.on('uncaughtException', (err) => {
+  const text = err?.stack || err?.message || String(err);
+  console.error('× Uncaught exception (bot kept alive):', text);
+});
+
 const splitJsonChunks = {};
 
 function extractAllLinks(text) {
@@ -313,108 +329,167 @@ function getBossReplyKeyboard() {
   ]).resize().persistent(false);
 }
 
-// Render the exact Swiggy World address block + itemized list + Final Bill matching Boss's exact layout
+// ---------------------------------------------------------------------------
+// Order card renderer — compact Swiggy-style receipt:
+//   Order Account / Your Cart / Delivering To / items / Bill Summary / To Pay
+// Address data is ONLY ever the URL-resolved delivery details (never chat text).
+// ---------------------------------------------------------------------------
+
+const PLACEHOLDER_CITIES = /^(?:india|address|delivery|delivering|shared location|delivery address|order|billing|your|saved)$/i;
+
+function cleanAddressLine(line) {
+  return String(line || '')
+    .replace(/(?:📱\s*)?(?:phone|mobile|tel|contact)\s*[:\-]?\s*\+?[\d\s\-]{10,}/gi, '')
+    .replace(/\bOrder\s*Account\s*:.*$/gi, '')
+    .replace(/^[,\s]+|[,\s]+$/g, '')
+    .trim();
+}
+
+// Normalises an addressDetails object for display: drops placeholder cities,
+// duplicate lines and any phone/account noise that may have leaked in earlier.
+function normalizeAddressForDisplay(ad) {
+  if (!ad || typeof ad !== 'object') return null;
+  const out = { ...ad };
+  const city = String(out.city || '').trim();
+  out.city = city && !PLACEHOLDER_CITIES.test(city) ? city : '';
+
+  if (out.mobile) {
+    const digits = String(out.mobile).replace(/\D/g, '').slice(-10);
+    out.mobile = digits.length === 10 ? digits : '';
+  }
+
+  const seen = new Set();
+  const lines = String(out.address || '')
+    .split(/\r?\n/)
+    .map(cleanAddressLine)
+    .filter(line => {
+      if (!line) return false;
+      if (/^(?:delivering\s*to|your\s*cart|select an available payment method)$/i.test(line)) return false;
+      if (out.city && line.toLowerCase() === `${out.city} address`.toLowerCase()) return false;
+      const key = line.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  out.address = lines.join('\n').trim();
+  if (!out.address && !out.city && !out.lat) return null;
+  return out;
+}
+
 export function formatUserOrderCardText(order, isBossView = false) {
   const db = getDb();
   const selectedAcc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
   const accPhone = order.orderAccount || selectedAcc?.phone || selectedAcc?.mobile || null;
   const restName = order.restaurantName || order.restaurant || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : '');
+  const ad = normalizeAddressForDisplay(order.addressDetails || parseAddressDetails(order.address));
 
-  const ad = order.addressDetails || parseAddressDetails(order.address);
+  const blocks = [];
 
   // ---------- 1. ORDER ACCOUNT (Boss view only) ----------
-  const accountPart = (isBossView && accPhone)
-    ? section('◉ Order Account', field('Account', esc(accPhone)))
-    : '';
+  if (isBossView && accPhone) {
+    blocks.push(`<b>Order Account:</b> <code>${esc(accPhone)}</code>`);
+  }
 
   // ---------- 2. CART / RESTAURANT ----------
-  const cartPart = restName
-    ? section('▣ Cart / Restaurant', field('Restaurant', esc(restName)))
-    : '';
+  if (restName) {
+    blocks.push(`<b>Your Cart</b>\n<b>${esc(restName)}</b>`);
+  }
 
-  // ---------- 3. DELIVERY ADDRESS (bordered card) ----------
-  let addrPart = '';
-  if (ad && (ad.name || ad.mobile || ad.address || ad.city || ad.lat)) {
-    const cityHeader = ad.city ? `${esc(ad.city)} Address` : 'Delivery Address';
-    let addrBody = `<b>${cityHeader}</b>\n`;
-    if (ad.name) addrBody += `${esc(ad.name)}\n`;
-    if (ad.mobile) {
-      const cleanTel = String(ad.mobile).replace(/\D/g, '').slice(-10) || ad.mobile;
-      addrBody += `<a href="tel:${esc(cleanTel)}">${esc(ad.mobile)}</a>\n`;
-    }
-    if (ad.flat_no && ad.address && !String(ad.address).startsWith(ad.flat_no)) {
-      addrBody += `${esc(ad.flat_no)}\n`;
-    }
-    if (ad.address) {
-      const addrLines = String(ad.address).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-      for (const ln of addrLines) addrBody += `${esc(ln)}\n`;
-    }
-    if (ad.lat) addrBody += `Latitude: ${esc(String(ad.lat))}\n`;
-    if (ad.lng) addrBody += `Longitude: ${esc(String(ad.lng))}\n`;
-    addrBody += 'Select an Available Payment Method';
-    addrPart = section(`⌖ ${cityHeader}`, addrBody);
-  } else if (order.address) {
-    addrPart = section('⌖ Delivery Address', `${esc(order.address)}\nSelect an Available Payment Method`);
+  // ---------- 3. DELIVERY ADDRESS ----------
+  const addrLines = [];
+  if (ad && (ad.address || ad.city || ad.name || ad.mobile || ad.lat)) {
+    addrLines.push('<b>Delivering To</b>');
+    addrLines.push(`<b>${esc(ad.city ? `${ad.city} Address` : 'Delivery Address')}</b>`);
+    if (ad.name) addrLines.push(esc(ad.name));
+    if (ad.mobile) addrLines.push(esc(ad.mobile));
+    if (ad.flat_no && ad.address && !ad.address.startsWith(ad.flat_no)) addrLines.push(esc(ad.flat_no));
+    if (ad.address) addrLines.push(...ad.address.split('\n').map(line => esc(line)));
+    if (ad.lat) addrLines.push(`Latitude: ${esc(String(ad.lat))}`);
+    if (ad.lng) addrLines.push(`Longitude: ${esc(String(ad.lng))}`);
+  } else if (order.addressDetails?.unresolvableShortLink) {
+    addrLines.push('<b>Delivering To</b>');
+    addrLines.push('<i>Address link could not be resolved — send a fresh address link or GPS pin.</i>');
   } else {
-    addrPart = section('⌖ Delivery Address', '<i>Address pending / not provided</i>');
+    addrLines.push('<b>Delivering To</b>');
+    addrLines.push('<i>Address pending / share the Swiggy address link or a GPS pin.</i>');
+  }
+  blocks.push(addrLines.join('\n'));
+
+  // ---------- 4. ORDER ITEMS ----------
+  const items = Array.isArray(order.items) ? order.items : [];
+  if (items.length > 0) {
+    const itemLines = [];
+    for (const it of items) {
+      const qty = Number(it.qty || it.quantity || 1);
+      const price = Number(it.price || (it.lineTotal ? it.lineTotal / qty : 0)) || 0;
+      const lineTotal = Number(it.lineTotal || Math.round(price * qty * 100) / 100) || 0;
+      itemLines.push(`<b>${esc(it.name || 'Item')}</b>`);
+      itemLines.push(`₹${price} × ${qty} = ₹${lineTotal}`);
+      itemLines.push('');
+    }
+    const totalQty = items.reduce((sum, it) => sum + Number(it.qty || it.quantity || 1), 0);
+    const itemsTotal = Number(order.itemTotal || order.subtotal || items.reduce((sum, it) => sum + (Number(it.lineTotal) || 0), 0));
+    itemLines.push(`${totalQty} ${totalQty === 1 ? 'Item' : 'Items'} • Subtotal: ₹${itemsTotal}`);
+    blocks.push(itemLines.join('\n').trim());
   }
 
-  // ---------- 4. ORDER ITEMS (monospace table inside border) ----------
-  let itemsPart = '';
-  if (order.items && Array.isArray(order.items) && order.items.length > 0) {
-    const rows = [['#', 'Item', 'Qty', 'Price', 'Total']];
-    order.items.forEach((it, idx) => {
-      const price = it.price ? it.price : Math.round(((it.lineTotal || 0) / (it.qty || 1)) * 100) / 100;
-      const lineTotal = it.lineTotal || Math.round((price * it.qty) * 100) / 100;
-      rows.push([String(idx + 1), esc(it.name), String(it.qty || 1), `₹${price}`, `₹${lineTotal}`]);
-    });
-    itemsPart = section('▪ Order Items', table(rows));
-  }
+  // ---------- 5. BILL SUMMARY ----------
+  const billLines = [];
+  const hasBill = Number(order.finalPayable || order.subtotal || 0) > 0;
+  if (hasBill) {
+    billLines.push('<b>Bill Summary</b>');
+    billLines.push(`Items Total: ₹${Number(order.subtotal || order.itemTotal || 0)}`);
 
-  // ---------- 5. FINAL BILL (monospace table inside border) ----------
-  let billPart = '';
-  if (order.finalPayable || order.subtotal) {
-    const billRows = [['Final Bill', '']];
-    if (order.subtotal) billRows.push(['Items Total', `₹${order.subtotal}`]);
     const merchantOfferDisc = order.merchantTradeDiscount !== undefined
       ? Number(order.merchantTradeDiscount || 0)
       : Math.max(0, Math.round((Number(order.tradeDiscountTotal || 0) - Number(order.campaignFreeCash || 0)) * 100) / 100);
-    if (merchantOfferDisc > 0) billRows.push(['Restaurant Offer Discount', `−₹${merchantOfferDisc}`]);
+    if (merchantOfferDisc > 0) billLines.push(`Restaurant Offer Discount: −₹${merchantOfferDisc}`);
+
     if (order.couponCode && Number(order.discountAmount || 0) > 0) {
-      billRows.push([`Applied coupon ${esc(order.couponCode)}`, `−₹${order.discountAmount}`]);
+      billLines.push(`Coupon ${esc(order.couponCode)}: −₹${Number(order.discountAmount)}`);
     } else if (order.couponCode) {
-      billRows.push([`Coupon ${esc(order.couponCode)}`, 'Not applied (₹0 discount confirmed)']);
+      billLines.push(`Coupon ${esc(order.couponCode)}: not applied`);
     } else if (order.swiggyVerified) {
-      billRows.push(['Coupon', 'No eligible offer confirmed by Swiggy']);
+      billLines.push('Coupon: no eligible offer confirmed by Swiggy');
     }
+
+    const freeCash = Number(order.freeCashApplied || 0);
+    if (freeCash > 0) billLines.push(`Extra Discount ( Free Cash ): −₹${freeCash}`);
+
     const oneFee = Number(order.swiggyOneMembershipFee || 0);
-    if (oneFee > 0) billRows.push(['Swiggy One Lite Membership', `+₹${oneFee}`]);
-    if (order.freeCashApplied > 0) billRows.push(['Swiggy Money / Free Cash', `−₹${order.freeCashApplied}`]);
+    if (oneFee > 0) billLines.push(`Swiggy One Lite Membership: +₹${oneFee}`);
+
     const savedDel = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
-    const isFreeDel = Number(order.deliveryFee || 0) <= 0 && (order.swiggyOneApplied || savedDel > 0 || oneFee > 0 || order.freeDelivery);
+    const isFreeDel = Number(order.deliveryFee || 0) <= 0 &&
+      (order.swiggyOneApplied || savedDel > 0 || oneFee > 0 || order.freeDelivery);
     if (isFreeDel) {
-      billRows.push(['Free Delivery upto 7km', 'Delivery Fee: FREE' + (savedDel > 0 ? ` (₹${savedDel} saved)` : '')]);
+      billLines.push('Free Delivery upto 7km');
+      billLines.push(`Delivery Fee: FREE${savedDel > 0 ? ` (₹${savedDel} saved)` : ''}`);
     } else if (Number(order.deliveryFee || 0) > 0) {
-      billRows.push(['Delivery Fee', `₹${order.deliveryFee}`]);
+      billLines.push(`Delivery Fee: ₹${Number(order.deliveryFee)}`);
     } else {
-      billRows.push(['Delivery Fee', 'FREE']);
+      billLines.push('Delivery Fee: FREE');
     }
-    if (order.packingCharges > 0) billRows.push(['Packing Charges', `₹${order.packingCharges}`]);
-    if (order.taxesAndCharges > 0) billRows.push(['GST & Other Charges', `₹${order.taxesAndCharges}`]);
-    if (order.totalSavings > 0) billRows.push(['Total Savings', `₹${order.totalSavings}`]);
-    if (order.finalPayable) billRows.push([`<b>Final Total</b>`, `<b>₹${order.finalPayable}</b>`]);
-    billPart = section('₹ Final Bill', table(billRows));
+
+    if (order.packingCharges > 0) billLines.push(`Packing Charges: ₹${Number(order.packingCharges)}`);
+    if (order.taxesAndCharges > 0) billLines.push(`GST & Other Charges: ₹${Number(order.taxesAndCharges)}`);
+
+    if (Number(order.totalSavings || 0) > 0) {
+      billLines.push('━━━━━━━━━━━━━━');
+      billLines.push(`Total Savings: ₹${Number(order.totalSavings)}`);
+    }
+    billLines.push(`<b>To Pay: ₹${Number(order.finalPayable || order.subtotal || 0)}</b>`);
+    blocks.push(billLines.join('\n'));
   } else {
-    billPart = section('₹ Final Bill', '<i>Calculating max coupon and bill on Swiggy…</i>');
+    blocks.push('<b>Bill Summary</b>\n<i>Calculating max coupon and final bill on Swiggy…</i>');
   }
 
   // ---------- 6. PAYMENT LINK ----------
-  let payPart = '';
   if (order.swiggyPaymentUrl) {
-    payPart = section('↗ Official Swiggy Payment Link', `<a href="${esc(order.swiggyPaymentUrl)}">${esc(order.swiggyPaymentUrl)}</a>`);
+    blocks.push(`<b>Swiggy Payment:</b> <a href="${esc(order.swiggyPaymentUrl)}">Open official Swiggy payment</a>`);
   }
 
-  return [accountPart, cartPart, addrPart, itemsPart, billPart, payPart].filter(Boolean).join('\n');
+  return blocks.filter(Boolean).join('\n\n');
 }
 
 // Format User (Customer) Order Screen matching State Machine
@@ -1372,35 +1447,93 @@ bot.hears(['Success Archive', '★ Success Archive', 'success archive', '/archiv
 // ================= COMMANDS =================
 
 bot.start(async (ctx) => {
-  const userId = ctx.from.id;
+  const userId = ctx.from?.id;
+  if (!userId) return;
   delete userWaitState[userId];
 
-  // Return Telegram buttons immediately; collect order inputs in chat.
-
-  if (isBoss(userId)) {
-    await ctx.reply(`★ Welcome back, <b>Boss</b>! Swiggy Family Care Admin Mode is active.`, {
-      parse_mode: 'HTML',
-      ...getBossReplyKeyboard()
-    });
-    const home = getBossPanelHome();
-    await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
-    await sendPendingOrdersToBoss(userId);
-    return;
-  }
-
-  const draft = getDraft(userId);
-  await ctx.reply(
+  const welcomeText =
     `→ <b>Welcome to Swiggy Slot Bot!</b>\n\n` +
     `Swiggy order ke liye apna <b>Cart link</b> aur <b>Delivery Address link</b> share karein:\n\n` +
-    `› Pehle <b>Cart link</b> bhejein ya <b>Address link</b> bhejein, fir <b>[ › Send to Beta ]</b> daba dein!`,
-    {
+    `› Pehle <b>Cart link</b> bhejein ya <b>Address link</b> bhejein, fir <b>[ › Send to Beta ]</b> daba dein!`;
+
+  // A new user must ALWAYS get a working screen. Any helper failure below is
+  // contained here so /start can never surface an UNEXPECTED_ERROR to the user.
+  try {
+    if (isBoss(userId)) {
+      await ctx.reply(`★ Welcome back, <b>Boss</b>! Swiggy Family Care Admin Mode is active.`, {
+        parse_mode: 'HTML',
+        ...getBossReplyKeyboard()
+      });
+      try {
+        const home = getBossPanelHome();
+        await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
+        await sendPendingOrdersToBoss(userId);
+      } catch (panelErr) {
+        console.error('[START] boss panel render failed:', panelErr?.stack || panelErr?.message || panelErr);
+      }
+      return;
+    }
+
+    const draft = getDraft(userId);
+    await ctx.reply(welcomeText, {
       parse_mode: 'HTML',
       ...getUserReplyKeyboard(draft)
-    }
-  );
+    });
 
-  const screen = getUserScreen(userId, ctx.from);
-  await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    try {
+      const screen = getUserScreen(userId, ctx.from);
+      await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    } catch (screenErr) {
+      console.error('[START] user screen render failed:', screenErr?.stack || screenErr?.message || screenErr);
+      await ctx.reply('› Cart link ya Address link paste karke order shuru karein.', {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[
+          Markup.button.callback('▤ Cart Link', 'action_add_cart'),
+          Markup.button.callback('⌖ Address Link', 'action_add_address')
+        ]])
+      }).catch(() => {});
+    }
+  } catch (err) {
+    console.error('[START] handler failed:', err?.stack || err?.message || err);
+    try {
+      await ctx.reply(welcomeText, { parse_mode: 'HTML', ...getUserReplyKeyboard() });
+    } catch (e2) {
+      console.error('[START] fallback reply failed:', e2?.message || e2);
+    }
+  }
+});
+
+bot.command('help', async (ctx) => {
+  const isBossUser = isBoss(ctx.from?.id);
+  const text =
+    `→ <b>Kaise order karein</b>\n\n` +
+    `1. Swiggy app se apna <b>Cart link</b> bhejein (ya ▤ Cart Link button dabayein).\n` +
+    `2. Apna <b>Delivery Address link</b> bhejein (Swiggy share-address link ya Telegram • Location pin).\n` +
+    `3. Dono ready hone par <b>[ › Send to Beta ]</b> dabayein.\n\n` +
+    `<i>Address sirf aapke Swiggy address link se liya jata hai — chat me likha hua koi bhi text address ya number nahi banega.</i>` +
+    (isBossUser ? `\n\n★ Boss: <code>/boss</code> se panel, <code>/parallel</code> se ready orders ek saath.` : '');
+  return ctx.reply(text, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([[
+      Markup.button.callback('▤ Cart Link', 'action_add_cart'),
+      Markup.button.callback('⌖ Address Link', 'action_add_address')
+    ]])
+  });
+});
+
+bot.command('cancel', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  delete userWaitState[userId];
+  clearDraft(userId);
+  if (isBoss(userId)) {
+    const home = getBossPanelHome();
+    return ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
+  }
+  return ctx.reply('● <b>Draft cancel kar diya gaya hai.</b>\n\nNaya order shuru karne ke liye cart aur address link bhejein.', {
+    parse_mode: 'HTML',
+    ...getUserReplyKeyboard()
+  });
 });
 
 bot.command(['boss', 'admin'], async (ctx) => {
@@ -7116,7 +7249,9 @@ bot.on('text', async (ctx) => {
     const cleanDisplayAddr = resolvedAddrDetails?.address || validAddress || rawText.trim();
     const draftUpdates = {
       address: cleanDisplayAddr,
-      addressOriginalText: rawText,
+      // When an address link was shared, keep the resolved address (or the link)
+      // instead of the whole pasted chat text.
+      addressOriginalText: resolvedAddrDetails?.address || (validAddress || rawText.trim()),
       ...(validAddress ? { addressLink: validAddress } : {})
     };
     if (resolvedAddrDetails) draftUpdates.addressDetails = resolvedAddrDetails;
@@ -7214,7 +7349,8 @@ bot.on('text', async (ctx) => {
       // NEVER overwrite clean street address with bare JgkQ URL!
       updateDraft(userId, {
         address: geoAddr?.address || validAddrLink || `${geoAddr?.city || 'Delivery'} Address`,
-        addressOriginalText: rawText,
+        // Link-shared messages: store the resolved address, never the pasted chat text.
+        addressOriginalText: geoAddr?.address || validAddrLink || rawText,
         ...(validAddrLink ? { addressLink: validAddrLink } : {}),
         ...(geoAddr ? { addressDetails: geoAddr } : {})
       });
@@ -7680,20 +7816,41 @@ async function handleSendToBoss(ctx) {
 
   let deliveryDetails = { ...(draft.addressDetails || {}) };
   const addressSource = draft.addressOriginalText || draft.address;
-  const parsedAddress = parseAddressDetails(addressSource);
-  if (parsedAddress) {
-    for (const [key, value] of Object.entries(parsedAddress)) {
-      if (value !== null && value !== undefined && value !== '') deliveryDetails[key] = value;
-    }
-  }
-  if (!normalizeDeliveryContact(deliveryDetails.mobile)) {
+  const addressLink = draft.addressLink || extractAddressShareUrl(addressSource) || (isAddressShareUrl(addressSource) ? addressSource : '');
+
+  if (addressLink) {
+    // URL-FIRST: the shared Swiggy address link is the only source of delivery
+    // data. Never merge name / mobile / area from the pasted chat text.
     try {
-      const addrMeta = await resolveSwiggyLink(addressSource);
-      if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
-        deliveryDetails = { ...deliveryDetails, ...addrMeta.addressDetails };
+      const addrMeta = await resolveSwiggyLink(addressLink);
+      const resolvedAd = addrMeta?.addressDetails;
+      if (resolvedAd && !resolvedAd.unresolvableShortLink) {
+        deliveryDetails = { ...resolvedAd };
+      } else {
+        deliveryDetails = { ...deliveryDetails, unresolvableShortLink: true };
       }
     } catch (e) {}
+  } else {
+    // Plain-text address / GPS pin — the message itself is the source.
+    const parsedAddress = parseAddressDetails(addressSource);
+    if (parsedAddress) {
+      for (const [key, value] of Object.entries(parsedAddress)) {
+        if (value !== null && value !== undefined && value !== '') deliveryDetails[key] = value;
+      }
+    }
   }
+
+  if (addressLink && deliveryDetails.unresolvableShortLink) {
+    userWaitState[userId] = { action: 'waiting_address' };
+    return ctx.reply(
+      `! <b>Address link resolve nahi hua.</b>\n\nSwiggy share-address link expire ho gaya ho sakta hai. Naya address link bhejein, ya Telegram • <b>Location</b> pin bhejein.`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[Markup.button.callback('● Paste Address Link', 'action_paste_address')]])
+      }
+    );
+  }
+
   const explicitRecipientMobile = normalizeDeliveryContact(deliveryDetails.mobile);
   if (!explicitRecipientMobile) {
     userWaitState[userId] = { action: 'waiting_recipient_mobile' };
@@ -7716,9 +7873,9 @@ async function handleSendToBoss(ctx) {
     userName: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || role,
     handle: ctx.from.username ? `@${ctx.from.username}` : null,
     type: 'SWIGGY_ORDER',
-    address: draft.address,
+    address: draft.addressDetails?.address || draft.address,
     addressOriginalText: draft.addressOriginalText || draft.address || '',
-    addressLink: draft.addressLink || null,
+    addressLink: draft.addressLink || extractAddressShareUrl(draft.addressOriginalText || draft.address) || null,
     cart: draft.cart,
     restaurantId: draft.restaurantId || null,
     groupCartId: draft.groupCartId || null,
@@ -7735,7 +7892,8 @@ async function handleSendToBoss(ctx) {
   if (draft.cartDetails) {
     const cd = draft.cartDetails;
     if (cd.restaurantName) newOrder.restaurantName = cd.restaurantName;
-    if (cd.orderAccount) newOrder.orderAccount = cd.orderAccount;
+    // NEVER copy the "Order Account" phone from pasted cart text: the account used
+    // for the order is the Swiggy account selected by the bot, not the pasted number.
     if (cd.items && cd.items.length > 0) newOrder.items = cd.items;
     if (cd.itemsTotal > 0) { newOrder.itemTotal = cd.itemsTotal; newOrder.subtotal = cd.itemsTotal; }
     if (cd.tradeDiscountTotal > 0) newOrder.tradeDiscountTotal = cd.tradeDiscountTotal;
@@ -8477,18 +8635,40 @@ bot.command('resetslots', async (ctx) => {
 bot.action('noop', async (ctx) => ctx.answerCbQuery().catch(() => {}));
 
 bot.catch(async (err, ctx) => {
-  // Ignore harmless "not modified" edits
-  if (err.description && err.description.includes('message is not modified')) return;
+  const description = String(err?.description || '');
+  const message = String(err?.message || '');
 
-  // Ignore normal 400 "message too long" & transient query expiration
-  const ignorePhrases = ['message is not modified', 'query is too old', 'MESSAGE_ID_INVALID', 'message is too long', 'message to be edited'];
-  if (ignorePhrases.some(p => (err.message || err.description || '').toLowerCase().includes(p.toLowerCase()))) return;
+  // Ignore harmless "not modified" edits and transient Telegram races
+  const ignorePhrases = [
+    'message is not modified',
+    'query is too old',
+    'MESSAGE_ID_INVALID',
+    'message is too long',
+    'message to be edited',
+    'message can\'t be edited'
+  ];
+  if (ignorePhrases.some(p => (message || description).toLowerCase().includes(p.toLowerCase()))) return;
 
   const updateType = ctx?.updateType || 'unknown';
-  const errMsg = err.message || err.description || String(err);
+  const errMsg = message || description || String(err);
   console.error(`× Bot error [${updateType}]:`, errMsg);
+  if (err?.stack) console.error(`  ↳ ${String(err.stack).split('\n').slice(1, 4).join('\n  ↳ ')}`);
 
-  // Send error to Boss
+  // Tell the person who triggered it something useful — but only for real code
+  // faults. Transient Telegram/network failures must not spam the chat.
+  const looksLikeCodeFault = /is not defined|is not a function|ReferenceError|TypeError|Cannot read|undefined \(reading/i.test(`${message} ${description}`);
+  if (looksLikeCodeFault) {
+    try {
+      if (ctx?.chat?.id && typeof ctx.reply === 'function') {
+        await ctx.reply(
+          '! <b>Kuch technical issue aa gaya.</b>\n\nKripya dobara try karein ya /start dabayein. Aapka data safe hai.',
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
+      }
+    } catch (e) {}
+  }
+
+  // Report to Boss with the exact failing line so the bug can be fixed fast.
   try {
     const db = getDb();
     const bossIds = db?.config?.bossIds || [];
@@ -9097,6 +9277,30 @@ function startAutoEventOffersPrebookLoop() {
   // Run every 2 hours so every account is ALWAYS pre-booked well before both 05:00 AM IST & 06:30 PM IST cutoffs!
   autoEventPrebookTimer = setInterval(runSweep, 2 * 60 * 60 * 1000);
   if (typeof autoEventPrebookTimer.unref === 'function') autoEventPrebookTimer.unref();
+}
+
+// Registers the command list + a plain "commands" menu button.
+// Kept dependency-free and fully guarded: a Telegram-side hiccup must never
+// stop the bot from serving /start or orders.
+let botMenuReady = false;
+async function setupBotMenu() {
+  if (botMenuReady) return true;
+  try {
+    await bot.telegram.setMyCommands([
+      { command: 'start', description: 'Start a new Swiggy order' },
+      { command: 'help', description: 'How to place an order' },
+      { command: 'cancel', description: 'Cancel the current draft order' }
+    ]);
+  } catch (e) {
+    console.warn('[Menu] setMyCommands skipped:', e?.message || e);
+  }
+  try {
+    await bot.telegram.setChatMenuButton({ menuButton: { type: 'commands' } });
+  } catch (e) {
+    console.warn('[Menu] setChatMenuButton skipped:', e?.message || e);
+  }
+  botMenuReady = true;
+  return true;
 }
 
 // Launch bot with retry resilience for cloud container handover
