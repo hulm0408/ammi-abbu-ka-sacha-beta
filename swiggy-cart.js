@@ -6344,6 +6344,55 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
  * 2) As soon as `data === 'success'`, fires `POST https://payments.swiggy.com/api/v3/order/confirm?order_id=<id>` so Swiggy confirms kitchen dispatch!
  * 3) Verifies real paid order via `GET /dapi/order/all` + `GET /dapi/order/details?type=full&version=V2` + `GET /dapi/order/trackV4` + `GET /dapi/order/trackV2/de`.
  */
+
+// Dedicated All-IDs tracking extractor — brute-force across every logged-in Swiggy ID
+export async function extractTrackingViaAllAccounts(order, { getAccountsFn = null } = {}) {
+  if (!order) return null;
+  const targetOrderId = String(order.swiggyOrderId || order.pendingSwiggyOrderId || '').trim();
+  const accountsGetter = typeof getAccountsFn === 'function' ? getAccountsFn : () => ({});
+  let accountsMap = accountsGetter();
+  // Fallback: try to load via store.js getDb if available (dynamic import to avoid cycle)
+  if (!accountsMap || Object.keys(accountsMap).length === 0) {
+    try {
+      const store = await import('./store.js');
+      const db = store.getDb ? store.getDb() : null;
+      accountsMap = db?.config?.accounts || {};
+    } catch {}
+  }
+  const entries = Object.entries(accountsMap).filter(([,a]) => a && (a.isLoggedIn || a.cookies || a.tid));
+  if (entries.length === 0) return null;
+
+  // Try each account in parallel (max concurrency 3) to avoid rate-limit
+  const results = await Promise.allSettled(entries.map(async ([key, acc]) => {
+    try {
+      const res = await checkRealSwiggyPaymentAndExtractTracking(acc, order);
+      if (res?.paid && (res.nativeShareUrl || res.swiggyWebTrackUrl)) {
+        const candidate = res.nativeShareUrl || res.swiggyWebTrackUrl;
+        const verified = candidate ? getStoredSwiggyTrackingUrl({ trackingLink: candidate, trackingLinkSource: 'SWIGGY_API' }) : '';
+        if (verified) return { accKey: key, acc, res, trackingUrl: verified };
+      }
+      // Fallback: scan fetchAccountOrders for matching orderId
+      if (targetOrderId) {
+        const liveOrders = await fetchAccountOrders(acc).catch(() => []);
+        const match = liveOrders.find(o => String(o.orderId) === targetOrderId);
+        if (match?.trackingUrl) {
+          const v2 = getStoredSwiggyTrackingUrl({ trackingLink: match.trackingUrl, trackingLinkSource: 'SWIGGY_API' }) || (isOfficialSwiggyTrackingUrl(match.trackingUrl, {allowProviderShortLink:true}) ? match.trackingUrl : '');
+          if (v2) {
+            return { accKey: key, acc, res: { ...match, nativeShareUrl: match.trackingUrl, swiggyWebTrackUrl: match.trackingUrl, deliveryOtp: match.deliveryOtp || '', orderStatus: match.status || '', paid: true, swiggyOrderId: match.orderId }, trackingUrl: v2 };
+          }
+        }
+      }
+      return null;
+    } catch (e) { return null; }
+  }));
+
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value?.trackingUrl) return r.value;
+  }
+  return null;
+}
+
+
 export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, maybeOrder) {
   const isWrapped = accountOrOpts && typeof accountOrOpts === 'object' && ('account' in accountOrOpts) && !maybeOrder;
   const account = isWrapped ? accountOrOpts.account : accountOrOpts;

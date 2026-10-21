@@ -5529,6 +5529,13 @@ bot.action(/^boss_confirm_paid_(.+)$/, async (ctx) => {
 });
 
 // View Family Accounts
+bot.action('boss_extract_tracking_prompt', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
+  await ctx.answerCbQuery().catch(()=>{});
+  userWaitState[ctx.from.id] = { action: 'waiting_boss_extract_tracking' };
+  await ctx.reply('🔗 <b>Extract Delivery Link — All IDs scan</b>\\nSend the <b>Order ID</b> (e.g. <code>FWD9670</code>) or Swiggy Order ID. I will check every logged-in Swiggy ID for its tracking link.', { parse_mode: 'HTML', reply_markup: { force_reply: true, input_field_placeholder: 'Enter Order ID' } });
+});
+
 bot.action('boss_view_accounts', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
@@ -7885,6 +7892,46 @@ bot.on('text', async (ctx) => {
   }
 
   // Boss sending Swiggy's actual tracking link to the parent
+  if (state && state.action === 'waiting_boss_extract_tracking') {
+    const q = String(ctx.message.text || '').trim();
+    const db2 = getDb();
+    // Try orderId direct, or swiggyOrderId search
+    let order = db2.orders?.[q];
+    if (!order) {
+      // search by swiggyOrderId
+      for (const o of Object.values(db2.orders||{})) {
+        if (String(o.swiggyOrderId) === q || String(o.pendingSwiggyOrderId) === q || String(o.id) === q) { order = o; break; }
+      }
+    }
+    if (!order) {
+      await ctx.reply('❌ Order <code>' + q + '</code> not found in bot DB. Check Order ID.', { parse_mode: 'HTML' });
+      delete userWaitState[ctx.from.id];
+      return;
+    }
+    await ctx.reply('⏳ <i>Scanning ' + Object.keys(db2.config?.accounts||{}).length + ' IDs for order #' + order.id + '...</i>', { parse_mode: 'HTML' });
+    try {
+      const result = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts });
+      if (!result?.trackingUrl) {
+        await ctx.reply('❌ No tracking found on any ID yet. Swiggy may not have published it. Try manual Add tracking.', { parse_mode: 'HTML' });
+      } else {
+        order.trackingLink = result.trackingUrl;
+        order.trackingLinkSource = 'SWIGGY_API';
+        order.shareTrackUrl = '';
+        if (result.res?.deliveryOtp) order.deliveryOtp = result.res.deliveryOtp;
+        if (result.res?.orderStatus) order.liveOrderStatus = result.res.orderStatus;
+        if (result.res?.swiggyOrderId) order.swiggyOrderId = result.res.swiggyOrderId;
+        if (result.accKey) order.selectedAccount = result.accKey;
+        if (order.status !== 'COMPLETED') { order.status='COMPLETED'; order.completedAt=new Date().toISOString(); }
+        saveDb(getDb());
+        await ctx.reply('✅ <b>Tracking extracted!</b>\\nFound on <b>' + (result.acc?.phone || result.accKey) + '</b>\\n🔗 <a href="' + result.trackingUrl + '">Open Swiggy tracking</a>' + (result.res?.deliveryOtp ? '\\n🔢 OTP: <code>' + result.res.deliveryOtp + '</code>' : ''), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard([[Markup.button.url('↗ Open tracking', result.trackingUrl)]]) });
+        // also push to boss panel
+        const bossCard = formatBossOrderCard(order);
+        await ctx.reply(bossCard.text, { parse_mode: 'HTML', ...bossCard.keyboard }).catch(()=>{});
+      }
+    } catch (e) { await ctx.reply('❌ Failed: ' + (e?.message||e), { parse_mode: 'HTML' }); }
+    delete userWaitState[ctx.from.id];
+    return;
+  }
   if (state && state.action === 'waiting_tracking') {
     const orderId = state.orderId;
     const candidateLink = extractAllLinks(rawText).find(isOfficialSwiggyTrackingUrl);

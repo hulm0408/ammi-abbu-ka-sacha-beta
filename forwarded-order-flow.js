@@ -1013,6 +1013,7 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
 
     const buttons = [
       [Markup.button.url('↗ Open Swiggy tracking', directSwiggyUrl)],
+      [Markup.button.callback('🔗 Extract Delivery Link (All IDs)', `fwd_extract_all_${order.id}`)],
       [Markup.button.callback('⌕ Add delivery OTP', `boss_delivery_otp_${order.id}`)],
       [cancelBtn]
     ];
@@ -1046,6 +1047,7 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
       text,
       keyboard: Markup.inlineKeyboard([
         [Markup.button.callback('↻ Retry Swiggy tracking', `fwd_retry_track_${order.id}`)],
+        [Markup.button.callback('🔗 Extract Delivery Link (All IDs)', `fwd_extract_all_${order.id}`)],
         [Markup.button.callback('⌕ Add delivery OTP', `boss_delivery_otp_${order.id}`)]
       ])
     };
@@ -2776,7 +2778,24 @@ export function registerForwardedOrderHandlers(bot, {
     const db = getDb();
     const order = db.orders?.[orderId];
     if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
-    const acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
+    let acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
+    // Fallback: if selected account missing/expired, try all accounts automatically
+    if ((!acc || !order.swiggyOrderId) && Object.keys(db.config?.accounts || {}).length > 0) {
+      const allRes = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => db.config.accounts }).catch(() => null);
+      if (allRes?.trackingUrl) {
+        order.trackingLink = allRes.trackingUrl;
+        order.trackingLinkSource = 'SWIGGY_API';
+        order.shareTrackUrl = '';
+        if (allRes.res?.deliveryOtp) order.deliveryOtp = allRes.res.deliveryOtp;
+        if (allRes.res?.orderStatus) order.liveOrderStatus = allRes.res.orderStatus;
+        if (allRes.res?.swiggyOrderId) order.swiggyOrderId = allRes.res.swiggyOrderId;
+        order.selectedAccount = allRes.accKey || order.selectedAccount;
+        upsertOrder(order.id, order);
+        await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn, { includeQrDelete: false }).catch(() => {});
+        await sendOrderDeliveryInfoNotice(ctx.telegram, ctx.chat.id, order);
+        return ctx.answerCbQuery('✓ Tracking extracted via ' + (allRes.acc?.phone || allRes.accKey) + ' (All IDs scan)', { show_alert: true });
+      }
+    }
     if (!acc || !order.swiggyOrderId) {
       return ctx.answerCbQuery('Swiggy tracking is not available for this order yet.', { show_alert: true });
     }
@@ -2815,6 +2834,46 @@ export function registerForwardedOrderHandlers(bot, {
       hasInfo ? '✓ Swiggy tracking details refreshed.' : '… Swiggy has not shared a tracking link or delivery OTP yet.',
       { show_alert: !hasInfo }
     );
+  });
+
+  // Dedicated Extract Delivery Link — scans ALL logged-in IDs, not just selectedAccount
+  bot.action(/^fwd_extract_all_([A-Za-z0-9_]+)$/, async (ctx) => {
+    if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
+    const orderId = ctx.match[1];
+    const db = getDb();
+    const order = db.orders?.[orderId];
+    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    await ctx.answerCbQuery('🔍 Scanning all Swiggy IDs for tracking...').catch(()=>{});
+    const scanMsg = await ctx.reply('⏳ <i>Scanning ' + Object.keys(db.config?.accounts || {}).length + ' logged-in IDs for tracking link...</i>', { parse_mode: 'HTML' }).catch(()=>null);
+    try {
+      const result = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts });
+      if (scanMsg) try { await ctx.telegram.deleteMessage(ctx.chat.id, scanMsg.message_id); } catch {}
+      if (!result?.trackingUrl) {
+        return ctx.reply('❌ <b>No tracking link found on any ID yet.</b>\n<i>Swiggy may not have published it. Try again in 1 min or paste manually via Add tracking.</i>', { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('↗ Add Swiggy tracking', `boss_tracking_${order.id}`)]]) });
+      }
+      order.trackingLink = result.trackingUrl;
+      order.trackingLinkSource = 'SWIGGY_API';
+      order.shareTrackUrl = '';
+      if (result.res?.deliveryOtp) order.deliveryOtp = result.res.deliveryOtp;
+      if (result.res?.orderStatus) order.liveOrderStatus = result.res.orderStatus;
+      if (result.res?.swiggyOrderId) order.swiggyOrderId = result.res.swiggyOrderId;
+      if (result.res?.deliveryBoy?.name) order.deliveryBoyName = result.res.deliveryBoy.name;
+      if (result.res?.deliveryBoy?.mobile) order.deliveryBoyMobile = result.res.deliveryBoy.mobile;
+      if (result.accKey) order.selectedAccount = result.accKey;
+      if (order.status !== 'COMPLETED') {
+        order.status = 'COMPLETED';
+        order.cardStage = 'PAID_CONFIRMED';
+        order.paidAt = new Date().toISOString();
+        order.completedAt = new Date().toISOString();
+      }
+      upsertOrder(order.id, order);
+      await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn, { includeQrDelete: false }).catch(()=>{});
+      await sendOrderDeliveryInfoNotice(ctx.telegram, ctx.chat.id, order, { force: true });
+      await ctx.reply('✅ <b>Tracking extracted!</b>\nFound on <b>' + (result.acc?.phone || result.accKey) + '</b>\n🔗 <a href="' + result.trackingUrl + '">Open Swiggy tracking</a>' + (result.res?.deliveryOtp ? '\n🔢 OTP: <code>' + result.res.deliveryOtp + '</code>' : ''), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard([[Markup.button.url('↗ Open tracking', result.trackingUrl)]]) });
+    } catch (e) {
+      if (scanMsg) try { await ctx.telegram.deleteMessage(ctx.chat.id, scanMsg.message_id); } catch {}
+      await ctx.reply('❌ Extract failed: ' + (e?.message || e), { parse_mode: 'HTML' });
+    }
   });
 }
 

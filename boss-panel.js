@@ -117,6 +117,10 @@ export function buildBossPanelHome(db) {
       { text: '▣ Pending Orders', callback_data: 'boss_view_pending' },
     ],
     [
+      { text: '🔗 Extract Delivery Link (All IDs)', callback_data: 'boss_extract_tracking_prompt' },
+      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' },
+    ],
+    [
       { text: '☎ Login with Number', callback_data: 'boss_login_with_number' },
       { text: '▤ Login with JSON', callback_data: 'boss_login_with_json' },
     ],
@@ -271,6 +275,9 @@ export function buildBossOrderCard(order, db = getDb()) {
       Markup.button.callback('⌕ Add delivery OTP', `boss_delivery_otp_${order.id}`),
     ]);
     rows.push([
+      Markup.button.callback('🔗 Extract Delivery (All IDs)', `fwd_extract_all_${order.id}`),
+    ]);
+    rows.push([
       Markup.button.callback('✓ Mark done', `boss_action_done_${order.id}`),
       Markup.button.callback('× Reject order', `boss_action_sorry_${order.id}`),
     ]);
@@ -281,6 +288,9 @@ export function buildBossOrderCard(order, db = getDb()) {
         Markup.button.callback('↗ Add Swiggy tracking', `boss_tracking_${order.id}`),
         Markup.button.callback('⌕ Add delivery OTP', `boss_delivery_otp_${order.id}`),
         Markup.button.callback('✓ Mark done', `boss_action_done_${order.id}`)
+      ]);
+      rows.push([
+        Markup.button.callback('🔗 Extract Delivery (All IDs)', `fwd_extract_all_${order.id}`),
       ]);
     }
     if (order.cart || order.address) {
