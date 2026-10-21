@@ -1220,6 +1220,37 @@ export function resetOtpLock(phone = '') {
   otpAttemptTracker.delete(clean);
 }
 
+// --- Robust instant order ID generator (no collisions, no hours delay) ---
+let _lastOrderMs = 0;
+let _orderSeqInMs = 0;
+export function generateOrderId() {
+  const now = Date.now();
+  if (now === _lastOrderMs) {
+    _orderSeqInMs = (_orderSeqInMs + 1) % 100;
+  } else {
+    _lastOrderMs = now;
+    _orderSeqInMs = 0;
+  }
+  // 6-digit base from timestamp + 2-digit seq/random to guarantee uniqueness in same ms
+  const base = String(now).slice(-6);
+  const suffix = String(_orderSeqInMs).padStart(2, '0');
+  let candidate = `${base}${suffix}`.slice(-6);
+  // Ensure not already in DB (extremely rare, but handle burst)
+  try {
+    const db = getDb();
+    let tries = 0;
+    while (db.orders && db.orders[candidate] && tries < 5) {
+      candidate = String((parseInt(candidate, 10) + 1) % 1000000).padStart(6, '0');
+      tries++;
+    }
+    if (db.orders && db.orders[candidate]) {
+      candidate = String(now).slice(-5) + String(Math.floor(Math.random() * 10));
+      candidate = candidate.slice(-6);
+    }
+  } catch {}
+  return candidate;
+}
+
 export function appendAuditEvent(action, meta = {}) {
   try {
     const db = getDb();

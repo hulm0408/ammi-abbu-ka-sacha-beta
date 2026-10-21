@@ -144,8 +144,74 @@
     "activeOrderAccount": "acc_6296591407",
     "deletedAccounts": {}
   },
-  "orders": {},
-  "drafts": {},
+  "orders": {
+    "TEST": {
+      "id": "AUTO_READY_1",
+      "userId": 424242,
+      "userName": "Ammi",
+      "type": "SWIGGY_ORDER",
+      "status": "APPROVAL_PENDING",
+      "paymentStatus": "UNPAID",
+      "cart": "https://swig.gy/gc/1467977/TestHost-642855918",
+      "restaurantName": "Mouj Mela",
+      "items": [
+        {
+          "name": "Egg Roll [2 Egg]",
+          "price": 109,
+          "qty": 2,
+          "lineTotal": 218
+        }
+      ],
+      "subtotal": 218,
+      "finalPayable": 73,
+      "couponCode": "FEASTMODE70",
+      "discountAmount": 130,
+      "selectedAccount": "acc_9935123518",
+      "orderAccount": "9935123518",
+      "freeCashApplied": 40,
+      "freeDelivery": true,
+      "totalSavings": 193,
+      "address": "Shyam Baba Mandir, Shivaji Nagar, Gullowara, Darbhanga, Bihar 846004",
+      "addressDetails": {
+        "name": "SHANU SAHANI",
+        "mobile": "9876500011",
+        "city": "Darbhanga",
+        "address": "Shyam Baba Mandir, Shivaji Nagar, Gullowara, Darbhanga, Bihar 846004",
+        "lat": "26.0829899",
+        "lng": "86.0324951"
+      },
+      "createdAt": "2026-10-21T18:17:23.181Z",
+      "userChatId": 424242,
+      "userMessageId": 7,
+      "cardStage": "BILL_READY",
+      "autoOptimized": true,
+      "billSummarySentAt": "2026-10-21T18:17:23.181Z"
+    }
+  },
+  "drafts": {
+    "515151": {
+      "address": "https://swiggy.onelink.me/JgkQ/kubail4a",
+      "cart": "https://swig.gy/gc/1467977/Umbashiya-642855918",
+      "submitted": false,
+      "currentOrderId": null,
+      "cartDetails": {
+        "restaurantName": "Mouj Mela",
+        "items": [
+          {
+            "name": "Egg Roll",
+            "price": 109,
+            "qty": 2,
+            "lineTotal": 218
+          }
+        ],
+        "subtotal": 218,
+        "itemsTotal": 218
+      },
+      "addressLink": "https://swiggy.onelink.me/JgkQ/kubail4a",
+      "addressOriginalText": "https://swiggy.onelink.me/JgkQ/kubail4a",
+      "addressDetails": null
+    }
+  },
   "bossState": null,
   "userStates": {},
   "sessionVault": {

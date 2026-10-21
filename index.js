@@ -32,6 +32,7 @@ import {
   cleanEssentialSwiggyCookies,
   hydrateAccountsFromCloudVault,
   syncCloudVaultNow,
+  generateOrderId,
 } from './store.js';
 import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
 import {
@@ -561,7 +562,7 @@ export function formatUserOrderCardText(order, isBossView = false) {
     blocks.push(itemLines.join('\n').trim());
   }
 
-  // ---------- 5. BILL SUMMARY ----------
+  // ---------- 5. BILL SUMMARY (clean, consistent) ----------
   const billLines = [];
   const hasBill = Number(order.finalPayable || order.subtotal || 0) > 0;
   if (hasBill) {
@@ -603,10 +604,11 @@ export function formatUserOrderCardText(order, isBossView = false) {
     if (order.taxesAndCharges > 0) billLines.push(`GST & Other Charges: ₹${Number(order.taxesAndCharges)}`);
 
     if (Number(order.totalSavings || 0) > 0) {
-      billLines.push('━━━━━━━━━━━━━━');
       billLines.push(`Total Savings: ₹${Number(order.totalSavings)}`);
     }
     billLines.push(`<b>To Pay: ₹${Number(order.finalPayable || order.subtotal || 0)}</b>`);
+    // Card & other payment options (new)
+    billLines.push(`<i>Pay via UPI QR, Card, or Wallet on Swiggy</i>`);
     blocks.push(billLines.join('\n'));
   } else {
     blocks.push('<b>Bill Summary</b>\n<i>Calculating max coupon and final bill on Swiggy…</i>');
@@ -614,7 +616,7 @@ export function formatUserOrderCardText(order, isBossView = false) {
 
   // ---------- 6. PAYMENT LINK ----------
   if (order.swiggyPaymentUrl) {
-    blocks.push(`<b>Swiggy Payment:</b> <a href="${esc(order.swiggyPaymentUrl)}">Open official Swiggy payment</a>`);
+    blocks.push(`<b>Swiggy Payment:</b> <a href="${esc(order.swiggyPaymentUrl)}">Open official Swiggy payment (UPI / Card)</a>`);
   }
 
   return blocks.filter(Boolean).join('\n\n');
@@ -632,58 +634,58 @@ export function formatUserOrderCard(order) {
 
   if (order.status === 'ACCEPTED' || order.status === 'COMPLETED') {
     const trackingLine = officialTrackingUrl
-      ? `↗ <b>Swiggy tracking:</b> <a href="${escapeHtml(officialTrackingUrl)}">Open tracking link</a>`
+      ? `<b>Swiggy tracking:</b> <a href="${escapeHtml(officialTrackingUrl)}">Open tracking link</a>`
       : '… Swiggy has not shared a tracking link yet. I will send it here when available.';
     const otpLine = order.deliveryOtp
-      ? `⌕ <b>Delivery OTP:</b> <code>${escapeHtml(String(order.deliveryOtp))}</code>`
+      ? `<b>Delivery OTP:</b> <code>${escapeHtml(String(order.deliveryOtp))}</code>`
       : 'Delivery OTP is not available yet. If Swiggy provides one, I will send it here.';
-    text += `${heading(`✓ Order confirmed (#${order.id})`)}\n\n` +
+    text += `${heading(`Order #${order.id} — Confirmed`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
-      section('Order status', [
+      section('Order Status', [
         `<b>${escapeHtml(order.liveOrderStatus || 'Processing')}</b>`,
         trackingLine,
         otpLine
       ].join('\n')) +
       `\n${field('Support', '@Its_life_001')}`;
-    if (officialTrackingUrl) buttons.push([Markup.button.url('↗ Open Swiggy tracking', officialTrackingUrl)]);
-    if (order.swiggyPaymentUrl) buttons.push([Markup.button.url('↗ Swiggy payment', order.swiggyPaymentUrl)]);
+    if (officialTrackingUrl) buttons.push([Markup.button.url('Open Swiggy tracking', officialTrackingUrl)]);
+    if (order.swiggyPaymentUrl) buttons.push([Markup.button.url('Pay via Swiggy (UPI/Card)', order.swiggyPaymentUrl)]);
     buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
     buttons.push([
-      Markup.button.callback('↻ Refresh status', `user_refresh_status_${order.id}`),
-      Markup.button.callback('✕ Cancel order', `action_cancel_order_confirm_${order.id}`)
+      Markup.button.callback('Refresh status', `user_refresh_status_${order.id}`),
+      Markup.button.callback('Cancel order', `action_cancel_order_confirm_${order.id}`)
     ]);
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
 
   if (order.status === 'REJECTED') {
-    text += `${heading(`! Order rejected (#${order.id})`)}\n\n` +
+    text += `${heading(`Order #${order.id} — Rejected`)}\n\n` +
       `${sub('Beta ne filhal yeh order reject kar diya hai.')}\n\n` +
       field('Support', '@Its_life_001') +
       '\n\n' +
       `${sub('Naya order place karne ke liye neeche button dabayein:')}`;
     buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
-    buttons.push([Markup.button.callback('↻ New order', 'user_back_to_main')]);
+    buttons.push([Markup.button.callback('New order', 'user_back_to_main')]);
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
 
   // PENDING state: show only the verified bill and payment action.
   if (order.paymentSentToUser && (order.swiggyPaymentUrl || order.customQrFileId || order.finalPayable)) {
     const amt = order.finalPayable ? `₹${order.finalPayable}` : 'amount shown on Swiggy';
-    text += `${heading(`↗ Official Swiggy payment ready (#${order.id})`)}\n\n` +
+    text += `${heading(`Payment Ready — Order #${order.id}`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
-      section('Payment status', `${heading('Payment ready')}\n${sub(`Pay <b>${esc(amt)}</b> using the QR or official button, then tap <b>“Check payment status”</b>.`)}`) +
+      section('Payment', `${heading('Pay to confirm')}\n${sub(`Amount <b>${esc(amt)}</b> — UPI QR, Card, or Wallet via Swiggy. After paying, tap Check payment status.`)}`) +
       `\n${field('Support', '@Its_life_001')}`;
 
-    if (order.swiggyPaymentUrl) buttons.push([Markup.button.url('↗ Pay on Swiggy', order.swiggyPaymentUrl)]);
-    buttons.push([Markup.button.callback('✓ Check payment status', `user_paid_status_${order.id}`)]);
+    if (order.swiggyPaymentUrl) buttons.push([Markup.button.url('Pay via Swiggy (UPI/Card)', order.swiggyPaymentUrl)]);
+    buttons.push([Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]);
     if (order.customQrFileId) {
-      buttons.push([Markup.button.callback('↻ Resend payment QR', `user_resend_qr_${order.id}`)]);
+      buttons.push([Markup.button.callback('Resend payment QR', `user_resend_qr_${order.id}`)]);
     } else if (order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.swiggyPaymentUrl) {
-      buttons.push([Markup.button.callback('↻ Resend Swiggy payment details', `user_resend_approved_qr_${order.id}`)]);
+      buttons.push([Markup.button.callback('Resend Swiggy payment details', `user_resend_approved_qr_${order.id}`)]);
     }
   } else if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
     // The max-discount bill summary was sent; the QR is created only after approval.
-    text += `${heading(`◷ Bill summary sent (#${order.id})`)}\n\n` +
+    text += `${heading(`Bill summary sent (#${order.id})`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
       section('Confirm', `${heading('Bill check karke Approve karein')}\n${sub('Approve karte hi official Swiggy payment QR/link aapko bheja jayega. Kuch galat lage to "Something is wrong" dabayein.')}`) +
       `\n${field('Support', '@Its_life_001')}`;
@@ -723,8 +725,8 @@ export function formatUserOrderCard(order) {
   }
 
   buttons.push([
-    Markup.button.callback('↻ Refresh status', `user_refresh_status_${order.id}`),
-    Markup.button.callback('✕ Cancel order', `action_cancel_order_confirm_${order.id}`)
+    Markup.button.callback('Refresh status', `user_refresh_status_${order.id}`),
+    Markup.button.callback('Cancel order', `action_cancel_order_confirm_${order.id}`)
   ]);
   buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
 
@@ -951,19 +953,23 @@ function getUserScreen(userId, user) {
   }
 
   const summaryBlock =
-    `${heading(`#${esc(String(userId).slice(-5).padStart(5, '3'))} — ORDER SUMMARY`)} · ${sub(statusTag)}\n` +
+    `${heading(`Order #${esc(String(userId).slice(-5).padStart(5, '3'))} — Summary`)} · ${sub(statusTag)}\n` +
     (draft.cart && cd.restaurantName
-      ? `▤ <b>${esc(cd.restaurantName)}</b> (${qtyCount || 1} items · subtotal ₹${subVal})\n`
+      ? `🛒 <b>${esc(cd.restaurantName)}</b> (${qtyCount || 1} items · ₹${subVal})\n`
       : '');
 
-  const text = `╔═════════════════════════╗\n   ●  <b>Slots Left: ${slotsLeft}/${totalSlots}</b>  ●\n╚═════════════════════════╝\n\n` +
-    section('▤ Order Summary', summaryBlock) +
-    section('→ Swiggy Food Order', `${sub('Send cart + address. Either can arrive first.')}\n` +
-      field('Cart Link', draft.cart ? `✓ <code>${esc(draft.cart)}</code>` : '<i>Not added yet</i>') +
+  const text = section('📦 Order Slots', `<b>Available: ${slotsLeft}/${totalSlots}</b> · <i>Order for your parents — delivered to their name & phone</i>`) +
+    section('Order Summary', summaryBlock) +
+    section('🛒 Swiggy Order', `${sub('Share cart + delivery address. Either link can come first.')}\n` +
+      field('Cart', draft.cart ? `✓ Added` : '<i>Not added</i>') +
       '\n' +
-      field('Address Link', draft.address ? `✓ <code>${esc(draft.address)}</code>` : '<i>Address link not received</i>')) +
+      field('Delivery', draft.address ? `✓ Added` : '<i>Not added</i>') +
+      (draft.cart ? `\n<code>${esc(draft.cart.slice(0,60))}${draft.cart.length>60?'…':''}</code>` : '') +
+      (draft.address ? `\n<code>${esc(draft.address.slice(0,60))}${draft.address.length>60?'…':''}</code>` : '')) +
     '\n' +
-    section('› Next Step', promptGuidance);
+    section('Recipient Info', sub('Order will be placed on recipient\'s name & phone from the address link — not your own. Delivery partner will call them directly.')) +
+    '\n' +
+    section('Next Step', promptGuidance);
 
   return { text, keyboard: Markup.inlineKeyboard(inlineButtons) };
 }
@@ -1072,7 +1078,7 @@ async function ensureBossBillSummary(order) {
     try {
       const sent = await bot.telegram.sendMessage(bossId, summaryText, {
         parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([[Markup.button.callback('↻ Refresh status', 'boss_refresh')]])
+        ...Markup.inlineKeyboard([[Markup.button.callback('Refresh status', 'boss_refresh')]])
       });
       order.bossMessageIds = { ...(order.bossMessageIds || {}), [bossId]: sent?.message_id };
       sentTo[bossId] = new Date().toISOString();
@@ -1170,7 +1176,7 @@ async function sendPaymentQrToUser(order) {
         ),
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback('✓ Check payment status', `user_paid_status_${order.id}`)],
+          [Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)],
           [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
         ])
       });
@@ -1197,7 +1203,7 @@ async function sendPaymentQrToUser(order) {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [Markup.button.url('₹ Pay on Swiggy (Official Link)', order.swiggyPaymentUrl)],
-            [Markup.button.callback('✓ Check payment status', `user_paid_status_${order.id}`)],
+            [Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)],
             [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
           ])
         }
@@ -4546,7 +4552,7 @@ bot.action(/^user_accept_amount_(.+)$/, async (ctx) => {
           `<i>Kisi bhi UPI app (GPay, PhonePe, Paytm) se scan karke ₹${amt} pay karein. Payment ke baad neeche "Check payment status" button dabayein:</i>`,
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback('✓ Check payment status', `user_paid_status_${order.id}`)],
+          [Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)],
           [Markup.button.callback('● Cancel Order', `action_cancel_order_confirm_${order.id}`)]
         ])
       });
@@ -4593,7 +4599,7 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
 
   const userButtons = [
     [Markup.button.url('● Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
-    [Markup.button.callback('✓ Check payment status', `user_paid_status_${orderId}`)]
+    [Markup.button.callback('Check payment status', `user_paid_status_${orderId}`)]
   ];
   if (order.cart && order.cart.startsWith('http')) {
     userButtons.push([Markup.button.url('● Open Swiggy Cart / Items', order.cart)]);
@@ -4869,7 +4875,7 @@ bot.action(/^boss_forward_live_screen_(.+)$/, async (ctx) => {
         ...Markup.inlineKeyboard([
           [Markup.button.url('◎ Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
           ...(order.cart?.startsWith('http') ? [[Markup.button.url('▤ Open Swiggy Cart / Items', order.cart)]] : []),
-          [Markup.button.callback('✓ Check payment status', `user_paid_status_${orderId}`)]
+          [Markup.button.callback('Check payment status', `user_paid_status_${orderId}`)]
         ])
       });
       await ctx.reply(`✓ <b>Live Swiggy payment screen deliver ho gaya Ammi/User ko!</b>`, { parse_mode: 'HTML' });
@@ -5346,7 +5352,7 @@ bot.on('voice', async (ctx) => {
 
   const db = getDb();
   const role = getFamilyRole(userId, 'Ammi');
-  const orderId = String(Date.now()).slice(-5);
+  const orderId = generateOrderId();
 
   const newOrder = {
     id: orderId,
@@ -5428,7 +5434,7 @@ bot.on('photo', async (ctx) => {
     const payable = order.finalPayable || 350;
     const userButtons = [
       [Markup.button.url('◎ Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
-      [Markup.button.callback('✓ Check payment status', `user_paid_status_${orderId}`)]
+      [Markup.button.callback('Check payment status', `user_paid_status_${orderId}`)]
     ];
     if (order.cart && order.cart.startsWith('http')) {
       userButtons.splice(1, 0, [Markup.button.url('▤ Open Swiggy Cart / Items', order.cart)]);
@@ -5454,7 +5460,7 @@ bot.on('photo', async (ctx) => {
 
   const db = getDb();
   const role = getFamilyRole(userId, 'Ammi');
-  const orderId = String(Date.now()).slice(-5);
+  const orderId = generateOrderId();
   const photo = ctx.message.photo[ctx.message.photo.length - 1];
 
   const newOrder = {
@@ -5575,7 +5581,7 @@ bot.on('document', async (ctx) => {
     const payable = order.finalPayable || 350;
     const userButtons = [
       [Markup.button.url('◎ Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
-      [Markup.button.callback('✓ Check payment status', `user_paid_status_${orderId}`)]
+      [Markup.button.callback('Check payment status', `user_paid_status_${orderId}`)]
     ];
     if (order.cart && order.cart.startsWith('http')) {
       userButtons.splice(1, 0, [Markup.button.url('▤ Open Swiggy Cart / Items', order.cart)]);
@@ -7265,7 +7271,7 @@ bot.on('text', async (ctx) => {
             parse_mode: 'HTML',
             ...Markup.inlineKeyboard([
               [Markup.button.url('₹ Pay on Swiggy (Official Link)', link)],
-              [Markup.button.callback('✓ Check payment status', `user_paid_status_${orderId}`)],
+              [Markup.button.callback('Check payment status', `user_paid_status_${orderId}`)],
               [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')]
             ])
           }
@@ -7434,22 +7440,28 @@ bot.on('text', async (ctx) => {
     order.trackingLink = candidateLink;
     order.trackingLinkSource = 'BOSS_PROVIDED';
     order.shareTrackUrl = '';
+    const bossDisplayName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ').trim() || 'Fer aex';
+    order.bossName = bossDisplayName;
+    order.placedByName = bossDisplayName;
+    if (!order.swiggyOrderId && order.pendingSwiggyOrderId) order.swiggyOrderId = order.pendingSwiggyOrderId;
     saveDb(db);
     await updateOrderCards(order);
 
     const trackingUrl = getStoredSwiggyTrackingUrl(order);
+    const displayOrderId = String(order.swiggyOrderId || order.id || '').trim();
+    const bossNameEsc = escapeHtml(bossDisplayName);
+    const trackEsc = escapeHtml(trackingUrl);
     const otpLine = order.deliveryOtp
-      ? `\n⌕ <b>Delivery OTP:</b> <code>${escapeHtml(String(order.deliveryOtp))}</code>`
-      : '\nDelivery OTP is not available yet. If Swiggy provides one, it will be sent separately.';
+      ? `\n<b>Delivery OTP:</b> <code>${escapeHtml(String(order.deliveryOtp))}</code>`
+      : '';
     try {
       await bot.telegram.sendMessage(
         order.fwdSenderUserId || order.userId,
-        `✓ <b>Swiggy order update for ${escapeHtml(order.userName || 'Customer')}</b>\n\n` +
-        `↗ <b>Tracking link provided by Swiggy:</b> <a href="${escapeHtml(trackingUrl)}">Open tracking</a>` +
+        `${bossNameEsc} has just placed an order (ID: ${escapeHtml(displayOrderId)}) for you on Swiggy. Click this link to track: <a href="${trackEsc}">${trackEsc}</a>` +
         `${otpLine}`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([[Markup.button.url('↗ Open Swiggy tracking', trackingUrl)]])
+          ...Markup.inlineKeyboard([[Markup.button.url('Open Swiggy tracking', trackingUrl)]])
         }
       );
       await ctx.reply(`✓ <b>Swiggy tracking link sent to ${escapeHtml(order.userName || 'customer')}.</b>`, { parse_mode: 'HTML' });
@@ -8044,11 +8056,11 @@ async function handlePreviousOrder(ctx) {
     `₹ <b>Total amount:</b> ₹${prev.finalPayable || prev.subtotal || 0}\n` +
     `● <b>Status:</b> <b>${statusBadge}</b>\n` +
     (previousTrackingLink ? `\n↗ <b>Swiggy tracking:</b> <a href="${escapeHtml(previousTrackingLink)}">Open tracking link</a>\n` : '') +
-    (prev.deliveryOtp ? `⌕ <b>Delivery OTP:</b> <code>${escapeHtml(String(prev.deliveryOtp))}</code>\n` : '');
+    (prev.deliveryOtp ? `<b>Delivery OTP:</b> <code>${escapeHtml(String(prev.deliveryOtp))}</code>\n` : '');
 
   const buttons = [];
   if (previousTrackingLink) {
-    buttons.push([Markup.button.url('↗ Open Swiggy tracking', previousTrackingLink)]);
+    buttons.push([Markup.button.url('Open Swiggy tracking', previousTrackingLink)]);
   }
   if (prev.cart && prev.cart.startsWith('http')) {
     buttons.push([Markup.button.url('View Swiggy Cart', prev.cart)]);
@@ -8163,7 +8175,7 @@ async function handleSendToBoss(ctx) {
   draft = getDraft(userId);
 
   const db = getDb();
-  const orderId = String(Date.now()).slice(-5);
+  const orderId = generateOrderId();
   const role = getFamilyRole(userId, 'Ammi');
 
   const newOrder = {
@@ -8903,6 +8915,8 @@ async function handleAllOrdersDone(ctx) {
               existing.deliveryOtp = dbo.deliveryOtp;
             }
           } else if (dbo.status === 'COMPLETED' || dbo.swiggyOrderId) {
+            // Never synthesize a tracking URL — only real Swiggy links are shown
+            const realTrack = dbo.trackingLink && isOfficialSwiggyTrackingUrl(dbo.trackingLink, { allowProviderShortLink: true }) ? dbo.trackingLink : '';
             orders.unshift({
               orderId: dbo.swiggyOrderId || dbo.id,
               restaurantName: dbo.restaurantName || 'Swiggy Food',
@@ -8910,7 +8924,7 @@ async function handleAllOrdersDone(ctx) {
               items: (dbo.items || []).map(i => `${i.name}${i.qty > 1 ? ` (${i.qty})` : ''}`),
               deliveryAddress: dbo.addressDetails?.address || dbo.address || '',
               orderTotal: dbo.finalPayable || 0,
-              trackingUrl: dbo.trackingLink || (dbo.swiggyOrderId ? `https://www.swiggy.com/orders/track/${dbo.swiggyOrderId}` : 'https://www.swiggy.com/orders'),
+              trackingUrl: realTrack,
               deliveryOtp: dbo.deliveryOtp || '',
               orderTime: dbo.completedAt ? new Date(dbo.completedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''
             });
@@ -8931,8 +8945,9 @@ async function handleAllOrdersDone(ctx) {
 
       for (let i = 0; i < orders.length; i++) {
         const o = orders[i];
-        const trackUrl = o.trackingUrl ||
-          (o.orderId ? `https://www.swiggy.com/orders/track/${o.orderId}` : 'https://www.swiggy.com/orders');
+        const rawTrackLink2 = o.trackingUrl ? String(o.trackingUrl).trim() : '';
+        const validTrackUrl = isOfficialSwiggyTrackingUrl(rawTrackLink2, { allowProviderShortLink: true }) ? rawTrackLink2 : '';
+        const trackingDisplay = validTrackUrl ? `<a href="${escapeHtml(validTrackUrl)}">${escapeHtml(validTrackUrl)}</a>` : '<i>Swiggy has not shared a tracking link yet — will be sent when available</i>';
         const statusStr = escapeHtml(o.status || 'COMPLETED');
         const restName = escapeHtml(o.restaurantName || 'Swiggy Food');
 
@@ -8943,11 +8958,11 @@ async function handleAllOrdersDone(ctx) {
           (o.deliveryAddress ? `• 📍 <b>Address:</b> <code>${escapeHtml(o.deliveryAddress)}</code>\n` : '') +
           (o.deliveryOtp ? `• 🔢 <b>Delivery OTP:</b> <code>${escapeHtml(String(o.deliveryOtp))}</code>\n` : '') +
           (o.orderTime ? `• 🕒 <b>Time:</b> <i>${escapeHtml(String(o.orderTime))}</i>\n` : '') +
-          `• 🔗 <b>Tracking Link:</b> ${trackUrl}\n\n`;
+          `• 🔗 <b>Tracking Link:</b> ${trackingDisplay}\n\n`;
 
-        if (trackUrl && buttons.length < 25) {
+        if (validTrackUrl && buttons.length < 25) {
           buttons.push([
-            Markup.button.url(`↗ Track #${o.orderId} (${truncateDisplayField(o.restaurantName || 'Order', 18)})`, trackUrl)
+            Markup.button.url(`↗ Track #${o.orderId} (${truncateDisplayField(o.restaurantName || 'Order', 18)})`, validTrackUrl)
           ]);
         }
       }
@@ -9214,9 +9229,9 @@ export async function sendApprovedOrderPaymentToUser(uidStr, order, { force = fa
   const amount = Number(order.finalPayable || order.finalTotal || 0);
   const restaurant = escapeHtml(order.restaurantName || 'Swiggy Order');
   const rows = [];
-  if (paymentUrl) rows.push([Markup.button.url('↗ Pay on Swiggy', paymentUrl)]);
-  rows.push([Markup.button.callback('✓ Check payment status', `user_paid_status_${order.id}`)]);
-  if (upiUri || paymentUrl) rows.push([Markup.button.callback('↻ Resend payment QR', `user_resend_approved_qr_${order.id}`)]);
+  if (paymentUrl) rows.push([Markup.button.url('Pay via Swiggy (UPI/Card)', paymentUrl)]);
+  rows.push([Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]);
+  if (upiUri || paymentUrl) rows.push([Markup.button.callback('Resend payment QR', `user_resend_approved_qr_${order.id}`)]);
   const keyboard = Markup.inlineKeyboard(rows);
 
   // If Swiggy did not return a UPI intent, fall back to the configured collection
