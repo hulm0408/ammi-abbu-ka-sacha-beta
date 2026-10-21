@@ -779,6 +779,23 @@ export function resolveCustomerChatId(order, bossIds = []) {
   return target;
 }
 
+// Who must see the max-discount bill summary?
+//   * Boss forwarded the message  -> only the Bot (Boss chat): the customer may
+//     not even be a bot user, and Boss is the one placing the order.
+//   * Customer tapped Send to Beta -> BOTH: the customer confirms the bill in
+//     their chat, the Boss sees the same bill on the order card.
+export function resolveBillSummaryAudience(order, db = null) {
+  const liveDb = db || getDb();
+  const bossIds = [...new Set((liveDb?.config?.bossIds || []).filter(Boolean).map(String))];
+  const bossIntake = order?.isForwardedOrder === true || order?.isDirectBossOrder === true;
+  if (bossIntake) return 'BOSS_ONLY';
+  return resolveCustomerChatId(order, bossIds) ? 'CUSTOMER_AND_BOSS' : 'BOSS_ONLY';
+}
+
+export function shouldSendSummaryToCustomer(order, db = null) {
+  return resolveBillSummaryAudience(order, db) === 'CUSTOMER_AND_BOSS';
+}
+
 // Sends the max-discount bill summary to the customer EXACTLY ONCE.
 // After this the order waits in `APPROVAL_PENDING`: the customer taps
 // "Approve bill" and only then are the official Swiggy payment details sent.
@@ -786,6 +803,10 @@ export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null
   if (!telegram?.sendMessage || !order?.id) return { sent: false, reason: 'no-telegram' };
 
   const liveDb = db || getDb();
+  const audience = resolveBillSummaryAudience(order, liveDb);
+  // A Boss-forwarded order must never message the customer — the summary lives
+  // on the Boss card in the bot chat.
+  if (audience !== 'CUSTOMER_AND_BOSS') return { sent: false, reason: 'boss-only' };
   const customerId = resolveCustomerChatId(order, liveDb?.config?.bossIds || []);
   if (!customerId) return { sent: false, reason: 'no-customer-chat' };
 
@@ -813,6 +834,7 @@ export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null
     order.billSummarySentAt = new Date().toISOString();
     order.billSummaryAutoSent = true;
     order.billSummaryDelivery = 'SINGLE_CARD';
+    order.billSummaryAudience = audience;
     delete order.billSummarySendError;
     const cardDb = getDb();
     cardDb.orders[order.id] = order;
@@ -841,6 +863,7 @@ export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null
   order.billSummarySentAt = new Date().toISOString();
   order.billSummaryAutoSent = true;
   order.billSummaryDelivery = 'MESSAGE';
+  order.billSummaryAudience = audience;
   delete order.billSummarySendError;
 
   const freshDb = getDb();
@@ -1778,15 +1801,30 @@ export async function executeOrderBillSyncOnAccount({
   freshDb.orders[order.id] = order;
   saveDb(freshDb);
 
-  // Send the max-discount bill summary to the customer once; the QR is generated
-  // only after they explicitly approve it.
-  try {
-    const summarySend = await sendBillSummaryToCustomerOnce(telegram, order, { db: freshDb });
-    if (summarySend?.sent) {
-      console.log(`[BillSummary] Sent to customer ${summarySend.customerId} for Order #${order.id}`);
+  // Bill summary routing: a Boss-forwarded / Boss-entered order keeps the summary
+  // INSIDE the bot (the Boss card below is that summary) and never messages the
+  // customer. Only a customer's own "Send to Beta" order goes to the customer.
+  const audience = resolveBillSummaryAudience(order, freshDb);
+  if (audience === 'BOSS_ONLY') {
+    order.billSummaryAudience = 'BOSS_ONLY';
+    order.billSummaryDelivery = 'BOSS_CARD';
+    order.billSummarySentAt = order.billSummarySentAt || new Date().toISOString();
+    order.billSummarySentTo = {
+      ...(order.billSummarySentTo && typeof order.billSummarySentTo === 'object' ? order.billSummarySentTo : {}),
+      [String(chatId)]: new Date().toISOString()
+    };
+    freshDb = getDb();
+    freshDb.orders[order.id] = order;
+    saveDb(freshDb);
+  } else {
+    try {
+      const summarySend = await sendBillSummaryToCustomerOnce(telegram, order, { db: freshDb });
+      if (summarySend?.sent) {
+        console.log(`[BillSummary] Sent to customer ${summarySend.customerId} for Order #${order.id}`);
+      }
+    } catch (summaryErr) {
+      console.warn('[BillSummary] Auto-send skipped:', summaryErr?.message || summaryErr);
     }
-  } catch (summaryErr) {
-    console.warn('[BillSummary] Auto-send skipped:', summaryErr?.message || summaryErr);
   }
 
   freshDb = getDb();

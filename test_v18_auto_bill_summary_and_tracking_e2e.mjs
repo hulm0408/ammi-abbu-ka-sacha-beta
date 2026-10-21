@@ -179,7 +179,7 @@ console.log('\n--- Scenario 2: approve -> payment QR/link to the customer ---');
   const paymentMsgs = customerMessagesSince(before);
   check('customer receives the payment details', paymentMsgs.length > 0);
   check('payment details are the official Swiggy payment request',
-    paymentMsgs.some((m) => /Official Swiggy payment request/.test(m.text)));
+    paymentMsgs.some((m) => /Payment QR/.test(m.text) && /Payment status/i.test(JSON.stringify(m.payload))));
   check('payment message never uses a bot tracking page', !customerMessagesSince(before).some((m) => /bot\.example\/track\//.test(m.text)));
   check('a slot is consumed exactly once', Number(getDb().config.slotsLeft) === slotsBefore - 1 && after.slotConsumed === true);
 
