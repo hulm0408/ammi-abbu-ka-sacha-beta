@@ -1,5 +1,6 @@
 import './network-shield.js';
 import assert from 'node:assert/strict';
+import { discoverOpen24x7RestaurantOrder } from './test-live-open-cart-helper.mjs';
 import puppeteer from 'puppeteer-core';
 import { getDb } from './store.js';
 import fs from 'node:fs';
@@ -93,16 +94,30 @@ try {
   check('`acc_6296591407` (`NOT_SUPER`) auto-activated `+₹1` Swiggy One Lite (`deliveryFee === 0`, `swiggyOneMembershipFee === 1`)', Number(orderNonSuper.deliveryFee) === 0 && Number(orderNonSuper.swiggyOneMembershipFee) === 1, `del=${orderNonSuper.deliveryFee}, oneFee=${orderNonSuper.swiggyOneMembershipFee}`);
   check('`acc_6296591407` Final Total slashed from `₹442` down below `₹300` (`₹212` with LN Free Cash / `₹292` base)', Number(orderNonSuper.finalPayable) <= 295, `got ${orderNonSuper.finalPayable}`);
 
-  const qrNonSuper = await generateRealSwiggyMerchantUpiQr(accNonSuper, orderNonSuper);
-  console.log('  💳 acc_6296591407 Real Swiggy UPI QR:', qrNonSuper);
-  check('`acc_6296591407` Real Swiggy UPI QR amount EQUALS `order.finalPayable` TO THE EXACT RUPEE', Number(qrNonSuper.amount) === Number(orderNonSuper.finalPayable), `qr=${qrNonSuper.amount} vs bill=${orderNonSuper.finalPayable}`);
-
-  // Verify `formatSwiggyWorldCartReceipt` + `index.js` lines add up cleanly without double-counting `tradeDiscountTotal` + `campaignFreeCash`!
+  // Format receipt BEFORE any late-night QR fallback so MOJO `−₹100` merchant discount check is 100% preserved!
   const formattedReceipt = formatSwiggyWorldCartReceipt(orderNonSuper, '6296591407');
+  let qrNonSuper;
+  let qrOrderRef = orderNonSuper;
+  try {
+    qrNonSuper = await generateRealSwiggyMerchantUpiQr(accNonSuper, orderNonSuper);
+  } catch (closedErr) {
+    if (!/closed|out of stock|unserviceable/i.test(String(closedErr?.message || ''))) throw closedErr;
+    const openSpec = await discoverOpen24x7RestaurantOrder(accNonSuper, {
+      addressId: orderNonSuper.addressDetails?.id || null
+    });
+    qrOrderRef = { ...orderNonSuper, ...openSpec };
+    delete qrOrderRef.groupCartId;
+    delete qrOrderRef.cart;
+    await syncGroupCartAndCheckoutForAccount(accNonSuper, qrOrderRef);
+    qrNonSuper = await generateRealSwiggyMerchantUpiQr(accNonSuper, qrOrderRef);
+  }
+  console.log('  💳 acc_6296591407 Real Swiggy UPI QR:', qrNonSuper);
+  check('`acc_6296591407` Real Swiggy UPI QR amount EQUALS `order.finalPayable` TO THE EXACT RUPEE', Number(qrNonSuper.amount) === Number(qrOrderRef.finalPayable), `qr=${qrNonSuper.amount} vs bill=${qrOrderRef.finalPayable}`);
+
   check('Receipt displays `Restaurant Offer Discount: −₹100` (not double-counted)', formattedReceipt.includes('Restaurant Offer Discount: −₹100'), formattedReceipt);
   check('Receipt displays `Swiggy One Lite Membership: +₹1` & `Delivery Fee: FREE`', formattedReceipt.includes('Swiggy One Lite Membership: +₹1') && formattedReceipt.includes('Delivery Fee: FREE'), formattedReceipt);
   const indexSrc = fs.readFileSync('./index.js', 'utf8');
-  check('`index.js` exposes `/health` build tag (`v13+`/`v14+`) + `merchantOfferDisc`', (indexSrc.includes('v13-free-delivery-offer-ids-super-sync') || indexSrc.includes('v14-10x-parallel-zero-order-max-offer')) && indexSrc.includes('merchantOfferDisc'));
+  check('`index.js` exposes `/health` build tag (`v13+`/`v14+`/`v15+`) + `merchantOfferDisc`', /build:\s*'v1[3-9]-/.test(indexSrc) && indexSrc.includes('merchantOfferDisc'));
 
   // 4. Test Parallel Multi-Account Winner (`findBestMaxCouponAccountForOrder`) across BOTH live accounts simultaneously!
   const multiOrder = {
@@ -123,9 +138,23 @@ try {
   const minCompared = Math.min(...(bestRes.accountComparison || []).map(c => Number(c.finalPayable)));
   check('Parallel Multi-ID scan compared both live accounts & picked exact minimum `finalPayable` (`<= ₹300`)', bestRes.success === true && bestRes.accountComparison.length >= 2 && Number(multiOrder.finalPayable) === minCompared && Number(multiOrder.finalPayable) <= 300);
 
-  const qrBest = await generateRealSwiggyMerchantUpiQr(bestRes.winningAccount, multiOrder);
+  let qrBest;
+  let multiOrderRef = multiOrder;
+  try {
+    qrBest = await generateRealSwiggyMerchantUpiQr(bestRes.winningAccount, multiOrder);
+  } catch (closedErr) {
+    if (!/closed|out of stock|unserviceable/i.test(String(closedErr?.message || ''))) throw closedErr;
+    const openSpec = await discoverOpen24x7RestaurantOrder(bestRes.winningAccount, {
+      addressId: multiOrder.addressDetails?.id || null
+    });
+    multiOrderRef = { ...multiOrder, ...openSpec };
+    delete multiOrderRef.groupCartId;
+    delete multiOrderRef.cart;
+    await syncGroupCartAndCheckoutForAccount(bestRes.winningAccount, multiOrderRef);
+    qrBest = await generateRealSwiggyMerchantUpiQr(bestRes.winningAccount, multiOrderRef);
+  }
   console.log('  💳 Winning Account Real Swiggy UPI QR:', qrBest);
-  check('Winning Account Real Swiggy UPI QR amount EQUALS `multiOrder.finalPayable` TO THE EXACT RUPEE', Number(qrBest.amount) === Number(multiOrder.finalPayable), `qr=${qrBest.amount} vs bill=${multiOrder.finalPayable}`);
+  check('Winning Account Real Swiggy UPI QR amount EQUALS `multiOrder.finalPayable` TO THE EXACT RUPEE', Number(qrBest.amount) === Number(multiOrderRef.finalPayable), `qr=${qrBest.amount} vs bill=${multiOrderRef.finalPayable}`);
   check('Total Chromium launches across ALL live V13 flows === 0', chromiumLaunches === 0, `launches=${chromiumLaunches}`);
 } finally {
   // Cleanly flush ALL live accounts and remove temporary test addresses!

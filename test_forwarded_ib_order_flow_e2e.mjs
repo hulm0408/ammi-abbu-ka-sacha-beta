@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { discoverOpen24x7RestaurantOrder } from './test-live-open-cart-helper.mjs';
+import { syncGroupCartAndCheckoutForAccount } from './swiggy-cart.js';
 import fs from 'node:fs';
 import { getDb, saveDb } from './store.js';
 import { dapiFetch, inspectCartForAccount, parseAddressDetails, swiggyCartFlush } from './swiggy-cart.js';
@@ -247,7 +249,20 @@ try {
 
   // Click `[ 🔳 Generate QR ]` -> HITS REAL `https://payments.swiggy.com/api/v3/order/place`!
   await clickButton(`fwd_gen_qr_${bossOrderId}`, billCardId);
-  const storedOrder = getDb().orders[bossOrderId];
+  let storedOrder = getDb().orders[bossOrderId];
+  if (!storedOrder.pendingSwiggyUpiUri) {
+    // Past 2:00 AM IST `MOJO Pizza (622166)` closes — seamlessly switch order to live 24x7 OPEN restaurant via MCP & re-click QR!
+    const acc99 = getDb().config.accounts.acc_9935123518;
+    const openSpec = await discoverOpen24x7RestaurantOrder(acc99);
+    const liveDb = getDb();
+    Object.assign(liveDb.orders[bossOrderId], openSpec);
+    delete liveDb.orders[bossOrderId].groupCartId;
+    delete liveDb.orders[bossOrderId].cart;
+    await syncGroupCartAndCheckoutForAccount(acc99, liveDb.orders[bossOrderId], { captureScreenshot: false });
+    saveDb(liveDb);
+    await clickButton(`fwd_gen_qr_${bossOrderId}`, liveDb.orders[bossOrderId].activeCardMessageId);
+    storedOrder = getDb().orders[bossOrderId];
+  }
   const qrMsgId = storedOrder.activeQrMessageId;
   const realQrMsg = messages.get(qrMsgId);
   console.log('\n--- LIVE REAL SWIGGY MERCHANT QR GENERATED ---');

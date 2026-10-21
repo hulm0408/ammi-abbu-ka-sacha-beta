@@ -31,7 +31,16 @@ import {
   canTransitionOrder,
   getNextAutoUserName,
   cleanEssentialSwiggyCookies,
+  hydrateAccountsFromCloudVault,
+  syncCloudVaultNow,
 } from './store.js';
+import {
+  extractStandaloneMobileNumber,
+  extractStandaloneOtpDigits,
+  ingestAndPersistRawAccountTexts,
+  formatBulkVaultImportSummaryHtml,
+  createBulkDocumentBatchCollector,
+} from './account-vault-intake.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
   verifyAndInspectSwiggyLink,
@@ -58,6 +67,7 @@ import {
   fetchAllAccountsSavedAddresses,
   applyLiveCouponToOrder,
   verifySwiggySessionLive,
+  inspectAccountOrderHistoryAndOffers,
   generateRealSwiggyMerchantUpiQr,
   checkRealSwiggyPaymentAndExtractTracking,
   startWafKeepWarmLoop
@@ -1170,8 +1180,8 @@ async function triggerBackgroundCartFetch(orderId) {
         }
       }
 
-      // Auto-sync live Group Cart & apply Max Coupon across active accounts immediately upon order arrival!
-      if (order.groupCartId && order.items?.length > 0 && !order.swiggyVerified) {
+      // Auto-sync live Group Cart & apply Max Coupon across saved JSON Vault accounts immediately upon order arrival (ZERO OTP!)
+      if (order.groupCartId && order.items?.length > 0 && !order.selectedAccount) {
         const bestRes = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false }).catch(() => null);
         if (bestRes?.availableCoupons?.length > 0) {
           order.availableCoupons = bestRes.availableCoupons;
@@ -1819,76 +1829,17 @@ async function handleProcessJsonLogin(ctx, rawJson, userId, targetKeyOverride = 
     return ctx.reply('⚠️ Invalid JSON format. Kripya valid Swiggy Session JSON, Cookie string, ya .json/.txt file bhejein.');
   }
 
-  // Multi-account JSON array (`accounts.json` / `[ {...}, {...} ]`) — verify & import all active accounts simultaneously!
+  // Multi-account JSON array (`accounts.json` / `[ {...}, {...} ]`) — verify & permanently save ALL active accounts to Vault!
   if (extractedList.length > 1) {
     const statusMsg = await ctx.reply(
-      `⏳ <i>${extractedList.length} Swiggy accounts live verify ho rahe hain (Web + Android engine)...</i>`,
+      `⏳ <i>${extractedList.length} Swiggy accounts verify hokar Permanent Vault me save ho rahe hain...</i>`,
       { parse_mode: 'HTML' }
     );
-    const dbCheck = getDb();
-    const checks = await Promise.all(
-      extractedList.map(async (entry, idx) => {
-        const vaultFb = (entry.phone && dbCheck.sessionVault?.[entry.phone]) || null;
-        const candidateCookies = cleanEssentialSwiggyCookies(
-          (!entry.cookies?.includes('_session_tid=') && vaultFb?.cookies?.includes('_session_tid='))
-            ? `${vaultFb.cookies}; ${entry.cookies || ''}`
-            : (entry.cookies || ''),
-          entry
-        );
-        const mergedEntry = { ...entry, cookies: candidateCookies };
-        const live = await verifySwiggySessionLive(mergedEntry);
-        return { entry: mergedEntry, live, idx };
-      })
-    );
-
-    const activeImported = [];
-    const deadList = [];
-    for (const { entry, live, idx } of checks) {
-      if (!live?.valid) {
-        deadList.push(entry.phone || entry.name || `Account #${idx + 1}`);
-        continue;
-      }
-      const cleanPhone = (live.phone || entry.phone || '').replace(/\D/g, '').slice(-10);
-      const swiggyName = live.name || entry.swiggyName || entry.name || (cleanPhone ? `User ${cleanPhone}` : 'Swiggy User');
-      const accKey = cleanPhone ? `acc_${cleanPhone}` : (entry.account || `acc_${Date.now()}_${idx}`);
-      const res = importSessionJson({
-        ...entry,
-        tid: live.liveTid || entry.tid || '',
-        token: live.token || entry.token || '',
-        customerId: live.customerId || entry.customerId || '',
-        name: swiggyName,
-        swiggyName,
-        phone: cleanPhone,
-        cookies: live.cookies || entry.cookies || ''
-      }, accKey);
-      if (res.success) {
-        claimSwiggyBreakfastAndLateNightOffers({
-          phone: cleanPhone,
-          token: live.token || entry.token || live.liveTid,
-          tid: live.liveTid || entry.tid,
-          cookies: live.cookies || entry.cookies
-        }).catch(() => {});
-        activeImported.push(`✅ <b>${escapeHtml(swiggyName)}</b> (<code>${cleanPhone || accKey}</code>)`);
-      }
-    }
-
+    const bulkRes = await ingestAndPersistRawAccountTexts([
+      { fileName: 'multi_accounts.json', text: typeof rawJson === 'string' ? rawJson : JSON.stringify(rawJson) }
+    ]);
     try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
-
-    if (activeImported.length === 0) {
-      return ctx.reply(
-        `❌ <b>All ${extractedList.length} Sessions Really Expired on Swiggy!</b>\n\n` +
-        `Web + Native Android dono servers par check kiya gaya — ye accounts Swiggy server se logout ho chuke hain:\n` +
-        deadList.map(x => `• <code>${escapeHtml(x)}</code>`).join('\n'),
-        { parse_mode: 'HTML', ...getBossPanelKeyboard() }
-      );
-    }
-
-    return ctx.reply(
-      `🎉 <b>${activeImported.length}/${extractedList.length} Active Swiggy Accounts Logged In!</b>\n\n` +
-      activeImported.join('\n') +
-      (deadList.length > 0 ? `\n\n⚠️ <i>Skipped Truly Expired (${deadList.length}):</i> ${deadList.map(x => `<code>${escapeHtml(x)}</code>`).join(', ')}` : ''),
-      { parse_mode: 'HTML', ...getBossPanelKeyboard() }
-    );
+    return sendSafeHtml(ctx, formatBulkVaultImportSummaryHtml(bulkRes, extractedList.length), getBossPanelKeyboard());
   }
 
   // Single account session JSON (supports Web `_session_tid`, hex-`tid`, Python/Android `{ tid, token, sid, deviceId }`, Cookie-Editor, etc.)
@@ -2514,19 +2465,25 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
           acc.isLoggedIn = false;
           saveDb(db);
         }
+        // ZERO-OTP AUTO-FAILOVER: Automatically pick the best remaining saved `.json` account from Vault instead of asking for OTP!
+        const fallbackBest = await findBestMaxCouponAccountForOrder(order, {
+          captureScreenshot: false,
+          excludeAccountKeys: [accKey]
+        }).catch(() => null);
+
+        if (fallbackBest?.success && fallbackBest.winningKey) {
+          saveDb(db);
+          try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
+          await updateOrderCards(order);
+          return;
+        }
+
         try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
         await ctx.reply(
-          `⚠️ <b>Swiggy Session Expired: ${escapeHtml(accPhone)} (${escapeHtml(accName)})</b>\n\n` +
-          `Swiggy security firewall ne is account ka login session expire kar diya hai, is wajah se cart aur address fetch nahi ho sake.\n\n` +
-          `👉 <b>Kripya is account par login karein ya doosra active account chunein:</b>`,
-          {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback(`🔑 Login via OTP: ${accPhone}`, `boss_login_acc_otp_${accKey}`)],
-              [Markup.button.callback(`📋 Paste Session JSON`, `boss_login_acc_json_${accKey}`)],
-              [Markup.button.callback(`👥 Select Another Account`, `boss_choose_acc_picker_${orderId}`)]
-            ])
-          }
+          `⚠️ <b>No Active Session Remaining in Vault</b>\n\n` +
+          `Purana account (<code>${escapeHtml(accPhone)}</code>) expire ho gaya tha aur Vault me koi aur active JSON file nahi bachi.\n` +
+          `📂 <i>Bas chat me apne <code>.json</code> / <code>.zip</code> account files drop kar dein — bot bina OTP sab save karke order ready kar dega!</i>`,
+          { parse_mode: 'HTML' }
         ).catch(() => {});
         return;
       }
@@ -5221,6 +5178,25 @@ bot.on('photo', async (ctx) => {
   }
 });
 
+// Coalesced Multi-File `.json` / `.txt` / `.zip` Account Vault Importer (1 to 200+ files at once — ZERO 429 drops!)
+const bulkAccountDocCollector = createBulkDocumentBatchCollector({
+  windowMs: 650,
+  downloadBufferFn: async (docMeta) => {
+    const fileLink = await docMeta.ctx.telegram.getFileLink(docMeta.fileId);
+    const res = await fetch(fileLink.href, { signal: AbortSignal.timeout(20000) });
+    const ab = await res.arrayBuffer();
+    return Buffer.from(ab);
+  },
+  onBatchComplete: async ({ lastCtx, statusMsg, html }) => {
+    if (statusMsg?.message_id) {
+      try { await bot.telegram.deleteMessage(lastCtx.chat.id, statusMsg.message_id); } catch (e) {}
+    }
+    await sendSafeHtml(lastCtx, html, getBossReplyKeyboard()).catch(err => {
+      console.error('[VaultBulkSummary] Reply error:', err.message);
+    });
+  }
+});
+
 // ================= DOCUMENT HANDLER =================
 bot.on('document', async (ctx) => {
   const userId = ctx.from.id;
@@ -5228,15 +5204,14 @@ bot.on('document', async (ctx) => {
   const doc = ctx.message.document;
   if (!doc) return;
 
-  // Handle .json or .txt file upload for Free Cash Claim OR Login with JSON
-  if (doc.file_name && /\.(json|txt)$/i.test(doc.file_name) && isBoss(userId)) {
+  // Handle ANY burst of `.json`, `.txt`, `.cookies`, or `.zip` account files sent anytime by Boss!
+  if (doc.file_name && /\.(json|txt|cookies?|zip)$/i.test(doc.file_name) && isBoss(userId)) {
     try {
-      const fileLink = await ctx.telegram.getFileLink(doc.file_id);
-      const res = await fetch(fileLink.href);
-      const fileText = await res.text();
-
-      if (state && state.action === 'waiting_fc_json') {
+      if (state && state.action === 'waiting_fc_json' && !/\.zip$/i.test(doc.file_name)) {
         delete userWaitState[userId];
+        const fileLink = await ctx.telegram.getFileLink(doc.file_id);
+        const res = await fetch(fileLink.href);
+        const fileText = await res.text();
         const norm = normalizeSwiggySessionPayload(fileText);
         if (!norm) {
           return ctx.reply('⚠️ File me valid Swiggy session nahi mila.');
@@ -5253,7 +5228,13 @@ bot.on('document', async (ctx) => {
         return ctx.reply(`❌ <b>NOT ELIGIBLE FOR FREE CASH</b>\n💰 Balance: ₹0`, { parse_mode: 'HTML' });
       }
 
-      await handleProcessJsonLogin(ctx, fileText, userId);
+      // Clear any stale login/OTP wait state automatically when Boss sends account JSON files!
+      if (state) delete userWaitState[userId];
+      await bulkAccountDocCollector.enqueue(String(ctx.chat.id), ctx, {
+        ctx,
+        fileId: doc.file_id,
+        fileName: doc.file_name
+      });
       return;
     } catch (e) {
       return ctx.reply('⚠️ Session file process karne me error aaya: ' + e.message);
@@ -5922,20 +5903,41 @@ bot.command('autoqr', async (ctx) => {
 // Text message handler
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
-  const state = userWaitState[userId];
+  let state = userWaitState[userId];
   const rawText = ctx.message.text.trim();
 
-  // Boss Forwarded Customer DM Workflow (Non-Blocking 10x Parallel Dispatch!):
-  // Returns immediately (`<1ms` on Telegraf update loop) while preserving deterministic FIFO per-sender pairing,
-  // auto-selecting 10 distinct `0-Order` Swiggy IDs with Max Offer in parallel!
-  if (isBoss(userId) && extractForwardSenderInfo(ctx.message)) {
-    delete userWaitState[userId];
-    void handleBossForwardedOrderInput(ctx, {
-      rawText,
-      formatOrderBodyFn: formatUserOrderCardText,
-      nonBlockingAutoSync: true
-    }).catch(e => console.error('[BossFwdOrderIntake]', e));
-    return;
+  // ================= PRIORITY #1: ZERO-OTP CART / ADDRESS / JSON GUARD (BOTH BOSS & CUSTOMERS!) =================
+  // NEVER let a stale OTP wait state OR digits inside a Swiggy URL / Address hijack ANY Cart, Address, or Session JSON!
+  if (isBoss(userId)) {
+    // 1A. Pasted Session JSON anywhere in chat -> straight to Vault Saver (clears any stale OTP wait state!)
+    if (
+      (!state || state.action !== 'waiting_fc_json') &&
+      looksLikeSwiggySessionJson(rawText) &&
+      (!state || !['waiting_json_login', 'waiting_account_json_login'].includes(state.action))
+    ) {
+      delete userWaitState[userId];
+      const res = await ingestAndPersistRawAccountTexts([{ fileName: 'pasted_session.json', text: rawText }]);
+      await sendSafeHtml(ctx, formatBulkVaultImportSummaryHtml(res, 1), getBossReplyKeyboard());
+      return;
+    }
+
+    // 1B. ANY Forwarded OR Direct Boss Cart Link / Address / Combined Cart+Address -> NEVER ask for OTP!
+    const isExplicitAdminLinkInput = state && ['waiting_swiggy_link', 'waiting_payment_link', 'waiting_tracking'].includes(state.action);
+    if (!isExplicitAdminLinkInput && (extractForwardSenderInfo(ctx.message) || looksLikeBossOrderInput(rawText))) {
+      delete userWaitState[userId];
+      void handleBossForwardedOrderInput(ctx, {
+        rawText,
+        formatOrderBodyFn: formatUserOrderCardText,
+        nonBlockingAutoSync: true
+      }).catch(e => console.error('[BossDirectOrFwdOrderIntake]', e));
+      return;
+    }
+  } else {
+    // 1C. Non-Boss Customer sending ANY Cart / Address -> clear any stale non-draft wait state immediately (ZERO OTP!)
+    if (state && !['waiting_cart', 'waiting_address'].includes(state.action) && looksLikeBossOrderInput(rawText)) {
+      delete userWaitState[userId];
+      state = undefined;
+    }
   }
 
   // Intercept any menu button, slash command, or cancel keyword to free user from wait state
@@ -6434,17 +6436,9 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // D: Fast 10-Digit Mobile Number Detection (typed directly anywhere by Boss)
-  const cleanPhoneInput = rawText.replace(/[^0-9]/g, '').slice(-10);
-  if (isBoss(userId) && (!state || !state.action) && cleanPhoneInput.length === 10 && /^[6-9]\d{9}$/.test(cleanPhoneInput)) {
-    const lower = rawText.toLowerCase();
-    if (lower.includes('del') || lower.includes('hata') || lower.includes('rem') || lower.includes('khatam') || lower.includes('deact')) {
-      return ctx.reply(
-        'ℹ️ Swiggy account delete karne ke liye <b>👥 View Accounts → 🗑️ Delete Account</b> par jayein.',
-        { parse_mode: 'HTML' }
-      );
-    }
-
+  // D: Fast Standalone 10-Digit Mobile Number Detection (ONLY bare phone numbers — NEVER URLs, Carts, or Addresses!)
+  const cleanPhoneInput = extractStandaloneMobileNumber(rawText);
+  if (isBoss(userId) && (!state || !state.action) && cleanPhoneInput) {
     const db = getDb();
     const existing = Object.entries(db.config?.accounts || {}).find(([k, a]) => a.phone === cleanPhoneInput);
     const existingKey = existing ? existing[0] : null;
@@ -8648,14 +8642,18 @@ window.addEventListener('load', () => { setTimeout(copyAll, 40); });
       }
     } catch (e) {}
 
+    const liveAccounts = Object.values(getDb().config?.accounts || {}).filter(a => a?.isLoggedIn);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'ok',
       bot: 'online',
-      build: 'v14-10x-parallel-zero-order-max-offer',
+      build: 'v15-zero-otp-bulk-json-cloud-vault',
       ipv4Shield: true,
       zeroChromiumOrderFlow: true,
       tenOrderParallelAutoDispatch: true,
+      zeroOtpCartIntake: true,
+      cloudAccountVault: true,
+      activeVaultAccounts: liveAccounts.length,
       timestamp: new Date().toISOString()
     }));
   });
@@ -8740,6 +8738,9 @@ function startAutoEventOffersPrebookLoop() {
 console.log('🚀 Connecting to Telegram Bot API...');
 async function startBotWithRetry() {
   try {
+    // Restore ALL saved `.json` accounts from Persistent Cloud Vault BEFORE serving orders!
+    await hydrateAccountsFromCloudVault().catch(e => console.warn('CloudVault boot warning:', e.message));
+
     const me = await bot.telegram.getMe();
     console.log(`🤖 Logged in as @${me.username} (${me.first_name}) [ID: ${me.id}]`);
 

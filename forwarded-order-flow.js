@@ -1342,17 +1342,54 @@ export async function executeRealQrGenerationForOrder({
   const order = db.orders?.[orderId];
   if (!order) throw new Error(`Order #${orderId} not found.`);
 
-  const accKey = order.selectedAccount;
-  const acc = accKey ? db.config?.accounts?.[accKey] : null;
+  let accKey = order.selectedAccount;
+  let acc = accKey ? db.config?.accounts?.[accKey] : null;
   if (!acc || !acc.isLoggedIn) {
-    const err = new Error('Selected Swiggy account session is missing or logged out.');
-    err.diag = { code: 'QR_ACCOUNT_MISSING', stage: 'GENERATE_REAL_SWIGGY_QR' };
-    throw err;
+    const autoPick = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false });
+    if (autoPick?.success && autoPick.winningKey) {
+      accKey = autoPick.winningKey;
+      acc = getDb().config?.accounts?.[accKey] || autoPick.winningAccount;
+      order.selectedAccount = accKey;
+      order.orderAccount = acc?.phone || accKey;
+    } else {
+      const err = new Error('No saved Swiggy JSON session is active right now — drop `.json` session files into chat to replenish the Account Vault.');
+      err.diag = { code: 'QR_ACCOUNT_MISSING', stage: 'GENERATE_REAL_SWIGGY_QR' };
+      throw err;
+    }
   }
 
   const generator = customRealQrGenerator || generateRealSwiggyMerchantUpiQr;
-  // Per-account lock: 10 orders on 10 different Swiggy IDs generate ALL 10 QRs 100% simultaneously in parallel (~1.8s)!
-  const realQr = await withSwiggyAccountLock(accKey, () => generator(acc, order));
+  let realQr;
+  try {
+    // Per-account lock: 10 orders on 10 different Swiggy IDs generate ALL 10 QRs 100% simultaneously in parallel (~1.8s)!
+    realQr = await withSwiggyAccountLock(accKey, () => generator(acc, order));
+  } catch (qrErr) {
+    const msg = String(qrErr?.message || '');
+    const swMsg = String(qrErr?.diag?.swiggyMessage || '');
+    const isSessionDead = /session expired|login again|unauthorized|unauthenticated/i.test(`${msg} ${swMsg}`) || Number(qrErr?.diag?.swiggyStatusCode) === 999;
+    if (!isSessionDead) throw qrErr;
+
+    // Silent Zero-OTP Auto-Failover to next saved JSON account in Vault!
+    const markDb = getDb();
+    if (markDb.config?.accounts?.[accKey]) {
+      markDb.config.accounts[accKey].isLoggedIn = false;
+      saveDb(markDb);
+    }
+    invalidateAccountOrderProfileCache(accKey);
+    releaseSwiggyAccountReservation(accKey, order.id);
+
+    const backupPick = await findBestMaxCouponAccountForOrder(order, {
+      captureScreenshot: false,
+      excludeAccountKeys: [accKey]
+    });
+    if (!backupPick?.success || !backupPick.winningKey) throw qrErr;
+
+    accKey = backupPick.winningKey;
+    acc = getDb().config?.accounts?.[accKey] || backupPick.winningAccount;
+    order.selectedAccount = accKey;
+    order.orderAccount = acc?.phone || accKey;
+    realQr = await withSwiggyAccountLock(accKey, () => generator(acc, order));
+  }
   const payable = Number(realQr.amount || order.finalPayable || 0);
   if (payable > 0) order.finalPayable = payable;
 

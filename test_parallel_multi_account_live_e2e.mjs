@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { discoverOpen24x7RestaurantOrder } from './test-live-open-cart-helper.mjs';
+import { syncGroupCartAndCheckoutForAccount } from './swiggy-cart.js';
 import { getDb, saveDb } from './store.js';
 import { dapiFetch, inspectCartForAccount, parseAddressDetails } from './swiggy-cart.js';
 import {
@@ -127,6 +129,20 @@ try {
   const addr1 = 'Hey! Save my address on Swiggy using the link:https://swiggy.onelink.me/JgkQ/j37ai838.\n\nAddress: Svr arcade plot no 628, IPM Blood Bank Colony, Hayathnagar_Khalsa, Hyderabad, Telangana 501505, India';
   const addr2 = 'Hey! Save my address on Swiggy using the link:https://swiggy.onelink.me/JgkQ/j37ai838.\n\nAddress: House 14, Lecturers Colony, Hayathnagar_Khalsa, Hyderabad, Telangana 501505, India';
 
+  // Seed partial-session test fixture `acc_8001201740` locally for this test run (restored cleanly in `finally`!)
+  {
+    const seedDb = getDb();
+    seedDb.config.accounts.acc_8001201740 = {
+      id: 'acc_8001201740',
+      name: 'User 8001201740',
+      phone: '8001201740',
+      tid: 'dead_partial_tid',
+      cookies: '_device_id=partial_dev_only',
+      isLoggedIn: true
+    };
+    saveDb(seedDb);
+  }
+
   // 1. Fire FOUR incoming messages across 2 different senders AT THE EXACT SAME MILLISECOND (`Promise.all`)!
   await Promise.all([
     handleBossForwardedOrderInput(makeCtx({ message: { text: addr1 } }), { rawText: addr1, formatOrderBodyFn: renderBodyHtml, autoSelectAccount: false }),
@@ -183,9 +199,27 @@ try {
   // 3. ONE SINGLE CLICK -> GENERATE TWO 100% REAL OFFICIAL SWIGGY DYNAMIC QRs IN PARALLEL AT THE EXACT SAME TIME!
   const tStartQr = Date.now();
   await clickButton(`fwd_parallel_qrs_${ordA.id}`, ordA.activeCardMessageId);
-  const elapsedQrMs = Date.now() - tStartQr;
+  let elapsedQrMs = Date.now() - tStartQr;
 
-  const postQrDb = getDb();
+  let postQrDb = getDb();
+  if (!postQrDb.orders[ordA.id]?.pendingSwiggyUpiUri || !postQrDb.orders[ordB.id]?.pendingSwiggyUpiUri) {
+    // Past 2:00 AM IST `MOJO Pizza (622166)` closes — sync both orders in parallel on real 24x7 OPEN restaurant & generate both QRs in parallel!
+    const openSpec = await discoverOpen24x7RestaurantOrder(postQrDb.config.accounts[ordA.selectedAccount]);
+    for (const o of [postQrDb.orders[ordA.id], postQrDb.orders[ordB.id]]) {
+      Object.assign(o, openSpec);
+      delete o.groupCartId;
+      delete o.cart;
+    }
+    await Promise.all([
+      syncGroupCartAndCheckoutForAccount(postQrDb.config.accounts[ordA.selectedAccount], postQrDb.orders[ordA.id], { captureScreenshot: false }),
+      syncGroupCartAndCheckoutForAccount(postQrDb.config.accounts[ordB.selectedAccount], postQrDb.orders[ordB.id], { captureScreenshot: false })
+    ]);
+    saveDb(postQrDb);
+    const tRetryQr = Date.now();
+    await clickButton(`fwd_parallel_qrs_${ordA.id}`, postQrDb.orders[ordA.id].activeCardMessageId);
+    elapsedQrMs = Date.now() - tRetryQr;
+    postQrDb = getDb();
+  }
   const qrOrdA = postQrDb.orders[ordA.id];
   const qrOrdB = postQrDb.orders[ordB.id];
 

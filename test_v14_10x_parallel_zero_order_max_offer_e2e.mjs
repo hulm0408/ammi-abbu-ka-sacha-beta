@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { discoverOpen24x7RestaurantOrder } from './test-live-open-cart-helper.mjs';
+import { syncGroupCartAndCheckoutForAccount } from './swiggy-cart.js';
 import fs from 'node:fs';
 import puppeteer from 'puppeteer-core';
 import { PNG } from 'pngjs';
@@ -554,7 +556,29 @@ try {
     );
 
     await clickButton(`fwd_parallel_qrs_${liveOrders[0].id}`, liveOrders[0].activeCardMessageId);
-    const afterQrOrders = Object.values(getDb().orders);
+    let afterQrOrders = Object.values(getDb().orders);
+    const triedOpenRestIds = [];
+    for (let attempt = 0; attempt < 5 && !afterQrOrders.every(o => /^upi:\/\/pay\?.*swiggy/i.test(o.pendingSwiggyUpiUri || '')); attempt++) {
+      // Past 2:00 AM IST `MOJO Pizza (622166)` closes — sync both orders in parallel on real 24x7 OPEN restaurant & generate both QRs in parallel!
+      const retryDb = getDb();
+      const retryOrders = Object.values(retryDb.orders);
+      const openSpec = await discoverOpen24x7RestaurantOrder(accA, {
+        excludeRestaurantIds: triedOpenRestIds
+      });
+      if (!openSpec) break;
+      triedOpenRestIds.push(openSpec.restaurantId);
+      for (const o of retryOrders) {
+        Object.assign(o, openSpec);
+        delete o.groupCartId;
+        delete o.cart;
+      }
+      await Promise.all(
+        retryOrders.map(o => syncGroupCartAndCheckoutForAccount(retryDb.config.accounts[o.selectedAccount], o, { captureScreenshot: false }))
+      );
+      saveDb(retryDb);
+      await clickButton(`fwd_parallel_qrs_${retryOrders[0].id}`, retryOrders[0].activeCardMessageId);
+      afterQrOrders = Object.values(getDb().orders);
+    }
     ok(
       afterQrOrders.every(o => /^upi:\/\/pay\?.*swiggy/i.test(o.pendingSwiggyUpiUri || '')) &&
       afterQrOrders[0].pendingSwiggyOrderId !== afterQrOrders[1].pendingSwiggyOrderId,

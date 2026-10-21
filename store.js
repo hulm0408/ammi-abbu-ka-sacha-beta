@@ -1,6 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  pullAccountsFromCloudVault,
+  pushAccountsToCloudVaultNow,
+  scheduleCloudVaultSync,
+  markCloudVaultHydrated
+} from './vault-sync.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -191,7 +197,9 @@ export function normalizeSwiggySessionPayload(rawInput) {
     token,
     sid,
     deviceId,
-    cookies: rawCookieStr
+    cookies: rawCookieStr,
+    ...(typeof src.totalOrdersCount === 'number' ? { totalOrdersCount: src.totalOrdersCount } : {}),
+    ...(typeof src.isZeroOrderAccount === 'boolean' ? { isZeroOrderAccount: src.isZeroOrderAccount } : {})
   };
 
   normalized.cookies = cleanEssentialSwiggyCookies(rawCookieStr, normalized);
@@ -317,7 +325,82 @@ export function cleanEssentialSwiggyCookies(cookieStr = '', fallback = {}) {
   return Array.from(map.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
 }
 
-function syncAccountsJsonMirror(data) {
+export function buildCloudVaultSnapshot(data = null) {
+  const src = data || getDb();
+  const accountsOut = {};
+  for (const [k, a] of Object.entries(src?.config?.accounts || {})) {
+    if (!a || (!a.cookies && !a.tid && !a.token && !a.isLoggedIn)) continue;
+    accountsOut[k] = { ...a };
+  }
+  return {
+    version: 15,
+    updatedAt: new Date().toISOString(),
+    accounts: accountsOut,
+    deletedAccounts: { ...(src?.config?.deletedAccounts || {}) },
+    sessionVault: { ...(src?.sessionVault || {}) }
+  };
+}
+
+export async function syncCloudVaultNow(data = null) {
+  return pushAccountsToCloudVaultNow(buildCloudVaultSnapshot(data));
+}
+
+export async function hydrateAccountsFromCloudVault() {
+  try {
+    const remote = await pullAccountsFromCloudVault();
+    markCloudVaultHydrated();
+    if (!remote || typeof remote !== 'object') return { restored: 0, total: 0 };
+
+    let restored = 0;
+    const db = getDb();
+    if (!db.config.accounts) db.config.accounts = {};
+    if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
+    if (!db.sessionVault) db.sessionVault = {};
+
+    for (const [delKey, delVal] of Object.entries(remote.deletedAccounts || {})) {
+      if (delVal && !db.config.accounts[delKey]?.isLoggedIn) {
+        db.config.deletedAccounts[delKey] = delVal;
+      }
+    }
+
+    for (const [vKey, vVal] of Object.entries(remote.sessionVault || {})) {
+      if (vVal && !db.sessionVault[vKey]) {
+        db.sessionVault[vKey] = vVal;
+      }
+    }
+
+    for (const [k, remAcc] of Object.entries(remote.accounts || {})) {
+      if (!remAcc || db.config.deletedAccounts[k]) continue;
+      if (remAcc.isLoggedIn === false) continue;
+      const cur = db.config.accounts[k];
+      if (!cur || !cur.isLoggedIn || (!cur.cookies && !cur.tid && !cur.token)) {
+        const cleanC = cleanEssentialSwiggyCookies(remAcc.cookies || '', remAcc);
+        db.config.accounts[k] = {
+          ...remAcc,
+          id: k,
+          cookies: cleanC || remAcc.cookies || '',
+          isLoggedIn: true
+        };
+        restored++;
+      }
+    }
+
+    if (restored > 0) {
+      saveDb(db);
+      syncAccountsJsonMirror(db, { skipCloudPush: true });
+      console.log(`[CloudVault] Restored ${restored} saved Swiggy JSON account(s) from persistent vault!`);
+    }
+    return {
+      restored,
+      total: Object.values(db.config.accounts).filter(a => a?.isLoggedIn).length
+    };
+  } catch (e) {
+    console.warn('[CloudVault] Hydrate note:', e.message);
+    return { restored: 0, total: 0 };
+  }
+}
+
+function syncAccountsJsonMirror(data, { skipCloudPush = false } = {}) {
   try {
     const accounts = data?.config?.accounts || {};
     const mirrorList = Object.entries(accounts)
@@ -339,10 +422,15 @@ function syncAccountsJsonMirror(data) {
           deviceId: a.deviceId || '',
           cookies: cleanC,
           isLoggedIn: true,
+          ...(a.isZeroOrderAccount !== undefined ? { isZeroOrderAccount: a.isZeroOrderAccount } : {}),
+          ...(a.totalOrdersCount !== undefined ? { totalOrdersCount: a.totalOrdersCount } : {}),
           savedAt: a.savedAt || new Date().toISOString()
         };
       });
     fs.writeFileSync(ACCOUNTS_JSON_FILE, JSON.stringify(mirrorList, null, 2), 'utf-8');
+    if (!skipCloudPush) {
+      scheduleCloudVaultSync(() => buildCloudVaultSnapshot(getDb()));
+    }
   } catch (e) {}
 }
 
@@ -426,12 +514,22 @@ export function getDb() {
     }
     seedAccountsFromJson(data);
     delete data.config.depositAmount;
-    // Tag non-enumerable baseline order snapshots so concurrent parallel async fibers never clobber sibling orders!
+    // Tag non-enumerable baseline snapshots for orders, accounts & sessionVault so NO concurrent async fiber ever clobbers newly uploaded accounts or sibling orders!
     const baseOrdersJson = {};
     for (const [oid, oVal] of Object.entries(data.orders || {})) {
       baseOrdersJson[oid] = JSON.stringify(oVal);
     }
+    const baseAccountsJson = {};
+    for (const [ak, aVal] of Object.entries(data.config.accounts || {})) {
+      baseAccountsJson[ak] = JSON.stringify(aVal);
+    }
+    const baseVaultJson = {};
+    for (const [vk, vVal] of Object.entries(data.sessionVault || {})) {
+      baseVaultJson[vk] = JSON.stringify(vVal);
+    }
     Object.defineProperty(data, '__baseOrdersJson', { value: baseOrdersJson, enumerable: false, configurable: true });
+    Object.defineProperty(data, '__baseAccountsJson', { value: baseAccountsJson, enumerable: false, configurable: true });
+    Object.defineProperty(data, '__baseVaultJson', { value: baseVaultJson, enumerable: false, configurable: true });
     return data;
   } catch (err) {
     console.error('Error reading db:', err);
@@ -454,36 +552,64 @@ export function saveDb(data) {
     }
   }
 
-  // Concurrent-Safe Parallel Order Merge:
-  // If `data` came from `getDb()` before another parallel Swiggy account coroutine added/updated a DIFFERENT order,
-  // preserve every concurrent sibling mutation automatically without breaking intentional deletions!
-  if (data && data.__baseOrdersJson && typeof data.orders === 'object' && data.orders !== null) {
+  // Concurrent-Safe Parallel Merge for Orders + Uploaded Accounts + Session Vault!
+  // Any account/vault/order written concurrently to disk after `getDb()` was called is 100% preserved unless explicitly mutated/deleted by caller!
+  if (data && (data.__baseOrdersJson || data.__baseAccountsJson)) {
     try {
       const liveDisk = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
-      const diskOrders = liveDisk?.orders || {};
-      const baseMap = data.__baseOrdersJson;
 
-      for (const [oid, diskOrder] of Object.entries(diskOrders)) {
-        const existedAtRead = Object.prototype.hasOwnProperty.call(baseMap, oid);
-        const presentInCaller = Object.prototype.hasOwnProperty.call(data.orders, oid);
-
-        if (!existedAtRead && !presentInCaller) {
-          // Brand-new sibling order created concurrently in parallel while this coroutine was awaiting Swiggy!
-          data.orders[oid] = diskOrder;
-        } else if (existedAtRead && presentInCaller) {
-          // Sibling order existed at read time; if caller did NOT touch `oid` (`JSON.stringify === base`), keep fresher `diskOrder`!
-          if (JSON.stringify(data.orders[oid]) === baseMap[oid]) {
+      if (data.__baseOrdersJson && typeof data.orders === 'object' && data.orders !== null) {
+        const diskOrders = liveDisk?.orders || {};
+        const baseMap = data.__baseOrdersJson;
+        for (const [oid, diskOrder] of Object.entries(diskOrders)) {
+          const existedAtRead = Object.prototype.hasOwnProperty.call(baseMap, oid);
+          const presentInCaller = Object.prototype.hasOwnProperty.call(data.orders, oid);
+          if (!existedAtRead && !presentInCaller) {
+            data.orders[oid] = diskOrder;
+          } else if (existedAtRead && presentInCaller && JSON.stringify(data.orders[oid]) === baseMap[oid]) {
             data.orders[oid] = diskOrder;
           }
         }
+        const refreshedBase = {};
+        for (const [oid, oVal] of Object.entries(data.orders)) refreshedBase[oid] = JSON.stringify(oVal);
+        Object.defineProperty(data, '__baseOrdersJson', { value: refreshedBase, enumerable: false, configurable: true });
       }
 
-      // Refresh baseline map on `data` after merge
-      const refreshedBase = {};
-      for (const [oid, oVal] of Object.entries(data.orders)) {
-        refreshedBase[oid] = JSON.stringify(oVal);
+      if (data.__baseAccountsJson && data.config && typeof data.config.accounts === 'object' && data.config.accounts !== null) {
+        const diskAccounts = liveDisk?.config?.accounts || {};
+        const baseAccMap = data.__baseAccountsJson;
+        const callerDeleted = data.config.deletedAccounts || {};
+        for (const [ak, diskAcc] of Object.entries(diskAccounts)) {
+          const existedAtRead = Object.prototype.hasOwnProperty.call(baseAccMap, ak);
+          const presentInCaller = Object.prototype.hasOwnProperty.call(data.config.accounts, ak);
+          if (!existedAtRead && !presentInCaller && !callerDeleted[ak]) {
+            // Brand-new `.json` account imported concurrently while this fiber was awaiting Swiggy — NEVER WIPE IT!
+            data.config.accounts[ak] = diskAcc;
+          } else if (existedAtRead && presentInCaller && JSON.stringify(data.config.accounts[ak]) === baseAccMap[ak]) {
+            data.config.accounts[ak] = diskAcc;
+          }
+        }
+        const refreshedAccBase = {};
+        for (const [ak, aVal] of Object.entries(data.config.accounts)) refreshedAccBase[ak] = JSON.stringify(aVal);
+        Object.defineProperty(data, '__baseAccountsJson', { value: refreshedAccBase, enumerable: false, configurable: true });
       }
-      Object.defineProperty(data, '__baseOrdersJson', { value: refreshedBase, enumerable: false, configurable: true });
+
+      if (data.__baseVaultJson && typeof data.sessionVault === 'object' && data.sessionVault !== null) {
+        const diskVault = liveDisk?.sessionVault || {};
+        const baseVaultMap = data.__baseVaultJson;
+        for (const [vk, diskV] of Object.entries(diskVault)) {
+          const existedAtRead = Object.prototype.hasOwnProperty.call(baseVaultMap, vk);
+          const presentInCaller = Object.prototype.hasOwnProperty.call(data.sessionVault, vk);
+          if (!existedAtRead && !presentInCaller) {
+            data.sessionVault[vk] = diskV;
+          } else if (existedAtRead && presentInCaller && JSON.stringify(data.sessionVault[vk]) === baseVaultMap[vk]) {
+            data.sessionVault[vk] = diskV;
+          }
+        }
+        const refreshedVaultBase = {};
+        for (const [vk, vVal] of Object.entries(data.sessionVault)) refreshedVaultBase[vk] = JSON.stringify(vVal);
+        Object.defineProperty(data, '__baseVaultJson', { value: refreshedVaultBase, enumerable: false, configurable: true });
+      }
     } catch (e) {}
   }
 
@@ -804,18 +930,39 @@ export function importSessionJson(rawJson, targetKey = null) {
       return { success: false, message: 'Invalid session JSON: missing cookies / tid / token' };
     }
 
+    const db = getDb();
+    if (!db.config.accounts) db.config.accounts = {};
+    if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
+    if (!db.sessionVault) db.sessionVault = {};
+
     const results = [];
     for (let idx = 0; idx < list.length; idx++) {
       const data = list[idx];
-      const db = getDb();
-      if (!db.config.accounts) db.config.accounts = {};
-      if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
-      if (!db.sessionVault) db.sessionVault = {};
-
       const cleanPhone = data.phone || '';
+      const cookieStrPre = cleanEssentialSwiggyCookies(data.cookies || '', data);
+      const extractFromCookiePre = (name) => {
+        const m = cookieStrPre.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+        return m ? m[1] : '';
+      };
+      const tidPre = data.tid || extractFromCookiePre('tid') || '';
+      let customerIdPre = data.customerId || '';
+      if (!customerIdPre && tidPre && tidPre.includes('.')) {
+        try {
+          const payload = tidPre.split('.')[1];
+          if (payload) {
+            const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+            if (decoded?.user_id && String(decoded.user_id) !== '0' && String(decoded.user_id) !== '-1') {
+              customerIdPre = String(decoded.user_id);
+            }
+          }
+        } catch {}
+      }
+
       const key = (list.length === 1 && targetKey)
         ? targetKey
-        : (cleanPhone ? `acc_${cleanPhone}` : (data.account || `acc_${Date.now()}_${idx}`));
+        : (cleanPhone
+          ? `acc_${cleanPhone}`
+          : (data.account || (customerIdPre ? `acc_cid_${customerIdPre}` : `acc_${Date.now()}_${idx}`)));
 
       // Recover full cookies from vault if user pasted an older partial JSON without `_session_tid`
       const vaultBackup = db.sessionVault[cleanPhone] || db.sessionVault[key] || null;
@@ -835,18 +982,7 @@ export function importSessionJson(rawJson, targetKey = null) {
       const token = data.token || extractFromCookie('token') || tid || '';
       const sid = data.sid || extractFromCookie('_sid') || '';
       const deviceId = data.deviceId || extractFromCookie('_device_id') || '';
-      let customerId = data.customerId || '';
-      if (!customerId && tid && tid.includes('.')) {
-        try {
-          const payload = tid.split('.')[1];
-          if (payload) {
-            const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
-            if (decoded?.user_id && String(decoded.user_id) !== '0' && String(decoded.user_id) !== '-1') {
-              customerId = String(decoded.user_id);
-            }
-          }
-        } catch {}
-      }
+      const customerId = customerIdPre;
 
       delete db.config.deletedAccounts[key];
       if (!db.config.accounts[key]) {
@@ -867,6 +1003,10 @@ export function importSessionJson(rawJson, targetKey = null) {
         sid: sid || db.config.accounts[key].sid || '',
         deviceId: deviceId || db.config.accounts[key].deviceId || '',
         cookies: cookieStr,
+        ...(typeof data.totalOrdersCount === 'number' ? {
+          totalOrdersCount: data.totalOrdersCount,
+          isZeroOrderAccount: data.totalOrdersCount === 0
+        } : {}),
         isLoggedIn: true,
         savedAt: new Date().toISOString()
       };
@@ -891,19 +1031,24 @@ export function importSessionJson(rawJson, targetKey = null) {
         db.config.activeOrderAccount = key;
       }
 
-      saveDb(db);
-      syncAccountsJsonMirror(db);
-
       results.push({
         success: true,
+        key,
         account: key,
+        accountObj: db.config.accounts[key],
         name: db.config.accounts[key].name,
         phone: db.config.accounts[key].phone,
         mobile: db.config.accounts[key].mobile,
         customerId: db.config.accounts[key].customerId,
-        token: db.config.accounts[key].token
+        token: db.config.accounts[key].token,
+        totalOrdersCount: db.config.accounts[key].totalOrdersCount,
+        isZeroOrderAccount: db.config.accounts[key].isZeroOrderAccount
       });
     }
+
+    // Single atomic disk write + `accounts.json` mirror + Cloud Vault schedule across ALL imported files!
+    saveDb(db);
+    syncAccountsJsonMirror(db);
 
     return {
       ...results[0],

@@ -927,22 +927,31 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
         if (csrf) fastBody._csrf = csrf;
       }
 
-      const fastRes = await fetch(url, {
-        method,
-        headers: {
-          'Cookie': zeroWafCookieParts.join('; '),
-          'User-Agent': isMobileWebOffersRoute ? MOBILE_WEB_UA : 'Swiggy-Android',
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'Origin': 'https://www.swiggy.com',
-          'Referer': isMobileWebOffersRoute ? 'https://www.swiggy.com/checkout' : 'https://www.swiggy.com/',
-          ...extraHeaders
-        },
-        ...(fastBody ? { body: JSON.stringify(fastBody) } : {}),
-        signal: AbortSignal.timeout(timeoutMs)
-      });
+      let fastRes = null;
+      for (let netTry = 0; netTry < 2; netTry++) {
+        try {
+          fastRes = await fetch(url, {
+            method,
+            headers: {
+              'Cookie': zeroWafCookieParts.join('; '),
+              'User-Agent': isMobileWebOffersRoute ? MOBILE_WEB_UA : 'Swiggy-Android',
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+              'Origin': 'https://www.swiggy.com',
+              'Referer': isMobileWebOffersRoute ? 'https://www.swiggy.com/checkout' : 'https://www.swiggy.com/',
+              ...extraHeaders
+            },
+            ...(fastBody ? { body: JSON.stringify(fastBody) } : {}),
+            signal: AbortSignal.timeout(timeoutMs)
+          });
+          break;
+        } catch (netErr) {
+          if (netTry === 1) throw netErr;
+          await new Promise(r => setTimeout(r, 150));
+        }
+      }
 
-      if (fastRes.status !== 202 && fastRes.status !== 403 && !fastRes.headers.get('x-amzn-waf-action')) {
+      if (fastRes && fastRes.status !== 202 && fastRes.status !== 403 && !fastRes.headers.get('x-amzn-waf-action')) {
         const fastText = await fastRes.text();
         const fastJson = JSON.parse(fastText);
         if (fastJson?.csrfToken) {
@@ -953,6 +962,12 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
         }
       }
     } catch {}
+  }
+
+  // Pure Android token-only sessions (`!_session_tid`) authenticate on `chkout.swiggy.com` / `mcp.swiggy.com`, NEVER on web `/dapi/*` —
+  // never waste 350MB RAM + 3s launching Headless Chromium on Render Free Tier for a token-only account!
+  if (!cleanCookies.includes('_session_tid=') && accountOrCookies && typeof accountOrCookies === 'object' && (accountOrCookies.tid || accountOrCookies.token)) {
+    return { ok: false, status: 401, json: null };
   }
 
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -1325,6 +1340,7 @@ export async function fetchLiveGroupCart(groupCartId, restaurantId = null, hostN
   };
 
   let lastStatusInfo = null;
+  let emptyPayloadFallback = null;
   // Deterministic ephemeral reader `user_id` per `group_cart_id`:
   // Resolves ANY foreign customer Group Cart in ANY city on the VERY FIRST ~200ms request,
   // NEVER hits `statusCode: 86` (`USER_ALREADY_PART_OF_GROUP_CART`), and NEVER pollutes real accounts!
@@ -1368,7 +1384,9 @@ export async function fetchLiveGroupCart(groupCartId, restaurantId = null, hostN
         });
         const joinJson = await joinRes.json().catch(() => null);
         if (joinJson?.statusCode === 0 && joinJson?.data) {
-          return parseSharedCartPayload(joinJson.data);
+          const parsedJoin = parseSharedCartPayload(joinJson.data);
+          if (parsedJoin?.items?.length > 0) return parsedJoin;
+          emptyPayloadFallback = parsedJoin || emptyPayloadFallback;
         }
         if (joinJson?.statusCode === 88 || joinJson?.errorCodes?.includes('GROUP_CART_NO_LONGER_EXISTS')) {
           return { status: 'EXPIRED', statusCode: joinJson.statusCode, statusMessage: joinJson.statusMessage || 'Group cart no longer exists', items: [] };
@@ -1380,7 +1398,7 @@ export async function fetchLiveGroupCart(groupCartId, restaurantId = null, hostN
       } catch {}
     }
 
-    // Fallback Path: Direct read-only GET when `restaurantId` wasn't embedded in URL
+    // Fallback Path: Direct read-only GET when `restaurantId` wasn't embedded in URL or cross-city `join` returned empty items
     if (auth.userId) {
       try {
         const res = await fetch(`https://chkout.swiggy.com/api/v1/shared_cart?group_cart_id=${encodeURIComponent(gcId)}`, {
@@ -1389,7 +1407,9 @@ export async function fetchLiveGroupCart(groupCartId, restaurantId = null, hostN
         });
         const json = await res.json().catch(() => null);
         if (json?.statusCode === 0 && json?.data) {
-          return parseSharedCartPayload(json.data);
+          const parsedGet = parseSharedCartPayload(json.data);
+          if (parsedGet?.items?.length > 0) return parsedGet;
+          emptyPayloadFallback = parsedGet || emptyPayloadFallback;
         }
         if (json?.statusCode === 88 || json?.errorCodes?.includes('GROUP_CART_NO_LONGER_EXISTS')) {
           return { status: 'EXPIRED', statusCode: json.statusCode, statusMessage: json.statusMessage || 'Group cart no longer exists', items: [] };
@@ -1401,6 +1421,8 @@ export async function fetchLiveGroupCart(groupCartId, restaurantId = null, hostN
       } catch {}
     }
   }
+
+  if (emptyPayloadFallback) return emptyPayloadFallback;
 
   if (lastStatusInfo) {
     return {

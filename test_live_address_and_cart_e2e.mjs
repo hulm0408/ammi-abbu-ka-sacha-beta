@@ -89,7 +89,12 @@ try {
 
   // 8. Sub-second Live Group Cart resolution (even when host dynamically changes restaurant & items!)
   const tGc = Date.now();
-  const gcResolved = await resolveSwiggyLink('https://swig.gy/gc/67272/Umbashiya-642855918');
+  let activeGcUrl = 'https://swig.gy/gc/67272/Umbashiya-642855918';
+  let gcResolved = await resolveSwiggyLink(activeGcUrl);
+  if (!gcResolved?.cartDetails?.items?.length) {
+    activeGcUrl = 'https://swig.gy/gc/622166/Adithya-312184336';
+    gcResolved = await resolveSwiggyLink(activeGcUrl);
+  }
   const gcMs = Date.now() - tGc;
   check(
     gcResolved.type === 'CART' &&
@@ -122,7 +127,7 @@ try {
   // 11. Full cross-account clone + address save + cart sync on acc_9935123518
   const testOrder = {
     id: 'E2E_LIVE_TEST',
-    cart: 'https://swig.gy/gc/67272/Umbashiya-642855918',
+    cart: activeGcUrl,
     address: swiggyShareMsg,
     addressOriginalText: swiggyShareMsg,
     status: 'PENDING'
@@ -144,13 +149,8 @@ try {
   console.log('\n--- LIVE GENERATED RECEIPT ---\n' + receipt + '\n------------------------------\n');
 } finally {
   // Strictly flush test cart & delete any newly created test address on acc_9935123518!
-  await dapiFetch(accHelper, 'cart', {
-    method: 'POST',
-    body: {
-      flushFirst: true,
-      cart: { restaurantId: '444136', address_id: '', couponCode: '', cartItems: [], mealItems: [], subscriptionItems: [] }
-    }
-  }).catch(() => {});
+  const { swiggyCartFlush } = await import('./swiggy-cart.js');
+  await swiggyCartFlush(accHelper).catch(() => {});
 
   for (const id of createdTestAddressIds) {
     await dapiFetch(accHelper, 'address/delete', {

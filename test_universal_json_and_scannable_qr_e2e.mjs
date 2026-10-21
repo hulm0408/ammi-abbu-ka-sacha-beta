@@ -1,4 +1,5 @@
 import assert from 'assert';
+import { cancelScheduledCloudVaultSync } from './vault-sync.js';
 import fs from 'fs';
 import path from 'path';
 import { PNG } from 'pngjs';
@@ -166,7 +167,7 @@ try {
               else if (v && typeof v === 'object') walk(v);
             }
           };
-          walk(mRes.structured);
+          walk(mRes.structured?.categories || mRes.structured);
           if (openItem) {
             mockOrder.restaurantId = rId;
             mockOrder.restaurantName = r.name || 'Open Restaurant';
@@ -287,6 +288,7 @@ try {
 
   console.log(`\n🏆 ALL ${passed}/${passed} UNIVERSAL SWIGGY JSON + SCANNABLE QR TESTS PASSED 100%!`);
 } finally {
+  cancelScheduledCloudVaultSync();
   fs.writeFileSync(DB_PATH, origDbRaw, 'utf8');
   if (origAccRaw !== null) fs.writeFileSync(ACC_PATH, origAccRaw, 'utf8');
 }
