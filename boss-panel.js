@@ -93,22 +93,25 @@ export function buildBossPanelHome(db) {
 
   const keyboard = Markup.inlineKeyboard([
     [
+      { text: '📦 Orders Done (All IDs)', callback_data: 'boss_view_orders_done' },
+      { text: '▣ Pending Orders', callback_data: 'boss_view_pending' },
+    ],
+    [
       { text: '☎ Login with Number', callback_data: 'boss_login_with_number' },
       { text: '▤ Login with JSON', callback_data: 'boss_login_with_json' },
     ],
     [
       { text: '◉ Connected Accounts', callback_data: 'boss_view_accounts' },
-      { text: '▣ Pending Orders', callback_data: 'boss_view_pending' },
-    ],
-    [
       { text: '▤ Order History', callback_data: 'boss_view_archive' },
-      { text: '× Cancelled Orders', callback_data: 'boss_view_cancelled_orders' },
     ],
     [
+      { text: '× Cancelled Orders', callback_data: 'boss_view_cancelled_orders' },
       { text: '▣ Claim Offers (All Accounts)', callback_data: 'boss_claim_all_event_offers' },
-      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' },
     ],
-    [{ text: '× Close Panel', callback_data: 'close_menu' }],
+    [
+      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' },
+      { text: '× Close Panel', callback_data: 'close_menu' },
+    ],
   ]);
 
   return { text, keyboard };

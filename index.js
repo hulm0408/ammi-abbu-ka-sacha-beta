@@ -430,6 +430,7 @@ function getUserReplyKeyboard(draft = {}) {
       { text: '› Send to Beta' }
     ],
     [
+      { text: '📦 Orders Done' },
       { text: '● Cancel Draft' }
     ]
   ]).resize();
@@ -443,11 +444,14 @@ function getBossReplyKeyboard() {
       { text: '▣ Pending Orders', style: 'primary' }
     ],
     [
-      { text: '× Cancelled Orders', style: 'danger' },
+      { text: '📦 Orders Done', style: 'success' },
       { text: '▤ Order History', style: 'success' }
     ],
     [
-      { text: '◈ Account Manager', style: 'primary' },
+      { text: '× Cancelled Orders', style: 'danger' },
+      { text: '◈ Account Manager', style: 'primary' }
+    ],
+    [
       { text: '× Close', style: 'danger' }
     ]
   ]).resize().persistent(false);
@@ -8791,6 +8795,174 @@ bot.action(/^acc_view_orders_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const key = ctx.match[1];
   await handlePreviousOrders(ctx, key);
+});
+
+// ================= ORDERS DONE (ALL IDs) =================
+async function handleAllOrdersDone(ctx) {
+  if (ctx.callbackQuery) {
+    await ctx.answerCbQuery('Fetching orders from all your IDs...').catch(() => {});
+  }
+
+  let statusMsg = null;
+  try {
+    statusMsg = await ctx.reply('⏳ <i>Saari Swiggy IDs se orders aur live tracking links fetch ho rahe hain...</i>', { parse_mode: 'HTML' });
+  } catch (e) {}
+
+  try {
+    const db = getDb();
+    const accounts = db.config?.accounts || {};
+    const accountEntries = Object.entries(accounts);
+
+    if (accountEntries.length === 0) {
+      if (statusMsg) {
+        try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+      }
+      return ctx.reply('⚠️ <b>Koi bhi Swiggy account added nahi hai!</b>\n\nBoss panel se pehle number ya JSON ke zariye account login karein.', {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('☎ Login with Number', 'boss_login_with_number')],
+          [Markup.button.callback('▤ Login with JSON', 'boss_login_with_json')],
+          [Markup.button.callback('★ Boss Panel', 'boss_panel_home')]
+        ])
+      });
+    }
+
+    // Parallel fetch orders from all accounts in parallel
+    const accountResults = await Promise.allSettled(
+      accountEntries.map(async ([key, acc]) => {
+        if (!acc || (!acc.cookies && !acc.tid)) {
+          return { key, acc, orders: [], notLoggedIn: true };
+        }
+        try {
+          const orders = await fetchAccountOrders(acc);
+          return { key, acc, orders: Array.isArray(orders) ? orders : [], notLoggedIn: false };
+        } catch (err) {
+          console.error(`[ORDERS_DONE] Error fetching orders for ${acc?.name || key}:`, err?.message || err);
+          return { key, acc, orders: [], error: err?.message };
+        }
+      })
+    );
+
+    // Also collect completed orders recorded in db.orders
+    const dbOrders = Object.values(db.orders || {});
+    const dbCompletedOrders = dbOrders.filter(o =>
+      o.status === 'COMPLETED' || o.swiggyOrderId || (o.trackingLink && isOfficialSwiggyTrackingUrl(o.trackingLink))
+    );
+
+    let totalOrdersFound = 0;
+    const buttons = [];
+    let text = `<blockquote>📦 <b>ORDERS DONE — ALL SWIGGY IDs</b></blockquote>\n\n`;
+
+    for (const res of accountResults) {
+      if (res.status !== 'fulfilled') continue;
+      const { key, acc, orders, notLoggedIn } = res.value;
+      const accName = acc.name || key;
+      const phoneStr = acc.phone ? `<code>${acc.phone}</code>` : '';
+
+      // Augment orders with any db.orders that were placed from this account
+      for (const dbo of dbCompletedOrders) {
+        const matchesAccount = (dbo.selectedAccount && dbo.selectedAccount === key) ||
+          (dbo.selectedAccountPhone && acc.phone && dbo.selectedAccountPhone === acc.phone) ||
+          (dbo.orderAccount && acc.phone && String(dbo.orderAccount).includes(acc.phone));
+        if (matchesAccount) {
+          const swiggyId = String(dbo.swiggyOrderId || dbo.id || '');
+          const existing = orders.find(o => String(o.orderId || '') === swiggyId);
+          if (existing) {
+            if (!existing.trackingUrl && dbo.trackingLink) {
+              existing.trackingUrl = dbo.trackingLink;
+            }
+            if (!existing.deliveryOtp && dbo.deliveryOtp) {
+              existing.deliveryOtp = dbo.deliveryOtp;
+            }
+          } else if (dbo.status === 'COMPLETED' || dbo.swiggyOrderId) {
+            orders.unshift({
+              orderId: dbo.swiggyOrderId || dbo.id,
+              restaurantName: dbo.restaurantName || 'Swiggy Food',
+              status: dbo.liveOrderStatus || dbo.status || 'COMPLETED',
+              items: (dbo.items || []).map(i => `${i.name}${i.qty > 1 ? ` (${i.qty})` : ''}`),
+              deliveryAddress: dbo.addressDetails?.address || dbo.address || '',
+              orderTotal: dbo.finalPayable || 0,
+              trackingUrl: dbo.trackingLink || (dbo.swiggyOrderId ? `https://www.swiggy.com/orders/track/${dbo.swiggyOrderId}` : 'https://www.swiggy.com/orders'),
+              deliveryOtp: dbo.deliveryOtp || '',
+              orderTime: dbo.completedAt ? new Date(dbo.completedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''
+            });
+          }
+        }
+      }
+
+      text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      text += `📱 <b>ID: ${escapeHtml(accName)}</b> ${phoneStr ? `(${phoneStr})` : ''}\n`;
+
+      if (notLoggedIn) {
+        text += `<i>⚠️ Account logged in nahi hai (Login required).</i>\n\n`;
+        continue;
+      }
+
+      if (!orders || orders.length === 0) {
+        text += `<i>Is ID se Swiggy par koi orders nahi mile (0 orders).</i>\n\n`;
+        continue;
+      }
+
+      totalOrdersFound += orders.length;
+      text += `<i>Total Orders: <b>${orders.length}</b></i>\n\n`;
+
+      for (let i = 0; i < orders.length; i++) {
+        const o = orders[i];
+        const trackUrl = o.trackingUrl ||
+          (o.orderId ? `https://www.swiggy.com/orders/track/${o.orderId}` : 'https://www.swiggy.com/orders');
+        const statusStr = escapeHtml(o.status || 'COMPLETED');
+        const restName = escapeHtml(o.restaurantName || 'Swiggy Food');
+
+        text += `<b>${i + 1}. ${restName}</b>\n` +
+          `• 🆔 <b>Order ID:</b> <code>#${escapeHtml(String(o.orderId || 'N/A'))}</code>\n` +
+          `• 💰 <b>Total:</b> <b>₹${o.orderTotal || 0}</b> • <b>Status:</b> <code>${statusStr}</code>\n` +
+          (o.items && o.items.length ? `• 🍽️ <b>Items:</b> <i>${escapeHtml(o.items.join(', '))}</i>\n` : '') +
+          (o.deliveryAddress ? `• 📍 <b>Address:</b> <code>${escapeHtml(o.deliveryAddress)}</code>\n` : '') +
+          (o.deliveryOtp ? `• 🔢 <b>Delivery OTP:</b> <code>${escapeHtml(String(o.deliveryOtp))}</code>\n` : '') +
+          (o.orderTime ? `• 🕒 <b>Time:</b> <i>${escapeHtml(String(o.orderTime))}</i>\n` : '') +
+          `• 🔗 <b>Tracking Link:</b> ${trackUrl}\n\n`;
+
+        if (trackUrl && buttons.length < 25) {
+          buttons.push([
+            Markup.button.url(`↗ Track #${o.orderId} (${truncateDisplayField(o.restaurantName || 'Order', 18)})`, trackUrl)
+          ]);
+        }
+      }
+    }
+
+    if (totalOrdersFound === 0) {
+      text += `\n<i>Connected accounts me abhi koi completed orders nahi hain.</i>`;
+    }
+
+    buttons.push([
+      Markup.button.callback('↻ Refresh Orders Done', 'boss_view_orders_done'),
+      Markup.button.callback('★ Boss Panel', 'boss_panel_home')
+    ]);
+
+    if (statusMsg) {
+      try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+    }
+
+    await sendSafeHtml(ctx, text.trim(), Markup.inlineKeyboard(buttons));
+  } catch (err) {
+    console.error('[ORDERS_DONE] Execution error:', err?.stack || err?.message || err);
+    if (statusMsg) {
+      try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+    }
+    await ctx.reply(`❌ <b>Orders Done fetch karne me error aaya:</b> ${escapeHtml(err?.message || 'Unknown error')}`, {
+      parse_mode: 'HTML'
+    });
+  }
+}
+
+bot.hears(['📦 Orders Done', 'Orders Done', 'orders done', 'orders_done', '/orders_done', '/ordersdone'], async (ctx) => {
+  await handleAllOrdersDone(ctx);
+});
+bot.command(['ordersdone', 'orders_done'], async (ctx) => {
+  await handleAllOrdersDone(ctx);
+});
+bot.action(['boss_view_orders_done', 'user_orders_done'], async (ctx) => {
+  await handleAllOrdersDone(ctx);
 });
 
 // 4. View Cart

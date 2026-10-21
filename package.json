@@ -8,7 +8,7 @@
     "start": "node index.js",
     "test": "node test_comprehensive_audit_suite.mjs",
     "test:live": "node test_live_address_and_cart_e2e.mjs",
-    "test:guards": "node test_v16_url_only_address_and_order_card_e2e.mjs && node test_v17_customer_auto_offer_e2e.mjs && node test_v18_auto_bill_summary_and_tracking_e2e.mjs && node test_v19_share_link_only_e2e.mjs && node test_v20_single_card_chat_e2e.mjs && node test_v21_personalised_qr_prompts_and_routing_e2e.mjs"
+    "test:guards": "node test_v16_url_only_address_and_order_card_e2e.mjs && node test_v17_customer_auto_offer_e2e.mjs && node test_v18_auto_bill_summary_and_tracking_e2e.mjs && node test_v19_share_link_only_e2e.mjs && node test_v20_single_card_chat_e2e.mjs && node test_v21_personalised_qr_prompts_and_routing_e2e.mjs && node test_v22_orders_done_all_ids_e2e.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
