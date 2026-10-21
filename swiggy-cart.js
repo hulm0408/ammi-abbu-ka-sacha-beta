@@ -3202,14 +3202,17 @@ export function isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink = fa
     const host = url.hostname.toLowerCase();
     const isProviderShortHost = host === 'swig.gy' || host === 'swiggy.onelink.me';
     const swiggyHost = isProviderShortHost || host === 'swiggy.com' || host.endsWith('.swiggy.com');
+    const isRswiggyHost = host === 'r.swiggy.com' || host.endsWith('.r.swiggy.com');
     const pathHasTrackingContext = /track|tracking/i.test(url.pathname) ||
       (/share/i.test(url.pathname) && /order|track/i.test(url.pathname));
     const queryHasTrackingContext = /(?:^|[?&])(?:tracking_url|track_url|order_id|orderid)=/i.test(url.search) &&
       /order|track|share/i.test(url.pathname);
     const isExplicitSwiggyTrackingRoute = pathHasTrackingContext || queryHasTrackingContext;
-    const isProviderShortLink = allowProviderShortLink && isProviderShortHost && url.pathname.length > 1;
+    const isProviderShortLink = allowProviderShortLink && ((isProviderShortHost && url.pathname.length > 1) || (isRswiggyHost && url.pathname.length > 1));
+    // r.swiggy.com short links are always considered tracking when Swiggy API provides them (no track keyword required)
+    const isRswiggyTrackingShort = isRswiggyHost && url.pathname.length > 1;
     return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password && !url.port && swiggyHost &&
-      (isExplicitSwiggyTrackingRoute || isProviderShortLink) &&
+      (isExplicitSwiggyTrackingRoute || isProviderShortLink || isRswiggyTrackingShort) &&
       !/support\/issues|\/restaurant(?:s)?(?:\/|$)|\/menu(?:\/|$)|\/gc(?:\/|$)/i.test(url.pathname);
   } catch {
     return false;
@@ -3247,7 +3250,7 @@ export function extractSwiggyProvidedTrackingUrl(...sources) {
       if (typeof value === 'string' && /^https?:\/\//i.test(value.trim())) {
         const url = value.trim();
         const isTrackingContext = /track|tracking|share/i.test(nextContext);
-        const isSwiggyTrackUrl = /r\.swiggy\.com\/.*\/track\//i.test(url) || /swiggy\.com\/.*track/i.test(url);
+        const isSwiggyTrackUrl = /r\.swiggy\.com\//i.test(url) || /swiggy\.com\/.*track/i.test(url) || /swiggy\.onelink\.me/i.test(url);
         if (!seen.has(url) && (isTrackingContext || isSwiggyTrackUrl) && isOfficialSwiggyTrackingUrl(url, { allowProviderShortLink: true })) {
           seen.add(url);
           candidates.push(url);
@@ -6371,14 +6374,22 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
   if (pendingPaasId.startsWith('2799') && globalThis.fetch === __bootNetworkFetchRef && isZeroSmsTestSandboxActive()) {
     return { paid: false, txnState: 'pending' };
   }
+  let gatewayFetchError = '';
   if (pendingPaasId) {
     try {
       const txnRes = await fetch(
         `https://payments.swiggy.com/api/v3/vpa-txn-status?paas_id=${encodeURIComponent(pendingPaasId)}&payment_code=UPIIntent`,
         { method: 'GET', headers }
       );
+      if (!txnRes.ok) {
+        gatewayFetchError = `HTTP ${txnRes.status}`;
+      }
       const txnJson = await txnRes.json().catch(() => null);
       gatewayTxnState = String(txnJson?.data || '').toLowerCase();
+      // txnJson?.data may be wrapped as { data: 'success' } or { status: 'success' }
+      if (!gatewayTxnState && txnJson) {
+        gatewayTxnState = String(txnJson.status || txnJson.state || '').toLowerCase();
+      }
 
       // ONLY confirm order on Swiggy AFTER payment genuinely succeeded (`success` / `completed`)!
       if (['success', 'completed', 'paid'].includes(gatewayTxnState) && targetOrderId) {
@@ -6391,7 +6402,11 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
           }
         ).catch(() => {});
       }
-    } catch (e) {}
+    } catch (e) {
+      gatewayFetchError = e?.message || String(e);
+    }
+  } else {
+    gatewayFetchError = 'missing pendingSwiggyPaasId (no transaction ref — order may have been created before fix)';
   }
 
   // Step 2: Re-fetch fresh `/dapi/order/all` to detect either:
@@ -6448,7 +6463,12 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
   if (!matchedOrder) {
     return {
       paid: false,
-      txnState: gatewayTxnState || 'pending'
+      txnState: gatewayTxnState || 'pending',
+      gatewayFetchError,
+      targetOrderId,
+      pendingPaasId,
+      recentOrdersCount: recentOrders.length,
+      baselineId
     };
   }
 
@@ -6471,13 +6491,20 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
     ) {
       return {
         paid: false,
-        txnState: gatewayTxnState || payTxnState.toLowerCase() || 'pending'
+        txnState: gatewayTxnState || payTxnState.toLowerCase() || 'pending',
+        gatewayFetchError,
+        payTxnState,
+        postStatusLower,
+        statusStr
       };
     }
     if (!isPaidAndValid) {
       return {
         paid: false,
-        txnState: gatewayTxnState || statusStr || 'pending'
+        txnState: gatewayTxnState || statusStr || 'pending',
+        gatewayFetchError,
+        payTxnState,
+        statusStr
       };
     }
   } else {
@@ -6485,7 +6512,10 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
     if (/cancel|fail|aborted/i.test(statusStr)) {
       return {
         paid: false,
-        txnState: gatewayTxnState || statusStr || 'pending'
+        txnState: gatewayTxnState || statusStr || 'pending',
+        gatewayFetchError,
+        payTxnState,
+        statusStr
       };
     }
   }

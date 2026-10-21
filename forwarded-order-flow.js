@@ -2604,11 +2604,16 @@ export function registerForwardedOrderHandlers(bot, {
       const liveCheck = await checker(acc, order);
 
       if (!liveCheck?.paid) {
+        const dbg = [];
+        if (liveCheck?.txnState) dbg.push('txn=' + liveCheck.txnState);
+        if (liveCheck?.payTxnState) dbg.push('pay=' + liveCheck.payTxnState);
+        if (liveCheck?.gatewayFetchError) dbg.push('gw=' + String(liveCheck.gatewayFetchError).slice(0,35));
+        if (liveCheck?.postStatusLower) dbg.push('post=' + liveCheck.postStatusLower);
         const stateLabel = liveCheck?.txnState === 'pending' || !liveCheck?.txnState
           ? 'Payment is processing'
           : `Payment status: ${liveCheck.txnState}`;
         await ctx.answerCbQuery(
-          `◷ ${stateLabel}... Order will confirm automatically as soon as UPI payment completes!`,
+          ('◷ ' + stateLabel + (dbg.length ? ' (' + dbg.join(' ') + ')' : '') + ' — wait 30s & retry, auto-detect every 5s').slice(0,190),
           { show_alert: true }
         );
         return;

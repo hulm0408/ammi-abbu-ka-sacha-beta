@@ -9982,7 +9982,17 @@ async function checkOrderPaidStatusOnly(orderId) {
       : { paid: false, message: 'Waiting for verified payment on the Swiggy gateway (status check only).' };
   }
 
-  const check = await checkRealSwiggyPaymentAndExtractTracking(acc, order).catch(() => ({ paid: false }));
+  let check;
+  try {
+    check = await checkRealSwiggyPaymentAndExtractTracking(acc, order);
+  } catch (checkErr) {
+    const errMsg = String(checkErr?.message || checkErr || 'unknown');
+    const diag = checkErr?.diag ? ' diag=' + JSON.stringify(checkErr.diag) : '';
+    return {
+      paid: false,
+      message: ('! Swiggy verify failed: ' + errMsg + diag).slice(0, 190)
+    };
+  }
   if (!check?.paid) {
     if (wasAlreadyCompleted) {
       const trackingLink = getStoredSwiggyTrackingUrl(order);
@@ -9993,9 +10003,15 @@ async function checkOrderPaidStatusOnly(orderId) {
         message: trackingLink ? '✓ Payment is verified; Swiggy tracking is available.' : '✓ Payment is verified. Swiggy has not published tracking yet.'
       };
     }
+    const dbg = [];
+    if (check?.txnState) dbg.push('txn=' + check.txnState);
+    if (check?.payTxnState) dbg.push('pay=' + check.payTxnState);
+    if (check?.gatewayFetchError) dbg.push('gwErr=' + String(check.gatewayFetchError).slice(0,40));
+    if (check?.postStatusLower) dbg.push('post=' + check.postStatusLower);
+    if (!dbg.length && check) dbg.push(JSON.stringify(check).slice(0,80));
     return {
       paid: false,
-      message: 'Waiting for verified payment. This check does not create another QR.'
+      message: ('◷ Still pending' + (dbg.length ? ' (' + dbg.join(' ') + ')' : '') + ' — will auto-detect every 5s. If you paid, wait 30s and try again.').slice(0,180)
     };
   }
 
