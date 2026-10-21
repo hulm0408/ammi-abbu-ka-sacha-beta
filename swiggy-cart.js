@@ -5,6 +5,7 @@ import fs from 'fs';
 import puppeteer from 'puppeteer-core';
 import QRCode from 'qrcode';
 import { getDb, updateAccount } from './store.js';
+import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers } from './swiggy-bridge.js';
 
 const CHROME_PATH = findChromePath();
@@ -2101,9 +2102,8 @@ export async function fetchFastRestaurantInfo(restaurantId, lat = '26.8658609', 
 // ============================================================================
 
 function collectHttpUrls(text) {
-  if (!text) return [];
-  const matches = String(text).match(/https?:\/\/[^\s<>"')]+/gi) || [];
-  return matches.map(u => u.replace(/[.,;!?]+$/, ''));
+  // Markdown `[label](url)` / duplicated `url](url` pastes yield one clean URL.
+  return extractSharedUrls(text);
 }
 
 // True for links that resolve to a delivery address (never for cart/group-cart).
@@ -2473,12 +2473,10 @@ export async function resolveSwiggyLink(input) {
   if (!input) return { url: input, type: 'UNKNOWN' };
   const rawInput = String(input).trim();
 
-  // Extract first URL from input while STILL keeping full text for address/receipt parsing!
-  const urlMatch = rawInput.match(/(https?:\/\/[^\s]+|www\.[^\s]+|maps\.app\.goo\.gl\/[^\s]+|swig\.gy\/[^\s]+)/i);
-  let primaryUrl = urlMatch ? urlMatch[1].replace(/[,\.;\)]+$/, '') : rawInput;
-  if (primaryUrl.startsWith('www.') || primaryUrl.startsWith('maps.app.goo.gl/') || primaryUrl.startsWith('swig.gy/')) {
-    primaryUrl = 'https://' + primaryUrl;
-  }
+  // Only the URL matters: surrounding share text ("It is a one time use link…")
+  // is never treated as part of the link.
+  const sharedUrls = extractSharedUrls(rawInput);
+  let primaryUrl = sharedUrls[0] || normalizeSharedUrl(rawInput) || rawInput;
 
   let resolved = primaryUrl;
   let restaurantId = null;

@@ -5,6 +5,7 @@ import { PNG } from 'pngjs';
 import { Markup } from 'telegraf';
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
+import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
 // Genuine Swiggy page used as an honest fallback (never a synthesised tracking URL).
 const SWIGGY_ORDERS_PAGE = 'https://www.swiggy.com/orders';
 
@@ -57,7 +58,7 @@ export function classifyRawOrderInputFast(rawText = '', location = null) {
   const s = String(rawText || '').trim();
   if (!s) return { hasCart: false, hasAddress: false, primaryCartUrl: '' };
 
-  const allUrls = s.match(/https?:\/\/[^\s]+/gi)?.map(u => u.replace(/[.,;!?)]+$/, '')) || [];
+  const allUrls = extractSharedUrls(s);
   let hasCart = false;
   let hasAddress = false;
   let primaryCartUrl = '';
@@ -81,7 +82,7 @@ export function classifyRawOrderInputFast(rawText = '', location = null) {
     }
   }
 
-  const textWithoutUrls = s.replace(/https?:\/\/[^\s]+/gi, ' ').trim();
+  const textWithoutUrls = stripSharedLinks(s);
   if (!hasCart && /your cart\s*\n|items total\s*:/i.test(s)) {
     hasCart = true;
   }
@@ -96,36 +97,38 @@ export function classifyRawOrderInputFast(rawText = '', location = null) {
 
 // Splits a single mega-message containing 2..N `Cart + Address` order blocks into independent per-order texts!
 export function splitMultipleOrderBlocks(rawText = '') {
-  const s = String(rawText || '').trim();
-  if (!s) return [];
-  const gcMatches = [...s.matchAll(/https?:\/\/[^\s]*(?:swig\.gy\/gc\/|swiggy\.com\/[^\s]*group_cart)[^\s]*/gi)];
-  if (gcMatches.length <= 1) return [s];
+  const raw = String(rawText || '').trim();
+  if (!raw) return [];
+  // Markdown pastes contain the same link twice (`[url](url)`); collapse them so
+  // each cart link is found exactly once before splitting.
+  const normalized = collapseSharedLinks(raw);
+  const gcLinks = extractSharedUrls(normalized).filter((u) => /\/gc\/|group_cart/i.test(u));
+  if (gcLinks.length <= 1) return [raw];
 
-  // Look for natural paragraph splits where each segment carries its own cart link
-  const segments = [];
-  for (let i = 0; i < gcMatches.length; i++) {
-    const curIdx = gcMatches[i].index;
-    const nextIdx = i + 1 < gcMatches.length ? gcMatches[i + 1].index : s.length;
-    // Check if address precedes cart link or follows cart link
-    if (i === 0 && curIdx > 25) {
-      // Format looks like `Address 1 \n Cart 1 \n\n Address 2 \n Cart 2 ...`
-      const endOfCartLine = s.indexOf('\n', curIdx + gcMatches[i][0].length);
-      const cutPoints = gcMatches.map((m, idx) => {
-        const lineEnd = s.indexOf('\n', m.index + m[0].length);
-        return idx === gcMatches.length - 1 ? s.length : (lineEnd === -1 ? m.index + m[0].length : lineEnd);
-      });
-      let start = 0;
-      for (const end of cutPoints) {
-        const chunk = s.slice(start, end).trim();
-        if (chunk) segments.push(chunk);
-        start = end;
-      }
-      return segments.length >= 2 ? segments : [s];
-    }
-    const seg = s.slice(curIdx, nextIdx).trim();
-    if (seg) segments.push(seg);
+  const positions = [];
+  let searchFrom = 0;
+  for (const link of gcLinks) {
+    let idx = normalized.indexOf(link, searchFrom);
+    if (idx === -1) idx = normalized.indexOf(link);
+    positions.push(idx === -1 ? 0 : idx);
+    searchFrom = (idx === -1 ? 0 : idx) + link.length;
   }
-  return segments.length >= 2 ? segments : [s];
+
+  // Cut at the end of each cart's line so the address block travels with its link.
+  const cutPoints = positions.map((pos, i) => {
+    if (i === positions.length - 1) return normalized.length;
+    const lineEnd = normalized.indexOf('\n', pos + gcLinks[i].length);
+    return lineEnd === -1 ? pos + gcLinks[i].length : lineEnd;
+  });
+
+  const segments = [];
+  let start = 0;
+  for (const end of cutPoints) {
+    const chunk = normalized.slice(start, end).trim();
+    if (chunk) segments.push(chunk);
+    start = end;
+  }
+  return segments.length >= 2 ? segments : [raw];
 }
 
 const activePaymentPollers = new Map();
@@ -1257,7 +1260,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
     return { updatedCart, updatedAddress: true };
   }
 
-  const allUrls = trimmed.match(/https?:\/\/[^\s]+/gi)?.map(u => u.replace(/[.,;!?)]+$/, '')) || [];
+  const allUrls = extractSharedUrls(trimmed);
   const swiggyUrls = allUrls.filter(u => /(swiggy\.com|swig\.gy|onelink\.me)/i.test(u));
   const mapsUrls = allUrls.filter(u => /(maps\.app\.goo\.gl|google\.com\/maps|goo\.gl\/maps)/i.test(u));
 
@@ -1268,7 +1271,7 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
 
   // Pre-extract plain-text street address BEFORE `Promise.all` so links + geocoding run 100% concurrently!
   // (Only for genuinely text-only messages — never when an address link is present.)
-  const textWithoutUrlsEarly = trimmed.replace(/https?:\/\/[^\s]+/gi, ' ').trim();
+  const textWithoutUrlsEarly = stripSharedLinks(trimmed);
   const earlyPlainAd = addressShareUrl
     ? null
     : (allUrls.length === 0 && !isValidCartInput(trimmed) && isValidAddressInput(trimmed)

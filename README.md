@@ -21,6 +21,12 @@ A Swiggy "Share address" message is the **only** source of delivery data:
 * If the link cannot be resolved, the bot asks for a fresh link/pin instead of guessing from chat text.
 * A plain street address (or Telegram GPS pin) is still accepted when the message contains **no** address link.
 * The delivery contact is always the receiver's number; the ordering Swiggy account's number is never substituted.
+* **Only the URL is used.** Telegram keeps markdown, so a real paste often looks like
+  `link:[https://swiggy.onelink.me/JgkQ/kubail4a](https://swiggy.onelink.me/JgkQ/kubail4a)` followed by
+  `Address: …` and `It is a one time use link and will be valid for 24 hours.` All URL capture goes through
+  `link-utils.js` (`extractSharedUrls` / `normalizeSharedUrl` / `stripSharedLinks`), so the markdown wrapper,
+  the duplicated copy and every line of marketing text are dropped. The same applies to restaurant/group-cart
+  links (`swig.gy/gc/...`), so a cart share message can never be read as an address and vice versa.
 
 Order cards render as a compact receipt: `Order Account` → `Your Cart` → `Delivering To` → items →
 `Bill Summary` → `To Pay`.

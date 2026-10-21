@@ -33,6 +33,7 @@ import {
   hydrateAccountsFromCloudVault,
   syncCloudVaultNow,
 } from './store.js';
+import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
 import {
   extractStandaloneMobileNumber,
   extractStandaloneOtpDigits,
@@ -160,15 +161,9 @@ process.on('uncaughtException', (err) => {
 const splitJsonChunks = {};
 
 function extractAllLinks(text) {
-  if (!text) return [];
-  const urlRegex = /(https?:\/\/[^\s]+|t\.me\/[^\s]+|www\.[^\s]+|maps\.app\.goo\.gl\/[^\s]+|swig\.gy\/[^\s]+)/gi;
-  const matches = text.match(urlRegex) || [];
-  return matches.map(link => {
-    let l = link.trim().replace(/[,\.;\)]+$/, '');
-    if (l.startsWith('www.')) l = 'https://' + l;
-    else if (!l.startsWith('http') && !l.startsWith('t.me')) l = 'https://' + l;
-    return l;
-  });
+  // Markdown / duplicated links are normalised to the bare URL by link-utils,
+  // so `[link](link)` never turns into one broken url with text around it.
+  return extractSharedUrls(text);
 }
 
 function extractLink(text) {
@@ -7017,12 +7012,13 @@ bot.on('text', async (ctx) => {
       return;
     }
 
-    let link = rawText.trim();
-    const urlMatch = link.match(/(https?:\/\/[^\s]+)/i);
-    const amtMatch = link.match(/(?:₹|rs\.?|inr)?\s*([0-9]{2,5})\b/i);
+    // Only the link is meaningful; markdown wrappers and the note around it are dropped.
+    const pastedUrls = extractSharedUrls(rawText);
+    let link = pastedUrls[0] || stripSharedLinks(rawText);
+    const amtMatch = rawText.match(/(?:₹|rs\.?|inr)?\s*([0-9]{2,5})\b/i);
 
-    if (urlMatch) {
-      link = urlMatch[1];
+    if (pastedUrls.length > 0) {
+      link = pastedUrls[0];
       if (amtMatch && !link.includes(amtMatch[1])) {
         order.finalPayable = parseInt(amtMatch[1], 10);
       }
@@ -7331,14 +7327,19 @@ bot.on('text', async (ctx) => {
       if (linkMeta?.hostName) draftUpdates.hostName = linkMeta.hostName;
     } catch (e) {}
 
-    // Check if user also sent address details in the same text
+    // Check if user also sent address details in the same text.
+    // Only the address link matters; marketing text around it is ignored.
     const parsedAddr = parseAddressDetails(rawText);
+    const addrLinkInCartMsg = extractAddressShareUrl(rawText);
     const curBefore = getDraft(userId);
-    if (parsedAddr && !curBefore.address) {
-      const geoAddr = await geocodeAddressDetails(parsedAddr).catch(() => parsedAddr);
-      draftUpdates.address = geoAddr.address || `${geoAddr.city || 'Delivery'} Address`;
-      draftUpdates.addressOriginalText = rawText;
-      draftUpdates.addressDetails = geoAddr;
+    if ((parsedAddr || addrLinkInCartMsg) && !curBefore.address) {
+      const geoAddr = parsedAddr
+        ? await geocodeAddressDetails(parsedAddr).catch(() => parsedAddr)
+        : null;
+      draftUpdates.address = geoAddr?.address || addrLinkInCartMsg || `${geoAddr?.city || 'Delivery'} Address`;
+      draftUpdates.addressOriginalText = geoAddr?.address || addrLinkInCartMsg || stripSharedLinks(rawText);
+      if (addrLinkInCartMsg) draftUpdates.addressLink = addrLinkInCartMsg;
+      if (geoAddr) draftUpdates.addressDetails = geoAddr;
     }
 
     updateDraft(userId, draftUpdates);
@@ -7404,7 +7405,7 @@ bot.on('text', async (ctx) => {
     // Resolve full address details immediately (preserves full Swiggy Share text + geocodes coordinates!)
     let resolvedAddrDetails = parsedAddr;
     try {
-      const addrMeta = await resolveSwiggyLink(rawText);
+      const addrMeta = await resolveSwiggyLink(validAddress || rawText);
       if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
         resolvedAddrDetails = { ...(resolvedAddrDetails || {}), ...addrMeta.addressDetails };
       } else if (resolvedAddrDetails) {
@@ -7412,12 +7413,12 @@ bot.on('text', async (ctx) => {
       }
     } catch (e) {}
 
-    const cleanDisplayAddr = resolvedAddrDetails?.address || validAddress || rawText.trim();
+    // When a link is present only the link matters: the marketing block around
+    // it ("It is a one time use link and will be valid for 24 hours") is ignored.
+    const cleanDisplayAddr = resolvedAddrDetails?.address || validAddress || stripSharedLinks(rawText);
     const draftUpdates = {
       address: cleanDisplayAddr,
-      // When an address link was shared, keep the resolved address (or the link)
-      // instead of the whole pasted chat text.
-      addressOriginalText: resolvedAddrDetails?.address || (validAddress || rawText.trim()),
+      addressOriginalText: resolvedAddrDetails?.address || validAddress || stripSharedLinks(rawText),
       ...(validAddress ? { addressLink: validAddress } : {})
     };
     if (resolvedAddrDetails) draftUpdates.addressDetails = resolvedAddrDetails;
@@ -7504,7 +7505,7 @@ bot.on('text', async (ctx) => {
     if (parsedAddrDirect || validAddrLink) {
       let geoAddr = parsedAddrDirect;
       try {
-        const addrMeta = await resolveSwiggyLink(rawText);
+        const addrMeta = await resolveSwiggyLink(validAddrLink || rawText);
         if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
           geoAddr = { ...(geoAddr || {}), ...addrMeta.addressDetails };
         } else if (geoAddr) {
@@ -7516,7 +7517,7 @@ bot.on('text', async (ctx) => {
       updateDraft(userId, {
         address: geoAddr?.address || validAddrLink || `${geoAddr?.city || 'Delivery'} Address`,
         // Link-shared messages: store the resolved address, never the pasted chat text.
-        addressOriginalText: geoAddr?.address || validAddrLink || rawText,
+        addressOriginalText: geoAddr?.address || validAddrLink || stripSharedLinks(rawText),
         ...(validAddrLink ? { addressLink: validAddrLink } : {}),
         ...(geoAddr ? { addressDetails: geoAddr } : {})
       });
@@ -8098,7 +8099,9 @@ async function handleSendToBoss(ctx) {
   // Fallback: If addressDetails is missing, resolve directly from address text/link without clobbering
   if (!newOrder.addressDetails && (newOrder.addressOriginalText || newOrder.address)) {
     try {
-      const addrMeta = await resolveSwiggyLink(newOrder.addressOriginalText || newOrder.address);
+      // Prefer the address share link itself; never hand the whole pasted text to the resolver.
+      const addrLinkForOrder = extractAddressShareUrl(newOrder.addressOriginalText || newOrder.address);
+      const addrMeta = await resolveSwiggyLink(addrLinkForOrder || newOrder.addressOriginalText || newOrder.address);
       if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
         newOrder.addressDetails = addrMeta.addressDetails;
         if (addrMeta.addressDetails.address) newOrder.address = addrMeta.addressDetails.address;
