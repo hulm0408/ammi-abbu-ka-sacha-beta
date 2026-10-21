@@ -4770,17 +4770,21 @@ async function runBossEventOffersClaim(ctx, chosenOfferValue = null) {
   saveDb(db);
   try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch {}
 
-  let reportText = `🎁 <b>SWIGGY FREE CASH &amp; EVENT OFFERS (15-DAY AUTO-LOCK)</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `🍳 <b>Breakfast:</b> 7AM–11AM <i>(auto-locked before 5:00 AM IST)</i>\n` +
-    `🌙 <b>Late Night:</b> 9PM–6AM <i>(auto-locked before 6:30 PM IST)</i>\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  let reportText = section('🎁 SWIGGY FREE CASH & EVENT OFFERS (15-DAY AUTO-LOCK)', [
+    sub('🍳 Breakfast: 7AM–11AM · 🌙 Late Night: 9PM–6AM'),
+    sub('Auto-locked before 5:00 AM IST (Breakfast) · 6:30 PM IST (Late Night)'),
+  ].join('\n')) + '\n';
 
+  const offerTableRows = [['Account', 'Breakfast', 'Late Night', 'Status']];
   for (const item of settled) {
     const r = item.res;
     if (r.error || r.reason) {
-      reportText += `📱 <b>${escapeHtml(item.label)}:</b>\n` +
-        `  ❌ <b>Status:</b> <code>${escapeHtml(r.error || r.reason)}</code>\n\n`;
+      offerTableRows.push([
+        `<b>${escapeHtml(item.label)}</b>`,
+        `❌ Error`,
+        `❌ Error`,
+        `<code>${escapeHtml(r.error || r.reason)}</code>`,
+      ]);
       continue;
     }
 
@@ -4788,16 +4792,25 @@ async function runBossEventOffersClaim(ctx, chosenOfferValue = null) {
     const ln = r.lateNight || {};
     const bfTag = bf.status === 'CLAIMED' ? '✅' : '❌';
     const lnTag = ln.status === 'CLAIMED' ? '✅' : '❌';
+    const bfMsg = escapeHtml(bf.message || bf.rawMessage || 'Done');
+    const lnMsg = escapeHtml(ln.message || ln.rawMessage || 'Done');
 
-    reportText += `📱 <b>${escapeHtml(item.label)}:</b>\n` +
-      `  • 🍳 <b>Breakfast:</b> ${bfTag} <i>${escapeHtml(bf.message || bf.rawMessage || 'Done')}</i>\n` +
-      `  • 🌙 <b>Late Night:</b> ${lnTag} <i>${escapeHtml(ln.message || ln.rawMessage || 'Done')}</i>\n\n`;
+    offerTableRows.push([
+      `<b>${escapeHtml(item.label)}</b>`,
+      `${bfTag} ${bfMsg}`,
+      `${lnTag} ${lnMsg}`,
+      '✅ Claimed',
+    ]);
   }
+  reportText += table(offerTableRows) + '\n';
 
-  reportText += `━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `📊 <b>Summary:</b> <b>${successCount}</b> Fully Locked | <b>${partialCount}</b> Partial | <b>${failCount}</b> Expired` +
-    (skippedCount > 0 ? ` <i>(${skippedCount} logged-out skipped)</i>` : '') +
-    `\n💡 <i>Tap any reward button below to switch ALL IDs instantly across all 15 days!</i>`;
+  reportText += section('📊 Summary', [
+    field('Fully Locked', `<b>${successCount}</b>`),
+    field('Partial', `<b>${partialCount}</b>`),
+    field('Expired', `<b>${failCount}</b>`),
+    skippedCount > 0 ? field('Logged-out Skipped', `<i>${skippedCount}</i>`) : '',
+    sub('Tap any reward button below to switch ALL IDs instantly across all 15 days!'),
+  ].filter(Boolean).join('\n'));
 
   const buttons = [
     [

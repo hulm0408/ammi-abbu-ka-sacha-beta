@@ -37,6 +37,7 @@ import {
   requestSwiggyOtpViaBridge,
   verifySwiggyOtpViaBridge
 } from './swiggy-bridge.js';
+import { table, heading, sub, field, section } from './rich-text.js';
 
 const PORTAL_SIGN_SECRET = crypto
   .createHash('sha256')
@@ -179,27 +180,35 @@ export function buildCleanUserIntakeCard(userId, draft = {}, userInfo = {}) {
     ? `<b>DELIVER TO</b>\n<b>${esc(ad.city || ad.label || 'Delivery Location')}</b>\n${esc(draft.address)}`
     : `<b>DELIVER TO</b>\n<i>Address link not received</i>`;
 
-  const itemLines = items.length > 0
-    ? '\n' + items.map((it) => {
-        const q = Number(it.qty || it.quantity || 1);
-        const lineAmt = Number(it.lineTotal || (Number(it.price || 0) * q) || 0);
-        return `• ${q} × ${esc(it.name || 'Item')}${lineAmt > 0 ? ` — <b>₹${lineAmt}</b>` : ''}`;
-      }).join('\n')
+  const itemTable = items.length > 0
+    ? table([
+        ['#', 'Item', 'Qty', 'Line Total'],
+        ...items.map((it, idx) => {
+          const q = Number(it.qty || it.quantity || 1);
+          const lineAmt = Number(it.lineTotal || (Number(it.price || 0) * q) || 0);
+          return [String(idx + 1), esc(it.name || 'Item'), String(q), lineAmt > 0 ? `₹${lineAmt}` : '—'];
+        })
+      ])
     : '';
+
+  const summaryTable = table([
+    ['Items / subtotal', subtotal > 0 ? `₹${subtotal}` : 'Pending cart'],
+    ['Delivery & fees', hasAddress ? 'Calculating on checkout' : 'Pending address'],
+    ['Eligible discount', 'Pending'],
+    ['Total after validation', 'Pending'],
+  ]);
 
   const text =
     `${topBanner}\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `<b>#${esc(shortRef)} — ORDER SUMMARY</b>  ·  ${statusBadge}\n\n` +
-    `${restLine}\n\n` +
-    `${deliverLine}${itemLines}\n\n` +
-    `Items / subtotal: <b>${subtotal > 0 ? `₹${subtotal}` : 'Pending cart'}</b>\n` +
-    `Delivery &amp; fees: <i>${hasAddress ? 'Calculating on checkout' : 'Pending address'}</i>\n` +
-    `Eligible discount: <i>Pending</i>\n` +
-    `<b>TOTAL AFTER VALIDATION:</b> <b>Pending</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `${actionPrompt}\n` +
-    `<i>🔒 No account allocated; QR is blocked.</i>`;
+    section(`#${esc(shortRef)} — ORDER SUMMARY · ${statusBadge}`, [
+      restLine,
+      deliverLine,
+      itemTable,
+    ].filter(Boolean).join('\n')) +
+    '\n' +
+    section('📋 Order Summary', summaryTable) +
+    '\n' +
+    section('⏭ Next Step', `${actionPrompt}\n${sub('🔒 No account allocated; QR is blocked.')}`);
 
   const rows = [
     [makeSmartPortalButton(primaryCtaLabel, portalUrl)],
@@ -228,28 +237,40 @@ export function buildCleanUserBillConfirmationCard(order) {
   const totalToPay = Number(order.finalPayable || order.finalTotal || subtotal || 0);
   const ad = order.addressDetails || {};
 
-  const itemLines = items.map((it) => {
-    const q = Number(it.qty || it.quantity || 1);
-    const lineAmt = Number(it.lineTotal || (Number(it.price || 0) * q) || 0);
-    return `• ${q} × ${esc(it.name || 'Item')} — <b>₹${lineAmt}</b>`;
-  }).join('\n');
+  const itemTable = items.length > 0
+    ? table([
+        ['#', 'Item', 'Qty', 'Line Total'],
+        ...items.map((it, idx) => {
+          const q = Number(it.qty || it.quantity || 1);
+          const lineAmt = Number(it.lineTotal || (Number(it.price || 0) * q) || 0);
+          return [String(idx + 1), esc(it.name || 'Item'), String(q), `₹${lineAmt}`];
+        })
+      ])
+    : '';
+
+  const billTable = table([
+    ['Items / subtotal', `₹${subtotal}`],
+    ['Delivery & fees', `₹${feesTotal}`],
+    ['Eligible discount', discount > 0 ? `−₹${discount}` : '₹0'],
+    ['TOTAL TO PAY', `<b>₹${totalToPay}</b>`],
+  ]);
 
   const text =
     `ℹ️ <b>Check your delivery address and total.</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `<b>#${esc(order.id)} — ORDER SUMMARY</b>  ·  🟡 <b>Approval pending</b>\n\n` +
-    `🍽 <b>${esc(order.restaurantName || 'Swiggy Order')}</b>\n` +
-    `<i>${totalQty || items.length || 1} items · address validated</i>\n\n` +
-    `<b>DELIVER TO</b>\n` +
-    `<b>${esc(ad.city || ad.name || 'Delivery Address')}</b>\n` +
-    `${esc(order.address || '')}\n\n` +
-    `${itemLines}\n\n` +
-    `Items / subtotal: <b>₹${subtotal}</b>\n` +
-    `Delivery &amp; fees: <b>₹${feesTotal}</b>\n` +
-    `Eligible discount: <b>${discount > 0 ? `−₹${discount}` : '₹0'}</b>\n` +
-    `<b>TOTAL TO PAY: ₹${totalToPay}</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `<i>🔒 No QR before explicit approval.</i>`;
+    section(`#${esc(order.id)} — ORDER SUMMARY · 🟡 <b>Approval pending</b>`, [
+      `🍽 <b>${esc(order.restaurantName || 'Swiggy Order')}</b>`,
+      `<i>${totalQty || items.length || 1} items · address validated</i>`,
+      '',
+      `<b>DELIVER TO</b>`,
+      `<b>${esc(ad.city || ad.name || 'Delivery Address')}</b>`,
+      `${esc(order.address || '')}`,
+      '',
+      itemTable,
+    ].filter(Boolean).join('\n')) +
+    '\n' +
+    section('💰 Final Bill', billTable) +
+    '\n' +
+    section('⚠️ Important', `<i>🔒 No QR before explicit approval.</i>`);
 
   const keyboard = Markup.inlineKeyboard([
     [
@@ -265,16 +286,19 @@ export function buildCleanUserBillConfirmationCard(order) {
 export function buildCleanUserPaymentPendingCard(order) {
   const portalUrl = buildUserPortalUrl(order.userId, order.id);
   const totalToPay = Number(order.finalPayable || order.finalTotal || 0);
+  const paymentTable = table([
+    ['Order ID', `#${esc(order.id)}`],
+    ['Amount', `<b>₹${totalToPay}</b>`],
+    ['Restaurant', esc(order.restaurantName || 'Swiggy Order')],
+    ['Status', '🟡 Waiting for verified payment'],
+  ]);
+
   const text =
     `💳 <b>Pay when ready</b> · <i>Amount confirmed by the order summary</i>\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `<b>#${esc(order.id)} — PAYMENT REQUEST ISSUED</b>\n\n` +
-    `Amount: <b>₹${totalToPay}</b>\n` +
-    `Restaurant: <b>${esc(order.restaurantName || 'Swiggy Order')}</b>\n\n` +
-    `🟡 <b>Waiting for verified payment</b>\n` +
+    section('📋 Payment Request Issued', paymentTable) +
+    '\n' +
     `<i>"I've paid" requests a status check only.</i>\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `<i>🔒 No duplicate QR. No trust in a button tap.</i>`;
+    section('⚠️ Important', `<i>🔒 No duplicate QR. No trust in a button tap.</i>`);
 
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback("🔍 I've paid — check status", `user_paid_status_${order.id}`)],
