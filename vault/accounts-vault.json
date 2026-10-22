@@ -1,6 +1,6 @@
 {
   "version": 15,
-  "updatedAt": "2026-10-21T12:52:49.755Z",
+  "updatedAt": "2026-10-22T08:38:06.340Z",
   "accounts": {
     "acc_9935123518": {
       "name": "prithvi",
@@ -10,7 +10,7 @@
       "phone": "9935123518",
       "mobile": "9935123518",
       "customerId": "283703858",
-      "tid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI1ODY0ODksInNpZCI6InViNmFmNjE2ZGM2LWRmZTctNDE2Mi1iNjU5LTc2ZDBkNDM1OSIsInN1YiI6IjdjZmQ1OGM4LWNmYWYtNDU3Mi1iZTIxLWE2YTEwMGQ3Nzk1YyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6Ik8rcXN2Q0VUR00wWWVQelpTYThKa2phWklvUDVFcjNSenhwUWJZWE5tY1Y1MVdlS2NKUVhPMGs3TElkWXNZNzRlazIxRHV4azNzNG8zYUlWNFhESEF5bm5sdzdUNGJEZWZLQWVYbVFzU3A3ZlhWOVlQZllBVHIrVStKMzZCMlVZdVg3aWJCb2tPMG5zV3IwdVJKcGdTWE1ZaW5jVlVmQys0NC8valVjdm1sODBVcVdyMnJkQzllR0NvSHlndXlwU0lFRi8wVHF2YndFYkFwbGFXZUZqK1ZscFV5TkJGNnFQZm40Q1laV1B3VzRQZm1CRWphTjdTWmpQY2JJQUU4NGVDQ29nZkRWNG11Zz0iLCJ1c2VyX2lkIjoiMjgzNzAzODU4IiwiZXhwIjoxNzk1MTc4NDg5fQ.EaJwy_WXWLoCmSLVDAVKj3am_FjWjJjH-1mMmN0mtkY",
+      "tid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiI3Y2ZkNThjOC1jZmFmLTQ1NzItYmUyMS1hNmExMDBkNzc5NWMiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicDkwZGQxNzFkLWNjYWMtNDczOC1iM2M4LTFiNGExMWUwZCIsInNlc3Npb25fZGF0YSI6Ik8rcXN2Q0VUR00wWWVQelpTYThKa2phWklvUDVFcjNSenhwUWJZWE5tY1Y1MVdlS2NKUVhPMGs3TElkWXNZNzRlazIxRHV4azNzNG8zYUlWNFhESEF5bm5sdzdUNGJEZWZLQWVYbVFzU3A3ZlhWOVlQZllBVHIrVStKMzZCMlVZdVg3aWJCb2tPMG5zV3IwdVJKcGdTWE1ZaW5jVlVmQys0NC8valVjdm1sODBVcVdyMnJkQzllR0NvSHlndXlwU0lFRi8wVHF2YndFYkFwbGFXZUZqK1ZscFV5TkJGNnFQZm40Q1laV1B3VzRQZm1CRWphTjdTWmpQY2JJQUU4NGVDQ29nZkRWNG11Zz0iLCJ1c2VyX2lkIjoiMjgzNzAzODU4IiwiZXhwIjoxNzk1MjQ5MjAxfQ.i5Ajdgz2LterCXyiiNYrbPVklQKfK43E5GZ2loMTc0A",
       "sid": "u870b88b801-690f-49c3-8372-f23876194",
       "deviceId": "cad5e8d0-098c-7992-da53-fae3f73790d8",
       "token": "b05c650e-752e-4a06-8596-d64a9bae5268a42cab26-f1da-4b4b-8523-6e21ac86f9b4",
@@ -27,16 +27,18 @@
           "byo-ln-v5-16": 1,
           "byo-bf-v10-16": 1,
           "byo-bf-v10-17": 1,
-          "byo-ln-v5-17": 1
+          "byo-ln-v5-17": 1,
+          "byo-ln-v5-18": 1,
+          "byo-bf-v10-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -44,15 +46,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -60,12 +62,12 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
       },
       "savedAt": "2026-10-17T01:54:15.307Z",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f7be679c6e4c89f4be234c6df7657cedf2aeb6902fefebf305b1cee3c175a9562399d2b91c7c08b74f61533ae36f96b25c9a3b41aa172daae26f3d85482ed38dbc8d30fcb27d8b56f906ee2f07db5119ea5309002cc105347e1a38aeefceb1cc8f15b9aca3ebe106f27ee8bd0773133a35e8f2bf3c16613ba514f567739b64b2db07b77039b4c0157cf7f095b8a526c434b069aaea9708309fb1f80af7604304944d3cc833228a23ab4e11ae8bd0652976bd4210d5cbb761d2688a5562ae0e35560a16ea12c92d275a8461fdbd779c9f8922f73acbd2ed1b16197ccdb39f2b4489f7b96130e926a26d7fa2e20c9bc571c36dbe59a65c5b0862a6a612b89cc92d13e62b51934b07ba38a8b1ba51009032dd77210fdf2c9d13ee4e507453b8a8ee51565ef5ed5140580a7a97df750bda431da60cc72d4447232c2d09bdba8c6524ed2b7dd10d2f923b25d62bec591c09780cd22949a4acf4f6f9cad0a70887a6b5bee8471821ed1ea08e303091d4a2b4cfefe642b69d1c96986a3b06b73158c9cd4262d26560f6795e2c1df5aace3142cfb46ed79753a50ff6f5025a8b04c2ae77dfcd6790f7b4f248f38a4c5f043b676fc26b45e860d248aef9048c63676e52a4e8a8aad36c9523a5b2a17749ad2248d9af2da0a86dd08005e5f31def6b826cd86461c0c14daf8342cad2f2a781f4aaf0bf4972af15716f98ff04015eb496103eaa8d5a75f978470d286aca473a4026aeb3422fa0c08cb52411cdf2cd4d99494a4108b4354a37098cd459da830aa1468f0e3b26e71a09d8875fbd2d764d145b91f17c44e9de700ec5fa38e116df624efce30878dab7ee45e1a995a6723bdedae32d47a4e322b7744bdabfcc5bdcfd9f43bb7ae3defc723e8a026a737f8aac003692f2321d28d2a4b2493b967a6d59eaa0b7eccecaca49589b4b7fd4eb4e797455c58be8b8696d85482652e9727e306964b4a52bcb1258373b123585e49bdb98dda",
-      "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI1ODY0ODksInNpZCI6InViNmFmNjE2ZGM2LWRmZTctNDE2Mi1iNjU5LTc2ZDBkNDM1OSIsInN1YiI6IjdjZmQ1OGM4LWNmYWYtNDU3Mi1iZTIxLWE2YTEwMGQ3Nzk1YyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6Ik8rcXN2Q0VUR00wWWVQelpTYThKa2phWklvUDVFcjNSenhwUWJZWE5tY1Y1MVdlS2NKUVhPMGs3TElkWXNZNzRlazIxRHV4azNzNG8zYUlWNFhESEF5bm5sdzdUNGJEZWZLQWVYbVFzU3A3ZlhWOVlQZllBVHIrVStKMzZCMlVZdVg3aWJCb2tPMG5zV3IwdVJKcGdTWE1ZaW5jVlVmQys0NC8valVjdm1sODBVcVdyMnJkQzllR0NvSHlndXlwU0lFRi8wVHF2YndFYkFwbGFXZUZqK1ZscFV5TkJGNnFQZm40Q1laV1B3VzRQZm1CRWphTjdTWmpQY2JJQUU4NGVDQ29nZkRWNG11Zz0iLCJ1c2VyX2lkIjoiMjgzNzAzODU4IiwiZXhwIjoxNzk1MTc4NDg5fQ.EaJwy_WXWLoCmSLVDAVKj3am_FjWjJjH-1mMmN0mtkY",
+      "jwtTid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiI3Y2ZkNThjOC1jZmFmLTQ1NzItYmUyMS1hNmExMDBkNzc5NWMiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicDkwZGQxNzFkLWNjYWMtNDczOC1iM2M4LTFiNGExMWUwZCIsInNlc3Npb25fZGF0YSI6Ik8rcXN2Q0VUR00wWWVQelpTYThKa2phWklvUDVFcjNSenhwUWJZWE5tY1Y1MVdlS2NKUVhPMGs3TElkWXNZNzRlazIxRHV4azNzNG8zYUlWNFhESEF5bm5sdzdUNGJEZWZLQWVYbVFzU3A3ZlhWOVlQZllBVHIrVStKMzZCMlVZdVg3aWJCb2tPMG5zV3IwdVJKcGdTWE1ZaW5jVlVmQys0NC8valVjdm1sODBVcVdyMnJkQzllR0NvSHlndXlwU0lFRi8wVHF2YndFYkFwbGFXZUZqK1ZscFV5TkJGNnFQZm40Q1laV1B3VzRQZm1CRWphTjdTWmpQY2JJQUU4NGVDQ29nZkRWNG11Zz0iLCJ1c2VyX2lkIjoiMjgzNzAzODU4IiwiZXhwIjoxNzk1MjQ5MjAxfQ.i5Ajdgz2LterCXyiiNYrbPVklQKfK43E5GZ2loMTc0A",
       "preferredOfferValue": 1
     },
     "acc_6296591407": {
@@ -100,11 +102,11 @@
         "sessionExpired": true,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 0,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "EXPIRED",
           "status": "FAILED",
@@ -116,11 +118,11 @@
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 0,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "EXPIRED",
           "status": "FAILED",
@@ -158,16 +160,18 @@
           "byo-ln-v5-16": 1,
           "byo-bf-v10-16": 1,
           "byo-bf-v10-17": 1,
-          "byo-ln-v5-17": 1
+          "byo-ln-v5-17": 1,
+          "byo-ln-v5-18": 1,
+          "byo-bf-v10-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -175,15 +179,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -191,7 +195,7 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
       }
     },
@@ -218,16 +222,18 @@
           "byo-ln-v5-16": 1,
           "byo-bf-v10-16": 1,
           "byo-ln-v5-17": 1,
-          "byo-bf-v10-17": 1
+          "byo-bf-v10-17": 1,
+          "byo-bf-v10-18": 1,
+          "byo-ln-v5-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -235,15 +241,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -251,7 +257,7 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
       }
     },
@@ -283,11 +289,11 @@
         "sessionExpired": true,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 0,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "EXPIRED",
           "status": "FAILED",
@@ -299,11 +305,11 @@
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 0,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "EXPIRED",
           "status": "FAILED",
@@ -324,7 +330,7 @@
       "customerId": "286556954",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fd6a293f1265246ae41ad4adf585b54f8232e8b12526b403d541ed2d1c8489239569fae403a625925ffee919b96b5e07e040b5b0603098f02821e477c74c2236000f58a9a092c6dc0d08bfd46054b410164bb9e833d1d5f5d45a50f16a5bfa97d46a3f488909537eff5032c317eaef2fe3e7def84d00b158b6aead5df51c399723dc78916b50d29cd5e271c4cfd3cb37d11b077e2675b1664b4d5ccab6ce285f11dfd0e043910062cef3b5ea6d3f554515544ec8e28c8deb6a8fbb76e739f01a968996b81bb8238c9cbcdcb900761554331d104cd7e1587bb13714c50f9beb0c2e6c6a65e028da2884b2d8c1117b6c8f4a320a9bd30c67186e8122235a25eeef98f630aff865883b094d0b57f390c326bafa0b97077888764057fc6855c9174edff9a2a44bd9633df2c19e653fc70e9d9a2b5846e7b4fa84acdc8a5c8a6e8bdc679a0929a0b228c71703781315d4757185b932af73d65c23c61da70083b46ab4975784b618d05aebd09f19f5a1986cd35bcfeb3489c9388a59c8266743929864b751d8628196a0b602071ac756b4f86bd87d836537e2e85f275c9bb5455906c4f9c0209e055127cb698290f73c420b7487cada0abb1edfbf97473b610b0489b4a6739a4722dffc8fa4dc83e3ad083fa88323190f013badf0bf0c449de5c353f1349707f426511ac5f5b2aeb919b5e04db8002f14fb06b062acdbc141fdfbbde1ed947cd41a749b4f0840861914de7d7113b33fe0ddc363c0770db6c04dac1774de870c01ed1a45c2179d2ffe0743431bb28ee5c410efc99867ea15951a3b19f92c19dda8e25557cce8c0d958e7a925935cae5357c4af02e342e9003dd37aff47dbd06c211f03d75c674d13f4052093e90c2ba6c6c6c812f75c2d917585eb7f3f27301c791847b0f342595f5e2125cfd14938a65cdf6ad4cbf045f8433d0a6433ab1bfe9c44c1f2c3d3ab8179a2a07aa5d7b911b0860d2eb501108baae018a9d4908b713aac0d9ea82696952fc2dbb48c1e1689e19f3836ce2857bf6625800a7ba2f4c891fa1cbd9a176239e5fff7df394675c2653b6282cce6523dff6989e02e00a73476054bf8ebbeeda6a4b863ba6b2a2a13568a6e1ca7bed6ee87af6a9e22335bedbe0ea1089ebf7d2db95eb67ebbfb0720271f143a7470faeb6135a05c54a",
       "token": "eec2b275-a291-4da1-8683-e06bb9b2b17bccce809a-9532-448a-84fe-340e3e9c2813",
-      "tid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiI4ZjkwMGNkOC01NDY4LTRhZDEtOTM5OS0wOGY4M2ViZWI0NmYiLCJpYXQiOjE3OTI1ODY1MTMsInNpZCI6InViNTJiYTBmMmRiLTc1ODAtNDVkNC1iYmNjLTEwYmUyNTcwNyIsInNlc3Npb25fZGF0YSI6IkdRcjc3eVkvVXFvWGFMV3lnMXdvN2FhaFRoeHVHZ3RHdmFqSFJCV1RTVWc2NEpmcyt0aHpHSEtmaDdyY1pOOGVyK1dXMlFYcE5ONXNqS3I4Y0J0UWRNcVIrOW8vN0dOVjRRaElWMTVUYm9tQTVVMEEydEk5ZmdXRFJUUnk5QTdNcE5jUmRXZlY4SVIwblNzaTNKeFd0RHdNOWlnZU03WHkvQTNSUllFZGZiYWhmbmh0bFY1Nys1L3FiVFRBZkxqUVBQRHI5SkRYNWdJK3RpTE5KRkU0TDZmMmt6VWJ3d2xTZVA2RTBQM0ptRGprbTVzSkFCRy9HSldRNWphUEZRWWUrUERQWFF4eHZzZVhjbUxtYks1NnBHUXdHR1kwQWFHTUVSOVdWZFBoakVpS09PUERram8xWlpBVHh5N05PaEN4MTdLVklCK2RuNnVPcUZmQ04xS3dlN3NXemsvb1NJWW00Q3hkVkcrQ0lRPT0iLCJ1c2VyX2lkIjoiMjg2NTU2OTU0IiwiZXhwIjoxNzk1MTc4NTEzfQ.XhQi-aoJjIuH6-XlrV_5-qDx11TQ_LXKR4KRga5NrkA",
+      "tid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiI4ZjkwMGNkOC01NDY4LTRhZDEtOTM5OS0wOGY4M2ViZWI0NmYiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicDY2NWE3YjRjLTE0MDYtNDg1NC1hMzZhLTYyNTUxMDNlNSIsInNlc3Npb25fZGF0YSI6IkdRcjc3eVkvVXFvWGFMV3lnMXdvN2FhaFRoeHVHZ3RHdmFqSFJCV1RTVWc2NEpmcyt0aHpHSEtmaDdyY1pOOGVyK1dXMlFYcE5ONXNqS3I4Y0J0UWRNcVIrOW8vN0dOVjRRaElWMTVUYm9tQTVVMEEydEk5ZmdXRFJUUnk5QTdNcE5jUmRXZlY4SVIwblNzaTNKeFd0RHdNOWlnZU03WHkvQTNSUllFZGZiYWhmbmh0bFY1Nys1L3FiVFRBZkxqUVBQRHI5SkRYNWdJK3RpTE5KRkU0TDZmMmt6VWJ3d2xTZVA2RTBQM0ptRGprbTVzSkFCRy9HSldRNWphUEZRWWUrUERQWFF4eHZzZVhjbUxtYks1NnBHUXdHR1kwQWFHTUVSOVdWZFBoakVpS09PUERram8xWlpBVHh5N05PaEN4MTdLVklCK2RuNnVPcUZmQ04xS3dlN3NXemsvb1NJWW00Q3hkVkcrQ0lRPT0iLCJ1c2VyX2lkIjoiMjg2NTU2OTU0IiwiZXhwIjoxNzk1MjQ5MjAxfQ.iroAFCewFETbR5Vntu3XcedvfxvLj5fnW_f9MMk8wd4",
       "sid": "ub52ba0f2db-7580-45d4-bbcc-10be25707",
       "deviceId": "e8f8f294-405b-46b3-8cb5-112a515c757a",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI4ZjkwMGNkOC01NDY4LTRhZDEtOTM5OS0wOGY4M2ViZWI0NmYiLCJ1c2VyX2lkIjoiMjg2NTU2OTU0Iiwic2Vzc2lvbl9kYXRhIjoiR1FyNzd5WS9VcW9YYUxXeWcxd283YWFoVGh4dUdndEd2YWpIUkJXVFNVZzY0SmZzK3RoekdIS2ZoN3JjWk44ZXIrV1cyUVhwTk41c2pLcjhjQnRRZE1xUis5by83R05WNFFoSVYxNVRib21BNVUwQTJ0STlmZ1dEUlRSeTlBN01wTmNSZFdmVjhJUjBuU3NpM0p4V3REd005aWdlTTdYeS9BM1JSWUVkZmJhaGZuaHRsVjU3KzUvcWJUVEFmTGpRUFBEcjlKRFg1Z0krdGlMTkpGRTRMNmYya3pVYnd3bFNlUDZFMFAzSm1EamttNXNKQUJHL0dKV1E1amFQRlFZZStQRFBYUXh4dnNlWGNtTG1iSzU2cEdRd0dHWTBBYUdNRVI5V1ZkUGhqRWlLT09QRGtqbzFaWkFUeHk3Tk9oQ3gxN0tWSUIrZG42dU9xRmZDTjFLd2U3c1d6ay9vU0lZbTRDeGRWRytDSVE9PSIsInNpZCI6InViNTJiYTBmMmRiLTc1ODAtNDVkNC1iYmNjLTEwYmUyNTcwNyIsImlhdCI6MTc5MjU4MzI4MSwiZXhwIjoxNzkyNTg1NjgxfQ.Akz3DTKh4n4_zkMR8A90nQ0XxO5lafQUqmOmLgtNuLg; _sid=ub52ba0f2db-7580-45d4-bbcc-10be25707; _device_id=e8f8f294-405b-46b3-8cb5-112a515c757a; token=eec2b275-a291-4da1-8683-e06bb9b2b17bccce809a-9532-448a-84fe-340e3e9c2813; _is_logged_in=1; __SW=m9t0QoyoPbPnwSX3pqbYuExJfX7TBzeK; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fd6a293f1265246ae41ad4adf585b54f8232e8b12526b403d541ed2d1c8489239569fae403a625925ffee919b96b5e07e040b5b0603098f02821e477c74c2236000f58a9a092c6dc0d08bfd46054b410164bb9e833d1d5f5d45a50f16a5bfa97d46a3f488909537eff5032c317eaef2fe3e7def84d00b158b6aead5df51c399723dc78916b50d29cd5e271c4cfd3cb37d11b077e2675b1664b4d5ccab6ce285f11dfd0e043910062cef3b5ea6d3f554515544ec8e28c8deb6a8fbb76e739f01a968996b81bb8238c9cbcdcb900761554331d104cd7e1587bb13714c50f9beb0c2e6c6a65e028da2884b2d8c1117b6c8f4a320a9bd30c67186e8122235a25eeef98f630aff865883b094d0b57f390c326bafa0b97077888764057fc6855c9174edff9a2a44bd9633df2c19e653fc70e9d9a2b5846e7b4fa84acdc8a5c8a6e8bdc679a0929a0b228c71703781315d4757185b932af73d65c23c61da70083b46ab4975784b618d05aebd09f19f5a1986cd35bcfeb3489c9388a59c8266743929864b751d8628196a0b602071ac756b4f86bd87d836537e2e85f275c9bb5455906c4f9c0209e055127cb698290f73c420b7487cada0abb1edfbf97473b610b0489b4a6739a4722dffc8fa4dc83e3ad083fa88323190f013badf0bf0c449de5c353f1349707f426511ac5f5b2aeb919b5e04db8002f14fb06b062acdbc141fdfbbde1ed947cd41a749b4f0840861914de7d7113b33fe0ddc363c0770db6c04dac1774de870c01ed1a45c2179d2ffe0743431bb28ee5c410efc99867ea15951a3b19f92c19dda8e25557cce8c0d958e7a925935cae5357c4af02e342e9003dd37aff47dbd06c211f03d75c674d13f4052093e90c2ba6c6c6c812f75c2d917585eb7f3f27301c791847b0f342595f5e2125cfd14938a65cdf6ad4cbf045f8433d0a6433ab1bfe9c44c1f2c3d3ab8179a2a07aa5d7b911b0860d2eb501108baae018a9d4908b713aac0d9ea82696952fc2dbb48c1e1689e19f3836ce2857bf6625800a7ba2f4c891fa1cbd9a176239e5fff7df394675c2653b6282cce6523dff6989e02e00a73476054bf8ebbeeda6a4b863ba6b2a2a13568a6e1ca7bed6ee87af6a9e22335bedbe0ea1089ebf7d2db95eb67ebbfb0720271f143a7470faeb6135a05c54a; _swuid=e8f8f294-405b-46b3-8cb5-112a515c757a; _cid=Mjg2NTU2OTU0",
@@ -339,16 +345,18 @@
           "byo-ln-v5-16": 1,
           "byo-bf-v10-16": 1,
           "byo-bf-v10-17": 1,
-          "byo-ln-v5-17": 1
+          "byo-ln-v5-17": 1,
+          "byo-ln-v5-18": 1,
+          "byo-bf-v10-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -356,15 +364,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -372,10 +380,10 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
       },
-      "jwtTid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiI4ZjkwMGNkOC01NDY4LTRhZDEtOTM5OS0wOGY4M2ViZWI0NmYiLCJpYXQiOjE3OTI1ODY1MTMsInNpZCI6InViNTJiYTBmMmRiLTc1ODAtNDVkNC1iYmNjLTEwYmUyNTcwNyIsInNlc3Npb25fZGF0YSI6IkdRcjc3eVkvVXFvWGFMV3lnMXdvN2FhaFRoeHVHZ3RHdmFqSFJCV1RTVWc2NEpmcyt0aHpHSEtmaDdyY1pOOGVyK1dXMlFYcE5ONXNqS3I4Y0J0UWRNcVIrOW8vN0dOVjRRaElWMTVUYm9tQTVVMEEydEk5ZmdXRFJUUnk5QTdNcE5jUmRXZlY4SVIwblNzaTNKeFd0RHdNOWlnZU03WHkvQTNSUllFZGZiYWhmbmh0bFY1Nys1L3FiVFRBZkxqUVBQRHI5SkRYNWdJK3RpTE5KRkU0TDZmMmt6VWJ3d2xTZVA2RTBQM0ptRGprbTVzSkFCRy9HSldRNWphUEZRWWUrUERQWFF4eHZzZVhjbUxtYks1NnBHUXdHR1kwQWFHTUVSOVdWZFBoakVpS09PUERram8xWlpBVHh5N05PaEN4MTdLVklCK2RuNnVPcUZmQ04xS3dlN3NXemsvb1NJWW00Q3hkVkcrQ0lRPT0iLCJ1c2VyX2lkIjoiMjg2NTU2OTU0IiwiZXhwIjoxNzk1MTc4NTEzfQ.XhQi-aoJjIuH6-XlrV_5-qDx11TQ_LXKR4KRga5NrkA"
+      "jwtTid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiI4ZjkwMGNkOC01NDY4LTRhZDEtOTM5OS0wOGY4M2ViZWI0NmYiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicDY2NWE3YjRjLTE0MDYtNDg1NC1hMzZhLTYyNTUxMDNlNSIsInNlc3Npb25fZGF0YSI6IkdRcjc3eVkvVXFvWGFMV3lnMXdvN2FhaFRoeHVHZ3RHdmFqSFJCV1RTVWc2NEpmcyt0aHpHSEtmaDdyY1pOOGVyK1dXMlFYcE5ONXNqS3I4Y0J0UWRNcVIrOW8vN0dOVjRRaElWMTVUYm9tQTVVMEEydEk5ZmdXRFJUUnk5QTdNcE5jUmRXZlY4SVIwblNzaTNKeFd0RHdNOWlnZU03WHkvQTNSUllFZGZiYWhmbmh0bFY1Nys1L3FiVFRBZkxqUVBQRHI5SkRYNWdJK3RpTE5KRkU0TDZmMmt6VWJ3d2xTZVA2RTBQM0ptRGprbTVzSkFCRy9HSldRNWphUEZRWWUrUERQWFF4eHZzZVhjbUxtYks1NnBHUXdHR1kwQWFHTUVSOVdWZFBoakVpS09PUERram8xWlpBVHh5N05PaEN4MTdLVklCK2RuNnVPcUZmQ04xS3dlN3NXemsvb1NJWW00Q3hkVkcrQ0lRPT0iLCJ1c2VyX2lkIjoiMjg2NTU2OTU0IiwiZXhwIjoxNzk1MjQ5MjAxfQ.iroAFCewFETbR5Vntu3XcedvfxvLj5fnW_f9MMk8wd4"
     },
     "acc_8873415879": {
       "id": "acc_8873415879",
@@ -392,8 +400,8 @@
       "isLoggedIn": true,
       "savedAt": "2026-10-21T11:48:51.955Z",
       "offers": {
-        "success": true,
-        "bothClaimed": true,
+        "success": false,
+        "bothClaimed": false,
         "offerValue": 1,
         "offerLabel": "₹50 Free Cash (>₹199)",
         "lockedMap": {
@@ -402,38 +410,38 @@
           "byo-ln-v5-17": 1,
           "byo-bf-v10-17": 1
         },
-        "sessionExpired": false,
+        "sessionExpired": true,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
-          "lockedDaysCount": 2,
+          "campaign": "byo-bf-v10-17",
+          "lockedDaysCount": 0,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
-          "slotState": "LOCKED_FOR_TODAY",
-          "status": "CLAIMED",
-          "statusCode": 200,
+          "slotState": "EXPIRED",
+          "status": "FAILED",
+          "statusCode": 401,
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
-          "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "rawMessage": "",
+          "message": "Session Expired — Re-login required"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
-          "lockedDaysCount": 2,
+          "campaign": "byo-ln-v5-17",
+          "lockedDaysCount": 0,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
-          "slotState": "LOCKED_FOR_TODAY",
-          "status": "CLAIMED",
-          "statusCode": 200,
+          "slotState": "EXPIRED",
+          "status": "FAILED",
+          "statusCode": 401,
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
-          "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "rawMessage": "",
+          "message": "Session Expired — Re-login required"
         }
       },
       "jwtTid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiJiNmQ1OTFjNy0xYjA2LTRjYmMtOTNkMy0yZmIzYjM3NDZmMmUiLCJpYXQiOjE3OTI1ODY1MTMsInNpZCI6InViNWMzMDZmZmE1LThlZTYtNDI4NS1hNTg1LTNkYzllN2E1NSIsInNlc3Npb25fZGF0YSI6Ik5GQTlwZzBzUXU1VmNpeW9QSnVESlZGV2M3RkdDTkR2b01iUVV1WnRBclB1M1lBNDJ3eDFWU0dXTURnWDlXLzRXQUd5NE9NMkdrcFBqaWNLZnNPR2t5Wi9QcUlZMUJDUTAwOWhiMXpPajgwRFNKaXduMmhBY0dEUHl6MGZvdmw5cTZNYkpOQWNrdlJWaE0weXhkaFZNcUxtVXZLYkRCUnJBa25rdHpoTHVhSHZWYU94azhjTkordTNlTWNjdTVDYUxVM1RCemlkU1VHbFlQU3crajRrQ1lKOUNIOGYxa0V2UXpLU1NwaWQvb0JGbFEyU2FlMk1YNEhkWGNLeitISHEwSWt4am5KV2VhS2tqZ1Nub3IvRkNwZlhsKzVTdjlxajZuWmplaWNHbFZnMVNzdUwxbUhJVndFMnpUbkhkM09sc1dORlBPYTM2VVlacGpoMU1salEySzhZVTF0czJ5Q0tLMUxUYTVaSyIsInVzZXJfaWQiOiIyODY1NTU4NzYiLCJleHAiOjE3OTUxNzg1MTN9.Z2hw0_6-Pps1qITuSNw80pwsT9H7w9Su1-Xiq3J9mg8"
@@ -446,7 +454,7 @@
       "customerId": "286556599",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f06feea1c97fef7c8351410f7b54098087dc8a518a785d11da00d9d1c3ce5f3a0bb5b55a2f168145b6c353f2d5a2c80f247c6ab84f07044fa2b3156fdc2ca264f09e89cd1b0cf0fa99e5b7fed68b641315c1b35fcfb6272105ffd975b1e16a3d5fee537944f38ef6caa9a2926c1e17c6f8d0fd59a0d0a82300954e3db7ee29c0e43bfab4e9219f71dca13c26faaff99f63cd318ef55e3709f6341619fff92eff4321b31976d18d75c43bcb58a08e7e026aca29a5416f649b3e059f8a67037ce98f3cf3fb9ca1cc287502535b709951dd1bf98edfa939a71688b5396161ea3ca132c59055c8fb2fbe97086f5cdf62cd5a404258fdd015d2fee275ec0371f4534150f2e2c593f4c7c80cd4b3d127dd5e2fff821805c09d22cfae330ff6f6be986f18bf429fee2d7e818359e0c535d147e2a25177f4ce27fec6f8afe4e13860325c044365da80f6fb98ba3de333587bade6d2f5c136f58ece4470d388de8ac885f6e360bc581ce3c7b6a0be38bdb84420e1a33ce7111a4e2e580a6b6849cab81c1a0fac5601b97835f77f3cdeef526250ee6a2bcef2fccc43c1139c769615f818042d56b5678e4206c98494e786078539d3b23118c90cd1d7c796443ca58efe08aaeb92c28dd1dcf2371ef96507690aff9e28f8c928c40ff74e4afbf13ce046b351ee542e2e97e623d94b6370e94dcc528b6d62dd19345c707a4d037a48ef1145bc3b45efb99fbf8931107796d6e992544065fe87513502a5f8a169850a1d8ee9d95cfe3f6951af117a59b8a6a47dd384d2e045ae866c069ec9147573a6947b71343450158a3999989d3e1c370f6daa5ddec7aff08638aa2e136810b2d6d8faae1f7d400de8dc558d765ccf987227a71ca379de0329434fc30c2f9687994a3e4ef6e4c37f75d84af2b2922dbc04641bf4e6cf285cd9e5d495329812246c173e4b68998c4cb28d67b0fe1cc30394f2340190e5934f2d2dee464060cdb1248118a2640599d9331d90ef25702ea0dd42edb02ce1b132cf529947ab94415ec750928020dc77044b5aced9c637b7c02a00b1f3313f2c0e3761d074ef09b78aecd9e52304f47984e9b08a40a791bf7e8eb6bc63d643165a0691a3dfba097f517cf80353c51716771e7940dee2785848c087cb2a0de092448814f9ef9a7d2dae59dc067fdcc",
       "token": "1b5169c4-93ae-4964-852a-6a2aa98243d0e8361d1f-40d8-4560-829c-55578d8fcf8a",
-      "tid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI1ODY0ODksInNpZCI6InViNWY1NTkxMTY3LTJlNDctNGJmZS05Nzk1LWM2NjFmODNhNCIsInN1YiI6IjA1ZmJmZWQ3LWJhMjUtNGQ2OS1hNTY0LTZhYzg3NzIxODY0OCIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6IlZha1JycngrUjEzT283OWFLemdOY2FBbm85dThjcXVmNy9LektPNGN3bW1leDc0cTliL3ZUb0xDY2NlYTFKN2xYdjFURTZnbXVnUEVUakNvamdzeDJkbWthd3VjbzkyUVoyU1ViMU9xdGFaOHFsTjllTFp0c09RemVuVUNiRTJqZ0RjQUJXTEhMKzhCSjRUWUtnN0l3OVRlZHlXaFJtNzZiSGZ0V3V3dnJXaGw3TmY1UENkTjZGbmQvT3F2Q3hMTXBTenhoZnRLajYxZEEvMEdqZ1ZWNHJmelZKaFJDR2dJMFF0QlUzZkhKQW9nRFBWYXhLbHRHTWh2dWxRd2M4alFGZjB3ZzV3eEtkdWdkdjdNZUVLS3RrbG1ydVNQTWNXc09yNmxzYVpTUDRKZ01OYXZHeWhncmFVY1lTL28xWllMYTRIMWt2SjY1WHdyc3pqNWFydkVqYmI3K3ZHbHFXZEE4M1ZsSGRRZmJ3PT0iLCJ1c2VyX2lkIjoiMjg2NTU2NTk5IiwiZXhwIjoxNzk1MTc4NDg5fQ.W4aIz3Z-tJ4ZiEKTtj0qOcb2gkVOz02yFGc-0_B62rw",
+      "tid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiIwNWZiZmVkNy1iYTI1LTRkNjktYTU2NC02YWM4NzcyMTg2NDgiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicGMxN2QwNjhkLWE5YTktNDE0Yi04ODNhLTg5YWI4NDlhNCIsInNlc3Npb25fZGF0YSI6IlZha1JycngrUjEzT283OWFLemdOY2FBbm85dThjcXVmNy9LektPNGN3bW1leDc0cTliL3ZUb0xDY2NlYTFKN2xYdjFURTZnbXVnUEVUakNvamdzeDJkbWthd3VjbzkyUVoyU1ViMU9xdGFaOHFsTjllTFp0c09RemVuVUNiRTJqZ0RjQUJXTEhMKzhCSjRUWUtnN0l3OVRlZHlXaFJtNzZiSGZ0V3V3dnJXaGw3TmY1UENkTjZGbmQvT3F2Q3hMTXBTenhoZnRLajYxZEEvMEdqZ1ZWNHJmelZKaFJDR2dJMFF0QlUzZkhKQW9nRFBWYXhLbHRHTWh2dWxRd2M4alFGZjB3ZzV3eEtkdWdkdjdNZUVLS3RrbG1ydVNQTWNXc09yNmxzYVpTUDRKZ01OYXZHeWhncmFVY1lTL28xWllMYTRIMWt2SjY1WHdyc3pqNWFydkVqYmI3K3ZHbHFXZEE4M1ZsSGRRZmJ3PT0iLCJ1c2VyX2lkIjoiMjg2NTU2NTk5IiwiZXhwIjoxNzk1MjQ5MjAxfQ.cmy6Xs4sGZGjC6dFwnfz7rDEz6k2xWpIwjcS0XwabGQ",
       "sid": "ub5f5591167-2e47-4bfe-9795-c661f83a4",
       "deviceId": "babeee54-6919-4ff7-9d38-de190a60b1a8",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIwNWZiZmVkNy1iYTI1LTRkNjktYTU2NC02YWM4NzcyMTg2NDgiLCJ1c2VyX2lkIjoiMjg2NTU2NTk5Iiwic2Vzc2lvbl9kYXRhIjoiVmFrUnJyeCtSMTNPbzc5YUt6Z05jYUFubzl1OGNxdWY3L0t6S080Y3dtbWV4NzRxOWIvdlRvTENjY2VhMUo3bFh2MVRFNmdtdWdQRVRqQ29qZ3N4MmRta2F3dWNvOTJRWjJTVWIxT3F0YVo4cWxOOWVMWnRzT1F6ZW5VQ2JFMmpnRGNBQldMSEwrOEJKNFRZS2c3SXc5VGVkeVdoUm03NmJIZnRXdXd2cldobDdOZjVQQ2RONkZuZC9PcXZDeExNcFN6eGhmdEtqNjFkQS8wR2pnVlY0cmZ6VkpoUkNHZ0kwUXRCVTNmSEpBb2dEUFZheEtsdEdNaHZ1bFF3YzhqUUZmMHdnNXd4S2R1Z2R2N01lRUtLdGtsbXJ1U1BNY1dzT3I2bHNhWlNQNEpnTU5hdkd5aGdyYVVjWVMvbzFaWUxhNEgxa3ZKNjVYd3Jzemo1YXJ2RWpiYjcrdkdscVdkQTgzVmxIZFFmYnc9PSIsInNpZCI6InViNWY1NTkxMTY3LTJlNDctNGJmZS05Nzk1LWM2NjFmODNhNCIsImlhdCI6MTc5MjU4MzE0OCwiZXhwIjoxNzkyNTg1NTQ4fQ.ob_fbKJYSAAGZt62YhzjwTosJ9PKrHSC1CgWKt1l2IE; _sid=ub5f5591167-2e47-4bfe-9795-c661f83a4; _device_id=babeee54-6919-4ff7-9d38-de190a60b1a8; token=1b5169c4-93ae-4964-852a-6a2aa98243d0e8361d1f-40d8-4560-829c-55578d8fcf8a; _is_logged_in=1; __SW=4IOvla35bIy38sBepi-QbP5xhWSva5O0; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f06feea1c97fef7c8351410f7b54098087dc8a518a785d11da00d9d1c3ce5f3a0bb5b55a2f168145b6c353f2d5a2c80f247c6ab84f07044fa2b3156fdc2ca264f09e89cd1b0cf0fa99e5b7fed68b641315c1b35fcfb6272105ffd975b1e16a3d5fee537944f38ef6caa9a2926c1e17c6f8d0fd59a0d0a82300954e3db7ee29c0e43bfab4e9219f71dca13c26faaff99f63cd318ef55e3709f6341619fff92eff4321b31976d18d75c43bcb58a08e7e026aca29a5416f649b3e059f8a67037ce98f3cf3fb9ca1cc287502535b709951dd1bf98edfa939a71688b5396161ea3ca132c59055c8fb2fbe97086f5cdf62cd5a404258fdd015d2fee275ec0371f4534150f2e2c593f4c7c80cd4b3d127dd5e2fff821805c09d22cfae330ff6f6be986f18bf429fee2d7e818359e0c535d147e2a25177f4ce27fec6f8afe4e13860325c044365da80f6fb98ba3de333587bade6d2f5c136f58ece4470d388de8ac885f6e360bc581ce3c7b6a0be38bdb84420e1a33ce7111a4e2e580a6b6849cab81c1a0fac5601b97835f77f3cdeef526250ee6a2bcef2fccc43c1139c769615f818042d56b5678e4206c98494e786078539d3b23118c90cd1d7c796443ca58efe08aaeb92c28dd1dcf2371ef96507690aff9e28f8c928c40ff74e4afbf13ce046b351ee542e2e97e623d94b6370e94dcc528b6d62dd19345c707a4d037a48ef1145bc3b45efb99fbf8931107796d6e992544065fe87513502a5f8a169850a1d8ee9d95cfe3f6951af117a59b8a6a47dd384d2e045ae866c069ec9147573a6947b71343450158a3999989d3e1c370f6daa5ddec7aff08638aa2e136810b2d6d8faae1f7d400de8dc558d765ccf987227a71ca379de0329434fc30c2f9687994a3e4ef6e4c37f75d84af2b2922dbc04641bf4e6cf285cd9e5d495329812246c173e4b68998c4cb28d67b0fe1cc30394f2340190e5934f2d2dee464060cdb1248118a2640599d9331d90ef25702ea0dd42edb02ce1b132cf529947ab94415ec750928020dc77044b5aced9c637b7c02a00b1f3313f2c0e3761d074ef09b78aecd9e52304f47984e9b08a40a791bf7e8eb6bc63d643165a0691a3dfba097f517cf80353c51716771e7940dee2785848c087cb2a0de092448814f9ef9a7d2dae59dc067fdcc; _swuid=babeee54-6919-4ff7-9d38-de190a60b1a8; _cid=Mjg2NTU2NTk5",
@@ -461,16 +469,18 @@
           "byo-bf-v10-16": 1,
           "byo-ln-v5-16": 1,
           "byo-bf-v10-17": 1,
-          "byo-ln-v5-17": 1
+          "byo-ln-v5-17": 1,
+          "byo-bf-v10-18": 1,
+          "byo-ln-v5-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -478,15 +488,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -494,10 +504,10 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
       },
-      "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI1ODY0ODksInNpZCI6InViNWY1NTkxMTY3LTJlNDctNGJmZS05Nzk1LWM2NjFmODNhNCIsInN1YiI6IjA1ZmJmZWQ3LWJhMjUtNGQ2OS1hNTY0LTZhYzg3NzIxODY0OCIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6IlZha1JycngrUjEzT283OWFLemdOY2FBbm85dThjcXVmNy9LektPNGN3bW1leDc0cTliL3ZUb0xDY2NlYTFKN2xYdjFURTZnbXVnUEVUakNvamdzeDJkbWthd3VjbzkyUVoyU1ViMU9xdGFaOHFsTjllTFp0c09RemVuVUNiRTJqZ0RjQUJXTEhMKzhCSjRUWUtnN0l3OVRlZHlXaFJtNzZiSGZ0V3V3dnJXaGw3TmY1UENkTjZGbmQvT3F2Q3hMTXBTenhoZnRLajYxZEEvMEdqZ1ZWNHJmelZKaFJDR2dJMFF0QlUzZkhKQW9nRFBWYXhLbHRHTWh2dWxRd2M4alFGZjB3ZzV3eEtkdWdkdjdNZUVLS3RrbG1ydVNQTWNXc09yNmxzYVpTUDRKZ01OYXZHeWhncmFVY1lTL28xWllMYTRIMWt2SjY1WHdyc3pqNWFydkVqYmI3K3ZHbHFXZEE4M1ZsSGRRZmJ3PT0iLCJ1c2VyX2lkIjoiMjg2NTU2NTk5IiwiZXhwIjoxNzk1MTc4NDg5fQ.W4aIz3Z-tJ4ZiEKTtj0qOcb2gkVOz02yFGc-0_B62rw"
+      "jwtTid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiIwNWZiZmVkNy1iYTI1LTRkNjktYTU2NC02YWM4NzcyMTg2NDgiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicGMxN2QwNjhkLWE5YTktNDE0Yi04ODNhLTg5YWI4NDlhNCIsInNlc3Npb25fZGF0YSI6IlZha1JycngrUjEzT283OWFLemdOY2FBbm85dThjcXVmNy9LektPNGN3bW1leDc0cTliL3ZUb0xDY2NlYTFKN2xYdjFURTZnbXVnUEVUakNvamdzeDJkbWthd3VjbzkyUVoyU1ViMU9xdGFaOHFsTjllTFp0c09RemVuVUNiRTJqZ0RjQUJXTEhMKzhCSjRUWUtnN0l3OVRlZHlXaFJtNzZiSGZ0V3V3dnJXaGw3TmY1UENkTjZGbmQvT3F2Q3hMTXBTenhoZnRLajYxZEEvMEdqZ1ZWNHJmelZKaFJDR2dJMFF0QlUzZkhKQW9nRFBWYXhLbHRHTWh2dWxRd2M4alFGZjB3ZzV3eEtkdWdkdjdNZUVLS3RrbG1ydVNQTWNXc09yNmxzYVpTUDRKZ01OYXZHeWhncmFVY1lTL28xWllMYTRIMWt2SjY1WHdyc3pqNWFydkVqYmI3K3ZHbHFXZEE4M1ZsSGRRZmJ3PT0iLCJ1c2VyX2lkIjoiMjg2NTU2NTk5IiwiZXhwIjoxNzk1MjQ5MjAxfQ.cmy6Xs4sGZGjC6dFwnfz7rDEz6k2xWpIwjcS0XwabGQ"
     },
     "acc_7006552398": {
       "id": "acc_7006552398",
@@ -507,7 +517,7 @@
       "customerId": "286556090",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fb1bd7f34527942f1db4c87fb2429b83d31ea209ac02cc2bd4dfdf0f6c04ee185b73526315d65feafcbb91b06d002c3820108eb0e0bd6c08587443b93628dba65ca6146812b3556e56389fb3711c9b5b42af54e175847d7ae5305e80c0a4bc7aefc0dd69eabe957424fab41078bd2b3e9e0cf19a885d6cb16be63047fdf2384e5b814d89bb3ac5dd78129b44af1ec44847d651c4cb83ef4981a53aede2ce3080ac6c3793f7be299fc79228a48aceaf88f041d86f8a66b427936baf4d4b91159a723c55ad79a4c4ff63a3972382a1cf16ef193db04768a42ae58555bdaed5aaa97ec3afed0a5d39c46cb1e4074e1a350061984533beed033bd3859f57a84c3d8d2f9ff461ed093945fbe5ae9d2af9f91597e913765e88b9191c1ee315b610452aebe17f51e081f5280bb3eefeab53f1595b17ff64871e1bbab292d2765f37756cb1d7eb1526a608be6efa829b85ff58a959d0c0a8276d52575bcf4572258cfafe7c08fbf60a80b36101d9b201a89020fafd9b243769badf3a815f47c66394b5357ea0fbebe5cbd7ae16537dfec15381903e08bcfe58b5c075bd533b1ab01cb2adb3fe59fa85ef956595a1bf024a1ec43bb0ec2ceaa19676c1c207a419944be0d7269b00d0b57ac60e213e2b265bdb2b12cb8f633ccd441aba517314e5f3625f613881c8ea61fc089347f243f877a7fa8e043d731c8be54c35663b6782d929740c7a0e419cef5caa92365b6a25f1085d730b3543ee448ead051e811fb6230a51e11fb7f5d18d66a42b9f37368a777c97e0002d2f98f392ad5fd10aa84618270d319e4121fa94fa421336ae2de26e22be0c14298aaf9cc69fd20196eeae9f26bb28096c55cdccefb8e2ed1788ff8ded29601a746acbf9f423af6012aeb83950f68dcaaf89a10f8fca6aae948f95d3c5cb8838c08c104d15e8db102622eea03074d1f7fe46bd5597bead864b6cf6430513bed537ca61e38a6cbd54b84808e00fe7c6274d04f8dbbb75204e34eb277455d1bb69fd42de6fea7eac3c71d1a9a41c015284190ff3fa519e01a91b6a70b0daef013bdd1a6410491f0241de55051b58f4370643c2e74f3259f2846aaee958875aebf7c9e0527cbe99f067a3703ea31f0af02df19d6b0f577313ee6bebf1bf637941da91ef1ea54ef79b6de8f4d8deaa7b5c9",
       "token": "7c47bddc-629c-40c5-a320-d45d2fd22aa7525c1759-7b24-44e7-80c1-68229616be30",
-      "tid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiJlYTI3OGQxOC0wNGMxLTQ1ZDEtYjQ1Ni1jYTZhNGQyYjU5NzQiLCJpYXQiOjE3OTI1ODY1MTMsInNpZCI6InViNWQ5MDE1ZDdhLTc3MmMtNDkzMS04Y2EwLTNhOWNhNGQ1MCIsInNlc3Npb25fZGF0YSI6IkpPYmgvR0pYdUlVUUtEbFg0YnVWZTdYMEtsd3gxVnJQSlRyWjFDcWN1d2JFeXgyQTYveFRnUlRQTzhRYnZ6ZXFacUdHbFgwaU1OOU1CcWdkaFJQcXdxeFBjK2FZVlY3Q0pieXBEWXNCRnNFeTJMRG8rVTZsa2JvNitZZnlMRkUxWmhRTHdXUnFVOTdFU3RaVlJaOU5iZHFNKzJtNU04TzFKZU9wVnpjWk1sSndvamIzOUhmQmpHUXZaU2ZYTER2WWgwNndNaEdaS3hWRGVNbWw0SG5yODNUL3NNK3h1ZGYzcHBaNHFPY29pb0E0NDZRYzc0b25uTGM5Q1JZQktRVzhodzlMYWtUQjkvQWJPNTdjSkUrOHArdUx3R0tJRVJxUWM5V3F1ZjdOVVRsbUZ0Z2hRQk40NGozVUx2Y0FjNGFTYmpNUEVYa2RDSGI5Q3NpREJpMmFFb2FwSU5WRThSS25sRXYrUFhjQnhybz0iLCJ1c2VyX2lkIjoiMjg2NTU2MDkwIiwiZXhwIjoxNzk1MTc4NTEzfQ.HdOXW9VkfVcGV12WVN-EswL6PiqY9Si_sFVu8tY4h-k",
+      "tid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiJlYTI3OGQxOC0wNGMxLTQ1ZDEtYjQ1Ni1jYTZhNGQyYjU5NzQiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicDg3ZTlhMzE1LWU4ZWItNGI3OC1iMzEwLTQ4MGE1ODQ4NiIsInNlc3Npb25fZGF0YSI6IkpPYmgvR0pYdUlVUUtEbFg0YnVWZTdYMEtsd3gxVnJQSlRyWjFDcWN1d2JFeXgyQTYveFRnUlRQTzhRYnZ6ZXFacUdHbFgwaU1OOU1CcWdkaFJQcXdxeFBjK2FZVlY3Q0pieXBEWXNCRnNFeTJMRG8rVTZsa2JvNitZZnlMRkUxWmhRTHdXUnFVOTdFU3RaVlJaOU5iZHFNKzJtNU04TzFKZU9wVnpjWk1sSndvamIzOUhmQmpHUXZaU2ZYTER2WWgwNndNaEdaS3hWRGVNbWw0SG5yODNUL3NNK3h1ZGYzcHBaNHFPY29pb0E0NDZRYzc0b25uTGM5Q1JZQktRVzhodzlMYWtUQjkvQWJPNTdjSkUrOHArdUx3R0tJRVJxUWM5V3F1ZjdOVVRsbUZ0Z2hRQk40NGozVUx2Y0FjNGFTYmpNUEVYa2RDSGI5Q3NpREJpMmFFb2FwSU5WRThSS25sRXYrUFhjQnhybz0iLCJ1c2VyX2lkIjoiMjg2NTU2MDkwIiwiZXhwIjoxNzk1MjQ5MjAxfQ.FOFYksYnWEStpvNo_5fOuM9Kvcj-koDEsh5lizyGuCc",
       "sid": "ub5d9015d7a-772c-4931-8ca0-3a9ca4d50",
       "deviceId": "62d40d2b-e4bf-4add-b9bc-924630323642",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJlYTI3OGQxOC0wNGMxLTQ1ZDEtYjQ1Ni1jYTZhNGQyYjU5NzQiLCJ1c2VyX2lkIjoiMjg2NTU2MDkwIiwic2Vzc2lvbl9kYXRhIjoiSk9iaC9HSlh1SVVRS0RsWDRidVZlN1gwS2x3eDFWclBKVHJaMUNxY3V3YkV5eDJBNi94VGdSVFBPOFFidnplcVpxR0dsWDBpTU45TUJxZ2RoUlBxd3F4UGMrYVlWVjdDSmJ5cERZc0JGc0V5MkxEbytVNmxrYm82K1lmeUxGRTFaaFFMd1dScVU5N0VTdFpWUlo5TmJkcU0rMm01TThPMUplT3BWemNaTWxKd29qYjM5SGZCakdRdlpTZlhMRHZZaDA2d01oR1pLeFZEZU1tbDRIbnI4M1Qvc00reHVkZjNwcFo0cU9jb2lvQTQ0NlFjNzRvbm5MYzlDUllCS1FXOGh3OUxha1RCOS9BYk81N2NKRSs4cCt1THdHS0lFUnFRYzlXcXVmN05VVGxtRnRnaFFCTjQ0ajNVTHZjQWM0YVNiak1QRVhrZENIYjlDc2lEQmkyYUVvYXBJTlZFOFJLbmxFditQWGNCeHJvPSIsInNpZCI6InViNWQ5MDE1ZDdhLTc3MmMtNDkzMS04Y2EwLTNhOWNhNGQ1MCIsImlhdCI6MTc5MjU4Mjk3MCwiZXhwIjoxNzkyNTg1MzcwfQ.ltSOUk0X4nZJcEQBPrwwbqH7U7uyouXZfRNngZx_YwI; _sid=ub5d9015d7a-772c-4931-8ca0-3a9ca4d50; _device_id=62d40d2b-e4bf-4add-b9bc-924630323642; token=7c47bddc-629c-40c5-a320-d45d2fd22aa7525c1759-7b24-44e7-80c1-68229616be30; _is_logged_in=1; __SW=I8Bl5gwp4mFsWGoB2rTIWRGtm0uAruJh; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fb1bd7f34527942f1db4c87fb2429b83d31ea209ac02cc2bd4dfdf0f6c04ee185b73526315d65feafcbb91b06d002c3820108eb0e0bd6c08587443b93628dba65ca6146812b3556e56389fb3711c9b5b42af54e175847d7ae5305e80c0a4bc7aefc0dd69eabe957424fab41078bd2b3e9e0cf19a885d6cb16be63047fdf2384e5b814d89bb3ac5dd78129b44af1ec44847d651c4cb83ef4981a53aede2ce3080ac6c3793f7be299fc79228a48aceaf88f041d86f8a66b427936baf4d4b91159a723c55ad79a4c4ff63a3972382a1cf16ef193db04768a42ae58555bdaed5aaa97ec3afed0a5d39c46cb1e4074e1a350061984533beed033bd3859f57a84c3d8d2f9ff461ed093945fbe5ae9d2af9f91597e913765e88b9191c1ee315b610452aebe17f51e081f5280bb3eefeab53f1595b17ff64871e1bbab292d2765f37756cb1d7eb1526a608be6efa829b85ff58a959d0c0a8276d52575bcf4572258cfafe7c08fbf60a80b36101d9b201a89020fafd9b243769badf3a815f47c66394b5357ea0fbebe5cbd7ae16537dfec15381903e08bcfe58b5c075bd533b1ab01cb2adb3fe59fa85ef956595a1bf024a1ec43bb0ec2ceaa19676c1c207a419944be0d7269b00d0b57ac60e213e2b265bdb2b12cb8f633ccd441aba517314e5f3625f613881c8ea61fc089347f243f877a7fa8e043d731c8be54c35663b6782d929740c7a0e419cef5caa92365b6a25f1085d730b3543ee448ead051e811fb6230a51e11fb7f5d18d66a42b9f37368a777c97e0002d2f98f392ad5fd10aa84618270d319e4121fa94fa421336ae2de26e22be0c14298aaf9cc69fd20196eeae9f26bb28096c55cdccefb8e2ed1788ff8ded29601a746acbf9f423af6012aeb83950f68dcaaf89a10f8fca6aae948f95d3c5cb8838c08c104d15e8db102622eea03074d1f7fe46bd5597bead864b6cf6430513bed537ca61e38a6cbd54b84808e00fe7c6274d04f8dbbb75204e34eb277455d1bb69fd42de6fea7eac3c71d1a9a41c015284190ff3fa519e01a91b6a70b0daef013bdd1a6410491f0241de55051b58f4370643c2e74f3259f2846aaee958875aebf7c9e0527cbe99f067a3703ea31f0af02df19d6b0f577313ee6bebf1bf637941da91ef1ea54ef79b6de8f4d8deaa7b5c9; _swuid=62d40d2b-e4bf-4add-b9bc-924630323642; _cid=Mjg2NTU2MDkw",
@@ -522,16 +532,18 @@
           "byo-bf-v10-16": 1,
           "byo-ln-v5-16": 1,
           "byo-bf-v10-17": 1,
-          "byo-ln-v5-17": 1
+          "byo-ln-v5-17": 1,
+          "byo-ln-v5-18": 1,
+          "byo-bf-v10-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -539,15 +551,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -555,10 +567,10 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
       },
-      "jwtTid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiJlYTI3OGQxOC0wNGMxLTQ1ZDEtYjQ1Ni1jYTZhNGQyYjU5NzQiLCJpYXQiOjE3OTI1ODY1MTMsInNpZCI6InViNWQ5MDE1ZDdhLTc3MmMtNDkzMS04Y2EwLTNhOWNhNGQ1MCIsInNlc3Npb25fZGF0YSI6IkpPYmgvR0pYdUlVUUtEbFg0YnVWZTdYMEtsd3gxVnJQSlRyWjFDcWN1d2JFeXgyQTYveFRnUlRQTzhRYnZ6ZXFacUdHbFgwaU1OOU1CcWdkaFJQcXdxeFBjK2FZVlY3Q0pieXBEWXNCRnNFeTJMRG8rVTZsa2JvNitZZnlMRkUxWmhRTHdXUnFVOTdFU3RaVlJaOU5iZHFNKzJtNU04TzFKZU9wVnpjWk1sSndvamIzOUhmQmpHUXZaU2ZYTER2WWgwNndNaEdaS3hWRGVNbWw0SG5yODNUL3NNK3h1ZGYzcHBaNHFPY29pb0E0NDZRYzc0b25uTGM5Q1JZQktRVzhodzlMYWtUQjkvQWJPNTdjSkUrOHArdUx3R0tJRVJxUWM5V3F1ZjdOVVRsbUZ0Z2hRQk40NGozVUx2Y0FjNGFTYmpNUEVYa2RDSGI5Q3NpREJpMmFFb2FwSU5WRThSS25sRXYrUFhjQnhybz0iLCJ1c2VyX2lkIjoiMjg2NTU2MDkwIiwiZXhwIjoxNzk1MTc4NTEzfQ.HdOXW9VkfVcGV12WVN-EswL6PiqY9Si_sFVu8tY4h-k"
+      "jwtTid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiJlYTI3OGQxOC0wNGMxLTQ1ZDEtYjQ1Ni1jYTZhNGQyYjU5NzQiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicDg3ZTlhMzE1LWU4ZWItNGI3OC1iMzEwLTQ4MGE1ODQ4NiIsInNlc3Npb25fZGF0YSI6IkpPYmgvR0pYdUlVUUtEbFg0YnVWZTdYMEtsd3gxVnJQSlRyWjFDcWN1d2JFeXgyQTYveFRnUlRQTzhRYnZ6ZXFacUdHbFgwaU1OOU1CcWdkaFJQcXdxeFBjK2FZVlY3Q0pieXBEWXNCRnNFeTJMRG8rVTZsa2JvNitZZnlMRkUxWmhRTHdXUnFVOTdFU3RaVlJaOU5iZHFNKzJtNU04TzFKZU9wVnpjWk1sSndvamIzOUhmQmpHUXZaU2ZYTER2WWgwNndNaEdaS3hWRGVNbWw0SG5yODNUL3NNK3h1ZGYzcHBaNHFPY29pb0E0NDZRYzc0b25uTGM5Q1JZQktRVzhodzlMYWtUQjkvQWJPNTdjSkUrOHArdUx3R0tJRVJxUWM5V3F1ZjdOVVRsbUZ0Z2hRQk40NGozVUx2Y0FjNGFTYmpNUEVYa2RDSGI5Q3NpREJpMmFFb2FwSU5WRThSS25sRXYrUFhjQnhybz0iLCJ1c2VyX2lkIjoiMjg2NTU2MDkwIiwiZXhwIjoxNzk1MjQ5MjAxfQ.FOFYksYnWEStpvNo_5fOuM9Kvcj-koDEsh5lizyGuCc"
     },
     "acc_9348016319": {
       "id": "acc_9348016319",
@@ -568,7 +580,7 @@
       "customerId": "286560366",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f9f89596384aaad987425be0a24be4d80fa33ca8b6768cf7b0505db70c96d92a200e647714be104c909d6e2d6badef51803583a5cab6f6fbdeeb8daa5e4395b6ac2e69c0c803030924ef3b30648e2659e17dfdca802e5372d02b862ae2cfac15531c0b16cb20bf6aece28e7742755238dea438359fe4a7447f9f86f28cd9c495dbde09fc3daf393684665ffb0d5160c98dd7a23b68920e95646a252389924d698265a66c266647223039fe84b2c9ec078630e75067269a870b5e9bd51d2a2c7fdbe9fa4bb78005d0c107e289cdb4c561b5e3e653202bfe12bc9dfc4cf1e2fba6be9b27a7fb80fcab6ae0ae6546bab9df284288644026ea667d792bd10e964e299f193af77b6b9d29f1c6d4cc5eb670630c04d3c019a145d96c44cf9dda21a64b887bfb5ff82f87e871db1327a9ac267c4ae6d82dcbd6272d274490cf027ef43ede38c1f4500827437040e81a890dbbdf2f37993dd96e1bc3e8948f471aa3787dce0320a2f8fc989382b5ce4ca42f22fc54b831e1259ace5eb38d6b30075926d7407efaa272df742ec4148653cee72b5412b3f0a95a239e41eae992976d73c67297b08bc5f9fcb0fe3f98cdbd854cd6c3af53a40ec212f38d349975b97a6fff1d45fcbd5bb7c25ec76878698eb619b6a3a0eaa1fc0034ee0fce1feea97714abaf8e58e53fc984483e65e220a347e23bbe05a54d98ab6e258b18bdc600c45a0065edd812df998f4dc281ec87cde1482cd2992e0d6fa3eb975bfef07aeeae2bcbcfc855ac7218e9d05ca83a63ee1f315ba7325c3d2a0936056d52534f4ed13b5e51bed3228308a85b59941b5efd5acb7411eaa25ad907cf240c05e5061e0884b883728c746ef6b326210be769df8ff5e8ea77bebed02ed614ca0c6b72aded85ffc8a2e78f0b2a30b68300c1652d2fd2338e5e1beb82e15a79d146deee4cfc44d14b75cc1a8f8e72506bb73cf36c0e47228b30a92046b7479509d68f687602afe172e39429f8638b6ad1f2c81b0393d4041354e3cdd7e646818edde01e35f8e58160ff0c70a85102ee91901b95a79318b5c24c1ec3a667e4d1ab4bbf0cc9e1e28611be724383febddccad6a203d64ee0b400425fa7981b04ca21533d73f87d44d23b1721d33ad6876e5120252ce29da64abf763000f6d8935eec82d65417107487288",
       "token": "e38cf81a-c754-480a-9f2a-40135842af54c5d22b51-0499-4112-af27-48cb087277cc",
-      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJmYjc1YzE2Yi1iZTMwLTQzZTQtYTIwYi01MzEwNDI1ODg1MmMiLCJ1c2VyX2lkIjoiMjg2NTYwMzY2Iiwic2Vzc2lvbl9kYXRhIjoiNm1JK3lHN2c5MlFQcWd2b0xQRmNPOEdMOVp5WnVyRFFibzhnbC9qSHpPTk1OQnYxcHJGaWY2NXZ3bTZYZFF6Q0dST1VxRlNEbEVnWmFlcndLVENTcW53eHRURGxrMzlIQ2Y5OEFHaU5LNzY1eXczTHVCcmo2Sk1Sa0xVaVQ4NXNOVlJ6SkN4UEVBVGpoWUk0MWFUSjgweDYwejc1UGp3SVdyZmdIQlJFaUNqdlVRakUwKzRvK2haTDYyWnd2djd4d2NudXluZExacXkzbHhZcmhuRzd0Yy9KSTc1SnpxaVA5S2t3dFNueWRIeklIcGkxUWpoekZSMjhJeDVsQWt3aFdxZUhMcUNodHFqZ1JiSjRvSXNFSFluVERteEdFSkpqUElBdFNRWUJmR292QTFMLzJvUjc5S3kxRUp6YzBjT3RWWDVhcGhsK3N4YmJ3UW8zMmNudzZETWl5V2ZNRDZ6SzRYaXJuUDJWRVE9PSIsInNpZCI6InViNTI3YWQ4ZmYzLTgwM2QtNGQxZC05ODBiLTQzOTY3OTViMiIsImlhdCI6MTc5MjU4NDQ5MCwiZXhwIjoxNzkyNTg2ODkwfQ.YpfQcXzaag0KgnLZ3Pq8Vj0sJ7enqA0nI8TPTeU6PVU",
+      "tid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzUsInNpZCI6InVicGQ0MjAyNzc0LTYwZTgtNDFjOS05MTZiLWJhZDJhNmIzZSIsInN1YiI6ImZiNzVjMTZiLWJlMzAtNDNlNC1hMjBiLTUzMTA0MjU4ODUyYyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6IjZtSSt5RzdnOTJRUHFndm9MUEZjTzhHTDlaeVp1ckRRYm84Z2wvakh6T05NTkJ2MXByRmlmNjV2d202WGRRekNHUk9VcUZTRGxFZ1phZXJ3S1RDU3Fud3h0VERsazM5SENmOThBR2lOSzc2NXl3M0x1QnJqNkpNUmtMVWlUODVzTlZSekpDeFBFQVRqaFlJNDFhVEo4MHg2MHo3NVBqd0lXcmZnSEJSRWlDanZVUWpFMCs0bytoWkw2Mlp3dnY3eHdjbnV5bmRMWnF5M2x4WXJobkc3dGMvSkk3NUp6cWlQOUtrd3RTbnlkSHpJSHBpMVFqaHpGUjI4SXg1bEFrd2hXcWVITHFDaHRxamdSYko0b0lzRUhZblREbXhHRUpKalBJQXRTUVlCZkdvdkExTC8yb1I3OUt5MUVKemMwY090Vlg1YXBobCtzeGJid1FvMzJjbnc2RE1peVdmTUQ2eks0WGlyblAyVkVRPT0iLCJ1c2VyX2lkIjoiMjg2NTYwMzY2IiwiZXhwIjoxNzk1MjQ5MTc1fQ.gXQFGBJ1IBSylyOBF8Tc8u2otnXgysb2OuqWerrq3ts",
       "sid": "ub527ad8ff3-803d-4d1d-980b-4396795b2",
       "deviceId": "bbd450cd-9d4d-4acb-80dd-7c364fb2f4f3",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJmYjc1YzE2Yi1iZTMwLTQzZTQtYTIwYi01MzEwNDI1ODg1MmMiLCJ1c2VyX2lkIjoiMjg2NTYwMzY2Iiwic2Vzc2lvbl9kYXRhIjoiNm1JK3lHN2c5MlFQcWd2b0xQRmNPOEdMOVp5WnVyRFFibzhnbC9qSHpPTk1OQnYxcHJGaWY2NXZ3bTZYZFF6Q0dST1VxRlNEbEVnWmFlcndLVENTcW53eHRURGxrMzlIQ2Y5OEFHaU5LNzY1eXczTHVCcmo2Sk1Sa0xVaVQ4NXNOVlJ6SkN4UEVBVGpoWUk0MWFUSjgweDYwejc1UGp3SVdyZmdIQlJFaUNqdlVRakUwKzRvK2haTDYyWnd2djd4d2NudXluZExacXkzbHhZcmhuRzd0Yy9KSTc1SnpxaVA5S2t3dFNueWRIeklIcGkxUWpoekZSMjhJeDVsQWt3aFdxZUhMcUNodHFqZ1JiSjRvSXNFSFluVERteEdFSkpqUElBdFNRWUJmR292QTFMLzJvUjc5S3kxRUp6YzBjT3RWWDVhcGhsK3N4YmJ3UW8zMmNudzZETWl5V2ZNRDZ6SzRYaXJuUDJWRVE9PSIsInNpZCI6InViNTI3YWQ4ZmYzLTgwM2QtNGQxZC05ODBiLTQzOTY3OTViMiIsImlhdCI6MTc5MjU4NDQ5MCwiZXhwIjoxNzkyNTg2ODkwfQ.YpfQcXzaag0KgnLZ3Pq8Vj0sJ7enqA0nI8TPTeU6PVU; _sid=ub527ad8ff3-803d-4d1d-980b-4396795b2; _device_id=bbd450cd-9d4d-4acb-80dd-7c364fb2f4f3; token=e38cf81a-c754-480a-9f2a-40135842af54c5d22b51-0499-4112-af27-48cb087277cc; _is_logged_in=1; __SW=aWVuwUZJOsr1sghvFxUnBEY8HxKzy1VB; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f9f89596384aaad987425be0a24be4d80fa33ca8b6768cf7b0505db70c96d92a200e647714be104c909d6e2d6badef51803583a5cab6f6fbdeeb8daa5e4395b6ac2e69c0c803030924ef3b30648e2659e17dfdca802e5372d02b862ae2cfac15531c0b16cb20bf6aece28e7742755238dea438359fe4a7447f9f86f28cd9c495dbde09fc3daf393684665ffb0d5160c98dd7a23b68920e95646a252389924d698265a66c266647223039fe84b2c9ec078630e75067269a870b5e9bd51d2a2c7fdbe9fa4bb78005d0c107e289cdb4c561b5e3e653202bfe12bc9dfc4cf1e2fba6be9b27a7fb80fcab6ae0ae6546bab9df284288644026ea667d792bd10e964e299f193af77b6b9d29f1c6d4cc5eb670630c04d3c019a145d96c44cf9dda21a64b887bfb5ff82f87e871db1327a9ac267c4ae6d82dcbd6272d274490cf027ef43ede38c1f4500827437040e81a890dbbdf2f37993dd96e1bc3e8948f471aa3787dce0320a2f8fc989382b5ce4ca42f22fc54b831e1259ace5eb38d6b30075926d7407efaa272df742ec4148653cee72b5412b3f0a95a239e41eae992976d73c67297b08bc5f9fcb0fe3f98cdbd854cd6c3af53a40ec212f38d349975b97a6fff1d45fcbd5bb7c25ec76878698eb619b6a3a0eaa1fc0034ee0fce1feea97714abaf8e58e53fc984483e65e220a347e23bbe05a54d98ab6e258b18bdc600c45a0065edd812df998f4dc281ec87cde1482cd2992e0d6fa3eb975bfef07aeeae2bcbcfc855ac7218e9d05ca83a63ee1f315ba7325c3d2a0936056d52534f4ed13b5e51bed3228308a85b59941b5efd5acb7411eaa25ad907cf240c05e5061e0884b883728c746ef6b326210be769df8ff5e8ea77bebed02ed614ca0c6b72aded85ffc8a2e78f0b2a30b68300c1652d2fd2338e5e1beb82e15a79d146deee4cfc44d14b75cc1a8f8e72506bb73cf36c0e47228b30a92046b7479509d68f687602afe172e39429f8638b6ad1f2c81b0393d4041354e3cdd7e646818edde01e35f8e58160ff0c70a85102ee91901b95a79318b5c24c1ec3a667e4d1ab4bbf0cc9e1e28611be724383febddccad6a203d64ee0b400425fa7981b04ca21533d73f87d44d23b1721d33ad6876e5120252ce29da64abf763000f6d8935eec82d65417107487288; _swuid=bbd450cd-9d4d-4acb-80dd-7c364fb2f4f3; _cid=Mjg2NTYwMzY2",
@@ -583,16 +595,18 @@
           "byo-ln-v5-16": 1,
           "byo-bf-v10-16": 1,
           "byo-bf-v10-17": 1,
-          "byo-ln-v5-17": 1
+          "byo-ln-v5-17": 1,
+          "byo-bf-v10-18": 1,
+          "byo-ln-v5-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -600,15 +614,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -616,9 +630,10 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
-      }
+      },
+      "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzUsInNpZCI6InVicGQ0MjAyNzc0LTYwZTgtNDFjOS05MTZiLWJhZDJhNmIzZSIsInN1YiI6ImZiNzVjMTZiLWJlMzAtNDNlNC1hMjBiLTUzMTA0MjU4ODUyYyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6IjZtSSt5RzdnOTJRUHFndm9MUEZjTzhHTDlaeVp1ckRRYm84Z2wvakh6T05NTkJ2MXByRmlmNjV2d202WGRRekNHUk9VcUZTRGxFZ1phZXJ3S1RDU3Fud3h0VERsazM5SENmOThBR2lOSzc2NXl3M0x1QnJqNkpNUmtMVWlUODVzTlZSekpDeFBFQVRqaFlJNDFhVEo4MHg2MHo3NVBqd0lXcmZnSEJSRWlDanZVUWpFMCs0bytoWkw2Mlp3dnY3eHdjbnV5bmRMWnF5M2x4WXJobkc3dGMvSkk3NUp6cWlQOUtrd3RTbnlkSHpJSHBpMVFqaHpGUjI4SXg1bEFrd2hXcWVITHFDaHRxamdSYko0b0lzRUhZblREbXhHRUpKalBJQXRTUVlCZkdvdkExTC8yb1I3OUt5MUVKemMwY090Vlg1YXBobCtzeGJid1FvMzJjbnc2RE1peVdmTUQ2eks0WGlyblAyVkVRPT0iLCJ1c2VyX2lkIjoiMjg2NTYwMzY2IiwiZXhwIjoxNzk1MjQ5MTc1fQ.gXQFGBJ1IBSylyOBF8Tc8u2otnXgysb2OuqWerrq3ts"
     },
     "acc_6372185500": {
       "id": "acc_6372185500",
@@ -628,7 +643,7 @@
       "customerId": "286561362",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fe064042d672c9eb08867513f6aa6f3d5010340271464388936dd549410553892631cfb5a942e70bcf1f7759c685ab5b2141da70fa471b937f7e2bab8631331c547549cb7c41505ffb9d3f2afb23b501bbd69005bec122152ab0bdcc8200dfba6080ebd9003b07511a56244820d4328c63978e5e4fea46cb75d5cab2b3b675875b335295cbb383cc3a2f5410b9c2603c4d517671522e01ccb9ed50a30eb2fc30d9137eafb2f5f7ec53b66a3488cd5c16a43bab05105b5501af0c93c3cd2c0ab87bc15395aa03e7a05693827202714d588289036de57fd86fee7292c34ff8ce16ebb71f462b9669bf08dd5f551a6934f527647c027cbc566692c1e881d173f7942bc7844e4cd49c1fc031e4c5051311c869b29a259aeda115dc7a963418b9b71ae45a5db03db82ab2f50cfd5e348afdb64e12a64aab53eb6b76f83185ad2abe2b229f7984a01551e5118a1f5c80a99b80e44e25044eaa882bf392c527ced7cd66de79aea3d259daf674e6626bb010f9cf26ae87f4020ebedc653bbbe8964a95a534fbdfd699790ef53b9f089a89b1f2cc1109b3320e353de3ce6b7fa0e4a2a6d44e4616e998aa15efd4b98065fd439f9f36904498568574e34ccfd3d62d9353121d4f7e8f3ad8e4a7e404439bddb18e5d5c10396f145e62a1575bac6f69b5ceba928b923d877dbb43c9254409dfff78dd79d1233f5520632ac82fe3d9bc36e7900590e5f1a10e90f02dd4b5cd1d56908f815462bbc99de77d4cfb9eb3f2a66ad5f67cdb3d03e12ab8e55ed1363866fb5e5eecd458e52308dc55d8d82f4dec88ad0d6ea8cfcf11366622c3f850bd9bd59c32c78dccffd68edad1539d2f67d51d4b2d4a562964658720d5ad6b44a591c3e533dfd34419ca36d020c8fd1e020db2a742950566fde24394e2cf557f0f04176f4572f7d95694161e8bd754919ea6467d0e737862d8ddb19a836c77a37e23a6c2b5af790852f0c844192d751eaa25115dc58060aa56d19e44ebe96e2720501975502e3fe9c90f778f08fa37785b80667a6ecc402d5c89803aa3ea28cb89f6df91494eb92789e9f467a5be80f7a6d1e9cf3f01541389e872d7ea823db9d06e0ae0f1e855228ff215715a01fb053d7bdf7912014bfe0ca3fafe193ca64228989cbb79068852fffde17d72a3192602ffc7087",
       "token": "aaeb6a73-b0e5-41fe-8bfc-a81abae9a413d6339c25-f914-4c33-887c-e129f984dece",
-      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIyZjViZGNiNi03MzI2LTQwMjctOGExMi01NDg5ZjNjZDQwYjYiLCJ1c2VyX2lkIjoiMjg2NTYxMzYyIiwic2Vzc2lvbl9kYXRhIjoiNjhCempCRFFBbUpRVTVkcnlhaWJ2YmYzcUVCdy9NNFk1SkNWOWRHRVUrTnlUekQwVnNUc1g4WTVFSjZKVW9JWC9BTjh0Wmw4SDBhRWkzakwxaGlYNmQvOWd4K0krRUFwMDc1bk9rSmVCaEQyTlVVbCs5SDlRYkZMZHBtcjBxQUdONEZGcVZWaGhqV2lCZ2lLNUFOcU91Y3Ria1ZtRUJ2c3czbytieFZXNXlhSWhIU2lIVlNoOFB5eVlzVEVuZWlISTg3c0wrNXEyU0FUN3pCQjAvV0RWcldyWUNIOEdGN3E4YnppTUQwcC9KZUtqNyttM3VCa29sd0hIK2x0U1BKdEg2RGFXcFZBUTcwWk9pYUV4cUdyWmZ0TW1uSzdqOUViNG9Rd2pOSlVlVG81Uk9WREhHM2dSS055UDRaYW1YZHQreFdacTdVckNIUEkxNFc0b3NvZWI5WFp0c1B1KzRqcUQvaDRVSWpsM1E9PSIsInNpZCI6InViNTYyZTJjMDVjLWZlYzgtNDUyMi1hZjE4LTQzNzA5ZDg5YSIsImlhdCI6MTc5MjU4NDg0MCwiZXhwIjoxNzkyNTg3MjQwfQ.tctHy-oBQwqdp4x-Ohs06d08b-ALUePbm5tm2Alv5bw",
+      "tid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiIyZjViZGNiNi03MzI2LTQwMjctOGExMi01NDg5ZjNjZDQwYjYiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicGViYjQ3ZDJjLWVhNzQtNDA0NC1hYjY1LTY2ZjAxNWM5OSIsInNlc3Npb25fZGF0YSI6IjY4QnpqQkRRQW1KUVU1ZHJ5YWlidmJmM3FFQncvTTRZNUpDVjlkR0VVK055VHpEMFZzVHNYOFk1RUo2SlVvSVgvQU44dFpsOEgwYUVpM2pMMWhpWDZkLzlneCtJK0VBcDA3NW5Pa0plQmhEMk5VVWwrOUg5UWJGTGRwbXIwcUFHTjRGRnFWVmhoaldpQmdpSzVBTnFPdWN0YmtWbUVCdnN3M28rYnhWVzV5YUloSFNpSFZTaDhQeXlZc1RFbmVpSEk4N3NMKzVxMlNBVDd6QkIwL1dEVnJXcllDSDhHRjdxOGJ6aU1EMHAvSmVLajcrbTN1QmtvbHdISCtsdFNQSnRINkRhV3BWQVE3MFpPaWFFeHFHclpmdE1tbks3ajlFYjRvUXdqTkpVZVRvNVJPVkRIRzNnUktOeVA0WmFtWGR0K3hXWnE3VXJDSFBJMTRXNG9zb2ViOVhadHNQdSs0anFEL2g0VUlqbDNRPT0iLCJ1c2VyX2lkIjoiMjg2NTYxMzYyIiwiZXhwIjoxNzk1MjQ5MjAxfQ.7e_0eqCFSrLMpPbERv7tRZXAOn328O6zXeJUoBFLNSk",
       "sid": "ub562e2c05c-fec8-4522-af18-43709d89a",
       "deviceId": "2b34eba8-a18f-461a-a5c9-fa65df2e90e9",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIyZjViZGNiNi03MzI2LTQwMjctOGExMi01NDg5ZjNjZDQwYjYiLCJ1c2VyX2lkIjoiMjg2NTYxMzYyIiwic2Vzc2lvbl9kYXRhIjoiNjhCempCRFFBbUpRVTVkcnlhaWJ2YmYzcUVCdy9NNFk1SkNWOWRHRVUrTnlUekQwVnNUc1g4WTVFSjZKVW9JWC9BTjh0Wmw4SDBhRWkzakwxaGlYNmQvOWd4K0krRUFwMDc1bk9rSmVCaEQyTlVVbCs5SDlRYkZMZHBtcjBxQUdONEZGcVZWaGhqV2lCZ2lLNUFOcU91Y3Ria1ZtRUJ2c3czbytieFZXNXlhSWhIU2lIVlNoOFB5eVlzVEVuZWlISTg3c0wrNXEyU0FUN3pCQjAvV0RWcldyWUNIOEdGN3E4YnppTUQwcC9KZUtqNyttM3VCa29sd0hIK2x0U1BKdEg2RGFXcFZBUTcwWk9pYUV4cUdyWmZ0TW1uSzdqOUViNG9Rd2pOSlVlVG81Uk9WREhHM2dSS055UDRaYW1YZHQreFdacTdVckNIUEkxNFc0b3NvZWI5WFp0c1B1KzRqcUQvaDRVSWpsM1E9PSIsInNpZCI6InViNTYyZTJjMDVjLWZlYzgtNDUyMi1hZjE4LTQzNzA5ZDg5YSIsImlhdCI6MTc5MjU4NDg0MCwiZXhwIjoxNzkyNTg3MjQwfQ.tctHy-oBQwqdp4x-Ohs06d08b-ALUePbm5tm2Alv5bw; _sid=ub562e2c05c-fec8-4522-af18-43709d89a; _device_id=2b34eba8-a18f-461a-a5c9-fa65df2e90e9; token=aaeb6a73-b0e5-41fe-8bfc-a81abae9a413d6339c25-f914-4c33-887c-e129f984dece; _is_logged_in=1; __SW=Kx2HsrBme1NruOMidEmWAsuiqVywmgaC; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fe064042d672c9eb08867513f6aa6f3d5010340271464388936dd549410553892631cfb5a942e70bcf1f7759c685ab5b2141da70fa471b937f7e2bab8631331c547549cb7c41505ffb9d3f2afb23b501bbd69005bec122152ab0bdcc8200dfba6080ebd9003b07511a56244820d4328c63978e5e4fea46cb75d5cab2b3b675875b335295cbb383cc3a2f5410b9c2603c4d517671522e01ccb9ed50a30eb2fc30d9137eafb2f5f7ec53b66a3488cd5c16a43bab05105b5501af0c93c3cd2c0ab87bc15395aa03e7a05693827202714d588289036de57fd86fee7292c34ff8ce16ebb71f462b9669bf08dd5f551a6934f527647c027cbc566692c1e881d173f7942bc7844e4cd49c1fc031e4c5051311c869b29a259aeda115dc7a963418b9b71ae45a5db03db82ab2f50cfd5e348afdb64e12a64aab53eb6b76f83185ad2abe2b229f7984a01551e5118a1f5c80a99b80e44e25044eaa882bf392c527ced7cd66de79aea3d259daf674e6626bb010f9cf26ae87f4020ebedc653bbbe8964a95a534fbdfd699790ef53b9f089a89b1f2cc1109b3320e353de3ce6b7fa0e4a2a6d44e4616e998aa15efd4b98065fd439f9f36904498568574e34ccfd3d62d9353121d4f7e8f3ad8e4a7e404439bddb18e5d5c10396f145e62a1575bac6f69b5ceba928b923d877dbb43c9254409dfff78dd79d1233f5520632ac82fe3d9bc36e7900590e5f1a10e90f02dd4b5cd1d56908f815462bbc99de77d4cfb9eb3f2a66ad5f67cdb3d03e12ab8e55ed1363866fb5e5eecd458e52308dc55d8d82f4dec88ad0d6ea8cfcf11366622c3f850bd9bd59c32c78dccffd68edad1539d2f67d51d4b2d4a562964658720d5ad6b44a591c3e533dfd34419ca36d020c8fd1e020db2a742950566fde24394e2cf557f0f04176f4572f7d95694161e8bd754919ea6467d0e737862d8ddb19a836c77a37e23a6c2b5af790852f0c844192d751eaa25115dc58060aa56d19e44ebe96e2720501975502e3fe9c90f778f08fa37785b80667a6ecc402d5c89803aa3ea28cb89f6df91494eb92789e9f467a5be80f7a6d1e9cf3f01541389e872d7ea823db9d06e0ae0f1e855228ff215715a01fb053d7bdf7912014bfe0ca3fafe193ca64228989cbb79068852fffde17d72a3192602ffc7087; _swuid=2b34eba8-a18f-461a-a5c9-fa65df2e90e9; _cid=Mjg2NTYxMzYy",
@@ -643,16 +658,18 @@
           "byo-ln-v5-16": 1,
           "byo-bf-v10-16": 1,
           "byo-ln-v5-17": 1,
-          "byo-bf-v10-17": 1
+          "byo-bf-v10-17": 1,
+          "byo-bf-v10-18": 1,
+          "byo-ln-v5-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -660,15 +677,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -676,9 +693,10 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
-      }
+      },
+      "jwtTid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiIyZjViZGNiNi03MzI2LTQwMjctOGExMi01NDg5ZjNjZDQwYjYiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicGViYjQ3ZDJjLWVhNzQtNDA0NC1hYjY1LTY2ZjAxNWM5OSIsInNlc3Npb25fZGF0YSI6IjY4QnpqQkRRQW1KUVU1ZHJ5YWlidmJmM3FFQncvTTRZNUpDVjlkR0VVK055VHpEMFZzVHNYOFk1RUo2SlVvSVgvQU44dFpsOEgwYUVpM2pMMWhpWDZkLzlneCtJK0VBcDA3NW5Pa0plQmhEMk5VVWwrOUg5UWJGTGRwbXIwcUFHTjRGRnFWVmhoaldpQmdpSzVBTnFPdWN0YmtWbUVCdnN3M28rYnhWVzV5YUloSFNpSFZTaDhQeXlZc1RFbmVpSEk4N3NMKzVxMlNBVDd6QkIwL1dEVnJXcllDSDhHRjdxOGJ6aU1EMHAvSmVLajcrbTN1QmtvbHdISCtsdFNQSnRINkRhV3BWQVE3MFpPaWFFeHFHclpmdE1tbks3ajlFYjRvUXdqTkpVZVRvNVJPVkRIRzNnUktOeVA0WmFtWGR0K3hXWnE3VXJDSFBJMTRXNG9zb2ViOVhadHNQdSs0anFEL2g0VUlqbDNRPT0iLCJ1c2VyX2lkIjoiMjg2NTYxMzYyIiwiZXhwIjoxNzk1MjQ5MjAxfQ.7e_0eqCFSrLMpPbERv7tRZXAOn328O6zXeJUoBFLNSk"
     },
     "acc_6268581545": {
       "id": "acc_6268581545",
@@ -695,8 +713,8 @@
       "isLoggedIn": true,
       "savedAt": "2026-10-21T12:14:52.918Z",
       "offers": {
-        "success": true,
-        "bothClaimed": true,
+        "success": false,
+        "bothClaimed": false,
         "offerValue": 1,
         "offerLabel": "₹50 Free Cash (>₹199)",
         "lockedMap": {
@@ -705,38 +723,38 @@
           "byo-bf-v10-17": 1,
           "byo-ln-v5-17": 1
         },
-        "sessionExpired": false,
+        "sessionExpired": true,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
-          "lockedDaysCount": 2,
+          "campaign": "byo-bf-v10-17",
+          "lockedDaysCount": 0,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
-          "slotState": "LOCKED_FOR_TODAY",
-          "status": "CLAIMED",
-          "statusCode": 200,
+          "slotState": "EXPIRED",
+          "status": "FAILED",
+          "statusCode": 401,
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
-          "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "rawMessage": "",
+          "message": "Session Expired — Re-login required"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
-          "lockedDaysCount": 2,
+          "campaign": "byo-ln-v5-17",
+          "lockedDaysCount": 0,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
-          "slotState": "LOCKED_FOR_TODAY",
-          "status": "CLAIMED",
-          "statusCode": 200,
+          "slotState": "EXPIRED",
+          "status": "FAILED",
+          "statusCode": 401,
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
-          "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "rawMessage": "",
+          "message": "Session Expired — Re-login required"
         }
       },
       "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI1ODY0ODksInNpZCI6InViNTllMTgyNGU3LWZjMjktNGZmOC05MDQ1LWUwZWM3NDhlYSIsInN1YiI6IjE4MGU1MWE3LWJkOTMtNDU0MS04OGY0LWRkMzQ2ZDU5Y2E0YiIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6ImE4eTNPL2NBR1hXSFhmc21uUlBPdHBUYUxMcGNoM3dsUU1EbzFRM3BVT0pHdTBMcENMTU5TNkd6RnpVL1A3VDhTQ2FjR2MrSVYwbDZGQjdRcHhVTElySE1qSWNtaTNpOWwyankrbkk0WGdGV3VqaEk0dEhRbXlJMkNzd0lnOWxrd0lodWNpMkZJdnp1SHl5Tk0zOWczUkMvbFRiM3VZbkZkRWw5aS9kMTN3TXovQmhGdzcwNzFWSFdnbC9FU3J6YVFDYmcrWFFFRmZ3UUhzeVZqNE5HekpYMGh1OUJWTW1lSUYxQm4vRWhja1hkSTNicnF3bTdzWnEvQjV1YVY5WGwyVlQwZVRIMWtSRnFrRlJXOEdOQTJBdEg1NXRCdStybW9Yd3MyRVR0S3VMWnU5bUd1MVExcnlSNTJFclBRRXFnb0p4cDdXYzk4ckd3MVNlUGxMZ1ptV0ZDN0ZjUDhKSHN3VDBlTTh1Wnhzaz0iLCJ1c2VyX2lkIjoiMjg2NTU4MTQzIiwiZXhwIjoxNzk1MTc4NDg5fQ.Vn95AXjLf8t4q6rcsB1SDb8xs44UATJ36qqE1v_ohwI"
@@ -749,7 +767,7 @@
       "customerId": "286559020",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f4d21778feeb91e9f4b32ca0ba15cee7ebba04ac189497633f5f637fa79c0c548f3a8ca541d093aa3cca55dac613dd4815085f18775a6819b28e5fc9dc0a4bc43b759e32f36840b39f80459f53206ec7fdb666d1129126496587e2b5c5c504270143966bdc31d44d1d0b8ee20ece20373a91cc23a8cf5916c5aab603251b6bfc8c0de257c68f70ba0787b364ebb69ac933e311f270089bf10da67c8183c5411a86d16f1a2c06022c7893449a7035e285c326365e94c8d8eab8ebc512775ca1b8a5578021294baf82e3134757c7b750c19d2bdf757b385c18f05e44283599bc16b5decf0ab1ada3295482cc454d5d6447366a4c58d718433bea78fb4fc72396700ab9aa7b2e02167d5dcc8a12492f5357a68eee00ee1e42a6a3a34132b2957a854744dd290ed27912b92c8e540ea3499f34dfcd6472c1ad38a511b582b91002304a46f8ad26420310fa741a724b3df45828fc184bdcd9fe79b3868853a4ed9cb7ea87a78479e9cbaa1d2c461d3290af576e43c058a5bd0a8782e74fd2c7f3d5afa8b159eabc4840f85b07fd62ac2ea3643c91732bf78770a8795d1497c21f535d1330eadfb82005591a1e870974d68e06b5fdd88feb2704e3a62136a45fae7d54e043dd9a051b0c07ae496ca329892a079955add07ebe569129af45209189358688c44fb5f609d909004af5ac9df95920e38f6c325a980758cea495f0808effb54a2e1a41e80ed90e14479c03c4d418d3918bbeb1a86cdf335e0650d9a0b29df000a28962cd00e152f0e537d3333cbed0f6f9fc62e4bc5f8b6528f960afb04685d668192bdf2d46b581cb21465bca31e445267ee19e7a089167340dd4becb8fb4663ce330ac09087a3a1e87dbb535b44f990f9441d054534820ec27a4fc2cc56b3cd94c64848fdb545a1fd1bc084d0a67e52cb938791fbd1d0ea9b404e45f031915ee4d874f9dd8ad78b2944a6698cd1601dcc25f9936efce20f011687fdb1f44535367b2ca55e122e5e8ba911a7029c1fbe047dd4c33405c6e8f32939f008ebc00da3b81a9cf4588532e6edbe6e88e983ca8768a9b1d65b1472ce504563d50ef0e4791b0a5725e4c744808953143b14e4535ec979d6d4409f9f2206f7c5038071917934cb1def6e0847bfa0c1c7f36b3676bb6431ba5fe09e2466344bf16bb7fd",
       "token": "bff2d821-d402-4f1f-875d-d64c0816d40a915bf530-db8a-4aed-97d6-355b9f45493e",
-      "tid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiJlODlhMWE1ZC1kYzMyLTQ1MzgtODU4Ny1kN2Y3NmFmNzFmN2UiLCJpYXQiOjE3OTI1ODY1MTMsInNpZCI6InViNTliYzg5Y2U3LWM1MmItNDc0Yy1hYzY4LTk4NmJhOTUyMCIsInNlc3Npb25fZGF0YSI6Ijg5c3drY3I4MytQZ3ZTd2tYZHAzdTVmUVZqWlZKVmN4WlBZckZJd1c5bmxwaUlKS0h2aUcrSStyb3kwL1BoVVBOc0twZnJncjlSRHRoSHVXRndqRGloS2prajBoanpwSGw2dHdqVkxKQXhOMkloaXFzbFVlNGtvc04xSUdPa2tWOGpXUlNydXdxMmxhQVY4bGxXQXU2THg5UTMwbGU3RlFpaFhyWGY1VW5laThFUzNySUNrTmsxTkFRZkgydmJ6NXNKLzFrU1hxZlBMVlFaLzlsVzVvakhWaDduSmh2K0EreTdwQUg2MHVJUjFpRzV3aVYyTzlIWmc2VHlrbExJRGhlc1dzR0xvZjBqeGIrZUZqeTJVamVSOVNKd3gzektHeGFEbE1PemxFN1F3VzhHaFhITnZpWjVQWnVCWTFSaFVGMy8xV0xxRjUveTN4VFhEamFTNkUxVTVHc20zbGFXN3lpejNhVTl4WGlBPT0iLCJ1c2VyX2lkIjoiMjg2NTU5MDIwIiwiZXhwIjoxNzk1MTc4NTEzfQ.FHV5BQv4nKJIiuCbW1Yjrp7wZcWeF02AHrd6y3HREYk",
+      "tid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicGUxZTA3ZTM3LTI1NWYtNGExOC1iOGNmLWY0OWUyOTc1YSIsInN1YiI6ImU4OWExYTVkLWRjMzItNDUzOC04NTg3LWQ3Zjc2YWY3MWY3ZSIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6Ijg5c3drY3I4MytQZ3ZTd2tYZHAzdTVmUVZqWlZKVmN4WlBZckZJd1c5bmxwaUlKS0h2aUcrSStyb3kwL1BoVVBOc0twZnJncjlSRHRoSHVXRndqRGloS2prajBoanpwSGw2dHdqVkxKQXhOMkloaXFzbFVlNGtvc04xSUdPa2tWOGpXUlNydXdxMmxhQVY4bGxXQXU2THg5UTMwbGU3RlFpaFhyWGY1VW5laThFUzNySUNrTmsxTkFRZkgydmJ6NXNKLzFrU1hxZlBMVlFaLzlsVzVvakhWaDduSmh2K0EreTdwQUg2MHVJUjFpRzV3aVYyTzlIWmc2VHlrbExJRGhlc1dzR0xvZjBqeGIrZUZqeTJVamVSOVNKd3gzektHeGFEbE1PemxFN1F3VzhHaFhITnZpWjVQWnVCWTFSaFVGMy8xV0xxRjUveTN4VFhEamFTNkUxVTVHc20zbGFXN3lpejNhVTl4WGlBPT0iLCJ1c2VyX2lkIjoiMjg2NTU5MDIwIiwiZXhwIjoxNzk1MjQ5MTc2fQ.BBErZTsQqA7rLc-e7S54ypG6giyJ2DdHGdYsgEMJ_GY",
       "sid": "ub59bc89ce7-c52b-474c-ac68-986ba9520",
       "deviceId": "3980f7bc-aee2-4fc5-a727-fff999467fc0",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJlODlhMWE1ZC1kYzMyLTQ1MzgtODU4Ny1kN2Y3NmFmNzFmN2UiLCJ1c2VyX2lkIjoiMjg2NTU5MDIwIiwic2Vzc2lvbl9kYXRhIjoiODlzd2tjcjgzK1BndlN3a1hkcDN1NWZRVmpaVkpWY3haUFlyRkl3VzlubHBpSUpLSHZpRytJK3JveTAvUGhVUE5zS3BmcmdyOVJEdGhIdVdGd2pEaWhLamtqMGhqenBIbDZ0d2pWTEpBeE4ySWhpcXNsVWU0a29zTjFJR09ra1Y4aldSU3J1d3EybGFBVjhsbFdBdTZMeDlRMzBsZTdGUWloWHJYZjVVbmVpOEVTM3JJQ2tOazFOQVFmSDJ2Yno1c0ovMWtTWHFmUExWUVovOWxXNW9qSFZoN25KaHYrQSt5N3BBSDYwdUlSMWlHNXdpVjJPOUhaZzZUeWtsTElEaGVzV3NHTG9mMGp4YitlRmp5MlVqZVI5U0p3eDN6S0d4YURsTU96bEU3UXdXOEdoWEhOdmlaNVBadUJZMVJoVUYzLzFXTHFGNS95M3hUWERqYVM2RTFVNUdzbTNsYVc3eWl6M2FVOXhYaUE9PSIsInNpZCI6InViNTliYzg5Y2U3LWM1MmItNDc0Yy1hYzY4LTk4NmJhOTUyMCIsImlhdCI6MTc5MjU4NDAyNSwiZXhwIjoxNzkyNTg2NDI1fQ.1aUZQQX76zXUat3e7XAVgr63yfkPh9cRLoGpsV-NatQ; _sid=ub59bc89ce7-c52b-474c-ac68-986ba9520; _device_id=3980f7bc-aee2-4fc5-a727-fff999467fc0; token=bff2d821-d402-4f1f-875d-d64c0816d40a915bf530-db8a-4aed-97d6-355b9f45493e; _is_logged_in=1; __SW=5YEjlgOY210I3_dCqwd373b2cRkoIUfp; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f4d21778feeb91e9f4b32ca0ba15cee7ebba04ac189497633f5f637fa79c0c548f3a8ca541d093aa3cca55dac613dd4815085f18775a6819b28e5fc9dc0a4bc43b759e32f36840b39f80459f53206ec7fdb666d1129126496587e2b5c5c504270143966bdc31d44d1d0b8ee20ece20373a91cc23a8cf5916c5aab603251b6bfc8c0de257c68f70ba0787b364ebb69ac933e311f270089bf10da67c8183c5411a86d16f1a2c06022c7893449a7035e285c326365e94c8d8eab8ebc512775ca1b8a5578021294baf82e3134757c7b750c19d2bdf757b385c18f05e44283599bc16b5decf0ab1ada3295482cc454d5d6447366a4c58d718433bea78fb4fc72396700ab9aa7b2e02167d5dcc8a12492f5357a68eee00ee1e42a6a3a34132b2957a854744dd290ed27912b92c8e540ea3499f34dfcd6472c1ad38a511b582b91002304a46f8ad26420310fa741a724b3df45828fc184bdcd9fe79b3868853a4ed9cb7ea87a78479e9cbaa1d2c461d3290af576e43c058a5bd0a8782e74fd2c7f3d5afa8b159eabc4840f85b07fd62ac2ea3643c91732bf78770a8795d1497c21f535d1330eadfb82005591a1e870974d68e06b5fdd88feb2704e3a62136a45fae7d54e043dd9a051b0c07ae496ca329892a079955add07ebe569129af45209189358688c44fb5f609d909004af5ac9df95920e38f6c325a980758cea495f0808effb54a2e1a41e80ed90e14479c03c4d418d3918bbeb1a86cdf335e0650d9a0b29df000a28962cd00e152f0e537d3333cbed0f6f9fc62e4bc5f8b6528f960afb04685d668192bdf2d46b581cb21465bca31e445267ee19e7a089167340dd4becb8fb4663ce330ac09087a3a1e87dbb535b44f990f9441d054534820ec27a4fc2cc56b3cd94c64848fdb545a1fd1bc084d0a67e52cb938791fbd1d0ea9b404e45f031915ee4d874f9dd8ad78b2944a6698cd1601dcc25f9936efce20f011687fdb1f44535367b2ca55e122e5e8ba911a7029c1fbe047dd4c33405c6e8f32939f008ebc00da3b81a9cf4588532e6edbe6e88e983ca8768a9b1d65b1472ce504563d50ef0e4791b0a5725e4c744808953143b14e4535ec979d6d4409f9f2206f7c5038071917934cb1def6e0847bfa0c1c7f36b3676bb6431ba5fe09e2466344bf16bb7fd; _swuid=3980f7bc-aee2-4fc5-a727-fff999467fc0; _cid=Mjg2NTU5MDIw",
@@ -764,16 +782,18 @@
           "byo-bf-v10-16": 1,
           "byo-ln-v5-16": 1,
           "byo-ln-v5-17": 1,
-          "byo-bf-v10-17": 1
+          "byo-bf-v10-17": 1,
+          "byo-ln-v5-18": 1,
+          "byo-bf-v10-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -781,15 +801,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -797,10 +817,10 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
       },
-      "jwtTid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiJlODlhMWE1ZC1kYzMyLTQ1MzgtODU4Ny1kN2Y3NmFmNzFmN2UiLCJpYXQiOjE3OTI1ODY1MTMsInNpZCI6InViNTliYzg5Y2U3LWM1MmItNDc0Yy1hYzY4LTk4NmJhOTUyMCIsInNlc3Npb25fZGF0YSI6Ijg5c3drY3I4MytQZ3ZTd2tYZHAzdTVmUVZqWlZKVmN4WlBZckZJd1c5bmxwaUlKS0h2aUcrSStyb3kwL1BoVVBOc0twZnJncjlSRHRoSHVXRndqRGloS2prajBoanpwSGw2dHdqVkxKQXhOMkloaXFzbFVlNGtvc04xSUdPa2tWOGpXUlNydXdxMmxhQVY4bGxXQXU2THg5UTMwbGU3RlFpaFhyWGY1VW5laThFUzNySUNrTmsxTkFRZkgydmJ6NXNKLzFrU1hxZlBMVlFaLzlsVzVvakhWaDduSmh2K0EreTdwQUg2MHVJUjFpRzV3aVYyTzlIWmc2VHlrbExJRGhlc1dzR0xvZjBqeGIrZUZqeTJVamVSOVNKd3gzektHeGFEbE1PemxFN1F3VzhHaFhITnZpWjVQWnVCWTFSaFVGMy8xV0xxRjUveTN4VFhEamFTNkUxVTVHc20zbGFXN3lpejNhVTl4WGlBPT0iLCJ1c2VyX2lkIjoiMjg2NTU5MDIwIiwiZXhwIjoxNzk1MTc4NTEzfQ.FHV5BQv4nKJIiuCbW1Yjrp7wZcWeF02AHrd6y3HREYk"
+      "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicGUxZTA3ZTM3LTI1NWYtNGExOC1iOGNmLWY0OWUyOTc1YSIsInN1YiI6ImU4OWExYTVkLWRjMzItNDUzOC04NTg3LWQ3Zjc2YWY3MWY3ZSIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6Ijg5c3drY3I4MytQZ3ZTd2tYZHAzdTVmUVZqWlZKVmN4WlBZckZJd1c5bmxwaUlKS0h2aUcrSStyb3kwL1BoVVBOc0twZnJncjlSRHRoSHVXRndqRGloS2prajBoanpwSGw2dHdqVkxKQXhOMkloaXFzbFVlNGtvc04xSUdPa2tWOGpXUlNydXdxMmxhQVY4bGxXQXU2THg5UTMwbGU3RlFpaFhyWGY1VW5laThFUzNySUNrTmsxTkFRZkgydmJ6NXNKLzFrU1hxZlBMVlFaLzlsVzVvakhWaDduSmh2K0EreTdwQUg2MHVJUjFpRzV3aVYyTzlIWmc2VHlrbExJRGhlc1dzR0xvZjBqeGIrZUZqeTJVamVSOVNKd3gzektHeGFEbE1PemxFN1F3VzhHaFhITnZpWjVQWnVCWTFSaFVGMy8xV0xxRjUveTN4VFhEamFTNkUxVTVHc20zbGFXN3lpejNhVTl4WGlBPT0iLCJ1c2VyX2lkIjoiMjg2NTU5MDIwIiwiZXhwIjoxNzk1MjQ5MTc2fQ.BBErZTsQqA7rLc-e7S54ypG6giyJ2DdHGdYsgEMJ_GY"
     },
     "acc_9875056460": {
       "id": "acc_9875056460",
@@ -810,7 +830,7 @@
       "customerId": "286559796",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f1de461bcd53cecd03654b19c46a08e3993ee4ecbc474156447f8d65c84f64b2df83a6109439f49cdf21167fe4163531b1bc4edcf87c27dd3f62a90005e45cb7c6f8f930e1d35ba11d28fd95dcae558744c0fd5af3a11d87cdbdba82677499ced80b45acb133d18059a7cb2b8b2a85ba3b1391201781befb8ad190d1eae10098d6b3af5d92be7e0b22beca3d0127755c8a21468a833d0240f6648e888f1dd2ab6bce79fd0c52329b21a3fb8fcb2ef46b0c4a53602de282658e1718552aadaeabe9a2f7153c4b5e3104a0cabb76a9ef8bded3cbf3580099727da8d1710d492d3cf74d67403cfeb3a35d6b72e76ae1283f840d3e2d1b0ab13920802bbdadedfd382e670f6d0958ffe596dbef6ac17c76852a9467f49726423e351bc192ccddbfefd5509f8e133831b798f1cf739e07fc6368250d443fc9dcff7b495f7af5b4662d6b04941503eb1dbd2dca9781d9300e0d9c919d982bb93c3eba2074404f484253e25acf4819a6388de0839f687f713e9d220f9ecf2f8c9cd3d6d1a9243fa29e59768c7bc695ab7362363d39bd6d6bea073974d07e0e757cc37d6a2bd8f32a3807cdfefe3ffd2c3e9260549a09d68545a97060596947b0372a9b6f3afa63f6803fc04558dee56ed035d736914069e1bb67871141bd3b7a876bd48d4b92d1824c533078a36b31601c969dedcce919c737733ee4d252d1847c759cc6e5d7022aeed1bba4762611f7f839f5ec15c77de76344a6b653e0bd2a12c2564b53871691f3514f51a6946c7bc0cf6d72ca065522d01b649271cbc6cd6ea7814946933ffcaab1a339acbe1c66a2bcc3356a070b25b74d7355c58a13f5be9c1788817338e52e46872bf814768f4ad8a433e8b90a51ab7fbe0b1176e4d6c67684dfc1f7d809c9bf527508908d34b2c78cfceca38351a75f1a6777fa0b466c4afcd9006657f07b56027f2748067f428886ba7f7bc7c355120546c29ce64d4cb4f7fe3825e8cbb4af27d7ba7d8d5f75d582967a172f58bb24d2733032a022929a921f2d07c0a2ae5c2530e223f8ae383bffa84cd1fb3c253b361033a86f417b66461457a6a57d4d16a00434e0c44fea63409d0570e44b5721928959003664f83e4251ddf10189cb2b1ca54f9a6617076d098336e33372c89bea207aadd07c498f7faa988258c317200",
       "token": "af0edbe7-a4c4-4248-8a7e-604bf4a85f0163ee76c4-cbc3-4b35-80aa-3b31b7baeafd",
-      "tid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiJiZGY0ZjM1OS01MTY2LTQ0ZGYtOWU2Ni1lYzdlZTJkY2I1OTMiLCJpYXQiOjE3OTI1ODY1MTMsInNpZCI6InViNWNkNDg1ZTBlLWY1NjItNDQyMS05NTZhLTUyNTNiM2QyNSIsInNlc3Npb25fZGF0YSI6Im1zUmxkcVVsR2xYU2tralFadERxdjkwU3d2S1REY3QraUZVYTU3YjVVakI1WTRLRnk2dDNleEpzMkFVeHFnbEVyaUFtamJHQTZoaUZaZG9hNUVFZEF1ck0xZGxmek82VFllK2ZRS0wweTd4d3N2eGF6L1U0QkRlR3UrOTJsWHI0cEFtMWp6dWRTRFJKN0tOVW41RlFINEpqMHphTTVweFVBUHNSMXZpSy9CTWI1dU5DV0lKdXRsOVFqUHBaaGt2TkliZEUvSzc3SStoWlZOaXJuSklOdm85d3lXemlmOTJGRDNkM0NIbVJYcmFOaTNsNW11RDBBT1dsNGowZCtaaExrdGFzOUcrUi9Ja2xUTGxlY3c3Y2FsTXJOMVRBLzUwTlJjSXRKV1hvaFd3YytSUHJod0pxYXN4MHBqVDg2bGdZT1pqS0JtT3libWdiM1UxNkJINnp2TTRpaFNSYWJERTV0RlZoZmV0Y0FnPT0iLCJ1c2VyX2lkIjoiMjg2NTU5Nzk2IiwiZXhwIjoxNzk1MTc4NTEzfQ.3bN1MJpqLg5N_Et1lXJxiEhHYc4Vdcq21QoXZlT0T4w",
+      "tid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicDJkY2IxMDQ1LWQzN2EtNDIzNi04MDVlLTFmYmI1MDdlMCIsInN1YiI6ImJkZjRmMzU5LTUxNjYtNDRkZi05ZTY2LWVjN2VlMmRjYjU5MyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6Im1zUmxkcVVsR2xYU2tralFadERxdjkwU3d2S1REY3QraUZVYTU3YjVVakI1WTRLRnk2dDNleEpzMkFVeHFnbEVyaUFtamJHQTZoaUZaZG9hNUVFZEF1ck0xZGxmek82VFllK2ZRS0wweTd4d3N2eGF6L1U0QkRlR3UrOTJsWHI0cEFtMWp6dWRTRFJKN0tOVW41RlFINEpqMHphTTVweFVBUHNSMXZpSy9CTWI1dU5DV0lKdXRsOVFqUHBaaGt2TkliZEUvSzc3SStoWlZOaXJuSklOdm85d3lXemlmOTJGRDNkM0NIbVJYcmFOaTNsNW11RDBBT1dsNGowZCtaaExrdGFzOUcrUi9Ja2xUTGxlY3c3Y2FsTXJOMVRBLzUwTlJjSXRKV1hvaFd3YytSUHJod0pxYXN4MHBqVDg2bGdZT1pqS0JtT3libWdiM1UxNkJINnp2TTRpaFNSYWJERTV0RlZoZmV0Y0FnPT0iLCJ1c2VyX2lkIjoiMjg2NTU5Nzk2IiwiZXhwIjoxNzk1MjQ5MTc2fQ.mcDKNSH0TWyvffo8aDcJB4cSId4Ck62tYY6YvkIuLC4",
       "sid": "ub5cd485e0e-f562-4421-956a-5253b3d25",
       "deviceId": "b5b34105-06e2-4961-94a0-3b4f196deb42",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJiZGY0ZjM1OS01MTY2LTQ0ZGYtOWU2Ni1lYzdlZTJkY2I1OTMiLCJ1c2VyX2lkIjoiMjg2NTU5Nzk2Iiwic2Vzc2lvbl9kYXRhIjoibXNSbGRxVWxHbFhTa2tqUVp0RHF2OTBTd3ZLVERjdCtpRlVhNTdiNVVqQjVZNEtGeTZ0M2V4SnMyQVV4cWdsRXJpQW1qYkdBNmhpRlpkb2E1RUVkQXVyTTFkbGZ6TzZUWWUrZlFLTDB5N3h3c3Z4YXovVTRCRGVHdSs5MmxYcjRwQW0xanp1ZFNEUko3S05VbjVGUUg0SmowemFNNXB4VUFQc1IxdmlLL0JNYjV1TkNXSUp1dGw5UWpQcFpoa3ZOSWJkRS9LNzdJK2haVk5pcm5KSU52bzl3eVd6aWY5MkZEM2QzQ0htUlhyYU5pM2w1bXVEMEFPV2w0ajBkK1poTGt0YXM5RytSL0lrbFRMbGVjdzdjYWxNck4xVEEvNTBOUmNJdEpXWG9oV3djK1JQcmh3SnFhc3gwcGpUODZsZ1lPWmpLQm1PeWJtZ2IzVTE2Qkg2enZNNGloU1JhYkRFNXRGVmhmZXRjQWc9PSIsInNpZCI6InViNWNkNDg1ZTBlLWY1NjItNDQyMS05NTZhLTUyNTNiM2QyNSIsImlhdCI6MTc5MjU4NDMwMSwiZXhwIjoxNzkyNTg2NzAxfQ.LHP3qixkdTtQlUJUpDDeihOdqD7qOutnIogsGK0RYho; _sid=ub5cd485e0e-f562-4421-956a-5253b3d25; _device_id=b5b34105-06e2-4961-94a0-3b4f196deb42; token=af0edbe7-a4c4-4248-8a7e-604bf4a85f0163ee76c4-cbc3-4b35-80aa-3b31b7baeafd; _is_logged_in=1; __SW=IJ_tsc37T4afC23NVBSbKhfvcrJG60-I; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f1de461bcd53cecd03654b19c46a08e3993ee4ecbc474156447f8d65c84f64b2df83a6109439f49cdf21167fe4163531b1bc4edcf87c27dd3f62a90005e45cb7c6f8f930e1d35ba11d28fd95dcae558744c0fd5af3a11d87cdbdba82677499ced80b45acb133d18059a7cb2b8b2a85ba3b1391201781befb8ad190d1eae10098d6b3af5d92be7e0b22beca3d0127755c8a21468a833d0240f6648e888f1dd2ab6bce79fd0c52329b21a3fb8fcb2ef46b0c4a53602de282658e1718552aadaeabe9a2f7153c4b5e3104a0cabb76a9ef8bded3cbf3580099727da8d1710d492d3cf74d67403cfeb3a35d6b72e76ae1283f840d3e2d1b0ab13920802bbdadedfd382e670f6d0958ffe596dbef6ac17c76852a9467f49726423e351bc192ccddbfefd5509f8e133831b798f1cf739e07fc6368250d443fc9dcff7b495f7af5b4662d6b04941503eb1dbd2dca9781d9300e0d9c919d982bb93c3eba2074404f484253e25acf4819a6388de0839f687f713e9d220f9ecf2f8c9cd3d6d1a9243fa29e59768c7bc695ab7362363d39bd6d6bea073974d07e0e757cc37d6a2bd8f32a3807cdfefe3ffd2c3e9260549a09d68545a97060596947b0372a9b6f3afa63f6803fc04558dee56ed035d736914069e1bb67871141bd3b7a876bd48d4b92d1824c533078a36b31601c969dedcce919c737733ee4d252d1847c759cc6e5d7022aeed1bba4762611f7f839f5ec15c77de76344a6b653e0bd2a12c2564b53871691f3514f51a6946c7bc0cf6d72ca065522d01b649271cbc6cd6ea7814946933ffcaab1a339acbe1c66a2bcc3356a070b25b74d7355c58a13f5be9c1788817338e52e46872bf814768f4ad8a433e8b90a51ab7fbe0b1176e4d6c67684dfc1f7d809c9bf527508908d34b2c78cfceca38351a75f1a6777fa0b466c4afcd9006657f07b56027f2748067f428886ba7f7bc7c355120546c29ce64d4cb4f7fe3825e8cbb4af27d7ba7d8d5f75d582967a172f58bb24d2733032a022929a921f2d07c0a2ae5c2530e223f8ae383bffa84cd1fb3c253b361033a86f417b66461457a6a57d4d16a00434e0c44fea63409d0570e44b5721928959003664f83e4251ddf10189cb2b1ca54f9a6617076d098336e33372c89bea207aadd07c498f7faa988258c317200; _swuid=b5b34105-06e2-4961-94a0-3b4f196deb42; _cid=Mjg2NTU5Nzk2",
@@ -825,16 +845,18 @@
           "byo-bf-v10-16": 1,
           "byo-ln-v5-16": 1,
           "byo-ln-v5-17": 1,
-          "byo-bf-v10-17": 1
+          "byo-bf-v10-17": 1,
+          "byo-ln-v5-18": 1,
+          "byo-bf-v10-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -842,15 +864,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -858,10 +880,10 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
       },
-      "jwtTid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiJiZGY0ZjM1OS01MTY2LTQ0ZGYtOWU2Ni1lYzdlZTJkY2I1OTMiLCJpYXQiOjE3OTI1ODY1MTMsInNpZCI6InViNWNkNDg1ZTBlLWY1NjItNDQyMS05NTZhLTUyNTNiM2QyNSIsInNlc3Npb25fZGF0YSI6Im1zUmxkcVVsR2xYU2tralFadERxdjkwU3d2S1REY3QraUZVYTU3YjVVakI1WTRLRnk2dDNleEpzMkFVeHFnbEVyaUFtamJHQTZoaUZaZG9hNUVFZEF1ck0xZGxmek82VFllK2ZRS0wweTd4d3N2eGF6L1U0QkRlR3UrOTJsWHI0cEFtMWp6dWRTRFJKN0tOVW41RlFINEpqMHphTTVweFVBUHNSMXZpSy9CTWI1dU5DV0lKdXRsOVFqUHBaaGt2TkliZEUvSzc3SStoWlZOaXJuSklOdm85d3lXemlmOTJGRDNkM0NIbVJYcmFOaTNsNW11RDBBT1dsNGowZCtaaExrdGFzOUcrUi9Ja2xUTGxlY3c3Y2FsTXJOMVRBLzUwTlJjSXRKV1hvaFd3YytSUHJod0pxYXN4MHBqVDg2bGdZT1pqS0JtT3libWdiM1UxNkJINnp2TTRpaFNSYWJERTV0RlZoZmV0Y0FnPT0iLCJ1c2VyX2lkIjoiMjg2NTU5Nzk2IiwiZXhwIjoxNzk1MTc4NTEzfQ.3bN1MJpqLg5N_Et1lXJxiEhHYc4Vdcq21QoXZlT0T4w"
+      "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicDJkY2IxMDQ1LWQzN2EtNDIzNi04MDVlLTFmYmI1MDdlMCIsInN1YiI6ImJkZjRmMzU5LTUxNjYtNDRkZi05ZTY2LWVjN2VlMmRjYjU5MyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6Im1zUmxkcVVsR2xYU2tralFadERxdjkwU3d2S1REY3QraUZVYTU3YjVVakI1WTRLRnk2dDNleEpzMkFVeHFnbEVyaUFtamJHQTZoaUZaZG9hNUVFZEF1ck0xZGxmek82VFllK2ZRS0wweTd4d3N2eGF6L1U0QkRlR3UrOTJsWHI0cEFtMWp6dWRTRFJKN0tOVW41RlFINEpqMHphTTVweFVBUHNSMXZpSy9CTWI1dU5DV0lKdXRsOVFqUHBaaGt2TkliZEUvSzc3SStoWlZOaXJuSklOdm85d3lXemlmOTJGRDNkM0NIbVJYcmFOaTNsNW11RDBBT1dsNGowZCtaaExrdGFzOUcrUi9Ja2xUTGxlY3c3Y2FsTXJOMVRBLzUwTlJjSXRKV1hvaFd3YytSUHJod0pxYXN4MHBqVDg2bGdZT1pqS0JtT3libWdiM1UxNkJINnp2TTRpaFNSYWJERTV0RlZoZmV0Y0FnPT0iLCJ1c2VyX2lkIjoiMjg2NTU5Nzk2IiwiZXhwIjoxNzk1MjQ5MTc2fQ.mcDKNSH0TWyvffo8aDcJB4cSId4Ck62tYY6YvkIuLC4"
     },
     "acc_8127861271": {
       "id": "acc_8127861271",
@@ -871,7 +893,7 @@
       "customerId": "286564238",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fbf1e90c82162037ce0d7026c760395f5f22878b9c47509e1ae239e294543b40ef9ba94468fd5df07a317cfd24cd77bdaac7e896cbeeb460712701366f7a435ec95d5fc9cf4551903846d5ac3e3660eebae2516118e12a674cb79bbd4373fa62bff3c951680a2d658b78d1dfb98672d00db45ef1a08822a0fa4598d6c874e931edb6f0825a29d7ff80c54df1fe3901f381a2798b920863365a938027c8957f1385069d8602e8ec525b7beedf1721883fda503bfb877db8a0276741b294b95c490ba51cf8bc6f63827f7b8489bace8db247b338d1599321673fbbfb3cd1572f2f47e95d85c0e4e61579a21d0c636656cd21297b35bd071feb88f3ffd00c6d7016c7eadab39d2d2bba97e3acb28b4aa31650941ba0ca125c42fd3987c9bb2d91bfb27214d2c35deca5555aba1d3199f11ba120149f4fe290995844ea08d80e927109e9123aec3dcbafe19e3ae5a5a4baf177263cb26469283450bc058c51da4e3c283ee0fa5f629dc94416ca166508d4bce3122dcb76d15261ca571c8bb31470538fc6d959d256e74f983f2dd1e4fbcf944da40134b043356bf183117b6afcb5d9aa17d4320abed82834070c9b561e34c267ee3d91f147c476638f06546b1e9a97df6e432029ebc9fd8d1757856659069dd0465e20d8d277f1639fd676cb57a0428036d05649bf698e6a8a95eacae0fbcf522f5d348e78523b753abe95ae63fc09971e46159f93021ea49c899cffc0cc16ba12257a3d8ccc01231ee5d27f65e4b63d1f8c68d0d8143676c90482f67aed859e4bb6f0f0f52626fc8b2e2ac1e9fdcf19685581fd0e59c3d248dcace2b6ef979b7150129c39299bafa8368f16bd4351e22eb4175b7581f060aed43be3de552e863c20297dd201a874ff0aee68eb59f07761ed211b0fc7c8e8de629c3d2a3d09664a5fa04f2dd920e8b1310a7a245e9e0bfc1dc8cc1acd570b891105e4ff602ef87c1c1a6fe9d74e5b07554090326359a688729413775c4f00838ddff3e1f98a7411adba571bdcbe433b1130c8bb2157802da8d10eb51a7e50659ffd62c22ecf0d59b6ba4e5836b60fed98ed3a000dac543546921402aa22e81334584e69ef376fd7dde841abb56e9e6b8f16551af60e7d06821659b5385a3b2e6c1b041ad49296c8feef60f6c2a6e6eedbdc8224d2d13",
       "token": "325a1165-0913-47dd-aedd-32525c6ece01d00ec381-0997-486a-9847-702098fa1e9f",
-      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJkMWZjM2MwMy1mODI0LTRjMmEtOGQ5MS03MTY3YjhhYjA4MTciLCJ1c2VyX2lkIjoiMjg2NTY0MjM4Iiwic2Vzc2lvbl9kYXRhIjoiakdLejFIYS80MnN0S1JaVjBGVkg4ckpUN0NzT1Yrb0NOMSt0V1RaSUYxWlVPMVJmM05oT2VHeEJJTGtHcFNtM1FBcXVUU0MxbWxRZ0JTSG5ySnZlTWdxV1pvWlQ2U1I1V01udjVTSUxDYWZSL0oyak1wVWRZOG9ZeCtpWVVGeldzZWJVcWtBTHV1dHl6ZzV5TEsyU1cyL2ZzeHdkQ0NBekhoOTliekxGeG1CZmVqZ2hUSEU0VWRmY3QzUUJ2YU1wME42MmpSREluekNzR1U0MkFrUDdKOG1oZ1FScHZlWTNPUlpMNXRraVMzN1kwVDRkblE4Q3Bjb0VDaXAwYm5wY2J2VXZGWWl6dXkycWdkYTJsbXN4aGF2dzZDVi8rMm12TGQxWFR1bVhVSUdDdkxCeHJIbzlnR1NpaUd1cVd4WHlmS2xSb1FNYXdZZUF1T3RIQk5XeStzM0xxUXA2RmY2MnlJTG95K0o5NUE9PSIsInNpZCI6InViNWNlODhiMjkyLWM3NDUtNGJkNi1hOTc4LTgwZDc3YTljNCIsImlhdCI6MTc5MjU4NTc4MCwiZXhwIjoxNzkyNTg4MTgwfQ.748VU-bVzp-B9EyG7NK8fYxLO18q880x5FH2VYbSOjk",
+      "tid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicGViNTAxOTM0LTUzNjgtNGZhMS1iNzE3LWNhN2U1M2FhOSIsInN1YiI6ImQxZmMzYzAzLWY4MjQtNGMyYS04ZDkxLTcxNjdiOGFiMDgxNyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6ImpHS3oxSGEvNDJzdEtSWlYwRlZIOHJKVDdDc09WK29DTjErdFdUWklGMVpVTzFSZjNOaE9lR3hCSUxrR3BTbTNRQXF1VFNDMW1sUWdCU0huckp2ZU1ncVdab1pUNlNSNVdNbnY1U0lMQ2FmUi9KMmpNcFVkWThvWXgraVlVRnpXc2ViVXFrQUx1dXR5emc1eUxLMlNXMi9mc3h3ZENDQXpIaDk5YnpMRnhtQmZlamdoVEhFNFVkZmN0M1FCdmFNcDBONjJqUkRJbnpDc0dVNDJBa1A3SjhtaGdRUnB2ZVkzT1JaTDV0a2lTMzdZMFQ0ZG5ROENwY29FQ2lwMGJucGNidlV2RllpenV5MnFnZGEybG1zeGhhdnc2Q1YvKzJtdkxkMVhUdW1YVUlHQ3ZMQnhySG85Z0dTaWlHdXFXeFh5ZktsUm9RTWF3WWVBdU90SEJOV3krczNMcVFwNkZmNjJ5SUxveStKOTVBPT0iLCJ1c2VyX2lkIjoiMjg2NTY0MjM4IiwiZXhwIjoxNzk1MjQ5MTc2fQ.ASyUf_cPOtR16Ak2KFgqq0ANQ9_svGabbpqbDfM-MDY",
       "sid": "ub5ce88b292-c745-4bd6-a978-80d77a9c4",
       "deviceId": "2285a27d-7df6-4922-9be1-c0e6f76b307e",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJkMWZjM2MwMy1mODI0LTRjMmEtOGQ5MS03MTY3YjhhYjA4MTciLCJ1c2VyX2lkIjoiMjg2NTY0MjM4Iiwic2Vzc2lvbl9kYXRhIjoiakdLejFIYS80MnN0S1JaVjBGVkg4ckpUN0NzT1Yrb0NOMSt0V1RaSUYxWlVPMVJmM05oT2VHeEJJTGtHcFNtM1FBcXVUU0MxbWxRZ0JTSG5ySnZlTWdxV1pvWlQ2U1I1V01udjVTSUxDYWZSL0oyak1wVWRZOG9ZeCtpWVVGeldzZWJVcWtBTHV1dHl6ZzV5TEsyU1cyL2ZzeHdkQ0NBekhoOTliekxGeG1CZmVqZ2hUSEU0VWRmY3QzUUJ2YU1wME42MmpSREluekNzR1U0MkFrUDdKOG1oZ1FScHZlWTNPUlpMNXRraVMzN1kwVDRkblE4Q3Bjb0VDaXAwYm5wY2J2VXZGWWl6dXkycWdkYTJsbXN4aGF2dzZDVi8rMm12TGQxWFR1bVhVSUdDdkxCeHJIbzlnR1NpaUd1cVd4WHlmS2xSb1FNYXdZZUF1T3RIQk5XeStzM0xxUXA2RmY2MnlJTG95K0o5NUE9PSIsInNpZCI6InViNWNlODhiMjkyLWM3NDUtNGJkNi1hOTc4LTgwZDc3YTljNCIsImlhdCI6MTc5MjU4NTc4MCwiZXhwIjoxNzkyNTg4MTgwfQ.748VU-bVzp-B9EyG7NK8fYxLO18q880x5FH2VYbSOjk; _sid=ub5ce88b292-c745-4bd6-a978-80d77a9c4; _device_id=2285a27d-7df6-4922-9be1-c0e6f76b307e; token=325a1165-0913-47dd-aedd-32525c6ece01d00ec381-0997-486a-9847-702098fa1e9f; _is_logged_in=1; __SW=R6QVTmWRUuKY9mCex6-tkt1ybnaQxCM7; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fbf1e90c82162037ce0d7026c760395f5f22878b9c47509e1ae239e294543b40ef9ba94468fd5df07a317cfd24cd77bdaac7e896cbeeb460712701366f7a435ec95d5fc9cf4551903846d5ac3e3660eebae2516118e12a674cb79bbd4373fa62bff3c951680a2d658b78d1dfb98672d00db45ef1a08822a0fa4598d6c874e931edb6f0825a29d7ff80c54df1fe3901f381a2798b920863365a938027c8957f1385069d8602e8ec525b7beedf1721883fda503bfb877db8a0276741b294b95c490ba51cf8bc6f63827f7b8489bace8db247b338d1599321673fbbfb3cd1572f2f47e95d85c0e4e61579a21d0c636656cd21297b35bd071feb88f3ffd00c6d7016c7eadab39d2d2bba97e3acb28b4aa31650941ba0ca125c42fd3987c9bb2d91bfb27214d2c35deca5555aba1d3199f11ba120149f4fe290995844ea08d80e927109e9123aec3dcbafe19e3ae5a5a4baf177263cb26469283450bc058c51da4e3c283ee0fa5f629dc94416ca166508d4bce3122dcb76d15261ca571c8bb31470538fc6d959d256e74f983f2dd1e4fbcf944da40134b043356bf183117b6afcb5d9aa17d4320abed82834070c9b561e34c267ee3d91f147c476638f06546b1e9a97df6e432029ebc9fd8d1757856659069dd0465e20d8d277f1639fd676cb57a0428036d05649bf698e6a8a95eacae0fbcf522f5d348e78523b753abe95ae63fc09971e46159f93021ea49c899cffc0cc16ba12257a3d8ccc01231ee5d27f65e4b63d1f8c68d0d8143676c90482f67aed859e4bb6f0f0f52626fc8b2e2ac1e9fdcf19685581fd0e59c3d248dcace2b6ef979b7150129c39299bafa8368f16bd4351e22eb4175b7581f060aed43be3de552e863c20297dd201a874ff0aee68eb59f07761ed211b0fc7c8e8de629c3d2a3d09664a5fa04f2dd920e8b1310a7a245e9e0bfc1dc8cc1acd570b891105e4ff602ef87c1c1a6fe9d74e5b07554090326359a688729413775c4f00838ddff3e1f98a7411adba571bdcbe433b1130c8bb2157802da8d10eb51a7e50659ffd62c22ecf0d59b6ba4e5836b60fed98ed3a000dac543546921402aa22e81334584e69ef376fd7dde841abb56e9e6b8f16551af60e7d06821659b5385a3b2e6c1b041ad49296c8feef60f6c2a6e6eedbdc8224d2d13; _swuid=2285a27d-7df6-4922-9be1-c0e6f76b307e; _cid=Mjg2NTY0MjM4",
@@ -886,16 +908,18 @@
           "byo-bf-v10-16": 1,
           "byo-ln-v5-16": 1,
           "byo-bf-v10-17": 1,
-          "byo-ln-v5-17": 1
+          "byo-ln-v5-17": 1,
+          "byo-ln-v5-18": 1,
+          "byo-bf-v10-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -903,15 +927,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -919,9 +943,10 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
-      }
+      },
+      "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicGViNTAxOTM0LTUzNjgtNGZhMS1iNzE3LWNhN2U1M2FhOSIsInN1YiI6ImQxZmMzYzAzLWY4MjQtNGMyYS04ZDkxLTcxNjdiOGFiMDgxNyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6ImpHS3oxSGEvNDJzdEtSWlYwRlZIOHJKVDdDc09WK29DTjErdFdUWklGMVpVTzFSZjNOaE9lR3hCSUxrR3BTbTNRQXF1VFNDMW1sUWdCU0huckp2ZU1ncVdab1pUNlNSNVdNbnY1U0lMQ2FmUi9KMmpNcFVkWThvWXgraVlVRnpXc2ViVXFrQUx1dXR5emc1eUxLMlNXMi9mc3h3ZENDQXpIaDk5YnpMRnhtQmZlamdoVEhFNFVkZmN0M1FCdmFNcDBONjJqUkRJbnpDc0dVNDJBa1A3SjhtaGdRUnB2ZVkzT1JaTDV0a2lTMzdZMFQ0ZG5ROENwY29FQ2lwMGJucGNidlV2RllpenV5MnFnZGEybG1zeGhhdnc2Q1YvKzJtdkxkMVhUdW1YVUlHQ3ZMQnhySG85Z0dTaWlHdXFXeFh5ZktsUm9RTWF3WWVBdU90SEJOV3krczNMcVFwNkZmNjJ5SUxveStKOTVBPT0iLCJ1c2VyX2lkIjoiMjg2NTY0MjM4IiwiZXhwIjoxNzk1MjQ5MTc2fQ.ASyUf_cPOtR16Ak2KFgqq0ANQ9_svGabbpqbDfM-MDY"
     },
     "acc_9482882291": {
       "id": "acc_9482882291",
@@ -931,7 +956,7 @@
       "customerId": "286564713",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fa0b7b1eaa72489878840113908a8fb278f271b4c96af75666ffa2618c686cdba7b57d94935f80de3eb88eba5a075da4f4a9052fdbd5128179849caefeb490f3f67c38541d691990fb141c5bfe3c1241446f6305dc813c81e649d6f26c218aa5c1b5554e0aab6d99ee59b9fb331735b9815e5ed693ea0ddb003af13e993ee8a5ae0818c52a56f8820f30a9e111c06d60d2ff750fd4a83ec72f83a1094f8e6b2a3a93ea8ae1e3c3bc4a0607b8e3fbc1003c877156d961c02e943b047bbb07fc1e8b9d56fc17738e2fdfd1c2c5d78ff0f796bf56386f3b38161c072b5acc73905133f47e422c1c11a25cebbb0280478acb88e6c8f728a860513fd53211566bc57a1a46e0bb3b2e2868c2433c79b5084458ec560f28076804ae53813ef1327a4b473fa6baa2205ea16aaca81103b0251b7a96a7c215b80acb2e9d9fb917914e2a8fba4380c206fb3f2b58d42ee93b8bf5a0cac54d6712cb6cd81bb1a484b6262f602a4bbfc4e20b6f7b49778739741c5fbff6b8db6f223166547029e45aed064c6f7e7f6a179a48213db7e3a7ec3c1d8ec9e40eebf43e8e1b00514d32bd6b9f051faecc1d8c077886be807a05f79a665b24b7e4bd447e70f0a2eb043c62c8ed239dec19f26fb9a397a12f2c090829ff265340c890eb8c12c1ff642ba452c3fa1342a6fce2b1446d0bf965da8eb5d1fa732ebf5ee89e5bafa64e818dc2cf440cb39517c400c696b76d35e46f97f2ecffe4251c02ac487c2b41544a2a22fb7677e10445b6384860570f5292defe2a58b164a7d877be1364cd100952c7afea227adb43f9f28a0dffb0b08cca0cb7153bf7e5852a0df42e777517513a30fd517c73fbb9534b2d449b46a21684228c6f8e2dec879eaebbc08a0e1eb74381114a475870f0cde7b9df0e1708019e970cf10b586d280687c03444379f72aa9fc788782c87373048ed7a7e23db4f15ea5c01c4ab0862f9e82cdd31742d350b440b69729c02a1772f1868fa272bd44c010dbe47bf285a321b284f1d811e4458534c3a01d1b663a6a09cc7efb6620eefe4d18ba79b0165a3f1729ce8be91c2258704c8f9b66e8b4aa47a0bf62d810947de560c4c4007a60e2e4a17f0332eefd694297581791c7bfc09f0a2dfd16eb9d5a3bb95790cec8033c311d42444314d621b35ed8769b6553",
       "token": "b580b709-fec9-41bb-8eeb-83215b30cdf18b23d2e6-8a35-46fb-96d7-8d231241056f",
-      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI2ODYyZWMzZS1hODUwLTQyMDktYWQ5NC0yNmJhZGE2ZGE3ZjciLCJ1c2VyX2lkIjoiMjg2NTY0NzEzIiwic2Vzc2lvbl9kYXRhIjoidFllc3hnZ1RCNk5SaVVjWS82U2F0Y0NNYktEbEZ4N245bUh1ZHdBa1hzeFlaR25PTUlVRFRFQ0pVekdzTk9KSmVWUW16eC9CNWgyYWdIN1NiTmluZnByNXdnKzF0RlJHaHhZUWYzL24vVEQwUGVYSGREUkw2bE80R1k2b0l0U1IxNEhvL2RtNms2RHpFclpQdjZnUW9PN0JXZE1Sd2FpdUJkbC9NN3Rqd0pWaXkvcmFqa05Ta3AxZGR6eUE4d2dIdmhNWnJmdUx5SmhoOXp6b3luTURBZ2FFNkp6WWZWcThhTmV3YTE0ZTJMaGVnRGNWZm93bFdvbmpTMkVBZFpPRFRyZFpKdnVvODRwQTNkZS9mSDBlb2JqcUtzcHBmWkg5WHVKRGZ6WVBkTnhWczQ4ZGRocnBRUktrNDRwMlV1ZHZsWmNOUm5qZGhzeS9TMzc4S2gxd01mVDVHUHRIcStqZlVGKzBMN1B4S0E9PSIsInNpZCI6InViNjdiOGQ5OTUxLTc1ZDAtNDE3Yi1iY2VmLTQxMjA4YTY4NCIsImlhdCI6MTc5MjU4NTk0MywiZXhwIjoxNzkyNTg4MzQzfQ.2OnItFxoxnkwW2S1o9ewgyIyUGZ3vB53XWBtyVVv3WE",
+      "tid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicDc2NDQ0OTFkLWZiZmYtNGRlNC04YjBmLTU0OWMxN2VlNCIsInN1YiI6IjY4NjJlYzNlLWE4NTAtNDIwOS1hZDk0LTI2YmFkYTZkYTdmNyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6InRZZXN4Z2dUQjZOUmlVY1kvNlNhdGNDTWJLRGxGeDduOW1IdWR3QWtYc3hZWkduT01JVURURUNKVXpHc05PSkplVlFtengvQjVoMmFnSDdTYk5pbmZwcjV3ZysxdEZSR2h4WVFmMy9uL1REMFBlWEhkRFJMNmxPNEdZNm9JdFNSMTRIby9kbTZrNkR6RXJaUHY2Z1FvTzdCV2RNUndhaXVCZGwvTTd0andKVml5L3JhamtOU2twMWRkenlBOHdnSHZoTVpyZnVMeUpoaDl6em95bk1EQWdhRTZKellmVnE4YU5ld2ExNGUyTGhlZ0RjVmZvd2xXb25qUzJFQWRaT0RUcmRaSnZ1bzg0cEEzZGUvZkgwZW9ianFLc3BwZlpIOVh1SkRmellQZE54VnM0OGRkaHJwUVJLazQ0cDJVdWR2bFpjTlJuamRoc3kvUzM3OEtoMXdNZlQ1R1B0SHEramZVRiswTDdQeEtBPT0iLCJ1c2VyX2lkIjoiMjg2NTY0NzEzIiwiZXhwIjoxNzk1MjQ5MTc2fQ.48pQnidLMFZJCDNXSzmhbMoLwbZKW_kWJRTJ2BSdduk",
       "sid": "ub67b8d9951-75d0-417b-bcef-41208a684",
       "deviceId": "8e29854b-0808-4177-a70a-31c23e6d8e0b",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI2ODYyZWMzZS1hODUwLTQyMDktYWQ5NC0yNmJhZGE2ZGE3ZjciLCJ1c2VyX2lkIjoiMjg2NTY0NzEzIiwic2Vzc2lvbl9kYXRhIjoidFllc3hnZ1RCNk5SaVVjWS82U2F0Y0NNYktEbEZ4N245bUh1ZHdBa1hzeFlaR25PTUlVRFRFQ0pVekdzTk9KSmVWUW16eC9CNWgyYWdIN1NiTmluZnByNXdnKzF0RlJHaHhZUWYzL24vVEQwUGVYSGREUkw2bE80R1k2b0l0U1IxNEhvL2RtNms2RHpFclpQdjZnUW9PN0JXZE1Sd2FpdUJkbC9NN3Rqd0pWaXkvcmFqa05Ta3AxZGR6eUE4d2dIdmhNWnJmdUx5SmhoOXp6b3luTURBZ2FFNkp6WWZWcThhTmV3YTE0ZTJMaGVnRGNWZm93bFdvbmpTMkVBZFpPRFRyZFpKdnVvODRwQTNkZS9mSDBlb2JqcUtzcHBmWkg5WHVKRGZ6WVBkTnhWczQ4ZGRocnBRUktrNDRwMlV1ZHZsWmNOUm5qZGhzeS9TMzc4S2gxd01mVDVHUHRIcStqZlVGKzBMN1B4S0E9PSIsInNpZCI6InViNjdiOGQ5OTUxLTc1ZDAtNDE3Yi1iY2VmLTQxMjA4YTY4NCIsImlhdCI6MTc5MjU4NTk0MywiZXhwIjoxNzkyNTg4MzQzfQ.2OnItFxoxnkwW2S1o9ewgyIyUGZ3vB53XWBtyVVv3WE; _sid=ub67b8d9951-75d0-417b-bcef-41208a684; _device_id=8e29854b-0808-4177-a70a-31c23e6d8e0b; token=b580b709-fec9-41bb-8eeb-83215b30cdf18b23d2e6-8a35-46fb-96d7-8d231241056f; _is_logged_in=1; __SW=tTveWg7WaoAvnyu1puvB-T2LYh9nstWc; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fa0b7b1eaa72489878840113908a8fb278f271b4c96af75666ffa2618c686cdba7b57d94935f80de3eb88eba5a075da4f4a9052fdbd5128179849caefeb490f3f67c38541d691990fb141c5bfe3c1241446f6305dc813c81e649d6f26c218aa5c1b5554e0aab6d99ee59b9fb331735b9815e5ed693ea0ddb003af13e993ee8a5ae0818c52a56f8820f30a9e111c06d60d2ff750fd4a83ec72f83a1094f8e6b2a3a93ea8ae1e3c3bc4a0607b8e3fbc1003c877156d961c02e943b047bbb07fc1e8b9d56fc17738e2fdfd1c2c5d78ff0f796bf56386f3b38161c072b5acc73905133f47e422c1c11a25cebbb0280478acb88e6c8f728a860513fd53211566bc57a1a46e0bb3b2e2868c2433c79b5084458ec560f28076804ae53813ef1327a4b473fa6baa2205ea16aaca81103b0251b7a96a7c215b80acb2e9d9fb917914e2a8fba4380c206fb3f2b58d42ee93b8bf5a0cac54d6712cb6cd81bb1a484b6262f602a4bbfc4e20b6f7b49778739741c5fbff6b8db6f223166547029e45aed064c6f7e7f6a179a48213db7e3a7ec3c1d8ec9e40eebf43e8e1b00514d32bd6b9f051faecc1d8c077886be807a05f79a665b24b7e4bd447e70f0a2eb043c62c8ed239dec19f26fb9a397a12f2c090829ff265340c890eb8c12c1ff642ba452c3fa1342a6fce2b1446d0bf965da8eb5d1fa732ebf5ee89e5bafa64e818dc2cf440cb39517c400c696b76d35e46f97f2ecffe4251c02ac487c2b41544a2a22fb7677e10445b6384860570f5292defe2a58b164a7d877be1364cd100952c7afea227adb43f9f28a0dffb0b08cca0cb7153bf7e5852a0df42e777517513a30fd517c73fbb9534b2d449b46a21684228c6f8e2dec879eaebbc08a0e1eb74381114a475870f0cde7b9df0e1708019e970cf10b586d280687c03444379f72aa9fc788782c87373048ed7a7e23db4f15ea5c01c4ab0862f9e82cdd31742d350b440b69729c02a1772f1868fa272bd44c010dbe47bf285a321b284f1d811e4458534c3a01d1b663a6a09cc7efb6620eefe4d18ba79b0165a3f1729ce8be91c2258704c8f9b66e8b4aa47a0bf62d810947de560c4c4007a60e2e4a17f0332eefd694297581791c7bfc09f0a2dfd16eb9d5a3bb95790cec8033c311d42444314d621b35ed8769b6553; _swuid=8e29854b-0808-4177-a70a-31c23e6d8e0b; _cid=Mjg2NTY0NzEz",
@@ -946,16 +971,18 @@
           "byo-bf-v10-16": 1,
           "byo-ln-v5-16": 1,
           "byo-ln-v5-17": 1,
-          "byo-bf-v10-17": 1
+          "byo-bf-v10-17": 1,
+          "byo-bf-v10-18": 1,
+          "byo-ln-v5-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -963,15 +990,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -979,9 +1006,10 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
-      }
+      },
+      "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicDc2NDQ0OTFkLWZiZmYtNGRlNC04YjBmLTU0OWMxN2VlNCIsInN1YiI6IjY4NjJlYzNlLWE4NTAtNDIwOS1hZDk0LTI2YmFkYTZkYTdmNyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6InRZZXN4Z2dUQjZOUmlVY1kvNlNhdGNDTWJLRGxGeDduOW1IdWR3QWtYc3hZWkduT01JVURURUNKVXpHc05PSkplVlFtengvQjVoMmFnSDdTYk5pbmZwcjV3ZysxdEZSR2h4WVFmMy9uL1REMFBlWEhkRFJMNmxPNEdZNm9JdFNSMTRIby9kbTZrNkR6RXJaUHY2Z1FvTzdCV2RNUndhaXVCZGwvTTd0andKVml5L3JhamtOU2twMWRkenlBOHdnSHZoTVpyZnVMeUpoaDl6em95bk1EQWdhRTZKellmVnE4YU5ld2ExNGUyTGhlZ0RjVmZvd2xXb25qUzJFQWRaT0RUcmRaSnZ1bzg0cEEzZGUvZkgwZW9ianFLc3BwZlpIOVh1SkRmellQZE54VnM0OGRkaHJwUVJLazQ0cDJVdWR2bFpjTlJuamRoc3kvUzM3OEtoMXdNZlQ1R1B0SHEramZVRiswTDdQeEtBPT0iLCJ1c2VyX2lkIjoiMjg2NTY0NzEzIiwiZXhwIjoxNzk1MjQ5MTc2fQ.48pQnidLMFZJCDNXSzmhbMoLwbZKW_kWJRTJ2BSdduk"
     },
     "acc_7488934840": {
       "id": "acc_7488934840",
@@ -991,7 +1019,7 @@
       "customerId": "286565375",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0ff30c078f04992b4fe008f72b825796f25bd1db337c1ee75b3c11d2f6d910c65a57dabb1a0a5962168ecda491ca7a27793cc7da34983c5d6bb66402889fdf06515ea60fb51f3303b365174f588db4ca4ad85b90da0b4a75186e4db90c4a843e71d2315cbfc0f1ea838c917b8a82e99471a8feb7155639607484a753dea577e943906b64017a5e755f0a7e34c61181905ae00471ebe9f8b2d30970f8584ae5bed8dfdc4419a7cc24600b2b21735a91be3a1e131756ba698f78d9a9cbe53cd78626f575ee6dc623eb10c1cdbda6623e6d957fd89ced121287c8dbcc4144201d82a0bbbaea3e58df57c578eef83d0201499f03684de8df151c0ffa88cb39ec9e9de6294c3d31755973571eec8e3cea9756bc3e23a33d9d5101fb145a3459da88ce64b85ec1236f6209330ae1b4fbb3fb4fae0064ea307a161bff02e7e30ab61843575a70b3f6b809284bae7a0e35e8c855bd064dc3232eec902c2cf59c6163eba246e95cbd0e55bc8ce1dbcd42bcfdfa66200a4371c7d730b07c764be2ce3fdd78d518fa37fbc61e3255eecda20028252646b9eb80e8bbd83a3d4a198213f6eb33cc0e9f164b9ef93dff8c865a54d9a6642100a7469c7044ef4bb0e4c789c60625d274789dbc85d1eac91297fb11c5b16f1ae3b4119bdd4f519aabbbd3975553b5c1c64c704b4845ef485f356ab5a4ee9929fd144eb6b3da973c3ee3068e9c8878d3096f21137aeae129b435b22c8d7506a61c185642c38579c2a3cc08ce01fe34fc0c5a2d00cd0b3f3b843486477387e33de9f0020d0ae0cac9a34cdec37d86b16fe8ba80f88773ad4b938ae4c9fe9726c943f7b5912396c198e39feace1c55bdfeccd49afe93cfda20b93fd700d6e7463227010dee29e405acb3e66fec07df282e567ecb6521f3fa9bd670a230a381f737b4146e4e965dd2945986c576ee9f9994da0450f62eeb7b8133266d0d0c030b471a6532e6855447dea0f454cdcf8c7dbd495a1ebddd73bdf1f72d44e6e1c79ccfd40cbe5e0ea8b439dcb26c1062b82524375fbb5aa5b46b666ae44a1ca49abefa63a3dc573867021bd30734b91985bd96dbb4c43b83666b1e499973a7858a768890dabf8ba682702c640c2965b46847147ab31088f30e7323232acd8c3c7ee3cac1ae7ef4151f3a71d0b9e02593e6b0e6",
       "token": "69cd16ca-5307-4022-8727-69ce8a62b8403651c5bc-967d-42e8-aef7-1f3f846b9414",
-      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIyY2I5YzdlNC1hYjM4LTQ1NzAtOTQ1MC1jNTM1NjM4MmRhZmMiLCJ1c2VyX2lkIjoiMjg2NTY1Mzc1Iiwic2Vzc2lvbl9kYXRhIjoiZTFlVlpNYlg1TXFqUitoK2lCUCsvZTVNV1dxeFJTMngwUWVPLy9HQlVuSVYwcDlvc3RBTFBUT3hSODByMkJhb3ZqeHVwSitwWE1kL3E3VTlQMkFITk00TjJ5RFFwd3NjZjBXTUlaQmhRUlkvRXBMWlpKMllKLzFrSzI4OC9lVXJ0bmhrUm93SE9BRENmMm5OaGlnSG5HaWtnWGZpSFE1MENxRG9jcUxzaE8vUE52WmtKZkw0cHZaRW1WRGxZem9RWFlYR3FUQXRqbThZVmJYSmJ5MmRzdTJsVE1jRzVRSzFiMks5bm5CcmJLd3RBWWhMUlZEanZZblkwY0ZWOTRBOUt3VGRVa0R0R2ZiTVJOd1EwVmFBU1pMd2NJVVFOQUNFS2U0N041bDE1TWd1emxFKzlxUDZZUnJIcW5adVgxeUNKeWZYRlEwNEYxMkprWFd0dmZjQXlyK3hzMkhicHlkUVB3b3pCUmVyZGc9PSIsInNpZCI6InViNmVkMTk0YTgyLTk2ZWEtNDk1Mi04NjBkLTk5Njk4ZmVhNSIsImlhdCI6MTc5MjU4NjE2MywiZXhwIjoxNzkyNTg4NTYzfQ.F8Ka-Uk-2Ou_Xbn8Kr3CdDllVENoqAqso1x-U7fLESY",
+      "tid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicDdlMTE1ODk5LThjOTMtNDdmMi1hNjNkLTIwZDAyNTkzYyIsInN1YiI6IjJjYjljN2U0LWFiMzgtNDU3MC05NDUwLWM1MzU2MzgyZGFmYyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6ImUxZVZaTWJYNU1xalIraCtpQlArL2U1TVdXcXhSUzJ4MFFlTy8vR0JVbklWMHA5b3N0QUxQVE94UjgwcjJCYW92anh1cEorcFhNZC9xN1U5UDJBSE5NNE4yeURRcHdzY2YwV01JWkJoUVJZL0VwTFpaSjJZSi8xa0syODgvZVVydG5oa1Jvd0hPQURDZjJuTmhpZ0huR2lrZ1hmaUhRNTBDcURvY3FMc2hPL1BOdlprSmZMNHB2WkVtVkRsWXpvUVhZWEdxVEF0am04WVZiWEpieTJkc3UybFRNY0c1UUsxYjJLOW5uQnJiS3d0QVloTFJWRGp2WW5ZMGNGVjk0QTlLd1RkVWtEdEdmYk1STndRMFZhQVNaTHdjSVVRTkFDRUtlNDdONWwxNU1ndXpsRSs5cVA2WVJySHFuWnVYMXlDSnlmWEZRMDRGMTJKa1hXdHZmY0F5cit4czJIYnB5ZFFQd296QlJlcmRnPT0iLCJ1c2VyX2lkIjoiMjg2NTY1Mzc1IiwiZXhwIjoxNzk1MjQ5MTc2fQ.o7hD-8_cv5BGgkevNj3K7XI_obrGFdKTQUiZSsGFzS0",
       "sid": "ub6ed194a82-96ea-4952-860d-99698fea5",
       "deviceId": "df532892-3489-4f1d-acf9-e2d6e871d5c0",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIyY2I5YzdlNC1hYjM4LTQ1NzAtOTQ1MC1jNTM1NjM4MmRhZmMiLCJ1c2VyX2lkIjoiMjg2NTY1Mzc1Iiwic2Vzc2lvbl9kYXRhIjoiZTFlVlpNYlg1TXFqUitoK2lCUCsvZTVNV1dxeFJTMngwUWVPLy9HQlVuSVYwcDlvc3RBTFBUT3hSODByMkJhb3ZqeHVwSitwWE1kL3E3VTlQMkFITk00TjJ5RFFwd3NjZjBXTUlaQmhRUlkvRXBMWlpKMllKLzFrSzI4OC9lVXJ0bmhrUm93SE9BRENmMm5OaGlnSG5HaWtnWGZpSFE1MENxRG9jcUxzaE8vUE52WmtKZkw0cHZaRW1WRGxZem9RWFlYR3FUQXRqbThZVmJYSmJ5MmRzdTJsVE1jRzVRSzFiMks5bm5CcmJLd3RBWWhMUlZEanZZblkwY0ZWOTRBOUt3VGRVa0R0R2ZiTVJOd1EwVmFBU1pMd2NJVVFOQUNFS2U0N041bDE1TWd1emxFKzlxUDZZUnJIcW5adVgxeUNKeWZYRlEwNEYxMkprWFd0dmZjQXlyK3hzMkhicHlkUVB3b3pCUmVyZGc9PSIsInNpZCI6InViNmVkMTk0YTgyLTk2ZWEtNDk1Mi04NjBkLTk5Njk4ZmVhNSIsImlhdCI6MTc5MjU4NjE2MywiZXhwIjoxNzkyNTg4NTYzfQ.F8Ka-Uk-2Ou_Xbn8Kr3CdDllVENoqAqso1x-U7fLESY; _sid=ub6ed194a82-96ea-4952-860d-99698fea5; _device_id=df532892-3489-4f1d-acf9-e2d6e871d5c0; token=69cd16ca-5307-4022-8727-69ce8a62b8403651c5bc-967d-42e8-aef7-1f3f846b9414; _is_logged_in=1; __SW=PRw4UCz0zE4rK1xVp9zU_1yBd2M0DDwS; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0ff30c078f04992b4fe008f72b825796f25bd1db337c1ee75b3c11d2f6d910c65a57dabb1a0a5962168ecda491ca7a27793cc7da34983c5d6bb66402889fdf06515ea60fb51f3303b365174f588db4ca4ad85b90da0b4a75186e4db90c4a843e71d2315cbfc0f1ea838c917b8a82e99471a8feb7155639607484a753dea577e943906b64017a5e755f0a7e34c61181905ae00471ebe9f8b2d30970f8584ae5bed8dfdc4419a7cc24600b2b21735a91be3a1e131756ba698f78d9a9cbe53cd78626f575ee6dc623eb10c1cdbda6623e6d957fd89ced121287c8dbcc4144201d82a0bbbaea3e58df57c578eef83d0201499f03684de8df151c0ffa88cb39ec9e9de6294c3d31755973571eec8e3cea9756bc3e23a33d9d5101fb145a3459da88ce64b85ec1236f6209330ae1b4fbb3fb4fae0064ea307a161bff02e7e30ab61843575a70b3f6b809284bae7a0e35e8c855bd064dc3232eec902c2cf59c6163eba246e95cbd0e55bc8ce1dbcd42bcfdfa66200a4371c7d730b07c764be2ce3fdd78d518fa37fbc61e3255eecda20028252646b9eb80e8bbd83a3d4a198213f6eb33cc0e9f164b9ef93dff8c865a54d9a6642100a7469c7044ef4bb0e4c789c60625d274789dbc85d1eac91297fb11c5b16f1ae3b4119bdd4f519aabbbd3975553b5c1c64c704b4845ef485f356ab5a4ee9929fd144eb6b3da973c3ee3068e9c8878d3096f21137aeae129b435b22c8d7506a61c185642c38579c2a3cc08ce01fe34fc0c5a2d00cd0b3f3b843486477387e33de9f0020d0ae0cac9a34cdec37d86b16fe8ba80f88773ad4b938ae4c9fe9726c943f7b5912396c198e39feace1c55bdfeccd49afe93cfda20b93fd700d6e7463227010dee29e405acb3e66fec07df282e567ecb6521f3fa9bd670a230a381f737b4146e4e965dd2945986c576ee9f9994da0450f62eeb7b8133266d0d0c030b471a6532e6855447dea0f454cdcf8c7dbd495a1ebddd73bdf1f72d44e6e1c79ccfd40cbe5e0ea8b439dcb26c1062b82524375fbb5aa5b46b666ae44a1ca49abefa63a3dc573867021bd30734b91985bd96dbb4c43b83666b1e499973a7858a768890dabf8ba682702c640c2965b46847147ab31088f30e7323232acd8c3c7ee3cac1ae7ef4151f3a71d0b9e02593e6b0e6; _swuid=df532892-3489-4f1d-acf9-e2d6e871d5c0; _cid=Mjg2NTY1Mzc1",
@@ -1006,16 +1034,18 @@
           "byo-bf-v10-16": 1,
           "byo-ln-v5-16": 1,
           "byo-ln-v5-17": 1,
-          "byo-bf-v10-17": 1
+          "byo-bf-v10-17": 1,
+          "byo-ln-v5-18": 1,
+          "byo-bf-v10-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -1023,15 +1053,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -1039,9 +1069,10 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
-      }
+      },
+      "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicDdlMTE1ODk5LThjOTMtNDdmMi1hNjNkLTIwZDAyNTkzYyIsInN1YiI6IjJjYjljN2U0LWFiMzgtNDU3MC05NDUwLWM1MzU2MzgyZGFmYyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6ImUxZVZaTWJYNU1xalIraCtpQlArL2U1TVdXcXhSUzJ4MFFlTy8vR0JVbklWMHA5b3N0QUxQVE94UjgwcjJCYW92anh1cEorcFhNZC9xN1U5UDJBSE5NNE4yeURRcHdzY2YwV01JWkJoUVJZL0VwTFpaSjJZSi8xa0syODgvZVVydG5oa1Jvd0hPQURDZjJuTmhpZ0huR2lrZ1hmaUhRNTBDcURvY3FMc2hPL1BOdlprSmZMNHB2WkVtVkRsWXpvUVhZWEdxVEF0am04WVZiWEpieTJkc3UybFRNY0c1UUsxYjJLOW5uQnJiS3d0QVloTFJWRGp2WW5ZMGNGVjk0QTlLd1RkVWtEdEdmYk1STndRMFZhQVNaTHdjSVVRTkFDRUtlNDdONWwxNU1ndXpsRSs5cVA2WVJySHFuWnVYMXlDSnlmWEZRMDRGMTJKa1hXdHZmY0F5cit4czJIYnB5ZFFQd296QlJlcmRnPT0iLCJ1c2VyX2lkIjoiMjg2NTY1Mzc1IiwiZXhwIjoxNzk1MjQ5MTc2fQ.o7hD-8_cv5BGgkevNj3K7XI_obrGFdKTQUiZSsGFzS0"
     },
     "acc_6200708680": {
       "id": "acc_6200708680",
@@ -1065,11 +1096,11 @@
         "sessionExpired": true,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 0,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "EXPIRED",
           "status": "FAILED",
@@ -1081,11 +1112,11 @@
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 0,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "EXPIRED",
           "status": "FAILED",
@@ -1105,7 +1136,7 @@
       "customerId": "286562855",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f39afbc5cc58af35343166ce1e4e422fc661ba6d6707a9a31b50fbd58f7d098e267a494891425d4b395fe2022ce7f081607d23c07ae1caa0596e3fa331978111a20d49836c7f655968476d1102d58105afab8db56d16629b3a873f5b2ff603f36ca6d499433a8629b0de57d6256821c9f2271cafabfc86b2fc878dc7489a9561ae4517f57b4d73d5882785f2474a54b45c915898406de2dda1982d40ead61d54f43c79a814dc0054349684c6ffd2594d3f6568143fff2fbfec8e7ddb2687b6a06d200c069c4c3c3d488173dc1ceb95702b5ff96093037dc41992ea931ce6aa1bea183bd4dc64347c384b0e12322c3cf77981e831a78142d03fcad32154b3af406a648b79348d53ba6b14f154b3ff671f3d8d4d38d34baa15c468630932792af882a3fb77c6cc7a7fc55d879e46bddc1aacbdf6b3c5395dd8b3403b558697c9f7924a7122a3555e81f286949a560807672bfefa3cd8f4c5362e7ee7a2c73ef7f56152716e6c0f447d805407466496fb16680809513c08b85e9763209b2fdcef10f76bc42ccd6ec69189888a0af05fcc21e1e8a9cd76a17aee0a614200045610b69e261b828864279ce77bd6846c697eb4aef7d58a38cbeb594506722723b007c1d1078566811e71ffff55ebbf509e7394aa881d20652e85eb75127dc2fc710c8df876c387f970fdaa8a016f61855413aa76046d9e72c84f3b5e6824c8a42691a3d99aa5395f1d41a5c3db6c67c23809f0577daa3f13676ca52c1d1dd381cce2a57569bd914b192f49b56c8408dbdace2b61bd45327a40a775ab5be9e0aa351c34f4d05b73e2b3304f8b84fe70a696ae979dcc901e33cacdbd98e24898ca4e70d93c5756aaeb275aea09f94e2b8f658b23efd37a51963b287e772baf85bce74ee5df160cd73198b84da98925533b94658902c6a3fe229477c2e5f7d43e82aa51e08b2ab59530d115d2d83cba334c1316b20a29c59ee2fb147032f28483db4d39c134e9f1c8693805e7337afd706909984a33ecf2136a911706763cbf0b5ab9228de234db2e773ab8d263aaaa3587be31f5b8cbe074fcf316082d6c8c6c6e44e5682d179b512a8e7a18e51f22aa9950b311a0d8300c8aa36f12b72149be6bbefb903143c9713b9ac0236cdea50a58fefd6960b0a803732ab52814615dd20b458d939",
       "token": "0b8ad0ce-37a4-4033-98b8-73bdcd4c0563bd52f252-d0c5-474f-9015-d694bdea3ccb",
-      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJmNzc0ZWZjZC1lNGE3LTQ1OGEtOTEwZC1iYTU4OGU5YTU2YTkiLCJ1c2VyX2lkIjoiMjg2NTYyODU1Iiwic2Vzc2lvbl9kYXRhIjoiTXMzeEpUV2VrTDlxVExET0k1MVg0Z1VuOFhaeTdKN0dGektMZVVMNGdYS1BoWklYMTk3ZURBN0w1eTd4ampqdm8xWHFhQXpxQ2NRR3FMK3ROZXF6cnRaTlErWHVMUlZqTnlsaERqbW5FY2MxYThtbGJUTkR1MDdRQWJSSjZWb3YybEhWbGk4ei91WGg0ZWhkcGF6VWk2MGVWeVRONzd2L21vOXNPdkNBbEZhNVZQczZwSDZVb1hPMUIrOVEzcDlhZ2lxaVFxVW9BT25zdVlocmp1anhhZHRxUjhjNE10bFBBcHVyRzFWTUdNM3dQYitNNTBWMW5aQkVZS1lsYnZ6Tlp1cWkrMDZtSEpzUjZsUHMrTUZmYkFoOWlCNlRKcFI5SzN5cmlGNDJadldLejdUSzVzR0IwODRBenhWcFFNNTJGSzRQZ0ZlSG84SlRGYlcyTGlKN2p4V0gwUkpySDVBYkxySmIyc25wMmc9PSIsInNpZCI6InViNTM4NjU5MjFmLWIyNTYtNDgxOC05MjQ1LTFjMTEyNmEyMCIsImlhdCI6MTc5MjU4NTMzOCwiZXhwIjoxNzkyNTg3NzM4fQ.5qMJ1QDBX_WuMozuqWwIgB8JGCito1movS3SRCQLWkg",
+      "tid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicDUwZDNiODFhLTUzMTUtNGU5Mi04NzYyLTA0MTE2NzZmOCIsInN1YiI6ImY3NzRlZmNkLWU0YTctNDU4YS05MTBkLWJhNTg4ZTlhNTZhOSIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6Ik1zM3hKVFdla0w5cVRMRE9JNTFYNGdVbjhYWnk3SjdHRnpLTGVVTDRnWEtQaFpJWDE5N2VEQTdMNXk3eGpqanZvMVhxYUF6cUNjUUdxTCt0TmVxenJ0Wk5RK1h1TFJWak55bGhEam1uRWNjMWE4bWxiVE5EdTA3UUFiUko2Vm92MmxIVmxpOHovdVhoNGVoZHBhelVpNjBlVnlUTjc3di9tbzlzT3ZDQWxGYTVWUHM2cEg2VW9YTzFCKzlRM3A5YWdpcWlRcVVvQU9uc3VZaHJqdWp4YWR0cVI4YzRNdGxQQXB1ckcxVk1HTTN3UGIrTTUwVjFuWkJFWUtZbGJ2ek5adXFpKzA2bUhKc1I2bFBzK01GZmJBaDlpQjZUSnBSOUszeXJpRjQyWnZXS3o3VEs1c0dCMDg0QXp4VnBRTTUyRks0UGdGZUhvOEpURmJXMkxpSjdqeFdIMFJKckg1QWJMckpiMnNucDJnPT0iLCJ1c2VyX2lkIjoiMjg2NTYyODU1IiwiZXhwIjoxNzk1MjQ5MTc2fQ.2EknMQx_B6kLFgbXq1OiwTNw1l1SeRIJzTH2KHmyUyw",
       "sid": "ub53865921f-b256-4818-9245-1c1126a20",
       "deviceId": "b8e53844-1f6d-4ad5-b5f9-1db162b2776a",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJmNzc0ZWZjZC1lNGE3LTQ1OGEtOTEwZC1iYTU4OGU5YTU2YTkiLCJ1c2VyX2lkIjoiMjg2NTYyODU1Iiwic2Vzc2lvbl9kYXRhIjoiTXMzeEpUV2VrTDlxVExET0k1MVg0Z1VuOFhaeTdKN0dGektMZVVMNGdYS1BoWklYMTk3ZURBN0w1eTd4ampqdm8xWHFhQXpxQ2NRR3FMK3ROZXF6cnRaTlErWHVMUlZqTnlsaERqbW5FY2MxYThtbGJUTkR1MDdRQWJSSjZWb3YybEhWbGk4ei91WGg0ZWhkcGF6VWk2MGVWeVRONzd2L21vOXNPdkNBbEZhNVZQczZwSDZVb1hPMUIrOVEzcDlhZ2lxaVFxVW9BT25zdVlocmp1anhhZHRxUjhjNE10bFBBcHVyRzFWTUdNM3dQYitNNTBWMW5aQkVZS1lsYnZ6Tlp1cWkrMDZtSEpzUjZsUHMrTUZmYkFoOWlCNlRKcFI5SzN5cmlGNDJadldLejdUSzVzR0IwODRBenhWcFFNNTJGSzRQZ0ZlSG84SlRGYlcyTGlKN2p4V0gwUkpySDVBYkxySmIyc25wMmc9PSIsInNpZCI6InViNTM4NjU5MjFmLWIyNTYtNDgxOC05MjQ1LTFjMTEyNmEyMCIsImlhdCI6MTc5MjU4NTMzOCwiZXhwIjoxNzkyNTg3NzM4fQ.5qMJ1QDBX_WuMozuqWwIgB8JGCito1movS3SRCQLWkg; _sid=ub53865921f-b256-4818-9245-1c1126a20; _device_id=b8e53844-1f6d-4ad5-b5f9-1db162b2776a; token=0b8ad0ce-37a4-4033-98b8-73bdcd4c0563bd52f252-d0c5-474f-9015-d694bdea3ccb; _is_logged_in=1; __SW=qdleSsTDyvkbjEoeZ0NM4hGSy_WrxY0X; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f39afbc5cc58af35343166ce1e4e422fc661ba6d6707a9a31b50fbd58f7d098e267a494891425d4b395fe2022ce7f081607d23c07ae1caa0596e3fa331978111a20d49836c7f655968476d1102d58105afab8db56d16629b3a873f5b2ff603f36ca6d499433a8629b0de57d6256821c9f2271cafabfc86b2fc878dc7489a9561ae4517f57b4d73d5882785f2474a54b45c915898406de2dda1982d40ead61d54f43c79a814dc0054349684c6ffd2594d3f6568143fff2fbfec8e7ddb2687b6a06d200c069c4c3c3d488173dc1ceb95702b5ff96093037dc41992ea931ce6aa1bea183bd4dc64347c384b0e12322c3cf77981e831a78142d03fcad32154b3af406a648b79348d53ba6b14f154b3ff671f3d8d4d38d34baa15c468630932792af882a3fb77c6cc7a7fc55d879e46bddc1aacbdf6b3c5395dd8b3403b558697c9f7924a7122a3555e81f286949a560807672bfefa3cd8f4c5362e7ee7a2c73ef7f56152716e6c0f447d805407466496fb16680809513c08b85e9763209b2fdcef10f76bc42ccd6ec69189888a0af05fcc21e1e8a9cd76a17aee0a614200045610b69e261b828864279ce77bd6846c697eb4aef7d58a38cbeb594506722723b007c1d1078566811e71ffff55ebbf509e7394aa881d20652e85eb75127dc2fc710c8df876c387f970fdaa8a016f61855413aa76046d9e72c84f3b5e6824c8a42691a3d99aa5395f1d41a5c3db6c67c23809f0577daa3f13676ca52c1d1dd381cce2a57569bd914b192f49b56c8408dbdace2b61bd45327a40a775ab5be9e0aa351c34f4d05b73e2b3304f8b84fe70a696ae979dcc901e33cacdbd98e24898ca4e70d93c5756aaeb275aea09f94e2b8f658b23efd37a51963b287e772baf85bce74ee5df160cd73198b84da98925533b94658902c6a3fe229477c2e5f7d43e82aa51e08b2ab59530d115d2d83cba334c1316b20a29c59ee2fb147032f28483db4d39c134e9f1c8693805e7337afd706909984a33ecf2136a911706763cbf0b5ab9228de234db2e773ab8d263aaaa3587be31f5b8cbe074fcf316082d6c8c6c6e44e5682d179b512a8e7a18e51f22aa9950b311a0d8300c8aa36f12b72149be6bbefb903143c9713b9ac0236cdea50a58fefd6960b0a803732ab52814615dd20b458d939; _swuid=b8e53844-1f6d-4ad5-b5f9-1db162b2776a; _cid=Mjg2NTYyODU1",
@@ -1120,16 +1151,18 @@
           "byo-bf-v10-16": 1,
           "byo-ln-v5-16": 1,
           "byo-bf-v10-17": 1,
-          "byo-ln-v5-17": 1
+          "byo-ln-v5-17": 1,
+          "byo-ln-v5-18": 1,
+          "byo-bf-v10-18": 1
         },
         "sessionExpired": false,
         "breakfast": {
           "name": "Breakfast Morning (7AM–11AM)",
-          "campaign": "byo-bf-v10-16",
+          "campaign": "byo-bf-v10-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-bf-v10-16",
-            "byo-bf-v10-17"
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -1137,15 +1170,15 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
         },
         "lateNight": {
           "name": "Late Night (9PM–6AM)",
-          "campaign": "byo-ln-v5-16",
+          "campaign": "byo-ln-v5-17",
           "lockedDaysCount": 2,
           "upcomingCampaigns": [
-            "byo-ln-v5-16",
-            "byo-ln-v5-17"
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
           ],
           "slotState": "LOCKED_FOR_TODAY",
           "status": "CLAIMED",
@@ -1153,9 +1186,10 @@
           "discount": "₹50 Free Cash (>₹199)",
           "offerValue": 1,
           "rawMessage": "Already active",
-          "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
         }
-      }
+      },
+      "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicDUwZDNiODFhLTUzMTUtNGU5Mi04NzYyLTA0MTE2NzZmOCIsInN1YiI6ImY3NzRlZmNkLWU0YTctNDU4YS05MTBkLWJhNTg4ZTlhNTZhOSIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6Ik1zM3hKVFdla0w5cVRMRE9JNTFYNGdVbjhYWnk3SjdHRnpLTGVVTDRnWEtQaFpJWDE5N2VEQTdMNXk3eGpqanZvMVhxYUF6cUNjUUdxTCt0TmVxenJ0Wk5RK1h1TFJWak55bGhEam1uRWNjMWE4bWxiVE5EdTA3UUFiUko2Vm92MmxIVmxpOHovdVhoNGVoZHBhelVpNjBlVnlUTjc3di9tbzlzT3ZDQWxGYTVWUHM2cEg2VW9YTzFCKzlRM3A5YWdpcWlRcVVvQU9uc3VZaHJqdWp4YWR0cVI4YzRNdGxQQXB1ckcxVk1HTTN3UGIrTTUwVjFuWkJFWUtZbGJ2ek5adXFpKzA2bUhKc1I2bFBzK01GZmJBaDlpQjZUSnBSOUszeXJpRjQyWnZXS3o3VEs1c0dCMDg0QXp4VnBRTTUyRks0UGdGZUhvOEpURmJXMkxpSjdqeFdIMFJKckg1QWJMckpiMnNucDJnPT0iLCJ1c2VyX2lkIjoiMjg2NTYyODU1IiwiZXhwIjoxNzk1MjQ5MTc2fQ.2EknMQx_B6kLFgbXq1OiwTNw1l1SeRIJzTH2KHmyUyw"
     },
     "acc_7783067848": {
       "id": "acc_7783067848",
@@ -1165,12 +1199,58 @@
       "customerId": "286568575",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f4358637b5b6c0390b51a116ebe02c4ac69bdfcce7406a53770662e999870d65d330231cd5fb5b174e53144122ea2d8207633d70a1ae0bd33b22012010856261f8f20f5411fc65fab45c7665b4b477665a0345a60956d0abaa1a74e407d49c0bcabe5dcc66e7d4adcb37368c2bf069d7c54d93f50b256b3a01e98ffaee00ce21f6f5f79e475a567aff3215e5f98c651185fe5a1a1a48c124fefea0cd8e381beaf2536d8b128fdbe32129328b9bb0a599f6c76fe0650b28c13156cf1353d845c6930cbd5e33515e68cc36243f99eeab0e51c5882820273299606fe566566b2daf0edbe1e7c0978d69a0e2f9474e1d17560aae2770d0952bad1d8f528e325ddf089acbeefa2e46445367b07eacee26613576399f8ccc53c0140cb4e1ad19603bad968c3182d915f9350f9f624ded5fcabb3b51341e418d2caa9ce22cc5cffa0e7d41076533c2e571cd71313f381adb8f5c2fa0131dd3b8b1380df8578e15c515ba1e533aa336df58d0f4881d25013cdaeeb0566270030322125bdc401dafed7de9a5851f5ac77a4682662cd2d58ef0513bfa19831c4e686b5546c9dfb37357bcfcff7e9b599cd44cd0ff860567fb6ad0b302cae72285383f0895071f02355827803f2fc90f27ceb62ad49a7685566303da398843da9956772c04e7e801dba4596a493c1d411498a4efb905e3c9a72fbc1f3b29bdbe30272f311bd30cf6984ea74437886d1993385dfdcb168b25ab848a75fa9401ea69099ff0a95a83dccd5957f6221e50c1ff4226d7a62c1e37a7bf61203e524ccaff5bff5d49331129854f96bbb814f4374461fa7c2e76b8751b1b2c3aab497f8bfab715c8ce4a99485f272a805de682ffb088daedfc8c77340a881b4d2117e654a215e97ae3fb7b5d78972946ec300a0fe0db6bec3e240229142340ba6ef35e835fb38e1711af2a76f55acdfc5c35a2bae3b44dfa48bc02d9676cac4c5bf4587dd8b75689dd1e2e7980b49760f246c1311f66a7b8fe9dd93202710d631d5be2582ccb906b3483b6c4b5da4fed0b96d923e5b35150e8d1bedec907897904811405d3eb57cd167b0a8e83cd13d14a6e778a4a466dab693dd8dd7095e837166c720356fea1e535c2f071970e0c90a62e1ee8321762a27c4ef694fceb6d40d5468aaef5be3e99f0167d9e20cdfb8ca",
       "token": "5fad78a9-af8f-4c91-8694-72662115a30680c24ca5-88d9-420a-b926-37368811281b",
-      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJhNDhjMjYwYi00NzlhLTQ1NDItYTI1ZC1jM2IyNDc2NTMxZjMiLCJ1c2VyX2lkIjoiMjg2NTY4NTc1Iiwic2Vzc2lvbl9kYXRhIjoiWlMxNFNlc1JmRmVFbmdVUjcrR3E4T0RYbVN3MHdULzg0NXNYKzRSZWNnem1mZjNPU3h3WmpjazhSdVFjVkhCUUQ4REFoSGY4VmlmZEFtcGFPOTRueDdtbEhQanMyTHZpajVpbGV0NFprR3REUFNaSlE3dU5lTlc2eThEcE9ELzJuYzE1YzJOWE9BUXBZclNVMHlpSExuY3M5WHNrUENsbHpnZFlaUmpHdHBkdml5NllJTDdsZmpPN1E0a2tIbEhQVFR5NUpFYzdxK0U4T1JJM1JrMkVid2tBSnZlWm5XM1BFRXZsanNjdnpxclZ2VGp5c0NjTUJrTmZZelBpMm1ZMHpoSEFteW4zaFFUbkxnWXhkektwb2FrMjMycFdXQkNJcEYrMkUvNktHMEVqblFiSDZob3g1aE5RT1ZxeGY0ZGVrcDVOQjU1bERadUF1MVJKcG83UTZJVHpwTks3ZDdCZ2tlWEhLamxKcVE9PSIsInNpZCI6InViNmY1Nzg0YWQ0LTkyZTYtNGQzMS1iOGZkLTJiOWY3MzJkNCIsImlhdCI6MTc5MjU4NzEyMiwiZXhwIjoxNzkyNTg5NTIyfQ.Ri4fIyXZlC7I8eC2sfBIPmaqOp9CZRGS-ljlboQjGII",
+      "tid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiJhNDhjMjYwYi00NzlhLTQ1NDItYTI1ZC1jM2IyNDc2NTMxZjMiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicDdhNGU5NGIxLTI4ZjEtNDllZC1hNDg1LWNiYzhlYzU5MyIsInNlc3Npb25fZGF0YSI6IlpTMTRTZXNSZkZlRW5nVVI3K0dxOE9EWG1TdzB3VC84NDVzWCs0UmVjZ3ptZmYzT1N4d1pqY2s4UnVRY1ZIQlFEOERBaEhmOFZpZmRBbXBhTzk0bng3bWxIUGpzMkx2aWo1aWxldDRaa0d0RFBTWkpRN3VOZU5XNnk4RHBPRC8ybmMxNWMyTlhPQVFwWXJTVTB5aUhMbmNzOVhza1BDbGx6Z2RZWlJqR3RwZHZpeTZZSUw3bGZqTzdRNGtrSGxIUFRUeTVKRWM3cStFOE9SSTNSazJFYndrQUp2ZVpuVzNQRUV2bGpzY3Z6cXJWdlRqeXNDY01Ca05mWXpQaTJtWTB6aEhBbXluM2hRVG5MZ1l4ZHpLcG9hazIzMnBXV0JDSXBGKzJFLzZLRzBFam5RYkg2aG94NWhOUU9WcXhmNGRla3A1TkI1NWxEWnVBdTFSSnBvN1E2SVR6cE5LN2Q3QmdrZVhIS2psSnFRPT0iLCJ1c2VyX2lkIjoiMjg2NTY4NTc1IiwiZXhwIjoxNzk1MjQ5MjAxfQ.vy6A6se5IzutfoS_HQXjxSqP18LY8KEnHlbsT31xtd0",
       "sid": "ub6f5784ad4-92e6-4d31-b8fd-2b9f732d4",
       "deviceId": "2ebc5c25-c87a-4410-9e96-e77311bfb8a2",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJhNDhjMjYwYi00NzlhLTQ1NDItYTI1ZC1jM2IyNDc2NTMxZjMiLCJ1c2VyX2lkIjoiMjg2NTY4NTc1Iiwic2Vzc2lvbl9kYXRhIjoiWlMxNFNlc1JmRmVFbmdVUjcrR3E4T0RYbVN3MHdULzg0NXNYKzRSZWNnem1mZjNPU3h3WmpjazhSdVFjVkhCUUQ4REFoSGY4VmlmZEFtcGFPOTRueDdtbEhQanMyTHZpajVpbGV0NFprR3REUFNaSlE3dU5lTlc2eThEcE9ELzJuYzE1YzJOWE9BUXBZclNVMHlpSExuY3M5WHNrUENsbHpnZFlaUmpHdHBkdml5NllJTDdsZmpPN1E0a2tIbEhQVFR5NUpFYzdxK0U4T1JJM1JrMkVid2tBSnZlWm5XM1BFRXZsanNjdnpxclZ2VGp5c0NjTUJrTmZZelBpMm1ZMHpoSEFteW4zaFFUbkxnWXhkektwb2FrMjMycFdXQkNJcEYrMkUvNktHMEVqblFiSDZob3g1aE5RT1ZxeGY0ZGVrcDVOQjU1bERadUF1MVJKcG83UTZJVHpwTks3ZDdCZ2tlWEhLamxKcVE9PSIsInNpZCI6InViNmY1Nzg0YWQ0LTkyZTYtNGQzMS1iOGZkLTJiOWY3MzJkNCIsImlhdCI6MTc5MjU4NzEyMiwiZXhwIjoxNzkyNTg5NTIyfQ.Ri4fIyXZlC7I8eC2sfBIPmaqOp9CZRGS-ljlboQjGII; _sid=ub6f5784ad4-92e6-4d31-b8fd-2b9f732d4; _device_id=2ebc5c25-c87a-4410-9e96-e77311bfb8a2; token=5fad78a9-af8f-4c91-8694-72662115a30680c24ca5-88d9-420a-b926-37368811281b; _is_logged_in=1; __SW=48M7pJH9Xtcqi7_875CSE6AwDvaCSc0S; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f4358637b5b6c0390b51a116ebe02c4ac69bdfcce7406a53770662e999870d65d330231cd5fb5b174e53144122ea2d8207633d70a1ae0bd33b22012010856261f8f20f5411fc65fab45c7665b4b477665a0345a60956d0abaa1a74e407d49c0bcabe5dcc66e7d4adcb37368c2bf069d7c54d93f50b256b3a01e98ffaee00ce21f6f5f79e475a567aff3215e5f98c651185fe5a1a1a48c124fefea0cd8e381beaf2536d8b128fdbe32129328b9bb0a599f6c76fe0650b28c13156cf1353d845c6930cbd5e33515e68cc36243f99eeab0e51c5882820273299606fe566566b2daf0edbe1e7c0978d69a0e2f9474e1d17560aae2770d0952bad1d8f528e325ddf089acbeefa2e46445367b07eacee26613576399f8ccc53c0140cb4e1ad19603bad968c3182d915f9350f9f624ded5fcabb3b51341e418d2caa9ce22cc5cffa0e7d41076533c2e571cd71313f381adb8f5c2fa0131dd3b8b1380df8578e15c515ba1e533aa336df58d0f4881d25013cdaeeb0566270030322125bdc401dafed7de9a5851f5ac77a4682662cd2d58ef0513bfa19831c4e686b5546c9dfb37357bcfcff7e9b599cd44cd0ff860567fb6ad0b302cae72285383f0895071f02355827803f2fc90f27ceb62ad49a7685566303da398843da9956772c04e7e801dba4596a493c1d411498a4efb905e3c9a72fbc1f3b29bdbe30272f311bd30cf6984ea74437886d1993385dfdcb168b25ab848a75fa9401ea69099ff0a95a83dccd5957f6221e50c1ff4226d7a62c1e37a7bf61203e524ccaff5bff5d49331129854f96bbb814f4374461fa7c2e76b8751b1b2c3aab497f8bfab715c8ce4a99485f272a805de682ffb088daedfc8c77340a881b4d2117e654a215e97ae3fb7b5d78972946ec300a0fe0db6bec3e240229142340ba6ef35e835fb38e1711af2a76f55acdfc5c35a2bae3b44dfa48bc02d9676cac4c5bf4587dd8b75689dd1e2e7980b49760f246c1311f66a7b8fe9dd93202710d631d5be2582ccb906b3483b6c4b5da4fed0b96d923e5b35150e8d1bedec907897904811405d3eb57cd167b0a8e83cd13d14a6e778a4a466dab693dd8dd7095e837166c720356fea1e535c2f071970e0c90a62e1ee8321762a27c4ef694fceb6d40d5468aaef5be3e99f0167d9e20cdfb8ca; _swuid=2ebc5c25-c87a-4410-9e96-e77311bfb8a2; _cid=Mjg2NTY4NTc1",
       "isLoggedIn": true,
-      "savedAt": "2026-10-21T12:52:48.803Z"
+      "savedAt": "2026-10-21T12:52:48.803Z",
+      "jwtTid": "eyJ0eXAiOiJKV1QiLCJLSUQiOiIyIiwiYWxnIjoiSFMyNTYifQ.eyJpc3MiOiJoYXAiLCJzdWIiOiJhNDhjMjYwYi00NzlhLTQ1NDItYTI1ZC1jM2IyNDc2NTMxZjMiLCJpYXQiOjE3OTI2NTcyMDEsInNpZCI6InVicDdhNGU5NGIxLTI4ZjEtNDllZC1hNDg1LWNiYzhlYzU5MyIsInNlc3Npb25fZGF0YSI6IlpTMTRTZXNSZkZlRW5nVVI3K0dxOE9EWG1TdzB3VC84NDVzWCs0UmVjZ3ptZmYzT1N4d1pqY2s4UnVRY1ZIQlFEOERBaEhmOFZpZmRBbXBhTzk0bng3bWxIUGpzMkx2aWo1aWxldDRaa0d0RFBTWkpRN3VOZU5XNnk4RHBPRC8ybmMxNWMyTlhPQVFwWXJTVTB5aUhMbmNzOVhza1BDbGx6Z2RZWlJqR3RwZHZpeTZZSUw3bGZqTzdRNGtrSGxIUFRUeTVKRWM3cStFOE9SSTNSazJFYndrQUp2ZVpuVzNQRUV2bGpzY3Z6cXJWdlRqeXNDY01Ca05mWXpQaTJtWTB6aEhBbXluM2hRVG5MZ1l4ZHpLcG9hazIzMnBXV0JDSXBGKzJFLzZLRzBFam5RYkg2aG94NWhOUU9WcXhmNGRla3A1TkI1NWxEWnVBdTFSSnBvN1E2SVR6cE5LN2Q3QmdrZVhIS2psSnFRPT0iLCJ1c2VyX2lkIjoiMjg2NTY4NTc1IiwiZXhwIjoxNzk1MjQ5MjAxfQ.vy6A6se5IzutfoS_HQXjxSqP18LY8KEnHlbsT31xtd0",
+      "offers": {
+        "success": true,
+        "bothClaimed": true,
+        "offerValue": 1,
+        "offerLabel": "₹50 Free Cash (>₹199)",
+        "lockedMap": {
+          "byo-ln-v5-17": 1,
+          "byo-bf-v10-17": 1,
+          "byo-bf-v10-18": 1,
+          "byo-ln-v5-18": 1
+        },
+        "sessionExpired": false,
+        "breakfast": {
+          "name": "Breakfast Morning (7AM–11AM)",
+          "campaign": "byo-bf-v10-17",
+          "lockedDaysCount": 2,
+          "upcomingCampaigns": [
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
+          ],
+          "slotState": "LOCKED_FOR_TODAY",
+          "status": "CLAIMED",
+          "statusCode": 200,
+          "discount": "₹50 Free Cash (>₹199)",
+          "offerValue": 1,
+          "rawMessage": "Already active",
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+        },
+        "lateNight": {
+          "name": "Late Night (9PM–6AM)",
+          "campaign": "byo-ln-v5-17",
+          "lockedDaysCount": 2,
+          "upcomingCampaigns": [
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
+          ],
+          "slotState": "LOCKED_FOR_TODAY",
+          "status": "CLAIMED",
+          "statusCode": 200,
+          "discount": "₹50 Free Cash (>₹199)",
+          "offerValue": 1,
+          "rawMessage": "Already active",
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+        }
+      }
     },
     "acc_9157600711": {
       "id": "acc_9157600711",
@@ -1184,7 +1264,47 @@
       "deviceId": "8a150eda-b147-4aff-823a-26ed801c1b85",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI3Yzc2OWQ4ZC02NDE2LTRhMzAtODFkNi01NDBkNjNkODViYmYiLCJ1c2VyX2lkIjoiMjg2NTY2ODQ3Iiwic2Vzc2lvbl9kYXRhIjoiYzVKRk1PSHZ2bXlKNVlneGpVTUpMbWUyb0lMUnh1Q09GV00waHdjR3o3NndSTmp0OW5Bc2YrcHJqUHhXK0l4Mkg0STNhR1VWNHZnUFRhdkRCOERuUGhhUGMvVUV2U2x5QlBOdm05OS9lWnExejJaM3lvb3hHdmVhVDhyaU81QUJ3MzlsRVkwVnFnSlVlWVlJWXJaQm52ZHB2WmtkVU85c0RGQ25ObWlJYnQ4S3U1bmljbndkeTlWazJpR2UyNTdjMVdtSzhvMXRKVDBZa2JLMlMrRExsQmllOUhUYWFTcU5FeXh3Ylc0OWJzQmM4TzFLck91M3hlV1haR1lqZkRIeEY2cXJsdTZKUzh5MTVTTWFPSHhSODB0eEZiSFdjNXhkbGFZbExwVVdSckdKc0RoT0tFQkRVNnVpMUt3UjY5TGZaZFdyQVFEaCtvZE1YdmpnSlVqYnlSdTZ6R0N0WGw2NWNEQklRcTFGN3FFPSIsInNpZCI6InViNjBlNzEyZDMwLWNlMzItNGM3MC1hMzM5LWIwYmVlODVkMyIsImlhdCI6MTc5MjU4NjYwOCwiZXhwIjoxNzkyNTg5MDA4fQ.iklzJG6q3zhrHkdKyxogc_fjGXtFQoAhAy_u78IFgLI; _sid=ub60e712d30-ce32-4c70-a339-b0bee85d3; _device_id=8a150eda-b147-4aff-823a-26ed801c1b85; token=7bc47b58-fa1b-4c53-be7d-db84f57822dd9eb2f67e-f95d-4b53-8dc2-700b525f6adf; _is_logged_in=1",
       "isLoggedIn": true,
-      "savedAt": "2026-10-21T12:52:48.803Z"
+      "savedAt": "2026-10-21T12:52:48.803Z",
+      "offers": {
+        "success": false,
+        "bothClaimed": false,
+        "offerValue": 1,
+        "offerLabel": "₹50 Free Cash (>₹199)",
+        "lockedMap": {},
+        "sessionExpired": true,
+        "breakfast": {
+          "name": "Breakfast Morning (7AM–11AM)",
+          "campaign": "byo-bf-v10-17",
+          "lockedDaysCount": 0,
+          "upcomingCampaigns": [
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
+          ],
+          "slotState": "EXPIRED",
+          "status": "FAILED",
+          "statusCode": 401,
+          "discount": "₹50 Free Cash (>₹199)",
+          "offerValue": 1,
+          "rawMessage": "",
+          "message": "Session Expired — Re-login required"
+        },
+        "lateNight": {
+          "name": "Late Night (9PM–6AM)",
+          "campaign": "byo-ln-v5-17",
+          "lockedDaysCount": 0,
+          "upcomingCampaigns": [
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
+          ],
+          "slotState": "EXPIRED",
+          "status": "FAILED",
+          "statusCode": 401,
+          "discount": "₹50 Free Cash (>₹199)",
+          "offerValue": 1,
+          "rawMessage": "",
+          "message": "Session Expired — Re-login required"
+        }
+      }
     },
     "acc_9558260436": {
       "id": "acc_9558260436",
@@ -1199,7 +1319,47 @@
       "deviceId": "9280f1c5-6068-49e1-a2a3-02744fe7e968",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJkODRiNjZhOC0wZjA1LTQ0ZmItOTFlNy0zOTAwNDFiMTBiNTQiLCJ1c2VyX2lkIjoiMjg2NTY2NjY1Iiwic2Vzc2lvbl9kYXRhIjoiMmIzVEJqQldtSW92cU5aNVlzRk13ZU5MT1QzS0JJa1A3ZGZLd2FFZGlhS0w0ZWttYmNJK3dqeFlLdkRTUHJsMjlxQ09TMDVvdnYrckJIRVNaRmh0cmJuek1tY0xDVWxJQUJudi9LSVpwZW1FZ3BhbUNiQmdhdFpwU1hoeXNkOHFhd09BU2ZnNnNOeFdCZE5vaFVKWTZ4eWRHU3ZCSTZyVldwWW9CVlZvT0JqcStuUTJubnAvWjFNQm93TEY4RnVFaWxRRUZKVkY0YlBvaU9BckJ0TktRcFBHWko4dWlGUXgzL1pSKzcxRlFhMmcxVTJ4TlJ5UkpLdTgwdnQyOXdVam1oRUhuUk02cEY5L1Qzbk01dHl0V2RVeEtpQzY0MnY2YUxIbGdxWllCaExCdG1PcXFKRk1PSEV6L1BTSnVaQ1lZYlhSMXl3ZE92UEgzeDEzZSsyUlFPUUlVb1pBTjBmNHV5bHF1VEtKOEE9PSIsInNpZCI6InViNjZlOWQ1Zjg3LWVkZDctNDA4Yi04Nzc5LTE4ZTdiNmU1MSIsImlhdCI6MTc5MjU4NjU1OSwiZXhwIjoxNzkyNTg4OTU5fQ.s3tHMsIxlFvUiRSWRGEz5E4-z7P6LK0hN5-Slud4O4Q; _sid=ub66e9d5f87-edd7-408b-8779-18e7b6e51; _device_id=9280f1c5-6068-49e1-a2a3-02744fe7e968; token=355907c3-695a-4178-862c-28a25c9478fe065097f8-5cf2-40b3-8786-84e0bde1918e; _is_logged_in=1; __SW=FZ_MtvqWu5hh9s-LjMLtVNVhGQQ5LMcI; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fec6f9f9405d0062ae45f993640b7e42eb62e100f9a55832aad2ca209aefd82720e0f5ca803a3f8a9f0a433079bf73de3d7d7d459784bda8bccdc9831d79f0fc91335290f5431880479a63ac697de3509cc19648324667472c0b5a65030134d5c2cc9b95e0e57cac745282281eb98076f05eaa5fd0bd7206bdc5b25d26cf17945948f393cd943dd7ae42bea9d8e17c86c71767c7bf53e1029743ef4242ed12ac88393383926764d9b7f46c7abb201dc7359d14990459bfb4c63dc4826b891f2c0a05450cf25f3fe2208556e875a09f7222fb4b63287496a68c6bcc0884cb6575d4e200bd0352678da001551ea06d7c7c7a4656a66c71d88d4c425eac14360948ba9ef18565145cdf73afca06749af1f6ff761db6442c2ecb86765f8e7b7938915992c72d662c0773d0eba5bb6c805e6624ac80864873894c9a7200ca5f4f3045cecb19de2c8273b9193e00803da804534bbcbb126b1da11ffe6df20f925b01f74109930dccb853ef2e17c6842614fc01d518d9359421b2abd39ebbe5ceca0d833c4c2e10d2b4277ef32ca51513609117b491027bea35d2eb43f5e20ad5cba8556d23d675e81cf8f6035d9a7eae588fe03a166efe024e8c940cf6d029115a88749f8fcd3cb3966dfcbedd8ca47296a5f02ef54fdcc4ee4855bc761c203eec363cbfc5d4bc74fc398897216d388a08ec6032411079709d9ba495a0ac6cd45923f77a10ee1c071ef4d4ec4a2dd00f16ebeb5a3331b51f3441869e62156de67eeac73535d6e0f1377fc195264b33dbf14a5d7a749d5a619c6be272b0a5f1fc90d50ea904fa4e765d97517f5d9526d2abd925af71f9d47de2143ced3fc468b2ebc390af3cd3fd25f53a84b56d43193b556653ee958cbb6a45dd22596e04ed3b53acef009102e5e336c472c53b754a14398e5a0eaf954b74f2f7e69e3b9eb6904432c48306fdcff5ab7ccf32c805f286addeb6dd00c78010c96d68869f173cfd6213ea72823ec45f5be29a19a12b6ed723a113302bb8e7923455b7fed6dcc25cf0cc13d6227424c8dc5bf721a7ea0cc841e9b2afe4adb930feafbd993ba86d8f0e18ad50c05ae9ccc809ef1a64c1c946d7626bb9d0971ce62ed2c0856fc812f60fdcace9b785707a52c7dc260a010748d7a16b87f4b1c8281c8bf772792804f7437aeca; _swuid=9280f1c5-6068-49e1-a2a3-02744fe7e968; _cid=Mjg2NTY2NjY1",
       "isLoggedIn": true,
-      "savedAt": "2026-10-21T12:52:48.804Z"
+      "savedAt": "2026-10-21T12:52:48.804Z",
+      "offers": {
+        "success": false,
+        "bothClaimed": false,
+        "offerValue": 1,
+        "offerLabel": "₹50 Free Cash (>₹199)",
+        "lockedMap": {},
+        "sessionExpired": true,
+        "breakfast": {
+          "name": "Breakfast Morning (7AM–11AM)",
+          "campaign": "byo-bf-v10-17",
+          "lockedDaysCount": 0,
+          "upcomingCampaigns": [
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
+          ],
+          "slotState": "EXPIRED",
+          "status": "FAILED",
+          "statusCode": 401,
+          "discount": "₹50 Free Cash (>₹199)",
+          "offerValue": 1,
+          "rawMessage": "",
+          "message": "Session Expired — Re-login required"
+        },
+        "lateNight": {
+          "name": "Late Night (9PM–6AM)",
+          "campaign": "byo-ln-v5-17",
+          "lockedDaysCount": 0,
+          "upcomingCampaigns": [
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
+          ],
+          "slotState": "EXPIRED",
+          "status": "FAILED",
+          "statusCode": 401,
+          "discount": "₹50 Free Cash (>₹199)",
+          "offerValue": 1,
+          "rawMessage": "",
+          "message": "Session Expired — Re-login required"
+        }
+      }
     },
     "acc_6376531847": {
       "id": "acc_6376531847",
@@ -1209,12 +1369,58 @@
       "customerId": "286568176",
       "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fe518e0249427f0048787ade02f9a24666bc3937dc26dbcc9a5900f914a375f3ac49649ecb62d87142fdcfe926bb0dd4364d30465be6976813650034543b5fce19f85b9fb90ae7b84b65770659f83214122d39044014534f053a06a26b966baba5aa093c7f69cb9dd28f8818a3a7fbdec91bc0697ee56c0bac5a2a6ea18a8fa9eb46128cd23499c5cea52a7ada5941f868b8655a471fa7dd607d1770d38f648838076349a79f4df102c2a8c49ca0cb1f7fcc7671da0279ac61746af712bb67093cf5cb9f56d13429622cfbce9316c942d30a5063d9dc800f7b23959102ded7117a13223f32a8b9a399d252fb3ec08e69570c9b95ba65e2e50d8e5a745085077dabd04662305b7651e63114d0910cd6b3c2f39d3de32f822ef3db605fe1c1d66b63d99615818d2f0b3aad36fd44aaef73eaab8e7b6d954c6104fcb5927fe51e36263d34d44248fab54762bf965558e0e3a4bbc10cee3d6c5d509aafeb82e19657f0e9e01225f5cb15c03e6764153a66653820e5670d5b4484801200ef679a447baeebeb3ff874dccec2c2224c0d8bcab3376c0b09c02e0105b0a47175ba051544aa692b4de6eab303e96e3ccf0f0d63d3470675c86b11355cc3c7392c901048548e40c50f521edce5bca91cba9b7097e106b698896d1b30ca0c97885acd2b8be55e956069e1ea0f72b68d21b7f08576411083b0a02012e91ca625b92e0a2d9ebfacd75793149333ef9663b95d9e62e110e8958ad48febc39cf348ce1555b36d00c5e8d15aab802058345f9701dd776d581be908fc53e6b8c7818aacf33625db7758d4501ac13e2761614cad5e73d9f9d66d5848f61f185e723a79f2071e689200e957d7a740c6e66490e7063dffcecca29b5816108375813cd384d69d29c19275b55dde6e9db03c07e877f10ac25be59653f90f2e9537fd02ddfcff5ae5e209cfd9cb073d9d4bc8e564bad2c3e9eed41499947c642f49527405a936e5e05044dd3e3dbbc829587d6928b34b87b92eff881285070259d1fd6fb4fbf02cd0dffbb7087f2c42136a437526f68da1d8605fc31c0544c09bd83aaed2800903f9df57217c97ece966a349554b84dc0e99ae7bc230156647647c2ccf71579b9ac5f00a3f91f1e45ff6ffc09df6745cb13350d85b8ff1a64c3d5bf6c6bac6cc2ae5f0b13af",
       "token": "ea1c5135-8dd9-49e8-8b89-4896cc776788fc85231c-764a-4c8e-a6b6-9a0897dbddb3",
-      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJiMDhjOTJmMC0wYTFiLTQzZmItODI2Yi0wYWFlZmRlZDRkYmIiLCJ1c2VyX2lkIjoiMjg2NTY4MTc2Iiwic2Vzc2lvbl9kYXRhIjoiRkpveDRhSisya1E5Q20zSDBQRGh1MXdGZ21Gc0prdW9aV3NGWmJvQlZVRXg4eTh1S0g3WjhDTGlKTzNCQngwdTR5UU5SZzB1TU5laTFUNi9KbTBZbGphVko4UzVWbDNTMmhhUkRDL3JlQjRHMDdldjlCSERLOVgzd3FRYWViZ3BhM0N0Vk5tWGlRV29xd3NtVEtVdUpLbzNUYU1BdVY1clA2SFB5RmVTNWpDWG14RjdLa2VLUXBadGdKUWovMXV4TlVjcCs3cFFxcU1ncWpkckZ4emdGTE51MVpWZHAwOU1WRmlqbTlXWHpibXkwaUpXenJ2c1F3ODIwVy9EeHg2TXNaWTkyK0pJL0RPNko1c1gyVWZMMUFSUUdpeTlWaWt6b1ZqazE5c0VLS2hrQ2FRcm41V3UwK01uTm1ndXFFaDNKRXE1d0FuQ0c0MXRDTUp0TjcwbzhKOUxMZ3BQSFlEYXN4YmRwRlB4NWNZPSIsInNpZCI6InViNmUxYTY2MTYyLTM3OGQtNGUxYS04MzAyLTUwOThkZDhmMCIsImlhdCI6MTc5MjU4NzAwNCwiZXhwIjoxNzkyNTg5NDA0fQ.ZM30uSZkSTgUky-wGovAQ1m1EjkhUABZ7RNHn3XR9XE",
+      "tid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicGZkOTVlZTU0LTBjNDQtNDQ5MS05YjcxLWQyZDNiYjYzNyIsInN1YiI6ImIwOGM5MmYwLTBhMWItNDNmYi04MjZiLTBhYWVmZGVkNGRiYiIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6IkZKb3g0YUorMmtROUNtM0gwUERodTF3RmdtRnNKa3VvWldzRlpib0JWVUV4OHk4dUtIN1o4Q0xpSk8zQkJ4MHU0eVFOUmcwdU1OZWkxVDYvSm0wWWxqYVZKOFM1VmwzUzJoYVJEQy9yZUI0RzA3ZXY5QkhESzlYM3dxUWFlYmdwYTNDdFZObVhpUVdvcXdzbVRLVXVKS28zVGFNQXVWNXJQNkhQeUZlUzVqQ1hteEY3S2tlS1FwWnRnSlFqLzF1eE5VY3ArN3BRcXFNZ3FqZHJGeHpnRkxOdTFaVmRwMDlNVkZpam05V1h6Ym15MGlKV3pydnNRdzgyMFcvRHh4Nk1zWlk5MitKSS9ETzZKNXNYMlVmTDFBUlFHaXk5Vmlrem9WamsxOXNFS0toa0NhUXJuNVd1MCtNbk5tZ3VxRWgzSkVxNXdBbkNHNDF0Q01KdE43MG84SjlMTGdwUEhZRGFzeGJkcEZQeDVjWT0iLCJ1c2VyX2lkIjoiMjg2NTY4MTc2IiwiZXhwIjoxNzk1MjQ5MTc2fQ.TA4WqcyMQ0jFBz0r98Dn8kv_DU-O38CLiLi-1rIiuRY",
       "sid": "ub6e1a66162-378d-4e1a-8302-5098dd8f0",
       "deviceId": "adb782cf-7a4a-404c-8eea-ebacfcc09996",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJiMDhjOTJmMC0wYTFiLTQzZmItODI2Yi0wYWFlZmRlZDRkYmIiLCJ1c2VyX2lkIjoiMjg2NTY4MTc2Iiwic2Vzc2lvbl9kYXRhIjoiRkpveDRhSisya1E5Q20zSDBQRGh1MXdGZ21Gc0prdW9aV3NGWmJvQlZVRXg4eTh1S0g3WjhDTGlKTzNCQngwdTR5UU5SZzB1TU5laTFUNi9KbTBZbGphVko4UzVWbDNTMmhhUkRDL3JlQjRHMDdldjlCSERLOVgzd3FRYWViZ3BhM0N0Vk5tWGlRV29xd3NtVEtVdUpLbzNUYU1BdVY1clA2SFB5RmVTNWpDWG14RjdLa2VLUXBadGdKUWovMXV4TlVjcCs3cFFxcU1ncWpkckZ4emdGTE51MVpWZHAwOU1WRmlqbTlXWHpibXkwaUpXenJ2c1F3ODIwVy9EeHg2TXNaWTkyK0pJL0RPNko1c1gyVWZMMUFSUUdpeTlWaWt6b1ZqazE5c0VLS2hrQ2FRcm41V3UwK01uTm1ndXFFaDNKRXE1d0FuQ0c0MXRDTUp0TjcwbzhKOUxMZ3BQSFlEYXN4YmRwRlB4NWNZPSIsInNpZCI6InViNmUxYTY2MTYyLTM3OGQtNGUxYS04MzAyLTUwOThkZDhmMCIsImlhdCI6MTc5MjU4NzAwNCwiZXhwIjoxNzkyNTg5NDA0fQ.ZM30uSZkSTgUky-wGovAQ1m1EjkhUABZ7RNHn3XR9XE; _sid=ub6e1a66162-378d-4e1a-8302-5098dd8f0; _device_id=adb782cf-7a4a-404c-8eea-ebacfcc09996; token=ea1c5135-8dd9-49e8-8b89-4896cc776788fc85231c-764a-4c8e-a6b6-9a0897dbddb3; _is_logged_in=1; __SW=P_Q8ZsF7KzFcN07k8Bea_HsAmVrafvrG; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0fe518e0249427f0048787ade02f9a24666bc3937dc26dbcc9a5900f914a375f3ac49649ecb62d87142fdcfe926bb0dd4364d30465be6976813650034543b5fce19f85b9fb90ae7b84b65770659f83214122d39044014534f053a06a26b966baba5aa093c7f69cb9dd28f8818a3a7fbdec91bc0697ee56c0bac5a2a6ea18a8fa9eb46128cd23499c5cea52a7ada5941f868b8655a471fa7dd607d1770d38f648838076349a79f4df102c2a8c49ca0cb1f7fcc7671da0279ac61746af712bb67093cf5cb9f56d13429622cfbce9316c942d30a5063d9dc800f7b23959102ded7117a13223f32a8b9a399d252fb3ec08e69570c9b95ba65e2e50d8e5a745085077dabd04662305b7651e63114d0910cd6b3c2f39d3de32f822ef3db605fe1c1d66b63d99615818d2f0b3aad36fd44aaef73eaab8e7b6d954c6104fcb5927fe51e36263d34d44248fab54762bf965558e0e3a4bbc10cee3d6c5d509aafeb82e19657f0e9e01225f5cb15c03e6764153a66653820e5670d5b4484801200ef679a447baeebeb3ff874dccec2c2224c0d8bcab3376c0b09c02e0105b0a47175ba051544aa692b4de6eab303e96e3ccf0f0d63d3470675c86b11355cc3c7392c901048548e40c50f521edce5bca91cba9b7097e106b698896d1b30ca0c97885acd2b8be55e956069e1ea0f72b68d21b7f08576411083b0a02012e91ca625b92e0a2d9ebfacd75793149333ef9663b95d9e62e110e8958ad48febc39cf348ce1555b36d00c5e8d15aab802058345f9701dd776d581be908fc53e6b8c7818aacf33625db7758d4501ac13e2761614cad5e73d9f9d66d5848f61f185e723a79f2071e689200e957d7a740c6e66490e7063dffcecca29b5816108375813cd384d69d29c19275b55dde6e9db03c07e877f10ac25be59653f90f2e9537fd02ddfcff5ae5e209cfd9cb073d9d4bc8e564bad2c3e9eed41499947c642f49527405a936e5e05044dd3e3dbbc829587d6928b34b87b92eff881285070259d1fd6fb4fbf02cd0dffbb7087f2c42136a437526f68da1d8605fc31c0544c09bd83aaed2800903f9df57217c97ece966a349554b84dc0e99ae7bc230156647647c2ccf71579b9ac5f00a3f91f1e45ff6ffc09df6745cb13350d85b8ff1a64c3d5bf6c6bac6cc2ae5f0b13af; _swuid=adb782cf-7a4a-404c-8eea-ebacfcc09996; _cid=Mjg2NTY4MTc2",
       "isLoggedIn": true,
-      "savedAt": "2026-10-21T12:52:48.804Z"
+      "savedAt": "2026-10-21T12:52:48.804Z",
+      "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI2NTcxNzYsInNpZCI6InVicGZkOTVlZTU0LTBjNDQtNDQ5MS05YjcxLWQyZDNiYjYzNyIsInN1YiI6ImIwOGM5MmYwLTBhMWItNDNmYi04MjZiLTBhYWVmZGVkNGRiYiIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6IkZKb3g0YUorMmtROUNtM0gwUERodTF3RmdtRnNKa3VvWldzRlpib0JWVUV4OHk4dUtIN1o4Q0xpSk8zQkJ4MHU0eVFOUmcwdU1OZWkxVDYvSm0wWWxqYVZKOFM1VmwzUzJoYVJEQy9yZUI0RzA3ZXY5QkhESzlYM3dxUWFlYmdwYTNDdFZObVhpUVdvcXdzbVRLVXVKS28zVGFNQXVWNXJQNkhQeUZlUzVqQ1hteEY3S2tlS1FwWnRnSlFqLzF1eE5VY3ArN3BRcXFNZ3FqZHJGeHpnRkxOdTFaVmRwMDlNVkZpam05V1h6Ym15MGlKV3pydnNRdzgyMFcvRHh4Nk1zWlk5MitKSS9ETzZKNXNYMlVmTDFBUlFHaXk5Vmlrem9WamsxOXNFS0toa0NhUXJuNVd1MCtNbk5tZ3VxRWgzSkVxNXdBbkNHNDF0Q01KdE43MG84SjlMTGdwUEhZRGFzeGJkcEZQeDVjWT0iLCJ1c2VyX2lkIjoiMjg2NTY4MTc2IiwiZXhwIjoxNzk1MjQ5MTc2fQ.TA4WqcyMQ0jFBz0r98Dn8kv_DU-O38CLiLi-1rIiuRY",
+      "offers": {
+        "success": true,
+        "bothClaimed": true,
+        "offerValue": 1,
+        "offerLabel": "₹50 Free Cash (>₹199)",
+        "lockedMap": {
+          "byo-bf-v10-17": 1,
+          "byo-ln-v5-17": 1,
+          "byo-ln-v5-18": 1,
+          "byo-bf-v10-18": 1
+        },
+        "sessionExpired": false,
+        "breakfast": {
+          "name": "Breakfast Morning (7AM–11AM)",
+          "campaign": "byo-bf-v10-17",
+          "lockedDaysCount": 2,
+          "upcomingCampaigns": [
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
+          ],
+          "slotState": "LOCKED_FOR_TODAY",
+          "status": "CLAIMED",
+          "statusCode": 200,
+          "discount": "₹50 Free Cash (>₹199)",
+          "offerValue": 1,
+          "rawMessage": "Already active",
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
+        },
+        "lateNight": {
+          "name": "Late Night (9PM–6AM)",
+          "campaign": "byo-ln-v5-17",
+          "lockedDaysCount": 2,
+          "upcomingCampaigns": [
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
+          ],
+          "slotState": "LOCKED_FOR_TODAY",
+          "status": "CLAIMED",
+          "statusCode": 200,
+          "discount": "₹50 Free Cash (>₹199)",
+          "offerValue": 1,
+          "rawMessage": "Already active",
+          "message": "✓ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
+        }
+      }
     },
     "acc_9680243673": {
       "id": "acc_9680243673",
@@ -1229,7 +1435,92 @@
       "deviceId": "82d6a4b7-a7f0-4a0c-8c84-d7ce3063f3bf",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJjNjJjZmI0Zi0zNzY0LTRkZWEtODllNy01NWYxNjEwNmMzZWIiLCJ1c2VyX2lkIjoiMjg2NTY3ODY2Iiwic2Vzc2lvbl9kYXRhIjoiczE4U1EwOGV0QWFIV3NHRWhQV1kxTEhCRE5xeDF6OGJnRkVmMTViTHdDWUhlSnBKQk0vMmFuR0ViVkpUTnRTS0F4T3lwOUh1ZktIaXBFRnZIalRaeFJSV05lK3IxbVVxcUlaNSt2dkd5RXBYUHVJazJZaVpwandZc04yTE5IUTREL0d3UHhWWnRKRVdVcy9td0F3T2t3OVNLbHZhVXkyWUc5ZWJoai8zUmJNRXNaUGpDRjBzc0twK0Z4MHRHdWRLVTdGUnNVVVc4K3daVTlzSVFhYVVpT3ZDamxOTzFOenRwMjNjOXViaTE4LzkycnZkTHJSVlcyN2VvVWJGZzN4S2tsMFZlTi9hU2FqWW5MN3VDSEplQnNscFU4ZEFVWENLcFhhaEJPTEpaeEZ3RVI3RHhsbGl3bVVqeGQ2c0NJS1hOQ0Z3Zm40VzRRNWpvZlp1bjY2Sk4zL3V2Nk5oL0pBSEJHcmh5bG5XekE9PSIsInNpZCI6InViNjhiOGNiN2FlLTY3ZjYtNGNhMS1iNzY2LTZhODM5NzZmMCIsImlhdCI6MTc5MjU4NjkxMiwiZXhwIjoxNzkyNTg5MzEyfQ.N5i9ZMC9hopRmvDNanSef2znnyWLcjJz1lkKQ0fdCGM; _sid=ub68b8cb7ae-67f6-4ca1-b766-6a83976f0; _device_id=82d6a4b7-a7f0-4a0c-8c84-d7ce3063f3bf; token=676a38e7-2cbc-427e-b6e3-cd0ce37b3f05465b4926-5b72-4953-8c41-c903950be0b3; _is_logged_in=1; __SW=PSZEyR3tJJ9Sev0XpYdB3OCKzV2aeZ6t; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f29835aed28b7fce2702d56a81df7862bb8ac303333098ff114593c51753fda3fef9d1c996205da318ae76f6d349ddc922799e4b07e1d731eeafae912ed439cc3b6459a4e5d5e6613266893d5a62588c80bc773dd17a424c5e9f11e1c40929ea88b48cde02d833fcef373691bdd654628452916ee788196260b9461b0d6239ca5b49c556beb5d0c764e83b27d464b52b7a59ffb34649721d1979ba5d1195c9d820f561aa7ccc0a98e27afd58238d9bb09cfe3ea3970295255bcc9cf2ecf1bae67291514ef28a190f3d8b0cebf45bf7edf6b53247d4002f4d7b3120c2a95a71a1d519b69e948997a9ce5ddbe62d948181bff644acf354dcf21c70b27ab15062728c0ea680a2cdf9ac3e4359fbf1464d1abf36e0c7727eff66323829f526001945e9a008b050d0e1a836b5539383f7455cf9079323b2e8df8c86985b51b105ece25c4fc324b35d7154e8dee2b31127bf43af55cd9362b2d820f4b9751d50169c4f1047fcedbe36360bc5141c151042e5d8ff09f96f3f045a3b0abf66669e83e1cb7611e9cf18e1c73350811c216c575288a65bf9f9029aa6f894520800e5a77e98dc94bd367b8fd4fc86b9d880ea0bc12f576d034810217c5e257297d7267f4b708e96b2c1102f478c2639ae7d9f27bf109c2ddbf37dd1046bc7a02053103444c32ed9239b6cdd50d5f92ecf631e496a99faee981e4690ee6fed41971bb7812ed73dbf564733866137749acc60f8ab57a6418227d40d75049e3fd4d5e8d98b4750b19cd657663fcb1b84d377a818f6db48b3e0d7ab1eedadf285353c3bc4604c49db6db370c46de6de78fe7f3902e596ebf469ad8212e7b89937a2461cf5fa78d9cecc357842f52c9e4eac9c18648f77032a0a33f9e0a1baed1b091e9bf4ea3fd8e398581b21cc371354ebf9ad94655085d60a322ffc6099c96fa050a66571beede1413c69d3d6a20cb9fe6e39e8e5981e0aee2af25f4a6121c5df619e5adaa0ef508ec1b0b8e56663c43ab74a4419ba9ae3a17d2c7a812fbef64e7860aae89e4e6692ec57e55d6b0bfd94089db22b56aa71050cd401e2cb475ba9aa45c1f8b891c52f8b471f40d820c3996a132f6d3d6f8b3c9024ad1e7c6bc78bd879e7fb82f7ebe1544c3e3e06c526c8ca568c1b294e774a67f73abe04e0d0de4c4432a37800b; _swuid=82d6a4b7-a7f0-4a0c-8c84-d7ce3063f3bf; _cid=Mjg2NTY3ODY2",
       "isLoggedIn": true,
-      "savedAt": "2026-10-21T12:52:48.805Z"
+      "savedAt": "2026-10-21T12:52:48.805Z",
+      "offers": {
+        "success": false,
+        "bothClaimed": false,
+        "offerValue": 1,
+        "offerLabel": "₹50 Free Cash (>₹199)",
+        "lockedMap": {},
+        "sessionExpired": true,
+        "breakfast": {
+          "name": "Breakfast Morning (7AM–11AM)",
+          "campaign": "byo-bf-v10-17",
+          "lockedDaysCount": 0,
+          "upcomingCampaigns": [
+            "byo-bf-v10-17",
+            "byo-bf-v10-18"
+          ],
+          "slotState": "EXPIRED",
+          "status": "FAILED",
+          "statusCode": 401,
+          "discount": "₹50 Free Cash (>₹199)",
+          "offerValue": 1,
+          "rawMessage": "",
+          "message": "Session Expired — Re-login required"
+        },
+        "lateNight": {
+          "name": "Late Night (9PM–6AM)",
+          "campaign": "byo-ln-v5-17",
+          "lockedDaysCount": 0,
+          "upcomingCampaigns": [
+            "byo-ln-v5-17",
+            "byo-ln-v5-18"
+          ],
+          "slotState": "EXPIRED",
+          "status": "FAILED",
+          "statusCode": 401,
+          "discount": "₹50 Free Cash (>₹199)",
+          "offerValue": 1,
+          "rawMessage": "",
+          "message": "Session Expired — Re-login required"
+        }
+      }
+    },
+    "acc_8000958285": {
+      "id": "acc_8000958285",
+      "name": "Rahul Kumar",
+      "mobile": "8000958285",
+      "phone": "8000958285",
+      "customerId": "286684413",
+      "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f785f223c0d70386b4eb5c6010eb2ef1faabca902805d126f445c8950f9e76df0153fc2519470dbbc671c00812d8b36ac365dcdbbc2394c89ab637be66aef97c0375988c86cf15f5241635f498c4622d1a076d3dc6cbd90be4b8a08ff9593b4527e19f01bcf5a5793838edb328fceb5561c918cb175c154e0c92e13c483883a46a870d3798fa003dce691af55e51bc99cd853675b055b4124aec3e040855e1d2e0ca890a1988fbd9e90f3aa3565b9886210034859104229912939cacdac7d3f4f1b4bf8103eed917d3475848fedb11b7bf74545b89c06723a9288cd2bc87431090f902be795a12e4f41e6089695d7c75f9870e0c1ba05c0b1950cf011e5057cabf58bdb83b7858e5c8c9027685113ad29ee0ab2bb33f3b0089e568004026f59b855a09cc2d9c717c57039fea81b3e749b16b57c20b7e9bfa30cef125e1a7eb7f37fd24c592e0e5b67b034c58f22fffc400cbf18a10ae29b1369d9ece9c5580e1d9cf44f0624759e568361ae54f1974f7b667f89cc85233f75cb9f49b253741686b9e5604fd29ea2a9dd5451c0cebdf6e2415864c9862a1efcc606cb5031e2f8e89ead70539cad95d55ca09f4b2c5ce71db4ffce95b2aea386099dc57dbb0a07d267387a8a8c299943db3744cef9dc7d52b212093ccd9a1a5f03531b1c318dec5e2acf33212eea383dfa4bf5eab7897b288a49f51b34944ab3bb7564333397f3ac9750fb90c784b7549918733ff49b6f868c5fb060f2de5b849e08d55651091bcbdef6390f975f97a0d54fea147787534929c43f1075de0dc5c726a9a3c99fb605f6ad4c552f55b984f0036880757b93f4d469d5d3947df9736f2264c07fd61a2eef3e257e42271c50c2e1abd36faef257d1d0fe7277051ac4150f45edba51ea479a37e5802e4ad9f770e0a3c3e6e1135c2b4848218834d3095f7fa01cd16d97f33493d7c7e1ea7460f11489022b8ef81bcc770a39c661fef3e5ee9c754a48023bcfb66cfdc164110688ec4f1d50a0b0bdb24d4ca53e128a951955fe87fb72f6d3ba46542b3d8e81889777dd53bbab6cbb6cafe934740ea80656e968b64cf55d90b4d5ca9b9a132bb73759fc3f7d8b74ed842b3e10229bdc3bf08680425245464b36adb6ada2705541b6b49f8baae8810eea613a3d018abf1fdb98a40f8f1f4b0f30ae8ec574d69db112f1ad67c88f1bc84cfe3c520c87f17ae58d1e120d71f1be0fd7a714a2756998092484e012ed482647bb43f8b9b7098ffd6b21afb1485d4d7259f0a2863ace6811cca3cfd1f700972e30c5b78c47631325af6312876b8d81",
+      "token": "42a30ba9-a32e-436b-a27c-b61e962c4119736ca889-7c21-4518-ad79-0f92254eb720",
+      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIyOTg2ZDgwNi0wZDk2LTQ2OTctOWM1MS0yMWE1ZGZhOWY0MzQiLCJ1c2VyX2lkIjoiMjg2Njg0NDEzIiwic2Vzc2lvbl9kYXRhIjoiNFBWczJoMi9QMHNYZXJMeW1XZVBoeFRkS2MxR1VGVzR2OE9sWFhoZ3lFR3VHakVrK2JibFFzZGFUMFpadnNrZkp1WFYzWHY4dG5JZzRkMmVKNHhGdEx6dE1vSEEzQXdyV1ZpZ2xNNFNTZ3FmR21tRVlqZ0YzZFMxd3dnVzJaYXQrTkt1S3BrZGhNMGV6a3F3RHJ3WlIvTzUwZlV3UzNud1gxaS9kYWdWa2RCcEEyT0dXSzI5OHlxOTI0MnhUT0JnVnRLNVFGaTBtOXJJc2ltbVZWMEVneGRIbkdPYThHazFaU0FuL0xPVEZ4OExGU29wd2cyV2tuQmdYc05hNEhUTmQ2RFhjRWxTUDlMYlFZQisycU9XK1FwKzFLRWJzaGoxR08wSFFtNnBEZDR6OGowTGxCdlBGU0drT1dpVzA0WUY1OGJCcTdPT080R012MWZzb1pTTnpKTEh6RVc2d2FmNGtXalQvWll2RXZIc1EyS1FQOXptbUFmTEZpam1uVDFkV0tTczA5d0FyYnFpOUNrM3FYZG9VUDNreGY0NDhQbUl6ZTFqdU5OR1NrOTQwZWJmbVpkRG0ySzMiLCJzaWQiOiJ1YnE2NmY3OTJhZS1mODAwLTQ5OTItYjQxNi03NzVhYWU5NDYiLCJpYXQiOjE3OTI2NTc5NDIsImV4cCI6MTc5MjY2MDM0Mn0.mkREmR76kWG9Ro4HPhFIvA1w0X1YYe93ESDs76oTYEo",
+      "sid": "ubq66f792ae-f800-4992-b416-775aae946",
+      "deviceId": "ad2ce66d-a484-6690-377f-89201c9268e5",
+      "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIyOTg2ZDgwNi0wZDk2LTQ2OTctOWM1MS0yMWE1ZGZhOWY0MzQiLCJ1c2VyX2lkIjoiMjg2Njg0NDEzIiwic2Vzc2lvbl9kYXRhIjoiNFBWczJoMi9QMHNYZXJMeW1XZVBoeFRkS2MxR1VGVzR2OE9sWFhoZ3lFR3VHakVrK2JibFFzZGFUMFpadnNrZkp1WFYzWHY4dG5JZzRkMmVKNHhGdEx6dE1vSEEzQXdyV1ZpZ2xNNFNTZ3FmR21tRVlqZ0YzZFMxd3dnVzJaYXQrTkt1S3BrZGhNMGV6a3F3RHJ3WlIvTzUwZlV3UzNud1gxaS9kYWdWa2RCcEEyT0dXSzI5OHlxOTI0MnhUT0JnVnRLNVFGaTBtOXJJc2ltbVZWMEVneGRIbkdPYThHazFaU0FuL0xPVEZ4OExGU29wd2cyV2tuQmdYc05hNEhUTmQ2RFhjRWxTUDlMYlFZQisycU9XK1FwKzFLRWJzaGoxR08wSFFtNnBEZDR6OGowTGxCdlBGU0drT1dpVzA0WUY1OGJCcTdPT080R012MWZzb1pTTnpKTEh6RVc2d2FmNGtXalQvWll2RXZIc1EyS1FQOXptbUFmTEZpam1uVDFkV0tTczA5d0FyYnFpOUNrM3FYZG9VUDNreGY0NDhQbUl6ZTFqdU5OR1NrOTQwZWJmbVpkRG0ySzMiLCJzaWQiOiJ1YnE2NmY3OTJhZS1mODAwLTQ5OTItYjQxNi03NzVhYWU5NDYiLCJpYXQiOjE3OTI2NTc5NDIsImV4cCI6MTc5MjY2MDM0Mn0.mkREmR76kWG9Ro4HPhFIvA1w0X1YYe93ESDs76oTYEo; _sid=ubq66f792ae-f800-4992-b416-775aae946; _device_id=ad2ce66d-a484-6690-377f-89201c9268e5; token=42a30ba9-a32e-436b-a27c-b61e962c4119736ca889-7c21-4518-ad79-0f92254eb720; _is_logged_in=1; __SW=YzRTrgqGAybuwZx4Eh8I8cRUSXRhkim9; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f785f223c0d70386b4eb5c6010eb2ef1faabca902805d126f445c8950f9e76df0153fc2519470dbbc671c00812d8b36ac365dcdbbc2394c89ab637be66aef97c0375988c86cf15f5241635f498c4622d1a076d3dc6cbd90be4b8a08ff9593b4527e19f01bcf5a5793838edb328fceb5561c918cb175c154e0c92e13c483883a46a870d3798fa003dce691af55e51bc99cd853675b055b4124aec3e040855e1d2e0ca890a1988fbd9e90f3aa3565b9886210034859104229912939cacdac7d3f4f1b4bf8103eed917d3475848fedb11b7bf74545b89c06723a9288cd2bc87431090f902be795a12e4f41e6089695d7c75f9870e0c1ba05c0b1950cf011e5057cabf58bdb83b7858e5c8c9027685113ad29ee0ab2bb33f3b0089e568004026f59b855a09cc2d9c717c57039fea81b3e749b16b57c20b7e9bfa30cef125e1a7eb7f37fd24c592e0e5b67b034c58f22fffc400cbf18a10ae29b1369d9ece9c5580e1d9cf44f0624759e568361ae54f1974f7b667f89cc85233f75cb9f49b253741686b9e5604fd29ea2a9dd5451c0cebdf6e2415864c9862a1efcc606cb5031e2f8e89ead70539cad95d55ca09f4b2c5ce71db4ffce95b2aea386099dc57dbb0a07d267387a8a8c299943db3744cef9dc7d52b212093ccd9a1a5f03531b1c318dec5e2acf33212eea383dfa4bf5eab7897b288a49f51b34944ab3bb7564333397f3ac9750fb90c784b7549918733ff49b6f868c5fb060f2de5b849e08d55651091bcbdef6390f975f97a0d54fea147787534929c43f1075de0dc5c726a9a3c99fb605f6ad4c552f55b984f0036880757b93f4d469d5d3947df9736f2264c07fd61a2eef3e257e42271c50c2e1abd36faef257d1d0fe7277051ac4150f45edba51ea479a37e5802e4ad9f770e0a3c3e6e1135c2b4848218834d3095f7fa01cd16d97f33493d7c7e1ea7460f11489022b8ef81bcc770a39c661fef3e5ee9c754a48023bcfb66cfdc164110688ec4f1d50a0b0bdb24d4ca53e128a951955fe87fb72f6d3ba46542b3d8e81889777dd53bbab6cbb6cafe934740ea80656e968b64cf55d90b4d5ca9b9a132bb73759fc3f7d8b74ed842b3e10229bdc3bf08680425245464b36adb6ada2705541b6b49f8baae8810eea613a3d018abf1fdb98a40f8f1f4b0f30ae8ec574d69db112f1ad67c88f1bc84cfe3c520c87f17ae58d1e120d71f1be0fd7a714a2756998092484e012ed482647bb43f8b9b7098ffd6b21afb1485d4d7259f0a2863ace6811cca3cfd1f700972e30c5b78c47631325af6312876b8d81; _swuid=ad2ce66d-a484-6690-377f-89201c9268e5; _cid=Mjg2Njg0NDEz",
+      "isLoggedIn": true,
+      "savedAt": "2026-10-22T08:38:06.186Z"
+    },
+    "acc_6204357083": {
+      "id": "acc_6204357083",
+      "name": "Rahul Kumar",
+      "mobile": "6204357083",
+      "phone": "6204357083",
+      "customerId": "286685216",
+      "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f39afbc5cc58af35343166ce1e4e422fc61b3d91d7d9948e7e6835ddc94dde0086c16c462023e4a8cefc03df4e0d3ad53f219f207e3ef11b35f552a1a9a1294d6b81ea45ef593869ca6585b86f11381826d54a068fafc408ee7b14bdf6f76c5bd1c3b9d9facc859d23a698e57ea3eabe51c4235edc686859a39ac1e4c09f6cb454aad5b10d1d2ef47a54c6ef3485e34b9ac84a190e0723036f8e3f4260d0711ef6e8651322c9d50f5438cff6b2239a46a61da5d424918ae1c9326aa766f38ac6b382a2b5f94a7e72f119586d5de56778794cdc31cfa4e95d6bb1753c5b3e668a8948f0dbe7669f462a158c1a4be79ec9daaf9406fa5dc091b8046c6ea0543160aed970977d4162a5edb208aafa738f9cda34bb2edc9fc0a906547a8c19d922e640f583d2d91d5a50bc44e1745faf585e922202f2619edd25fb528df333a85055ce6c247d176092db047f851fccbcff8e5ee52514bf94f2dbe1782fc411cf5c7bee3caac650de14cc860a93fdbacd02d2406a6dfb5dc26eedd35f174f24b00e2f878f653a67cc9e97e4fcec88c9a9c9af18666321999d9e42fcba29900155f4a023f119cf7f5cf6abee4151ad1ed80db747f70de16d9849830f01c0bb27942f53f49ed0d7e74d825e1196ccbf657a433b8206e6f54c78d1bba28d617fb8eaccd32eca79d298f8de1d43f714a18bae6e6a5d0f444c504f3a20986f916fdd03d3ad767b36746fbd77b605ff042ba56d8153164792b02833ffc5202ca19ff5b6ab4da98cd48dd3d51a0bd4768d321d65c7602036d2b1702c31d023a8c2505351aca6ab3c1ee62a7758c4f55c4743b19adecf9ddf7fe40f630261d63a0ee0113e8b3de82071adaa216b2649f611b9ae84ef5e109c41cac22e888f43f64aa340c9239c113020ae6a78cd75f82edf85560eba56e76c70b81e6b62522e1cbd1bcd14af5633731b885920febf7882f1ac238c91ffb4b099137bf3b6a7c602b65e68eb7b2164ccafbfa4e82ca4f44f3214e2d10a0322de73194b5ef700917f527048a88f779fa09a0f686b7e482810dfbce8a9ffb8aab5e6b88d0cb34a06daaeed7863d10162ae9455ac510316417fa812b1974b2a4d428c7b418e8328e422b047bdb018e97ea7983ffc67993e4ed9353c6c5c658d49dcd0577e6d94ce37c65bf896a881a1e3e011faab4c81e27e0796e96e91aebbcc17dbe06d12ea810e357d0c9c2e4e46d5781ed935202b0ce4160af3d8fa865f3649785c6ee8a0e4aae65bd7e8ae5b7a527b8902001963887423faa8a0194aeaeb43bc8c20c896d7e58bbb06cc56b35ea",
+      "token": "f70b29a0-d53c-4ccf-890b-583fe758e71e195c9b52-916a-4e86-8810-766f685bdb96",
+      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJmNGZhOTBlMC0yNWNmLTQxNDgtOTU0Zi1jNDUxMTZiMDdmYmYiLCJ1c2VyX2lkIjoiMjg2Njg1MjE2Iiwic2Vzc2lvbl9kYXRhIjoiNU1HZXV1a0dRZ1R4dEdBNWUyMGsxOUZ6Zm5nKzJrOUNqVHRqUW95LzBLNURuaEhlRFJkV0hxL21ncytuVFN2a2lyWXBNeDdLZUY1NjNWN0xBbmNmSVN2MnFRQUlEbzdReUNWUzBRWDVza0tQVjkwRmsvbHB2WmVNZkdnZWFpRlBSNnlLZk5yYWVxLzN3YU8vZXdXOXFJaWM2RHhHRTZzR2hwYjhxaFd0TlRkUEFveTZPUXpLaGFvN2w2K2RXd0dqYlh1ZVFWd2E5WnRCeXJTRFZHcFh3eUZyV1BQSDIweUkyazdXVTVyQ256amJTWDlGbXBTaDlYck9iS1VFNlhIVXp0UTBMdW5WeW9YRVp6SGoya1dRRGRnNTdMd0JGMXpqQUVvL200SUMxd0oycklMSm5Sc0RFRmowSFB5VkorRzN6Rm5qbGdKRjE0Mm50bE93aERXV3MzZ0xneTkvSVdyTGtFbmpnVEQ4YzhDU0xvaXptaWJ2dnRpbkh3TklvK1BJeFVoQjRxblQ2NkxzNGxmNkIwRUF0a0VOMHBFK0NtazNWblRNQlY3YUg0TDhueG1keSttRmQ2ZEYiLCJzaWQiOiJ1YnFhYzBlZDBmNC01YTAxLTRlMzMtOGI5ZC1hOTEzNzMwNjMiLCJpYXQiOjE3OTI2NTgyMDgsImV4cCI6MTc5MjY2MDYwOH0.edao27ZlYlOx0IPzAgZDJxPhOhtyVvFb9zuEjkFPSsM",
+      "sid": "ubqac0ed0f4-5a01-4e33-8b9d-a91373063",
+      "deviceId": "b710f1d1-3787-653c-fdff-67fe83d80ab4",
+      "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJmNGZhOTBlMC0yNWNmLTQxNDgtOTU0Zi1jNDUxMTZiMDdmYmYiLCJ1c2VyX2lkIjoiMjg2Njg1MjE2Iiwic2Vzc2lvbl9kYXRhIjoiNU1HZXV1a0dRZ1R4dEdBNWUyMGsxOUZ6Zm5nKzJrOUNqVHRqUW95LzBLNURuaEhlRFJkV0hxL21ncytuVFN2a2lyWXBNeDdLZUY1NjNWN0xBbmNmSVN2MnFRQUlEbzdReUNWUzBRWDVza0tQVjkwRmsvbHB2WmVNZkdnZWFpRlBSNnlLZk5yYWVxLzN3YU8vZXdXOXFJaWM2RHhHRTZzR2hwYjhxaFd0TlRkUEFveTZPUXpLaGFvN2w2K2RXd0dqYlh1ZVFWd2E5WnRCeXJTRFZHcFh3eUZyV1BQSDIweUkyazdXVTVyQ256amJTWDlGbXBTaDlYck9iS1VFNlhIVXp0UTBMdW5WeW9YRVp6SGoya1dRRGRnNTdMd0JGMXpqQUVvL200SUMxd0oycklMSm5Sc0RFRmowSFB5VkorRzN6Rm5qbGdKRjE0Mm50bE93aERXV3MzZ0xneTkvSVdyTGtFbmpnVEQ4YzhDU0xvaXptaWJ2dnRpbkh3TklvK1BJeFVoQjRxblQ2NkxzNGxmNkIwRUF0a0VOMHBFK0NtazNWblRNQlY3YUg0TDhueG1keSttRmQ2ZEYiLCJzaWQiOiJ1YnFhYzBlZDBmNC01YTAxLTRlMzMtOGI5ZC1hOTEzNzMwNjMiLCJpYXQiOjE3OTI2NTgyMDgsImV4cCI6MTc5MjY2MDYwOH0.edao27ZlYlOx0IPzAgZDJxPhOhtyVvFb9zuEjkFPSsM; _sid=ubqac0ed0f4-5a01-4e33-8b9d-a91373063; _device_id=b710f1d1-3787-653c-fdff-67fe83d80ab4; token=f70b29a0-d53c-4ccf-890b-583fe758e71e195c9b52-916a-4e86-8810-766f685bdb96; _is_logged_in=1; __SW=5NyZC5pow37-iTDiVPnSdah-2yaNZz5Z; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f39afbc5cc58af35343166ce1e4e422fc61b3d91d7d9948e7e6835ddc94dde0086c16c462023e4a8cefc03df4e0d3ad53f219f207e3ef11b35f552a1a9a1294d6b81ea45ef593869ca6585b86f11381826d54a068fafc408ee7b14bdf6f76c5bd1c3b9d9facc859d23a698e57ea3eabe51c4235edc686859a39ac1e4c09f6cb454aad5b10d1d2ef47a54c6ef3485e34b9ac84a190e0723036f8e3f4260d0711ef6e8651322c9d50f5438cff6b2239a46a61da5d424918ae1c9326aa766f38ac6b382a2b5f94a7e72f119586d5de56778794cdc31cfa4e95d6bb1753c5b3e668a8948f0dbe7669f462a158c1a4be79ec9daaf9406fa5dc091b8046c6ea0543160aed970977d4162a5edb208aafa738f9cda34bb2edc9fc0a906547a8c19d922e640f583d2d91d5a50bc44e1745faf585e922202f2619edd25fb528df333a85055ce6c247d176092db047f851fccbcff8e5ee52514bf94f2dbe1782fc411cf5c7bee3caac650de14cc860a93fdbacd02d2406a6dfb5dc26eedd35f174f24b00e2f878f653a67cc9e97e4fcec88c9a9c9af18666321999d9e42fcba29900155f4a023f119cf7f5cf6abee4151ad1ed80db747f70de16d9849830f01c0bb27942f53f49ed0d7e74d825e1196ccbf657a433b8206e6f54c78d1bba28d617fb8eaccd32eca79d298f8de1d43f714a18bae6e6a5d0f444c504f3a20986f916fdd03d3ad767b36746fbd77b605ff042ba56d8153164792b02833ffc5202ca19ff5b6ab4da98cd48dd3d51a0bd4768d321d65c7602036d2b1702c31d023a8c2505351aca6ab3c1ee62a7758c4f55c4743b19adecf9ddf7fe40f630261d63a0ee0113e8b3de82071adaa216b2649f611b9ae84ef5e109c41cac22e888f43f64aa340c9239c113020ae6a78cd75f82edf85560eba56e76c70b81e6b62522e1cbd1bcd14af5633731b885920febf7882f1ac238c91ffb4b099137bf3b6a7c602b65e68eb7b2164ccafbfa4e82ca4f44f3214e2d10a0322de73194b5ef700917f527048a88f779fa09a0f686b7e482810dfbce8a9ffb8aab5e6b88d0cb34a06daaeed7863d10162ae9455ac510316417fa812b1974b2a4d428c7b418e8328e422b047bdb018e97ea7983ffc67993e4ed9353c6c5c658d49dcd0577e6d94ce37c65bf896a881a1e3e011faab4c81e27e0796e96e91aebbcc17dbe06d12ea810e357d0c9c2e4e46d5781ed935202b0ce4160af3d8fa865f3649785c6ee8a0e4aae65bd7e8ae5b7a527b8902001963887423faa8a0194aeaeb43bc8c20c896d7e58bbb06cc56b35ea; _swuid=b710f1d1-3787-653c-fdff-67fe83d80ab4; _cid=Mjg2Njg1MjE2",
+      "isLoggedIn": true,
+      "savedAt": "2026-10-22T08:38:06.186Z"
+    },
+    "acc_7058813196": {
+      "id": "acc_7058813196",
+      "name": "Rahul Kumar",
+      "mobile": "7058813196",
+      "phone": "7058813196",
+      "customerId": "286684769",
+      "_session_tid": "f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f4358637b5b6c0390b51a116ebe02c4ac7642f432f6b5cccbe66ccaef33b9cb4a04b4cdf818f3356e8c7cc0f5c7bf09d43ad0563ea07f7f88041dd1640529849606a1cf7f71771c1a190b2fc110c0b830346b3f1a801fc44b7cb9adec992d8c79c4b6c25977acc553f654808350de8ddd295eda8c2e86fb8b888d9dcd67167e6ea0fd663d4ef3389872005dd8525d4aabf089b6e5202b3615b92e19ea8b8181c7d9e0b9dd2351df592a3dbeb47400bc0a21a11d4a9cd3ff3cd594ad74c942b669bd8c66d9dec916943cc27aad26a3bbb2c1e057d315b8412349952abfc01aa89ae082ccc31a2f86d21d2e52e3e371fed992e0b1b6ab7d4b4f2eba10c9314503ac5934dd6c019d1186aeb10f4b563794795d19e312b35bdc366112994ced4b50820fb033b6fba670ef25724dd053125c756db7c5d9647b0b7045b758274b5946b8ac48e536033572d118c044101234af914e78463ea544dad4c39dff6b12fa2990d70ece6e66e27b6fcc44b7c78b76417a5c354505b7fa41d1953d7c002a571f2bc7ff87ca5c3e78ad729f3778cc17369beb88730b81655202c23486756b2739c38f6a3b7be6fe64ec31896793f7250ade3154ab1a755ffbb483607d28053958037a20341e6725c9014d231da30aff8bf74e97caa53615c9ffaf2a2be228b2373fbcede22426eafbb115e26cc2b146c4e316ea89e80b3af062793e0d792eefbfce47481479c9700067a71d6665e66717763cfbe1ade1a59bd4002e81f91ccc0109a3ec1d15d3270e3cbd51b38adabd73ff4e2724e8256277cc96cd0196ee64b95afb4c6f6de4a45ec203428174fb34e10d2424803919721adfe7519e002372b23fb7291a3413e896bcb26263006167f4610f07e29f73871aa769a3fbe546fa157aa99a24088499fb00074e6465fc4c16a247e53b06deddca0e903ea5aa48e57f48f9e4c8398483d5104861bde58ea621c818716d82c93b075a54fe858756a5341493887004b12370b59a5a47dde1e0b5caa9e1c90cd92ef8bd8482475450b9ec2a1ede64a39b7231c27497a7af4a135e303cad7903be3f641ae161668c898bc62914636c99b37ee0b0534763241ec582f0159c6d03a9b24f29351341d52b93f098ff807400507a41aadd7971091b95700a7c447eac7c8f4065ed679e41c4d4527f9fc926dac3af4bf26f693194d1206e0ab3856baa69b9c0385812d5c3824fb692fcd254ad726afdcbb09190e6b8c7f61bd69b02ace5b0ab2274565f330f403f8bee43d35404e77889cddc2df0bf8aa312cab6127a3d2af96213a1a3e8e9e4544f",
+      "token": "8d0010d6-ef8e-4bbc-bc3a-3205c6b55b682cd3f1f7-322b-42b0-a0bc-9bdaea9d9229",
+      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJhNmVmYzU1YS0wMjkwLTQ3NjctODUxZS0yZjI0MTc1OGFlNjUiLCJ1c2VyX2lkIjoiMjg2Njg0NzY5Iiwic2Vzc2lvbl9kYXRhIjoiRGNKdHlFRzJ1dFc0TkJtOXpBVTZQRGYvM2hCaTQybklqeVo3UzFyRXRGSWZzbU56dU5UK1FsVktXRkRmbjVLK1NES2hXWmNYditQZ21EKzdneWhGanFpQ2lDSzB3VTdObmQ3M3pNZ1ozOGtTNmxCMTZJT0pRMnhmLzYyYkhLaHg3Q1NDR3hzNDRDNTVFeXRhRUJ0WVdLVTFoTTVKZUppaUdkOXNuaktWcWlKaWhZR01LbTVSWVUybG56R0Znb1BHMzUxd0wvcnNKYThxRzY0d3V3dFp5aG5TU2RmQmdSYU0vdzcvV1ozd3FsRUNuYlJKYWlYRWNqSUFYV3JqMG14bDY0V0RhRnRhOFk3Q0JXb201cnBMZGhqZG54NDBaQk1LVXpiL3AyZDV2b0ZaZ3B3VVZuMm8zaVR0bGdTODcyMW9iWWJwUFJXQXdzVHNJN3pHRjZnR1E4U3hNYkRsWWtVTUcyb1lWSjdEb3ZVVko4Ty9rN3QzM3lyWjh0RnJvOTlQZmppL0Z5cVp0cXZqM09jL0ovdTd6Zm9URCszQUdqcFAvZFZTRkFOZTE5dTU4ekVGaU9LK05oc0EiLCJzaWQiOiJ1YnFmYTk5ZmE4NC1mMjJiLTRhMWYtOGNlNy1jZjk1NGM4MzQiLCJpYXQiOjE3OTI2NTgwNjQsImV4cCI6MTc5MjY2MDQ2NH0.GY6GGkXVCbxV3zl996q9PfXqIxu3s8HY-MrP5T-9IBI",
+      "sid": "ubqfa99fa84-f22b-4a1f-8ce7-cf954c834",
+      "deviceId": "2f1e88a5-dac5-7b62-eaad-4136e062bfd7",
+      "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJhNmVmYzU1YS0wMjkwLTQ3NjctODUxZS0yZjI0MTc1OGFlNjUiLCJ1c2VyX2lkIjoiMjg2Njg0NzY5Iiwic2Vzc2lvbl9kYXRhIjoiRGNKdHlFRzJ1dFc0TkJtOXpBVTZQRGYvM2hCaTQybklqeVo3UzFyRXRGSWZzbU56dU5UK1FsVktXRkRmbjVLK1NES2hXWmNYditQZ21EKzdneWhGanFpQ2lDSzB3VTdObmQ3M3pNZ1ozOGtTNmxCMTZJT0pRMnhmLzYyYkhLaHg3Q1NDR3hzNDRDNTVFeXRhRUJ0WVdLVTFoTTVKZUppaUdkOXNuaktWcWlKaWhZR01LbTVSWVUybG56R0Znb1BHMzUxd0wvcnNKYThxRzY0d3V3dFp5aG5TU2RmQmdSYU0vdzcvV1ozd3FsRUNuYlJKYWlYRWNqSUFYV3JqMG14bDY0V0RhRnRhOFk3Q0JXb201cnBMZGhqZG54NDBaQk1LVXpiL3AyZDV2b0ZaZ3B3VVZuMm8zaVR0bGdTODcyMW9iWWJwUFJXQXdzVHNJN3pHRjZnR1E4U3hNYkRsWWtVTUcyb1lWSjdEb3ZVVko4Ty9rN3QzM3lyWjh0RnJvOTlQZmppL0Z5cVp0cXZqM09jL0ovdTd6Zm9URCszQUdqcFAvZFZTRkFOZTE5dTU4ekVGaU9LK05oc0EiLCJzaWQiOiJ1YnFmYTk5ZmE4NC1mMjJiLTRhMWYtOGNlNy1jZjk1NGM4MzQiLCJpYXQiOjE3OTI2NTgwNjQsImV4cCI6MTc5MjY2MDQ2NH0.GY6GGkXVCbxV3zl996q9PfXqIxu3s8HY-MrP5T-9IBI; _sid=ubqfa99fa84-f22b-4a1f-8ce7-cf954c834; _device_id=2f1e88a5-dac5-7b62-eaad-4136e062bfd7; token=8d0010d6-ef8e-4bbc-bc3a-3205c6b55b682cd3f1f7-322b-42b0-a0bc-9bdaea9d9229; _is_logged_in=1; __SW=LvUTiRE2RHqaWBnjgNw_fXIXJ2PhRzJy; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f4358637b5b6c0390b51a116ebe02c4ac7642f432f6b5cccbe66ccaef33b9cb4a04b4cdf818f3356e8c7cc0f5c7bf09d43ad0563ea07f7f88041dd1640529849606a1cf7f71771c1a190b2fc110c0b830346b3f1a801fc44b7cb9adec992d8c79c4b6c25977acc553f654808350de8ddd295eda8c2e86fb8b888d9dcd67167e6ea0fd663d4ef3389872005dd8525d4aabf089b6e5202b3615b92e19ea8b8181c7d9e0b9dd2351df592a3dbeb47400bc0a21a11d4a9cd3ff3cd594ad74c942b669bd8c66d9dec916943cc27aad26a3bbb2c1e057d315b8412349952abfc01aa89ae082ccc31a2f86d21d2e52e3e371fed992e0b1b6ab7d4b4f2eba10c9314503ac5934dd6c019d1186aeb10f4b563794795d19e312b35bdc366112994ced4b50820fb033b6fba670ef25724dd053125c756db7c5d9647b0b7045b758274b5946b8ac48e536033572d118c044101234af914e78463ea544dad4c39dff6b12fa2990d70ece6e66e27b6fcc44b7c78b76417a5c354505b7fa41d1953d7c002a571f2bc7ff87ca5c3e78ad729f3778cc17369beb88730b81655202c23486756b2739c38f6a3b7be6fe64ec31896793f7250ade3154ab1a755ffbb483607d28053958037a20341e6725c9014d231da30aff8bf74e97caa53615c9ffaf2a2be228b2373fbcede22426eafbb115e26cc2b146c4e316ea89e80b3af062793e0d792eefbfce47481479c9700067a71d6665e66717763cfbe1ade1a59bd4002e81f91ccc0109a3ec1d15d3270e3cbd51b38adabd73ff4e2724e8256277cc96cd0196ee64b95afb4c6f6de4a45ec203428174fb34e10d2424803919721adfe7519e002372b23fb7291a3413e896bcb26263006167f4610f07e29f73871aa769a3fbe546fa157aa99a24088499fb00074e6465fc4c16a247e53b06deddca0e903ea5aa48e57f48f9e4c8398483d5104861bde58ea621c818716d82c93b075a54fe858756a5341493887004b12370b59a5a47dde1e0b5caa9e1c90cd92ef8bd8482475450b9ec2a1ede64a39b7231c27497a7af4a135e303cad7903be3f641ae161668c898bc62914636c99b37ee0b0534763241ec582f0159c6d03a9b24f29351341d52b93f098ff807400507a41aadd7971091b95700a7c447eac7c8f4065ed679e41c4d4527f9fc926dac3af4bf26f693194d1206e0ab3856baa69b9c0385812d5c3824fb692fcd254ad726afdcbb09190e6b8c7f61bd69b02ace5b0ab2274565f330f403f8bee43d35404e77889cddc2df0bf8aa312cab6127a3d2af96213a1a3e8e9e4544f; _swuid=2f1e88a5-dac5-7b62-eaad-4136e062bfd7; _cid=Mjg2Njg0NzY5",
+      "isLoggedIn": true,
+      "savedAt": "2026-10-22T08:38:06.186Z"
     }
   },
   "deletedAccounts": {
@@ -1585,6 +1876,48 @@
       "deviceId": "82d6a4b7-a7f0-4a0c-8c84-d7ce3063f3bf",
       "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJjNjJjZmI0Zi0zNzY0LTRkZWEtODllNy01NWYxNjEwNmMzZWIiLCJ1c2VyX2lkIjoiMjg2NTY3ODY2Iiwic2Vzc2lvbl9kYXRhIjoiczE4U1EwOGV0QWFIV3NHRWhQV1kxTEhCRE5xeDF6OGJnRkVmMTViTHdDWUhlSnBKQk0vMmFuR0ViVkpUTnRTS0F4T3lwOUh1ZktIaXBFRnZIalRaeFJSV05lK3IxbVVxcUlaNSt2dkd5RXBYUHVJazJZaVpwandZc04yTE5IUTREL0d3UHhWWnRKRVdVcy9td0F3T2t3OVNLbHZhVXkyWUc5ZWJoai8zUmJNRXNaUGpDRjBzc0twK0Z4MHRHdWRLVTdGUnNVVVc4K3daVTlzSVFhYVVpT3ZDamxOTzFOenRwMjNjOXViaTE4LzkycnZkTHJSVlcyN2VvVWJGZzN4S2tsMFZlTi9hU2FqWW5MN3VDSEplQnNscFU4ZEFVWENLcFhhaEJPTEpaeEZ3RVI3RHhsbGl3bVVqeGQ2c0NJS1hOQ0Z3Zm40VzRRNWpvZlp1bjY2Sk4zL3V2Nk5oL0pBSEJHcmh5bG5XekE9PSIsInNpZCI6InViNjhiOGNiN2FlLTY3ZjYtNGNhMS1iNzY2LTZhODM5NzZmMCIsImlhdCI6MTc5MjU4NjkxMiwiZXhwIjoxNzkyNTg5MzEyfQ.N5i9ZMC9hopRmvDNanSef2znnyWLcjJz1lkKQ0fdCGM; _sid=ub68b8cb7ae-67f6-4ca1-b766-6a83976f0; _device_id=82d6a4b7-a7f0-4a0c-8c84-d7ce3063f3bf; token=676a38e7-2cbc-427e-b6e3-cd0ce37b3f05465b4926-5b72-4953-8c41-c903950be0b3; _is_logged_in=1; __SW=PSZEyR3tJJ9Sev0XpYdB3OCKzV2aeZ6t; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f29835aed28b7fce2702d56a81df7862bb8ac303333098ff114593c51753fda3fef9d1c996205da318ae76f6d349ddc922799e4b07e1d731eeafae912ed439cc3b6459a4e5d5e6613266893d5a62588c80bc773dd17a424c5e9f11e1c40929ea88b48cde02d833fcef373691bdd654628452916ee788196260b9461b0d6239ca5b49c556beb5d0c764e83b27d464b52b7a59ffb34649721d1979ba5d1195c9d820f561aa7ccc0a98e27afd58238d9bb09cfe3ea3970295255bcc9cf2ecf1bae67291514ef28a190f3d8b0cebf45bf7edf6b53247d4002f4d7b3120c2a95a71a1d519b69e948997a9ce5ddbe62d948181bff644acf354dcf21c70b27ab15062728c0ea680a2cdf9ac3e4359fbf1464d1abf36e0c7727eff66323829f526001945e9a008b050d0e1a836b5539383f7455cf9079323b2e8df8c86985b51b105ece25c4fc324b35d7154e8dee2b31127bf43af55cd9362b2d820f4b9751d50169c4f1047fcedbe36360bc5141c151042e5d8ff09f96f3f045a3b0abf66669e83e1cb7611e9cf18e1c73350811c216c575288a65bf9f9029aa6f894520800e5a77e98dc94bd367b8fd4fc86b9d880ea0bc12f576d034810217c5e257297d7267f4b708e96b2c1102f478c2639ae7d9f27bf109c2ddbf37dd1046bc7a02053103444c32ed9239b6cdd50d5f92ecf631e496a99faee981e4690ee6fed41971bb7812ed73dbf564733866137749acc60f8ab57a6418227d40d75049e3fd4d5e8d98b4750b19cd657663fcb1b84d377a818f6db48b3e0d7ab1eedadf285353c3bc4604c49db6db370c46de6de78fe7f3902e596ebf469ad8212e7b89937a2461cf5fa78d9cecc357842f52c9e4eac9c18648f77032a0a33f9e0a1baed1b091e9bf4ea3fd8e398581b21cc371354ebf9ad94655085d60a322ffc6099c96fa050a66571beede1413c69d3d6a20cb9fe6e39e8e5981e0aee2af25f4a6121c5df619e5adaa0ef508ec1b0b8e56663c43ab74a4419ba9ae3a17d2c7a812fbef64e7860aae89e4e6692ec57e55d6b0bfd94089db22b56aa71050cd401e2cb475ba9aa45c1f8b891c52f8b471f40d820c3996a132f6d3d6f8b3c9024ad1e7c6bc78bd879e7fb82f7ebe1544c3e3e06c526c8ca568c1b294e774a67f73abe04e0d0de4c4432a37800b; _swuid=82d6a4b7-a7f0-4a0c-8c84-d7ce3063f3bf; _cid=Mjg2NTY3ODY2",
       "savedAt": "2026-10-21T12:52:48.805Z"
+    },
+    "8000958285": {
+      "account": "acc_8000958285",
+      "name": "Rahul Kumar",
+      "swiggyName": "",
+      "mobile": "8000958285",
+      "phone": "8000958285",
+      "customerId": "286684413",
+      "token": "42a30ba9-a32e-436b-a27c-b61e962c4119736ca889-7c21-4518-ad79-0f92254eb720",
+      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIyOTg2ZDgwNi0wZDk2LTQ2OTctOWM1MS0yMWE1ZGZhOWY0MzQiLCJ1c2VyX2lkIjoiMjg2Njg0NDEzIiwic2Vzc2lvbl9kYXRhIjoiNFBWczJoMi9QMHNYZXJMeW1XZVBoeFRkS2MxR1VGVzR2OE9sWFhoZ3lFR3VHakVrK2JibFFzZGFUMFpadnNrZkp1WFYzWHY4dG5JZzRkMmVKNHhGdEx6dE1vSEEzQXdyV1ZpZ2xNNFNTZ3FmR21tRVlqZ0YzZFMxd3dnVzJaYXQrTkt1S3BrZGhNMGV6a3F3RHJ3WlIvTzUwZlV3UzNud1gxaS9kYWdWa2RCcEEyT0dXSzI5OHlxOTI0MnhUT0JnVnRLNVFGaTBtOXJJc2ltbVZWMEVneGRIbkdPYThHazFaU0FuL0xPVEZ4OExGU29wd2cyV2tuQmdYc05hNEhUTmQ2RFhjRWxTUDlMYlFZQisycU9XK1FwKzFLRWJzaGoxR08wSFFtNnBEZDR6OGowTGxCdlBGU0drT1dpVzA0WUY1OGJCcTdPT080R012MWZzb1pTTnpKTEh6RVc2d2FmNGtXalQvWll2RXZIc1EyS1FQOXptbUFmTEZpam1uVDFkV0tTczA5d0FyYnFpOUNrM3FYZG9VUDNreGY0NDhQbUl6ZTFqdU5OR1NrOTQwZWJmbVpkRG0ySzMiLCJzaWQiOiJ1YnE2NmY3OTJhZS1mODAwLTQ5OTItYjQxNi03NzVhYWU5NDYiLCJpYXQiOjE3OTI2NTc5NDIsImV4cCI6MTc5MjY2MDM0Mn0.mkREmR76kWG9Ro4HPhFIvA1w0X1YYe93ESDs76oTYEo",
+      "sid": "ubq66f792ae-f800-4992-b416-775aae946",
+      "deviceId": "ad2ce66d-a484-6690-377f-89201c9268e5",
+      "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIyOTg2ZDgwNi0wZDk2LTQ2OTctOWM1MS0yMWE1ZGZhOWY0MzQiLCJ1c2VyX2lkIjoiMjg2Njg0NDEzIiwic2Vzc2lvbl9kYXRhIjoiNFBWczJoMi9QMHNYZXJMeW1XZVBoeFRkS2MxR1VGVzR2OE9sWFhoZ3lFR3VHakVrK2JibFFzZGFUMFpadnNrZkp1WFYzWHY4dG5JZzRkMmVKNHhGdEx6dE1vSEEzQXdyV1ZpZ2xNNFNTZ3FmR21tRVlqZ0YzZFMxd3dnVzJaYXQrTkt1S3BrZGhNMGV6a3F3RHJ3WlIvTzUwZlV3UzNud1gxaS9kYWdWa2RCcEEyT0dXSzI5OHlxOTI0MnhUT0JnVnRLNVFGaTBtOXJJc2ltbVZWMEVneGRIbkdPYThHazFaU0FuL0xPVEZ4OExGU29wd2cyV2tuQmdYc05hNEhUTmQ2RFhjRWxTUDlMYlFZQisycU9XK1FwKzFLRWJzaGoxR08wSFFtNnBEZDR6OGowTGxCdlBGU0drT1dpVzA0WUY1OGJCcTdPT080R012MWZzb1pTTnpKTEh6RVc2d2FmNGtXalQvWll2RXZIc1EyS1FQOXptbUFmTEZpam1uVDFkV0tTczA5d0FyYnFpOUNrM3FYZG9VUDNreGY0NDhQbUl6ZTFqdU5OR1NrOTQwZWJmbVpkRG0ySzMiLCJzaWQiOiJ1YnE2NmY3OTJhZS1mODAwLTQ5OTItYjQxNi03NzVhYWU5NDYiLCJpYXQiOjE3OTI2NTc5NDIsImV4cCI6MTc5MjY2MDM0Mn0.mkREmR76kWG9Ro4HPhFIvA1w0X1YYe93ESDs76oTYEo; _sid=ubq66f792ae-f800-4992-b416-775aae946; _device_id=ad2ce66d-a484-6690-377f-89201c9268e5; token=42a30ba9-a32e-436b-a27c-b61e962c4119736ca889-7c21-4518-ad79-0f92254eb720; _is_logged_in=1; __SW=YzRTrgqGAybuwZx4Eh8I8cRUSXRhkim9; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f785f223c0d70386b4eb5c6010eb2ef1faabca902805d126f445c8950f9e76df0153fc2519470dbbc671c00812d8b36ac365dcdbbc2394c89ab637be66aef97c0375988c86cf15f5241635f498c4622d1a076d3dc6cbd90be4b8a08ff9593b4527e19f01bcf5a5793838edb328fceb5561c918cb175c154e0c92e13c483883a46a870d3798fa003dce691af55e51bc99cd853675b055b4124aec3e040855e1d2e0ca890a1988fbd9e90f3aa3565b9886210034859104229912939cacdac7d3f4f1b4bf8103eed917d3475848fedb11b7bf74545b89c06723a9288cd2bc87431090f902be795a12e4f41e6089695d7c75f9870e0c1ba05c0b1950cf011e5057cabf58bdb83b7858e5c8c9027685113ad29ee0ab2bb33f3b0089e568004026f59b855a09cc2d9c717c57039fea81b3e749b16b57c20b7e9bfa30cef125e1a7eb7f37fd24c592e0e5b67b034c58f22fffc400cbf18a10ae29b1369d9ece9c5580e1d9cf44f0624759e568361ae54f1974f7b667f89cc85233f75cb9f49b253741686b9e5604fd29ea2a9dd5451c0cebdf6e2415864c9862a1efcc606cb5031e2f8e89ead70539cad95d55ca09f4b2c5ce71db4ffce95b2aea386099dc57dbb0a07d267387a8a8c299943db3744cef9dc7d52b212093ccd9a1a5f03531b1c318dec5e2acf33212eea383dfa4bf5eab7897b288a49f51b34944ab3bb7564333397f3ac9750fb90c784b7549918733ff49b6f868c5fb060f2de5b849e08d55651091bcbdef6390f975f97a0d54fea147787534929c43f1075de0dc5c726a9a3c99fb605f6ad4c552f55b984f0036880757b93f4d469d5d3947df9736f2264c07fd61a2eef3e257e42271c50c2e1abd36faef257d1d0fe7277051ac4150f45edba51ea479a37e5802e4ad9f770e0a3c3e6e1135c2b4848218834d3095f7fa01cd16d97f33493d7c7e1ea7460f11489022b8ef81bcc770a39c661fef3e5ee9c754a48023bcfb66cfdc164110688ec4f1d50a0b0bdb24d4ca53e128a951955fe87fb72f6d3ba46542b3d8e81889777dd53bbab6cbb6cafe934740ea80656e968b64cf55d90b4d5ca9b9a132bb73759fc3f7d8b74ed842b3e10229bdc3bf08680425245464b36adb6ada2705541b6b49f8baae8810eea613a3d018abf1fdb98a40f8f1f4b0f30ae8ec574d69db112f1ad67c88f1bc84cfe3c520c87f17ae58d1e120d71f1be0fd7a714a2756998092484e012ed482647bb43f8b9b7098ffd6b21afb1485d4d7259f0a2863ace6811cca3cfd1f700972e30c5b78c47631325af6312876b8d81; _swuid=ad2ce66d-a484-6690-377f-89201c9268e5; _cid=Mjg2Njg0NDEz",
+      "savedAt": "2026-10-22T08:38:06.186Z"
+    },
+    "6204357083": {
+      "account": "acc_6204357083",
+      "name": "Rahul Kumar",
+      "swiggyName": "",
+      "mobile": "6204357083",
+      "phone": "6204357083",
+      "customerId": "286685216",
+      "token": "f70b29a0-d53c-4ccf-890b-583fe758e71e195c9b52-916a-4e86-8810-766f685bdb96",
+      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJmNGZhOTBlMC0yNWNmLTQxNDgtOTU0Zi1jNDUxMTZiMDdmYmYiLCJ1c2VyX2lkIjoiMjg2Njg1MjE2Iiwic2Vzc2lvbl9kYXRhIjoiNU1HZXV1a0dRZ1R4dEdBNWUyMGsxOUZ6Zm5nKzJrOUNqVHRqUW95LzBLNURuaEhlRFJkV0hxL21ncytuVFN2a2lyWXBNeDdLZUY1NjNWN0xBbmNmSVN2MnFRQUlEbzdReUNWUzBRWDVza0tQVjkwRmsvbHB2WmVNZkdnZWFpRlBSNnlLZk5yYWVxLzN3YU8vZXdXOXFJaWM2RHhHRTZzR2hwYjhxaFd0TlRkUEFveTZPUXpLaGFvN2w2K2RXd0dqYlh1ZVFWd2E5WnRCeXJTRFZHcFh3eUZyV1BQSDIweUkyazdXVTVyQ256amJTWDlGbXBTaDlYck9iS1VFNlhIVXp0UTBMdW5WeW9YRVp6SGoya1dRRGRnNTdMd0JGMXpqQUVvL200SUMxd0oycklMSm5Sc0RFRmowSFB5VkorRzN6Rm5qbGdKRjE0Mm50bE93aERXV3MzZ0xneTkvSVdyTGtFbmpnVEQ4YzhDU0xvaXptaWJ2dnRpbkh3TklvK1BJeFVoQjRxblQ2NkxzNGxmNkIwRUF0a0VOMHBFK0NtazNWblRNQlY3YUg0TDhueG1keSttRmQ2ZEYiLCJzaWQiOiJ1YnFhYzBlZDBmNC01YTAxLTRlMzMtOGI5ZC1hOTEzNzMwNjMiLCJpYXQiOjE3OTI2NTgyMDgsImV4cCI6MTc5MjY2MDYwOH0.edao27ZlYlOx0IPzAgZDJxPhOhtyVvFb9zuEjkFPSsM",
+      "sid": "ubqac0ed0f4-5a01-4e33-8b9d-a91373063",
+      "deviceId": "b710f1d1-3787-653c-fdff-67fe83d80ab4",
+      "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJmNGZhOTBlMC0yNWNmLTQxNDgtOTU0Zi1jNDUxMTZiMDdmYmYiLCJ1c2VyX2lkIjoiMjg2Njg1MjE2Iiwic2Vzc2lvbl9kYXRhIjoiNU1HZXV1a0dRZ1R4dEdBNWUyMGsxOUZ6Zm5nKzJrOUNqVHRqUW95LzBLNURuaEhlRFJkV0hxL21ncytuVFN2a2lyWXBNeDdLZUY1NjNWN0xBbmNmSVN2MnFRQUlEbzdReUNWUzBRWDVza0tQVjkwRmsvbHB2WmVNZkdnZWFpRlBSNnlLZk5yYWVxLzN3YU8vZXdXOXFJaWM2RHhHRTZzR2hwYjhxaFd0TlRkUEFveTZPUXpLaGFvN2w2K2RXd0dqYlh1ZVFWd2E5WnRCeXJTRFZHcFh3eUZyV1BQSDIweUkyazdXVTVyQ256amJTWDlGbXBTaDlYck9iS1VFNlhIVXp0UTBMdW5WeW9YRVp6SGoya1dRRGRnNTdMd0JGMXpqQUVvL200SUMxd0oycklMSm5Sc0RFRmowSFB5VkorRzN6Rm5qbGdKRjE0Mm50bE93aERXV3MzZ0xneTkvSVdyTGtFbmpnVEQ4YzhDU0xvaXptaWJ2dnRpbkh3TklvK1BJeFVoQjRxblQ2NkxzNGxmNkIwRUF0a0VOMHBFK0NtazNWblRNQlY3YUg0TDhueG1keSttRmQ2ZEYiLCJzaWQiOiJ1YnFhYzBlZDBmNC01YTAxLTRlMzMtOGI5ZC1hOTEzNzMwNjMiLCJpYXQiOjE3OTI2NTgyMDgsImV4cCI6MTc5MjY2MDYwOH0.edao27ZlYlOx0IPzAgZDJxPhOhtyVvFb9zuEjkFPSsM; _sid=ubqac0ed0f4-5a01-4e33-8b9d-a91373063; _device_id=b710f1d1-3787-653c-fdff-67fe83d80ab4; token=f70b29a0-d53c-4ccf-890b-583fe758e71e195c9b52-916a-4e86-8810-766f685bdb96; _is_logged_in=1; __SW=5NyZC5pow37-iTDiVPnSdah-2yaNZz5Z; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f39afbc5cc58af35343166ce1e4e422fc61b3d91d7d9948e7e6835ddc94dde0086c16c462023e4a8cefc03df4e0d3ad53f219f207e3ef11b35f552a1a9a1294d6b81ea45ef593869ca6585b86f11381826d54a068fafc408ee7b14bdf6f76c5bd1c3b9d9facc859d23a698e57ea3eabe51c4235edc686859a39ac1e4c09f6cb454aad5b10d1d2ef47a54c6ef3485e34b9ac84a190e0723036f8e3f4260d0711ef6e8651322c9d50f5438cff6b2239a46a61da5d424918ae1c9326aa766f38ac6b382a2b5f94a7e72f119586d5de56778794cdc31cfa4e95d6bb1753c5b3e668a8948f0dbe7669f462a158c1a4be79ec9daaf9406fa5dc091b8046c6ea0543160aed970977d4162a5edb208aafa738f9cda34bb2edc9fc0a906547a8c19d922e640f583d2d91d5a50bc44e1745faf585e922202f2619edd25fb528df333a85055ce6c247d176092db047f851fccbcff8e5ee52514bf94f2dbe1782fc411cf5c7bee3caac650de14cc860a93fdbacd02d2406a6dfb5dc26eedd35f174f24b00e2f878f653a67cc9e97e4fcec88c9a9c9af18666321999d9e42fcba29900155f4a023f119cf7f5cf6abee4151ad1ed80db747f70de16d9849830f01c0bb27942f53f49ed0d7e74d825e1196ccbf657a433b8206e6f54c78d1bba28d617fb8eaccd32eca79d298f8de1d43f714a18bae6e6a5d0f444c504f3a20986f916fdd03d3ad767b36746fbd77b605ff042ba56d8153164792b02833ffc5202ca19ff5b6ab4da98cd48dd3d51a0bd4768d321d65c7602036d2b1702c31d023a8c2505351aca6ab3c1ee62a7758c4f55c4743b19adecf9ddf7fe40f630261d63a0ee0113e8b3de82071adaa216b2649f611b9ae84ef5e109c41cac22e888f43f64aa340c9239c113020ae6a78cd75f82edf85560eba56e76c70b81e6b62522e1cbd1bcd14af5633731b885920febf7882f1ac238c91ffb4b099137bf3b6a7c602b65e68eb7b2164ccafbfa4e82ca4f44f3214e2d10a0322de73194b5ef700917f527048a88f779fa09a0f686b7e482810dfbce8a9ffb8aab5e6b88d0cb34a06daaeed7863d10162ae9455ac510316417fa812b1974b2a4d428c7b418e8328e422b047bdb018e97ea7983ffc67993e4ed9353c6c5c658d49dcd0577e6d94ce37c65bf896a881a1e3e011faab4c81e27e0796e96e91aebbcc17dbe06d12ea810e357d0c9c2e4e46d5781ed935202b0ce4160af3d8fa865f3649785c6ee8a0e4aae65bd7e8ae5b7a527b8902001963887423faa8a0194aeaeb43bc8c20c896d7e58bbb06cc56b35ea; _swuid=b710f1d1-3787-653c-fdff-67fe83d80ab4; _cid=Mjg2Njg1MjE2",
+      "savedAt": "2026-10-22T08:38:06.186Z"
+    },
+    "7058813196": {
+      "account": "acc_7058813196",
+      "name": "Rahul Kumar",
+      "swiggyName": "",
+      "mobile": "7058813196",
+      "phone": "7058813196",
+      "customerId": "286684769",
+      "token": "8d0010d6-ef8e-4bbc-bc3a-3205c6b55b682cd3f1f7-322b-42b0-a0bc-9bdaea9d9229",
+      "tid": "eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJhNmVmYzU1YS0wMjkwLTQ3NjctODUxZS0yZjI0MTc1OGFlNjUiLCJ1c2VyX2lkIjoiMjg2Njg0NzY5Iiwic2Vzc2lvbl9kYXRhIjoiRGNKdHlFRzJ1dFc0TkJtOXpBVTZQRGYvM2hCaTQybklqeVo3UzFyRXRGSWZzbU56dU5UK1FsVktXRkRmbjVLK1NES2hXWmNYditQZ21EKzdneWhGanFpQ2lDSzB3VTdObmQ3M3pNZ1ozOGtTNmxCMTZJT0pRMnhmLzYyYkhLaHg3Q1NDR3hzNDRDNTVFeXRhRUJ0WVdLVTFoTTVKZUppaUdkOXNuaktWcWlKaWhZR01LbTVSWVUybG56R0Znb1BHMzUxd0wvcnNKYThxRzY0d3V3dFp5aG5TU2RmQmdSYU0vdzcvV1ozd3FsRUNuYlJKYWlYRWNqSUFYV3JqMG14bDY0V0RhRnRhOFk3Q0JXb201cnBMZGhqZG54NDBaQk1LVXpiL3AyZDV2b0ZaZ3B3VVZuMm8zaVR0bGdTODcyMW9iWWJwUFJXQXdzVHNJN3pHRjZnR1E4U3hNYkRsWWtVTUcyb1lWSjdEb3ZVVko4Ty9rN3QzM3lyWjh0RnJvOTlQZmppL0Z5cVp0cXZqM09jL0ovdTd6Zm9URCszQUdqcFAvZFZTRkFOZTE5dTU4ekVGaU9LK05oc0EiLCJzaWQiOiJ1YnFmYTk5ZmE4NC1mMjJiLTRhMWYtOGNlNy1jZjk1NGM4MzQiLCJpYXQiOjE3OTI2NTgwNjQsImV4cCI6MTc5MjY2MDQ2NH0.GY6GGkXVCbxV3zl996q9PfXqIxu3s8HY-MrP5T-9IBI",
+      "sid": "ubqfa99fa84-f22b-4a1f-8ce7-cf954c834",
+      "deviceId": "2f1e88a5-dac5-7b62-eaad-4136e062bfd7",
+      "cookies": "tid=eyJLSUQiOiIyIiwidHlwIjoiSldUIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJhNmVmYzU1YS0wMjkwLTQ3NjctODUxZS0yZjI0MTc1OGFlNjUiLCJ1c2VyX2lkIjoiMjg2Njg0NzY5Iiwic2Vzc2lvbl9kYXRhIjoiRGNKdHlFRzJ1dFc0TkJtOXpBVTZQRGYvM2hCaTQybklqeVo3UzFyRXRGSWZzbU56dU5UK1FsVktXRkRmbjVLK1NES2hXWmNYditQZ21EKzdneWhGanFpQ2lDSzB3VTdObmQ3M3pNZ1ozOGtTNmxCMTZJT0pRMnhmLzYyYkhLaHg3Q1NDR3hzNDRDNTVFeXRhRUJ0WVdLVTFoTTVKZUppaUdkOXNuaktWcWlKaWhZR01LbTVSWVUybG56R0Znb1BHMzUxd0wvcnNKYThxRzY0d3V3dFp5aG5TU2RmQmdSYU0vdzcvV1ozd3FsRUNuYlJKYWlYRWNqSUFYV3JqMG14bDY0V0RhRnRhOFk3Q0JXb201cnBMZGhqZG54NDBaQk1LVXpiL3AyZDV2b0ZaZ3B3VVZuMm8zaVR0bGdTODcyMW9iWWJwUFJXQXdzVHNJN3pHRjZnR1E4U3hNYkRsWWtVTUcyb1lWSjdEb3ZVVko4Ty9rN3QzM3lyWjh0RnJvOTlQZmppL0Z5cVp0cXZqM09jL0ovdTd6Zm9URCszQUdqcFAvZFZTRkFOZTE5dTU4ekVGaU9LK05oc0EiLCJzaWQiOiJ1YnFmYTk5ZmE4NC1mMjJiLTRhMWYtOGNlNy1jZjk1NGM4MzQiLCJpYXQiOjE3OTI2NTgwNjQsImV4cCI6MTc5MjY2MDQ2NH0.GY6GGkXVCbxV3zl996q9PfXqIxu3s8HY-MrP5T-9IBI; _sid=ubqfa99fa84-f22b-4a1f-8ce7-cf954c834; _device_id=2f1e88a5-dac5-7b62-eaad-4136e062bfd7; token=8d0010d6-ef8e-4bbc-bc3a-3205c6b55b682cd3f1f7-322b-42b0-a0bc-9bdaea9d9229; _is_logged_in=1; __SW=LvUTiRE2RHqaWBnjgNw_fXIXJ2PhRzJy; statusbarheight=0; bottomoffset=0; _session_tid=f3e95fbf7453de1e5059a3146c16f1e57f9ef584e86927d88d068c89e6a34e84b7816ee8746053383d7efa39b7344a0f4358637b5b6c0390b51a116ebe02c4ac7642f432f6b5cccbe66ccaef33b9cb4a04b4cdf818f3356e8c7cc0f5c7bf09d43ad0563ea07f7f88041dd1640529849606a1cf7f71771c1a190b2fc110c0b830346b3f1a801fc44b7cb9adec992d8c79c4b6c25977acc553f654808350de8ddd295eda8c2e86fb8b888d9dcd67167e6ea0fd663d4ef3389872005dd8525d4aabf089b6e5202b3615b92e19ea8b8181c7d9e0b9dd2351df592a3dbeb47400bc0a21a11d4a9cd3ff3cd594ad74c942b669bd8c66d9dec916943cc27aad26a3bbb2c1e057d315b8412349952abfc01aa89ae082ccc31a2f86d21d2e52e3e371fed992e0b1b6ab7d4b4f2eba10c9314503ac5934dd6c019d1186aeb10f4b563794795d19e312b35bdc366112994ced4b50820fb033b6fba670ef25724dd053125c756db7c5d9647b0b7045b758274b5946b8ac48e536033572d118c044101234af914e78463ea544dad4c39dff6b12fa2990d70ece6e66e27b6fcc44b7c78b76417a5c354505b7fa41d1953d7c002a571f2bc7ff87ca5c3e78ad729f3778cc17369beb88730b81655202c23486756b2739c38f6a3b7be6fe64ec31896793f7250ade3154ab1a755ffbb483607d28053958037a20341e6725c9014d231da30aff8bf74e97caa53615c9ffaf2a2be228b2373fbcede22426eafbb115e26cc2b146c4e316ea89e80b3af062793e0d792eefbfce47481479c9700067a71d6665e66717763cfbe1ade1a59bd4002e81f91ccc0109a3ec1d15d3270e3cbd51b38adabd73ff4e2724e8256277cc96cd0196ee64b95afb4c6f6de4a45ec203428174fb34e10d2424803919721adfe7519e002372b23fb7291a3413e896bcb26263006167f4610f07e29f73871aa769a3fbe546fa157aa99a24088499fb00074e6465fc4c16a247e53b06deddca0e903ea5aa48e57f48f9e4c8398483d5104861bde58ea621c818716d82c93b075a54fe858756a5341493887004b12370b59a5a47dde1e0b5caa9e1c90cd92ef8bd8482475450b9ec2a1ede64a39b7231c27497a7af4a135e303cad7903be3f641ae161668c898bc62914636c99b37ee0b0534763241ec582f0159c6d03a9b24f29351341d52b93f098ff807400507a41aadd7971091b95700a7c447eac7c8f4065ed679e41c4d4527f9fc926dac3af4bf26f693194d1206e0ab3856baa69b9c0385812d5c3824fb692fcd254ad726afdcbb09190e6b8c7f61bd69b02ace5b0ab2274565f330f403f8bee43d35404e77889cddc2df0bf8aa312cab6127a3d2af96213a1a3e8e9e4544f; _swuid=2f1e88a5-dac5-7b62-eaad-4136e062bfd7; _cid=Mjg2Njg0NzY5",
+      "savedAt": "2026-10-22T08:38:06.186Z"
     }
   }
 }
