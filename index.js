@@ -4682,7 +4682,7 @@ bot.action('rare_ultra_card', async (ctx) => {
       totalSavings: 128,
       addressDetails: { name: 'Panu', mobile: '9157600711', address: 'Sector 4, Bhilai, Chhattisgarh 490001' },
       swiggyPaymentUrl: 'https://www.swiggy.com/payments',
-      trackingLink: 'https://www.swiggy.com/track',
+      trackingLink: '', // No fabricated tracking — real link only from Swiggy API
       deliveryOtp: `${Math.floor(1000+Math.random()*9000)}`,
       registeredMobile: '9157600711'
     };
@@ -10327,8 +10327,11 @@ async function checkOrderPaidStatusOnly(orderId) {
       // Auto-edit payment message to inject link on delayed I-have-paid click
       try { await tryEditCustomerPaymentMessageWithTracking(order); } catch {}
     }
+    if (wasAlreadyCompleted && !trackingLink) {
+      console.log(`[Tracking] Order ${order.id} already completed but tracking not yet available. Will retry.`);
+    }
     return wasAlreadyCompleted
-      ? { paid: true, trackingLink, deliveryOtp: order.deliveryOtp || '', message: trackingLink ? '✓ Swiggy tracking is available.' : '… Swiggy has not shared a tracking link yet.' }
+      ? { paid: true, trackingLink, deliveryOtp: order.deliveryOtp || '', message: trackingLink ? '✓ Swiggy tracking is available.' : 'Payment verified successfully. Swiggy tracking is not available yet. I\'ll retry shortly.' }
       : { paid: false, message: 'Waiting for verified payment on the Swiggy gateway (status check only).' };
   }
 
@@ -10363,7 +10366,7 @@ async function checkOrderPaidStatusOnly(orderId) {
         paid: true,
         trackingLink,
         deliveryOtp: order.deliveryOtp || '',
-        message: trackingLink ? '✓ Payment is verified; Swiggy tracking is available.' : '✓ Payment is verified. Swiggy has not published tracking yet.'
+        message: trackingLink ? '✓ Payment is verified; Swiggy tracking is available.' : 'Payment verified successfully. Swiggy tracking is not available yet. I\'ll retry shortly.'
       };
     }
     // Delay rescue: primary ID says pending but payment may have settled on another saved account — try All-IDs before declaring pending
@@ -10397,7 +10400,8 @@ async function checkOrderPaidStatusOnly(orderId) {
           try { await sendOrderDeliveryInfoNotice(bot.telegram, firstBossChatId2, order); } catch {}
           try { startOrderDeliveryInfoPoller({ telegram: bot.telegram, chatId: firstBossChatId2, orderId: order.id, formatOrderBodyFn: formatUserOrderCardText }); } catch {}
           const t2 = getStoredSwiggyTrackingUrl(order);
-          return { paid: true, trackingLink: t2, deliveryOtp: order.deliveryOtp || '', message: t2 ? '✓ Payment verified via linked Swiggy account. Swiggy tracking is available.' : '✓ Payment verified via linked account. Tracking will be sent when available.' };
+                    console.log(`[Tracking] Payment verified via linked account for order ${order.id}, tracking ${t2 ? 'available' : 'not yet available — will retry'}`);
+          return { paid: true, trackingLink: t2, deliveryOtp: order.deliveryOtp || '', message: t2 ? '✓ Payment verified via linked Swiggy account. Swiggy tracking is available.' : 'Payment verified successfully. Swiggy tracking is not available yet. I\'ll retry shortly.' };
         }
       } catch {}
     }
@@ -10444,13 +10448,17 @@ async function checkOrderPaidStatusOnly(orderId) {
   });
 
   const trackingLink = getStoredSwiggyTrackingUrl(order);
+  // Payment and tracking are separate states — use required message when tracking not yet available
+  if (!trackingLink) {
+    console.log(`[Tracking] Payment verified for order ${order.id} but tracking not available yet. Will retry via poller.`);
+  }
   return {
     paid: true,
     trackingLink,
     deliveryOtp: order.deliveryOtp || '',
     message: trackingLink
       ? '✓ Payment verified. Swiggy tracking is available.'
-      : '✓ Payment verified. Swiggy has not published a tracking link yet; it will be sent when available.'
+      : 'Payment verified successfully. Swiggy tracking is not available yet. I\'ll retry shortly.'
   };
 }
 

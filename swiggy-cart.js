@@ -3219,10 +3219,79 @@ export function isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink = fa
   }
 }
 
+// Fabricated tracking URL detection — never construct by appending order ID to a URL pattern
+export function isFabricatedTrackingUrl(url, orderId = '') {
+  if (!url) return false;
+  const u = String(url).trim();
+  const oid = String(orderId || '').trim();
+  if (!u) return false;
+  // Generic placeholders are fabricated when claimed as per-order tracking
+  if (u === 'https://www.swiggy.com/track' || u === 'https://www.swiggy.com/orders' || u === 'https://www.swiggy.com/' || u === 'https://www.swiggy.com/track/') return true;
+  if (/^https?:\/\/(www\.)?swiggy\.com\/(track|orders)\/?$/i.test(u)) return true;
+  if (oid && u.toLowerCase().includes(oid.toLowerCase()) && /swiggy\.com/i.test(u)) {
+    // r.swiggy.com short links with numeric orderId are fabricated — genuine are random codes
+    try {
+      const parsed2 = new URL(u);
+      const host2 = parsed2.hostname.toLowerCase();
+      const path2 = parsed2.pathname;
+      if ((host2 === 'r.swiggy.com' || host2.endsWith('.r.swiggy.com')) && (path2 === `/${oid}` || path2 === `/${oid}/`)) return true;
+    } catch {}
+    if (!isOfficialSwiggyTrackingUrl(u, { allowProviderShortLink: true })) return true;
+    // Simple append pattern like https://www.swiggy.com/orders/2515765... (without track context) is fabricated
+    // But allow genuine tracking routes like /orders/track/<orderId> which Swiggy returns in tracking fields
+    try {
+      const parsed = new URL(u);
+      const path = parsed.pathname;
+      // Only reject simple /track/<oid> or /orders/<oid> at root, not /orders/track/<oid> which is genuine tracking page
+      if (new RegExp(`^/(track|orders|order)/${oid}$`, 'i').test(path) || path === `/${oid}` || path === `/${oid}/`) {
+        // Check if path has tracking context beyond simple append — if it's just /orders/<oid> without track, it's fabricated
+        if (!/track/i.test(path) || path === `/${oid}`) {
+          // Additional check: if source would be verified via API, we already passed isOfficial — but simple append without track context is still fabricated
+          // We keep rejection for plain /orders/<oid> or /track/<oid> guessed patterns
+          return true;
+        }
+      }
+    } catch {}
+  }
+  return false;
+}
+
+export function validateTrackingUrlForOrder(url, order, source = '') {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  try { const p = new URL(trimmed); if (p.protocol !== 'https:' && p.protocol !== 'http:') return false; if (p.username || p.password || p.port) return false; } catch { return false; }
+  const allowProviderShort = source === 'SWIGGY_API';
+  if (!isOfficialSwiggyTrackingUrl(trimmed, { allowProviderShortLink: allowProviderShort })) return false;
+  const orderId = String(order?.swiggyOrderId || order?.pendingSwiggyOrderId || order?.id || '').trim();
+  if (isFabricatedTrackingUrl(trimmed, orderId)) return false;
+  if (trimmed === 'https://www.swiggy.com/orders' || trimmed === 'https://www.swiggy.com/track') return false;
+  try { const parsed = new URL(trimmed); const qOrderId = parsed.searchParams.get('order_id') || parsed.searchParams.get('orderId') || parsed.searchParams.get('orderid'); if (qOrderId && orderId && qOrderId !== orderId) return false; } catch {}
+  return true;
+}
+
+export function sanitizeTrackingLink(order) {
+  if (!order || !order.trackingLink) return '';
+  const url = String(order.trackingLink).trim();
+  const source = String(order.trackingLinkSource || '').trim();
+  if (!['SWIGGY_API', 'BOSS_PROVIDED'].includes(source)) { order.trackingLink=''; order.trackingLinkSource=''; order.shareTrackUrl=''; return ''; }
+  if (!validateTrackingUrlForOrder(url, order, source)) { console.warn(`[TrackingValidation] Rejected invalid tracking URL for order ${order.id}: ${url} source=${source}`); order.trackingLink=''; order.trackingLinkSource=''; order.shareTrackUrl=''; return ''; }
+  return url;
+}
+
+export function hasValidTrackingForOrder(order) {
+  if (!order) return false;
+  const url = String(order.trackingLink || '').trim();
+  if (!url) return false;
+  return validateTrackingUrlForOrder(url, order, String(order.trackingLinkSource || ''));
+}
+
 export function getStoredSwiggyTrackingUrl(order) {
   const source = String(order?.trackingLinkSource || '');
   if (!['SWIGGY_API', 'BOSS_PROVIDED'].includes(source)) return '';
   const value = String(order?.trackingLink || '').trim();
+  // Use authoritative validation — reject fabricated URLs
+  if (!validateTrackingUrlForOrder(value, order, source)) return '';
   return isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink: source === 'SWIGGY_API' }) ? value : '';
 }
 
@@ -3840,8 +3909,9 @@ export async function fetchAccountOrders(cookiesOrAcc) {
         }
 
         const nativeTrackingUrl = extractSwiggyProvidedTrackingUrl(o, trkData);
-        // Only real Swiggy-provided tracking links are ever shown. No synthetic /track/<orderId> fallback.
-        const finalTrackingUrl = nativeTrackingUrl || '';
+        // Only real Swiggy-provided tracking links are ever shown. No synthetic /track/<orderId> fallback. Validated via validateTrackingUrlForOrder.
+        let finalTrackingUrl = '';
+        if (nativeTrackingUrl && validateTrackingUrlForOrder(nativeTrackingUrl, { swiggyOrderId: String(o.order_id || ''), pendingSwiggyOrderId: String(o.order_id || ''), id: String(o.order_id || '') }, 'SWIGGY_API')) finalTrackingUrl = nativeTrackingUrl;
 
         const deliveryOtp = extractSwiggyDeliveryOtp(o, trkData, { delivery: deData });
         const liveStatus = trkData?.order_status_details?.status_message || o.order_status || 'Delivered';

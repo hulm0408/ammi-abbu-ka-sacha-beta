@@ -1608,14 +1608,27 @@ export async function finalizePaidOrderCard({
   if (livePaidResult.restaurantName) order.restaurantName = livePaidResult.restaurantName;
 
   const providerTrackingCandidate = livePaidResult.nativeShareUrl || livePaidResult.swiggyWebTrackUrl || '';
-  const providerTrackingUrl = providerTrackingCandidate
-    ? getStoredSwiggyTrackingUrl({ trackingLink: providerTrackingCandidate, trackingLinkSource: 'SWIGGY_API' })
-    : '';
+  let providerTrackingUrl = '';
+  if (providerTrackingCandidate) {
+    const temp = { ...order, trackingLink: providerTrackingCandidate, trackingLinkSource: 'SWIGGY_API', swiggyOrderId: order.swiggyOrderId, pendingSwiggyOrderId: order.pendingSwiggyOrderId, id: order.id };
+    // Preserve real URL exactly as obtained, validate it belongs to this order before storing
+    const { validateTrackingUrlForOrder } = await import('./swiggy-cart.js').catch(()=>({ validateTrackingUrlForOrder: ()=>false }));
+    if (validateTrackingUrlForOrder(providerTrackingCandidate, temp, 'SWIGGY_API')) {
+      providerTrackingUrl = getStoredSwiggyTrackingUrl(temp);
+    } else {
+      console.warn(`[Tracking] Rejected fabricated or mismatched tracking URL for order ${order.id}: ${providerTrackingCandidate}`);
+      providerTrackingUrl = '';
+    }
+  }
   const existingTrustedTrackingUrl = getStoredSwiggyTrackingUrl(order);
   order.shareTrackUrl = '';
   order.trackingLink = providerTrackingUrl || existingTrustedTrackingUrl;
   order.trackingLinkSource = providerTrackingUrl ? 'SWIGGY_API' : (existingTrustedTrackingUrl ? order.trackingLinkSource : '');
   order.paidAt = new Date().toISOString();
+  // Separate states: payment confirmed does NOT imply tracking available
+  if (!providerTrackingUrl && !existingTrustedTrackingUrl) {
+    console.log(`[Tracking] Payment verified for order ${order.id} but tracking not yet available. Scheduling retry poller.`);
+  }
 
   // NEW: Try to edit the existing payment QR message in-place to inject tracking link/OTP (user request: payment message auto-edit)
   // If edit succeeds, keep the edited QR visible (do not delete it) and only clear card messages.
@@ -1671,12 +1684,14 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
     lines.push(`✓ <b>Payment received — Swiggy order confirmed</b>`);
     if (order.liveOrderStatus) lines.push(`Status: ${escapeHtml(String(order.liveOrderStatus))}`);
   } else {
+    // Payment vs tracking are separate states — do NOT send fabricated link
     lines.push(`✓ <b>Swiggy order update</b>`);
     lines.push(`Order reference: <code>#${escapeHtml(String(order.id))}</code>`);
     if (order.swiggyOrderId) lines.push(`Swiggy order no.: <code>${escapeHtml(String(order.swiggyOrderId))}</code>`);
     if (order.liveOrderStatus) lines.push(`Status: ${escapeHtml(String(order.liveOrderStatus))}`);
-    lines.push(`↗ <b>Live tracking:</b> <a href="${SWIGGY_ORDERS_PAGE}">Swiggy app → Orders</a>`);
-    lines.push('… Swiggy has not shared a tracking link yet. I will send the exact link here as soon as it is published.');
+    // Honest limitation: tracking not yet available, will retry
+    lines.push('Payment verified successfully. Swiggy tracking is not available yet. I\'ll retry shortly.');
+    console.log(`[Tracking] No reliable tracking source for order ${order.id} (swiggyOrderId=${order.swiggyOrderId||'n/a'}). Will retry via poller.`);
   }
   if (deliveryOtp) {
     lines.push(`⌕ <b>Delivery OTP:</b> <code>${escapeHtml(deliveryOtp)}</code>`);
@@ -1765,9 +1780,25 @@ export function startOrderDeliveryInfoPoller({
       }
 
       const candidateUrl = update?.trackingUrl || update?.swiggyWebTrackUrl || update?.nativeShareUrl || '';
-      const verifiedUrl = candidateUrl
-        ? getStoredSwiggyTrackingUrl({ trackingLink: candidateUrl, trackingLinkSource: 'SWIGGY_API' })
-        : '';
+      // Validate that candidate belongs to this specific order before storing — prevents cross-order contamination
+      let verifiedUrl = '';
+      if (candidateUrl) {
+        // Explicit validation: URL must be genuine and for this order
+        const tempOrder = { ...order, trackingLink: candidateUrl, trackingLinkSource: 'SWIGGY_API' };
+        const { validateTrackingUrlForOrder } = await import('./swiggy-cart.js').catch(()=>({ validateTrackingUrlForOrder: ()=>false }));
+        // Fallback to getStoredSwiggyTrackingUrl which now includes fabrication check
+        verifiedUrl = getStoredSwiggyTrackingUrl(tempOrder);
+        if (verifiedUrl && tempOrder.swiggyOrderId) {
+          // Additional isolation: if URL contains different order_id, reject (handled in validateTrackingUrlForOrder)
+          if (!validateTrackingUrlForOrder(verifiedUrl, order, 'SWIGGY_API')) {
+            console.warn(`[Tracking] Rejected tracking URL not for order ${order.id}: ${verifiedUrl}`);
+            verifiedUrl = '';
+          }
+        }
+        if (!verifiedUrl) {
+          console.log(`[Tracking] Retry: No valid tracking for order ${order.id} on attempt ${state.attempts}, will continue polling (max 6h)`);
+        }
+      }
       const previousUrl = getStoredSwiggyTrackingUrl(order);
       const otpDigits = String(update?.deliveryOtp || '').replace(/\D/g, '');
       const nextOtp = /^\d{4,8}$/.test(otpDigits) ? otpDigits : '';
@@ -1779,6 +1810,9 @@ export function startOrderDeliveryInfoPoller({
         order.trackingLink = verifiedUrl;
         order.trackingLinkSource = 'SWIGGY_API';
         order.shareTrackUrl = '';
+        console.log(`[Tracking] Genuine tracking obtained for order ${order.id}: ${verifiedUrl}`);
+      } else if (candidateUrl) {
+        console.log(`[Tracking] Candidate rejected for order ${order.id}: ${candidateUrl} — not stored, will retry`);
       }
       if (nextOtp) order.deliveryOtp = nextOtp;
       if (update?.status) order.liveOrderStatus = String(update.status);
