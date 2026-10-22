@@ -756,12 +756,33 @@ export function formatUserOrderCard(order) {
       section('Status', `${heading('Waiting for Beta approval')}\n${sub('Best offers lag chuke hain. Payment QR yahan aayega.')}`) +
       `\n${field('Support', '@Its_life_001')}`;
   } else if (order.cardStage === 'AUTO_SELECTING') {
+    // Elderly-friendly: show provisional account instantly so Ammi/Abbu see progress in <1s
+    const provAcc = order.orderAccount || order.selectedAccount || '';
+    const provLine = provAcc ? `✓ <b>Account selected:</b> <code>${esc(String(provAcc).slice(-4).padStart(4,'*'))}</code> (best offer check ho raha hai)` : '<b>Best offer lagaya ja raha hai</b>';
+    const estPay = order.finalPayable ? ` · Est: ₹${Number(order.finalPayable)}` : '';
     text += `${heading(`◷ Best offers check ho rahe hain (#${order.id})`)}\n\n` +
       section('Order details', [
         field('Restaurant', esc(order.restaurantName || 'Swiggy Food Order')),
-        field('Status', '<b>Best offer lagaya ja raha hai</b>')
-      ].join('\n')) +
-      `\n${sub('Final bill yahan update ho jayega.')}`;
+        field('Status', provLine + estPay),
+        order.autoOptimizeError ? field('Note', esc(String(order.autoOptimizeError).slice(0,90))) : null
+      ].filter(Boolean).join('\n')) +
+      `\n${sub(order.provisionalAccount ? 'Account turant select ho gaya hai — 20 sec me final bill aa jayega.' : 'Final bill yahan update ho jayega.')}` +
+      (order.provisionalAccount ? `\n${sub('Ammi/Abbu ko kuch aur dabane ki zarurat nahi — bill auto-approve hoke QR aa jayega.')}` : '');
+  } else if (order.cardStage === 'BILL_READY' && order.provisionalAccount) {
+    // Provisional bill ready — show immediately with clear message
+    text += `${heading(`✓ Bill taiyaar (#${order.id}) - Final check chal raha hai`)}\n\n` +
+      formatUserOrderCardText(order, false) + '\n\n' +
+      section('Confirm', `${heading('Bill check karke Approve karein')}\n${sub('Ya kuch na karein — 25 sec me auto-approve hoke QR aa jayega (Ammi/Abbu ke liye)')}`) +
+      `\n${field('Support', '@Its_life_001')}`;
+    buttons.push([{ text: '✓ Approve bill (ya auto hoga)', callback_data: `user_approve_bill_${order.id}`, style: 'success' }]);
+    buttons.push([{ text: '! Something is wrong', callback_data: `user_bill_issue_${order.id}`, style: 'danger' }]);
+    // Return early — already pushed buttons, skip default footer
+    buttons.push([
+      { text: '↻ Refresh status', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
+      { text: '✖ Cancel order', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
+    ]);
+    buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
+    return { text, keyboard: Markup.inlineKeyboard(buttons) };
   } else {
     const rest = order.restaurantName || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : 'Swiggy Food Order');
     const ad = order.addressDetails || parseAddressDetails(order.address);
@@ -1556,15 +1577,115 @@ async function triggerBackgroundCartFetch(orderId, { skipAccountScan = false } =
 }
 
 // ---------------------------------------------------------------------------
+// ELDERLY-PARENT OPTIMIZED AUTO-SELECTION (Gulf-son mode)
+// Enables zero-touch for Ammi/Abbu: instant provisional pick, bounded scan,
+// automatic retries, and family auto-approve so they never have to remember.
+// ---------------------------------------------------------------------------
+function isFamilyAutoApproveEnabled(db, userId) {
+  if (db?.config?.familyAutoApprove === false) return false;
+  if (!userId) return true;
+  const role = String(getFamilyRole(Number(userId), '') || '').toLowerCase();
+  if (role === 'ammi' || role === 'abbu' || role === 'parent') return true;
+  if (!isBoss(Number(userId))) return true;
+  return false;
+}
+async function tryInstantProvisionalAccountPick(order) {
+  try {
+    const db = getDb();
+    const accounts = db?.config?.accounts || {};
+    const entries = Object.entries(accounts).filter(([, a]) => a && a.isLoggedIn && (a.cookies || a.tid || a.jwtTid || a.token));
+    if (entries.length === 0) return null;
+    const { getBusySwiggyAccountsMap } = await import('./swiggy-cart.js');
+    const busy = getBusySwiggyAccountsMap(db, order.id);
+    let bestKey = null;
+    let bestScore = -Infinity;
+    for (const [k, a] of entries) {
+      if (busy.has(k)) continue;
+      const isZero = a.isZeroOrderAccount === true || Number(a.totalOrdersCount || 999) === 0;
+      const score = (isZero ? 100000 : 0) + (a.isLoggedIn ? 1000 : 0) - Number(a.totalOrdersCount || 0);
+      if (score > bestScore) { bestScore = score; bestKey = k; }
+    }
+    if (!bestKey) return null;
+    const { reserveSwiggyAccountAtomically } = await import('./swiggy-cart.js');
+    if (!reserveSwiggyAccountAtomically(bestKey, order.id)) return null;
+    const acc = accounts[bestKey];
+    order.selectedAccount = bestKey;
+    order.orderAccount = acc.phone || acc.mobile || bestKey;
+    order.selectedAccountZeroOrders = Boolean(acc.isZeroOrderAccount);
+    order.provisionalAccount = true;
+    order.provisionalPickedAt = new Date().toISOString();
+    applyMaxOfferToOrder(order);
+    order.cardStage = 'AUTO_SELECTING';
+    order.autoOptimizeStartedAt = new Date().toISOString();
+    saveDb(db);
+    await updateOrderCards(order).catch(() => {});
+    console.log(`[InstantPick] Order #${order.id} -> provisional ${bestKey} (${order.orderAccount}) in <1s`);
+    return bestKey;
+  } catch (e) {
+    console.warn('[InstantPick] failed:', e?.message);
+    return null;
+  }
+}
+function scheduleAutoOptimizeRetry(orderId, reason, delayMs, attempt = 1) {
+  if (attempt > 4) return;
+  console.log(`[AutoOptimize] Scheduling retry #${attempt} for #${orderId} in ${delayMs}ms (${reason})`);
+  setTimeout(() => {
+    autoOptimizeUserOrder(orderId, { reason: `${reason}_RETRY_${attempt}`, _retryAttempt: attempt })
+      .catch(err => console.error(`[AutoOptimize] retry #${attempt} failed:`, err?.message));
+  }, delayMs);
+}
+async function autoApproveFamilyBillIfEnabled(order, summarySent) {
+  try {
+    const db = getDb();
+    if (!isFamilyAutoApproveEnabled(db, order.userId)) return;
+    if (!summarySent) return;
+    const fresh = getDb().orders?.[String(order.id)];
+    if (!fresh || fresh.billApprovedByUser || fresh.status === 'COMPLETED') return;
+    const graceSec = Number(db.config?.familyAutoApproveGraceSec || 25);
+    console.log(`[FamilyAutoApprove] Will auto-approve Order #${order.id} in ${graceSec}s for family user ${order.userId}`);
+    setTimeout(async () => {
+      try {
+        const curDb = getDb();
+        const cur = curDb.orders?.[String(order.id)];
+        if (!cur || cur.billApprovedByUser || ['COMPLETED','CANCELLED','REJECTED'].includes(cur.status)) return;
+        if (cur.status !== 'PENDING' && cur.status !== 'APPROVAL_PENDING' && cur.cardStage !== 'BILL_READY') return;
+        console.log(`[FamilyAutoApprove] Auto-approving Order #${order.id} now`);
+        const res = await approveUserOrderBillAction(String(cur.userId || cur.fwdSenderUserId || ''), cur.id);
+        if (res?.ok) {
+          try {
+            const updated = getDb().orders?.[String(order.id)];
+            if (updated) await updateOrderCards(updated).catch(()=>{});
+            const bossIds = curDb.config?.bossIds || [];
+            for (const bid of bossIds) {
+              try {
+                await bot.telegram.sendMessage(bid,
+                  `✅ <b>Auto-approved for Ammi/Abbu</b> — Order #${escapeHtml(cur.id)}\n` +
+                  `Restaurant: ${escapeHtml(cur.restaurantName||'Swiggy')}\n` +
+                  `To Pay: ₹${Number(cur.finalPayable||cur.subtotal||0)}\n` +
+                  `<i>Ammi/Abbu ko payment QR bhej diya gaya hai (auto, taaki unhe yaad na karna pade).</i>`,
+                  { parse_mode: 'HTML' });
+              } catch {}
+            }
+          } catch {}
+        }
+      } catch (e) {
+        console.warn('[FamilyAutoApprove] failed:', e?.message);
+      }
+    }, graceSec * 1000);
+  } catch {}
+}
+// ---------------------------------------------------------------------------
 // AUTO MAX-OFFER FOR CUSTOMER SUBMISSIONS
 // ---------------------------------------------------------------------------
 // A forwarded message runs the full pipeline (best 0-Order account -> max coupon
-// -> live bill) automatically. A customer tapping "Send to Beta" used to stop at a
-// plain PENDING order, so Ammi had to wait for Boss to press "Auto Max Coupon".
+// -> live bill) automatically. A customer tapping \"Send to Beta\" used to stop at a
+// plain PENDING order, so Ammi had to wait for Boss to press \"Auto Max Coupon\".
 // This helper gives customer orders the exact same treatment, in the background.
 const autoOptimizeInFlight = new Set();
 
-export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_TO_BETA' } = {}) {
+export async function autoOptimizeUserOrder(orderId, opts = {}) {
+  const reason = opts.reason || 'CUSTOMER_SEND_TO_BETA';
+  const _retryAttempt = Number(opts._retryAttempt || 0);
   const key = String(orderId);
   if (autoOptimizeInFlight.has(key)) return { skipped: true, reason: 'in-flight' };
   autoOptimizeInFlight.add(key);
@@ -1624,26 +1745,111 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
     }
 
     const statusBefore = order.status || 'PENDING';
-    order.cardStage = 'AUTO_SELECTING';
-    order.autoOptimizeStartedAt = new Date().toISOString();
-    delete order.autoOptimizeError;
-    saveDb(db);
-    await updateOrderCards(order).catch(() => {});
+
+    // INSTANT provisional pick for old parents — zero network wait
+    // If no account yet, reserve best idle 0-order account immediately
+    // so card shows progress within 1s instead of silent 15 min.
+    if (!order.selectedAccount && !_retryAttempt) {
+      const provisional = await tryInstantProvisionalAccountPick(order);
+      if (provisional) {
+        // Refresh local reference after provisional pick saved to DB
+        db = getDb();
+        order = db.orders?.[key] || order;
+      } else {
+        order.cardStage = 'AUTO_SELECTING';
+        order.autoOptimizeStartedAt = new Date().toISOString();
+        delete order.autoOptimizeError;
+        saveDb(db);
+        await updateOrderCards(order).catch(() => {});
+      }
+    } else {
+      order.cardStage = 'AUTO_SELECTING';
+      order.autoOptimizeStartedAt = new Date().toISOString();
+      delete order.autoOptimizeError;
+      saveDb(db);
+      await updateOrderCards(order).catch(() => {});
+    }
 
     console.log(`[AutoOptimize] Order #${key} (${reason}): scanning accounts for max offer...`);
-    const best = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false });
+    // Bounded scan: never block Ammi/Abbu for 15 minutes. Race vs 25s timeout.
+    let best = null;
+    let bestError = null;
+    try {
+      best = await Promise.race([
+        findBestMaxCouponAccountForOrder(order, { captureScreenshot: false }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('ACCOUNT_SCAN_TIMEOUT')), 25000))
+      ]);
+    } catch (e) {
+      best = null;
+      bestError = e?.message || String(e);
+      if (bestError === 'ACCOUNT_SCAN_TIMEOUT') {
+        console.warn(`[AutoOptimize] Order #${key} timed out after 25s — keeping provisional bill`);
+        // If we had a provisional account, keep it as BILL_READY with estimate
+        if (order.selectedAccount && order.provisionalAccount) {
+          order.cardStage = 'BILL_READY';
+          order.autoOptimized = true;
+          order.autoOptimizedAt = new Date().toISOString();
+          order.autoOptimizeError = 'Live scan slow — provisional bill shown, refining in background.';
+          saveDb(getDb());
+          await updateOrderCards(order).catch(()=>{});
+          // Send provisional bill summary so Ammi sees something NOW
+          let provSent = null;
+          try {
+            provSent = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+              db: getDb(),
+              deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary)
+            });
+            if (provSent?.sent) {
+              await ensureBossBillSummary(order).catch(()=>{});
+              await autoApproveFamilyBillIfEnabled(order, true).catch(()=>{});
+            }
+          } catch {}
+          // Retry full scan in background after short delay
+          scheduleAutoOptimizeRetry(key, 'TIMEOUT', 30000, (_retryAttempt||0)+1);
+          return { success: true, provisional: true, order, summarySent: Boolean(provSent?.sent) };
+        }
+      }
+    }
 
     if (!best?.success) {
       db = getDb();
       order = db.orders?.[key] || order;
+      // Keep AUTO_SELECTING visual if we already have provisional — don't revert to blank PENDING
+      if (order.provisionalAccount && order.selectedAccount) {
+        order.cardStage = 'BILL_READY';
+        order.autoOptimizeError = best?.error || bestError || 'Live scan slow — provisional account held';
+        order.autoOptimized = true;
+        order.autoOptimizedAt = new Date().toISOString();
+        saveDb(db);
+        await updateOrderCards(order).catch(()=>{});
+        let provSent2 = null;
+        try {
+          provSent2 = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+            db: getDb(),
+            deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary)
+          });
+          if (provSent2?.sent) await ensureBossBillSummary(order).catch(()=>{});
+          await autoApproveFamilyBillIfEnabled(order, Boolean(provSent2?.sent)).catch(()=>{});
+        } catch {}
+        // Auto-retry for busy / WAF errors that caused 15-min stuck
+        const code = best?.code || '';
+        const isBusy = code === 'ALL_SWIGGY_IDS_BUSY' || /busy/i.test(best?.error||bestError||'');
+        const delay = isBusy ? 15000 : 30000;
+        scheduleAutoOptimizeRetry(key, code||'SCAN_FAILED', delay, (_retryAttempt||0)+1);
+        return { success: true, provisional: true, order, summarySent: Boolean(provSent2?.sent), error: best?.error||bestError };
+      }
       order.cardStage = 'PENDING';
       order.status = statusBefore;
-      order.autoOptimizeError = best?.error || 'Could not sync cart on any free Swiggy account.';
+      order.autoOptimizeError = (best?.error || bestError || 'Could not sync cart on any free Swiggy account.') + ' — 15s me auto retry hoga.';
       order.autoOptimizeFailedAt = new Date().toISOString();
       db.orders[key] = order;
       saveDb(db);
       await updateOrderCards(order).catch(() => {});
       console.warn(`[AutoOptimize] Order #${key} failed: ${order.autoOptimizeError}`);
+      // Automatic retry so Ammi never has to ask "beta kab hoga?"
+      const code = best?.code || '';
+      const isBusyRetry = code === 'ALL_SWIGGY_IDS_BUSY';
+      scheduleAutoOptimizeRetry(key, code||'FAILED', isBusyRetry ? 15000 : 35000, (_retryAttempt||0)+1);
       return { success: false, error: order.autoOptimizeError, code: best?.code };
     }
 
@@ -1702,6 +1908,8 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
     order = getDb().orders?.[key] || order;
     await updateOrderCards(order, { skipUserCard: Boolean(summarySend?.viaCard) }).catch(() => {});
     if (summarySent) await ensureBossBillSummary(order).catch(() => {});
+    // Family mode: Ammi/Abbu shouldn't have to remember Approve — auto-approve
+    if (summarySent) await autoApproveFamilyBillIfEnabled(order, summarySent).catch(()=>{});
 
     console.log(
       `[AutoOptimize] Order #${key} ready: account ${order.orderAccount || order.selectedAccount}, ` +
@@ -2144,6 +2352,34 @@ bot.command(['boss', 'admin'], async (ctx) => {
   }
 
   await ctx.reply(`× <b>Access Denied:</b> Reserved for Boss only.`, { parse_mode: 'HTML' });
+});
+
+// ================= FAMILY AUTO-APPROVE (Gulf son fix) =================
+// Ammi/Abbu old hain, yaad nahi rehta. Gulf son chahta hai bill auto approve ho.
+// /family_auto_approve on [sec]  /family_auto_approve off
+bot.command(['family_auto_approve', 'family_auto', 'ammi_auto'], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.reply('Boss only');
+  const parts = ctx.message.text.trim().split(/\s+/);
+  const arg = String(parts[1]||'').toLowerCase();
+  const db = getDb();
+  if (arg === 'off' || arg === 'disable' || arg === '0') {
+    db.config.familyAutoApprove = false;
+    saveDb(db);
+    return ctx.reply('🔴 <b>Family auto-approve OFF</b> — Ammi/Abbu ko ab khud Approve dabana hoga.', {parse_mode:'HTML'});
+  } else if (arg === 'on' || arg === 'enable' || arg === '1') {
+    db.config.familyAutoApprove = true;
+    if (parts[2]) db.config.familyAutoApproveGraceSec = Math.max(5, Math.min(120, Number(parts[2])||25));
+    saveDb(db);
+    return ctx.reply(`🟢 <b>Family auto-approve ON</b> — Ammi/Abbu ka bill ${db.config.familyAutoApproveGraceSec||25}s me auto-approve hoke QR chala jayega (Gulf se aapko notify hoga).\nCustomize: <code>/family_auto_approve on 40</code>`, {parse_mode:'HTML'});
+  }
+  const curOn = db.config.familyAutoApprove !== false;
+  const sec = db.config.familyAutoApproveGraceSec || 25;
+  return ctx.reply(
+    `${curOn ? '🟢 <b>ON</b>' : '🔴 <b>OFF</b>'} — Family auto-approve ${curOn ? `active (${sec}s grace)` : 'disabled'}\n`+
+    `• ON:  <code>/family_auto_approve on</code> ya <code>/family_auto_approve on 15</code>\n`+
+    `• OFF: <code>/family_auto_approve off</code>\n\n`+
+    `<i>Gulf wale bete ke liye banaya: Ammi/Abbu bhool jaye to bhi QR auto chala jayega, aapko Boss panel me notify hoga.</i>`,
+    {parse_mode:'HTML'});
 });
 
 // ================= UPI ID CONFIGURATION =================
@@ -9367,11 +9603,32 @@ async function handleSendToBoss(ctx) {
   }
   saveDb(db);
 
+  // Immediate feedback for old parents: reserve best account instantly (<1s)
+  // so card shows "Account selected" instead of 15-min blank. Gulf son requested
+  // "auto account to select hota hi na hai" — this fixes it.
+  try {
+    const tempOrder = db.orders[orderId];
+    if (tempOrder && !tempOrder.selectedAccount) {
+      await tryInstantProvisionalAccountPick(tempOrder).catch(()=>{});
+    }
+  } catch {}
+
   // Background pipeline for customer submissions — same treatment as a forwarded order:
   // 1) resolve the live cart + address (without duplicate vault scan), 2) auto-pick the best account, 3) lock the max offer & send bill confirmation.
+  // Now with instant provisional pick already done, live scan refines bill in background.
   triggerBackgroundCartFetch(orderId, { skipAccountScan: true })
     .then(() => autoOptimizeUserOrder(orderId, { reason: 'CUSTOMER_SEND_TO_BETA' }))
     .catch(err => console.error(`[BackgroundFetch] Order #${orderId} error:`, err?.stack || err?.message || err));
+
+  // Extra safety: if background fetch stalls (Swiggy slow), still retry auto-optimize after 10s
+  // so Ammi/Abbu see provisional bill quickly even if cart fetch is slow.
+  setTimeout(() => {
+    const cur = getDb().orders?.[String(orderId)];
+    if (cur && !cur.autoOptimized && cur.status === 'PENDING' && !cur.autoOptimizeError) {
+      console.log(`[SendToBoss] Failsafe auto-optimize retry for #${orderId} (cart fetch slow)`);
+      autoOptimizeUserOrder(orderId, { reason: 'SEND_TO_BETA_FAILSAFE_10S' }).catch(()=>{});
+    }
+  }, 10000);
 }
 
 // Action Callbacks for User Screen & Flowchart
@@ -11109,13 +11366,14 @@ pollTimer = setInterval(refresh, 8000);
     console.log(`◎ Cloud health & Swiggy tracking server listening on 0.0.0.0:${healthPort}`);
   });
 
-  // Self keep-alive ping every 8 minutes via public Render edge URL so container never idles out
+  // Self keep-alive ping every 4 minutes via public Render edge URL so container never idles out
+  // Gulf son fix: 15-min delay often = Render cold start after idle. Pinging every 4min keeps warm.
   const keepAliveUrl = PUBLIC_SERVICE_URL + '/';
   setInterval(() => {
     fetch(keepAliveUrl, { signal: AbortSignal.timeout(10000) })
       .then(r => console.log(`♥ Keep-alive ping -> ${keepAliveUrl} [${r.status}]`))
       .catch(e => console.log(`♥ Keep-alive retry note: ${e.message}`));
-  }, 8 * 60 * 1000).unref();
+  }, 4 * 60 * 1000).unref();
 }
 
 // Non-blocking Concurrent Parallel Update Dispatcher:
@@ -11231,6 +11489,17 @@ async function startBotWithRetry() {
         await bot.launch({ dropPendingUpdates: true });
         try { await setupBotMenu(); } catch (e) { console.error('Menu setup error:', e.message); }
         resumeAutoTrackingForRecentOrders();
+        // Warm profile cache for all accounts so first Ammi/Abbu order gets instant <1s provisional pick
+        setTimeout(async () => {
+          try {
+            const { inspectAccountOrderHistoryAndOffers } = await import('./swiggy-cart.js');
+            const db2 = getDb();
+            const accs = Object.entries(db2.config?.accounts||{}).filter(([,a])=>a?.isLoggedIn);
+            console.log(`⚡ Warming profile cache for ${accs.length} accounts (Ammi/Abbu instant pick)...`);
+            await Promise.all(accs.map(([k,a])=> inspectAccountOrderHistoryAndOffers(k,a).catch(()=>null)));
+            console.log('⚡ Profile cache warm done');
+          } catch (e) { console.log('Warm cache note:', e.message); }
+        }, 3000);
         break;
       } catch (err) {
         if ((err.message?.includes('409') || err.description?.includes('Conflict')) && attempt < 10) {
