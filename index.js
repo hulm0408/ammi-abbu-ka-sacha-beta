@@ -10692,7 +10692,7 @@ async function checkOrderPaidStatusOnly(orderId) {
           try { startOrderDeliveryInfoPoller({ telegram: bot.telegram, chatId: firstBossChatId2, orderId: order.id, formatOrderBodyFn: formatUserOrderCardText }); } catch {}
           try { startOrderTrackingAuto(order.id, { budgetMs: 12000 }); } catch {}
           const t2 = getStoredSwiggyTrackingUrl(order);
-          return { paid: true, trackingLink: t2, deliveryOtp: order.deliveryOtp || '', message: t2 ? '✓ Payment verified via linked Swiggy account. Swiggy tracking is available.' : '✓ Payment verified via linked account. Tracking will be sent when available.' };
+          return { paid: true, trackingLink: t2, deliveryOtp: order.deliveryOtp || '', message: t2 ? '✓ Payment verified via linked Swiggy account. Swiggy tracking is available.' : 'Payment verified successfully. Swiggy tracking is not available yet. I\'ll retry shortly.' };
         }
       } catch {}
     }
@@ -10748,7 +10748,7 @@ async function checkOrderPaidStatusOnly(orderId) {
     deliveryOtp: order.deliveryOtp || '',
     message: trackingLink
       ? '✓ Payment verified. Swiggy tracking is available.'
-      : '✓ Payment verified. Swiggy has not published a tracking link yet; it will be sent when available.'
+      : 'Payment verified successfully. Swiggy tracking is not available yet. I\'ll retry shortly.'
   };
 }
 

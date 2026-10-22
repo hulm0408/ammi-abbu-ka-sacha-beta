@@ -1679,8 +1679,8 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
     lines.push(`Order reference: <code>#${escapeHtml(String(order.id))}</code>`);
     if (order.swiggyOrderId) lines.push(`Swiggy order no.: <code>${escapeHtml(String(order.swiggyOrderId))}</code>`);
     if (order.liveOrderStatus) lines.push(`Status: ${escapeHtml(String(order.liveOrderStatus))}`);
-    lines.push(`↗ <b>Live tracking:</b> <a href="${SWIGGY_ORDERS_PAGE}">Swiggy app → Orders</a>`);
-    lines.push('… Swiggy has not shared a tracking link yet. I will send the exact link here as soon as it is published.');
+    lines.push('Payment verified successfully. Swiggy tracking is not available yet. I\'ll retry shortly.');
+    console.log(`[Tracking] No reliable tracking source for order ${order.id} (swiggyOrderId=${order.swiggyOrderId || 'unknown'}). Will retry via poller.`);
   }
   if (deliveryOtp) {
     lines.push(`⌕ <b>Delivery OTP:</b> <code>${escapeHtml(deliveryOtp)}</code>`);
