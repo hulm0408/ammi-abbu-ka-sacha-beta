@@ -5735,8 +5735,24 @@ function scanFailuresLine(result) {
 }
 
 async function handleConfirmOrderPaid(ctx, orderId, _confirmedBy) {
+  // Telegram expires callback answers after ~10s, but payment verification +
+  // all-IDs tracking scan takes longer → a late answerCbQuery ALWAYS 400s with
+  // "query is too old and response timeout expired". Answer ONCE, instantly
+  // (toast), then deliver the full result as a chat message.
+  await ctx.answerCbQuery('Verifying payment + checking tracking…').catch(() => {});
   const result = await checkOrderPaidStatusOnly(orderId);
-  await ctx.answerCbQuery(result.message || 'Waiting for Swiggy payment verification.', { show_alert: true }).catch(() => {});
+  try {
+    const ord = getDb().orders?.[orderId];
+    const link = ord ? getStoredSwiggyTrackingUrl(ord) : '';
+    const otp = String(ord?.deliveryOtp || '');
+    await ctx.reply(
+      (result?.message ? `◉ ${escapeHtml(result.message)}\n` : '') +
+      (link ? `🔗 <b>Tracking link:</b>\n<a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n` : '') +
+      (otp ? `🔑 <b>Delivery OTP:</b> <code>${escapeHtml(otp)}</code>\n` : '') +
+      `<i>Payment final hai — tracking auto-retry chalta rahega, link aate hi yahan aayega.</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+  } catch {}
 }
 
 bot.action(/^user_confirm_order_(.+)$/, async (ctx) => {
@@ -10658,8 +10674,18 @@ bot.action(/^user_paid_status_([A-Za-z0-9_-]+)$/, async (ctx) => {
   if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
     return ctx.answerCbQuery('Unauthorized: not your order.', { show_alert: true }).catch(() => {});
   }
+  // Same 10s Telegram callback rule: answer instantly, result comes as a message.
+  await ctx.answerCbQuery('Checking payment + tracking…').catch(() => {});
   const res = await checkOrderPaidStatusOnly(orderId);
-  await ctx.answerCbQuery(res.message, { show_alert: true }).catch(() => {});
+  try {
+    const ord = getDb().orders?.[orderId];
+    const link = ord ? getStoredSwiggyTrackingUrl(ord) : '';
+    await ctx.reply(
+      `◉ ${escapeHtml(res.message)}` +
+      (link ? `\n\n🔗 <b>Tracking link:</b>\n<a href="${escapeHtml(link)}">${escapeHtml(link)}</a>` : ''),
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+  } catch {}
 });
 
 bot.action(/^user_resend_approved_qr_([A-Za-z0-9_-]+)$/, async (ctx) => {
