@@ -51,6 +51,13 @@ import * as wafPool from './waf-pool.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
+  getOrderCurrentTopic,
+  buildTopicNavKeyboardRows,
+  formatTopicProgressBarText,
+  handleTopicNavClick,
+  resetOrderTopicsToStart
+} from './ammi-abbu-topic-flow.js';
+import {
   verifyAndInspectSwiggyLink,
   inspectCartForAccount,
   getGenuinePaymentDetails,
@@ -702,6 +709,8 @@ export function formatUserOrderCard(order) {
   const buttons = [];
   let text = '';
   const officialTrackingUrl = getStoredSwiggyTrackingUrl(order);
+  const currentTopic = getOrderCurrentTopic(order);
+  const topicProgress = formatTopicProgressBarText(currentTopic);
 
   if (order.status === 'ACCEPTED' || order.status === 'COMPLETED') {
     const trackingLine = officialTrackingUrl
@@ -725,6 +734,9 @@ export function formatUserOrderCard(order) {
       { text: '✖ Cancel Order', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
     ]);
     buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
+    buttons.push([{ text: '🛒 Naya Order Shuru Karein (Finish)', callback_data: 'topic_finish_and_start', style: 'success' }]);
+    text = topicProgress + text;
+    buttons.unshift(...buildTopicNavKeyboardRows(currentTopic, order.id));
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
 
@@ -795,6 +807,9 @@ export function formatUserOrderCard(order) {
     { text: '✖ Cancel order', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
   ]);
   buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
+
+  text = topicProgress + text;
+  buttons.unshift(...buildTopicNavKeyboardRows(currentTopic, order.id));
 
   return { text, keyboard: Markup.inlineKeyboard(buttons) };
 }
@@ -987,6 +1002,7 @@ function getUserScreen(userId, user) {
     : { text: '🟠 📍 Address Link', callback_data: 'action_add_address', style: 'danger' };
 
   const inlineButtons = [
+    ...buildTopicNavKeyboardRows(1, 'draft'),
     [cartBtn, addressBtn],
     [{ text: '🚀 Send to Beta', callback_data: 'action_send_to_boss', style: bothReady ? 'success' : 'primary' }],
     [
@@ -1052,7 +1068,7 @@ function getUserScreen(userId, user) {
     nextLine += '\n⚠️ Naya <b>Address link</b> ya Location pin bhejein.';
   }
 
-  const headerTitle = bothReady ? '🍽 <b>Order Ready!</b>' : '🍽 <b>Khana Order Karein</b>';
+  const headerTitle = bothReady ? '🍽 <b>Topic 1: Order Ready!</b>' : '🍽 <b>Topic 1: Submit Link</b>';
   const text = `${headerTitle}\n\n${cartLine}\n${addrLine}\n\n${nextLine}`;
 
   return { text, keyboard: Markup.inlineKeyboard(inlineButtons) };
@@ -9289,6 +9305,7 @@ async function handleSendToBoss(ctx) {
     paymentStatus: 'UNPAID',
     isCustomerSubmitted: true,
     createdAt: new Date().toISOString(),
+    autoOptimizeStartedAt: new Date().toISOString(),
     userChatId: userId,
     userMessageId: ctx.callbackQuery?.message?.message_id || null,
     bossMessageIds: {}
@@ -9458,6 +9475,37 @@ bot.action(/^action_cancel_order_confirm_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const orderId = ctx.match[1];
   await handleCancelOrderConfirm(ctx, orderId);
+});
+
+// Progressive 4-Topic progression actions for Ammi & Abbu
+bot.action(/^topic_nav_(\d)_(.+)$/, async (ctx) => {
+  const targetTopic = ctx.match[1];
+  const orderIdArg = ctx.match[2];
+  await handleTopicNavClick(ctx, targetTopic, orderIdArg, {
+    getUserScreenFn: getUserScreen,
+    formatUserOrderCardFn: formatUserOrderCard
+  });
+});
+
+bot.action('topic_finish_and_start', async (ctx) => {
+  const userId = ctx.from.id;
+  resetOrderTopicsToStart(userId);
+  userChatCards.delete(String(userId));
+  await ctx.answerCbQuery('✓ Sab topics complete! Naya order shuru (Topic 1: Submit Link)').catch(() => {});
+  const screen = getUserScreen(userId, ctx.from);
+  try {
+    await ctx.editMessageText(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+  } catch (e) {
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+  }
+});
+
+bot.hears(['🛒 Start New Order', '🛒 New Order', 'Start New Order', 'New Order', 'Naya Order', '🛒 Naya Order', 'Naya Order Shuru Karein'], async (ctx) => {
+  const userId = ctx.from.id;
+  resetOrderTopicsToStart(userId);
+  userChatCards.delete(String(userId));
+  const screen = getUserScreen(userId, ctx.from);
+  await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
 });
 
 bot.action(/^user_confirm_cancel_(.+)$/, async (ctx) => {
