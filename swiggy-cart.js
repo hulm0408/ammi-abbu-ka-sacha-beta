@@ -7364,10 +7364,6 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
   if (!targetId) {
     return { status: 'NO_SWIGGY_ID', hasOrder: false, trackingUrl: '', scanned: 0, elapsedMs: 0, failures: [] };
   }
-  const deadline = startedAt + Math.max(3000, Number(budgetMs) || 20000);
-  const remaining = () => deadline - Date.now();
-  const callTimeout = () => Math.max(1200, Math.min(Number(fetchTimeoutMs) || 6000, remaining()));
-
   const accountsMap = resolveTrackingAccountsMap(getAccountsFn);
   const entries = Object.entries(accountsMap)
     .filter(([, acc]) => acc && (acc.isLoggedIn || acc.cookies || acc.tid || acc.token))
@@ -7380,6 +7376,16 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
   if (entries.length === 0) {
     return { status: 'NO_ACCOUNTS', hasOrder: false, trackingUrl: '', scanned: 0, elapsedMs: Date.now() - startedAt, failures: [] };
   }
+
+  // A 27-account vault needs far more than 20s at concurrency 4-6; a too-small
+  // budget silently scans only a subset (live incident: 8/27 scanned, "time
+  // out") and reports a misleading "not found". Scale the budget with account
+  // count (capped at 45s) so full coverage is actually achievable.
+  const requestedBudget = Math.max(3000, Number(budgetMs) || 20000);
+  const scaledBudget = Math.min(45000, Math.max(requestedBudget, entries.length * 1100));
+  const deadline = startedAt + scaledBudget;
+  const remaining = () => deadline - Date.now();
+  const callTimeout = () => Math.max(1200, Math.min(Number(fetchTimeoutMs) || 6000, remaining()));
 
   let best = null;
   let orderFound = null;

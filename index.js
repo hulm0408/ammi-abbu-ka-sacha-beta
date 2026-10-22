@@ -5721,6 +5721,13 @@ function scanFailuresLine(result) {
   const fails = Array.isArray(result?.failures) ? result.failures : [];
   const ok = Number(result?.okScanned) || 0;
   let out = '';
+  // A TIMEOUT that only reached a subset of accounts must NOT be reported as
+  // "kisi bhi ID par nahi mila" — say plainly that the scan is incomplete and
+  // to retry (live incident: 8/27 scanned → user got a false "not found").
+  const total = Number(result?.accountsTotal) || 0;
+  if (result?.status === 'TIMEOUT' && total > 0 && (ok + fails.length) < total) {
+    out += `⚠ <b>Scan incomplete:</b> sirf ${ok + fails.length}/${total} IDs check hue (time out) — <b>dobara bhejo</b>, agle try me baaki bhi scan honge.\n`;
+  }
   if (ok > 0 || fails.length > 0) {
     out += `▪ <b>Checked:</b> ${ok} IDs OK (no order)${fails.length ? ` · <b>${fails.length}</b> failed` : ''}\n`;
   }
