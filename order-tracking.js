@@ -21,7 +21,10 @@ import {
   isOfficialSwiggyTrackingUrl,
   validateTrackingUrlForOrder,
   extractOrderShareUrlDeep,
-  dapiFetch
+  dapiFetch,
+  buildSignedOrderTrackUrl,
+  getSwiggyOrderSnapshot,
+  checkRealSwiggyPaymentAndExtractTracking
 } from './swiggy-cart.js';
 
 const inflightScans = new Map();
@@ -133,6 +136,41 @@ function applyScanToOrder(order, scan) {
   if (scan.etaMinutes) order.etaMinutes = String(scan.etaMinutes);
   if (scan.deliveryBoy?.name) order.deliveryBoyName = String(scan.deliveryBoy.name);
   if (scan.deliveryBoy?.mobile) order.deliveryBoyMobile = String(scan.deliveryBoy.mobile);
+  if (scan.deliveryBoy?.lat != null) order.deliveryBoyLat = scan.deliveryBoy.lat;
+  if (scan.deliveryBoy?.lng != null) order.deliveryBoyLng = scan.deliveryBoy.lng;
+  if (scan.restaurantName && (!order.restaurantName || /^swiggy\s+(?:order|food)$/i.test(String(order.restaurantName).trim()))) {
+    order.restaurantName = String(scan.restaurantName);
+  }
+  if (scan.restaurantAddress && !order.restaurantAddress) {
+    order.restaurantAddress = String(scan.restaurantAddress);
+  }
+  if (scan.restaurantLat != null && order.restaurantLat == null) order.restaurantLat = scan.restaurantLat;
+  if (scan.restaurantLng != null && order.restaurantLng == null) order.restaurantLng = scan.restaurantLng;
+  if (Array.isArray(scan.items) && scan.items.length > 0 && (!Array.isArray(order.items) || order.items.length === 0)) {
+    order.items = scan.items;
+  }
+  if (Number(scan.orderTotal) > 0 && !Number(order.finalPayable)) {
+    order.finalPayable = Number(scan.orderTotal);
+  }
+  if (scan.orderTime && !order.orderTime) {
+    order.orderTime = String(scan.orderTime);
+  }
+  if (scan.deliveryAddress && (scan.deliveryAddress.address || scan.deliveryAddress.lat != null)) {
+    const existingAd = (order.addressDetails && typeof order.addressDetails === 'object') ? order.addressDetails : {};
+    order.addressDetails = {
+      ...existingAd,
+      ...(scan.deliveryAddress.name && !existingAd.name ? { name: scan.deliveryAddress.name } : {}),
+      ...(scan.deliveryAddress.address && !existingAd.address ? { address: scan.deliveryAddress.address } : {}),
+      ...(scan.deliveryAddress.area && !existingAd.area ? { area: scan.deliveryAddress.area } : {}),
+      ...(scan.deliveryAddress.city && !existingAd.city ? { city: scan.deliveryAddress.city } : {}),
+      ...(scan.deliveryAddress.mobile && !existingAd.mobile ? { mobile: scan.deliveryAddress.mobile } : {}),
+      ...(scan.deliveryAddress.lat != null && existingAd.lat == null ? { lat: scan.deliveryAddress.lat } : {}),
+      ...(scan.deliveryAddress.lng != null && existingAd.lng == null ? { lng: scan.deliveryAddress.lng } : {})
+    };
+    if (scan.deliveryAddress.address && !order.address) {
+      order.address = scan.deliveryAddress.address;
+    }
+  }
   if (scan.accKey) {
     order.selectedAccount = scan.accKey;
     if (scan.accPhone) order.selectedAccountPhone = scan.accPhone;
@@ -361,3 +399,202 @@ export async function refreshLatestOrderTrackingForAccount(accKey) {
     accountPhone: String(acc.phone || acc.mobile || '')
   };
 }
+
+/**
+ * Resolve full live or delivered Swiggy order tracking/receipt payload for `/api/track/:orderId`.
+ * Supports both internal bot order refs (`ORD...`) and standalone numeric Swiggy order IDs
+ * (`251585352131266`) discovered in `Orders Done`, `Previous Orders`, or `Extract Tracking`.
+ */
+export async function resolveTrackEndpointPayload(orderId, {
+  db = null,
+  forceRefresh = false,
+  getAccountsFn = null,
+  onLiveDiscovery = null
+} = {}) {
+  const database = db || getDb();
+  const cleanParam = String(orderId || '').trim();
+  if (!cleanParam) {
+    return { ok: false, statusCode: 404, error: 'Order not found' };
+  }
+
+  let order = findOrderRecord(cleanParam, database);
+  const numericId = normalizeSwiggyOrderId(order?.swiggyOrderId || order?.pendingSwiggyOrderId || cleanParam);
+  let snap = numericId ? getSwiggyOrderSnapshot(numericId) : null;
+
+  if (!order && !numericId) {
+    return { ok: false, statusCode: 404, error: 'Order not found' };
+  }
+
+  const rawKnownStatus = String(order?.liveOrderStatus || snap?.status || '');
+  const knownStatus = normalizeSwiggyLiveOrderStatus(rawKnownStatus) || rawKnownStatus;
+  const knownTerminal = isTerminalDeliveryStatus(knownStatus);
+  const snapAgeMs = snap?.updatedAt ? (Date.now() - Number(snap.updatedAt)) : Infinity;
+  const hasRichDetails = Boolean(
+    (Array.isArray(order?.items) && order.items.length > 0) ||
+    (Array.isArray(snap?.items) && snap.items.length > 0)
+  ) && Boolean(
+    order?.addressDetails?.address || order?.address || snap?.deliveryAddress?.address
+  );
+
+  const shouldRefresh = forceRefresh ||
+    (!order && !snap) ||
+    (!knownTerminal && snapAgeMs > 4000) ||
+    (knownTerminal && !hasRichDetails && snapAgeMs > 15000);
+
+  let live = null;
+  let scan = null;
+
+  if (shouldRefresh) {
+    const acc = order?.selectedAccount ? database?.config?.accounts?.[order.selectedAccount] : null;
+    const previousTrackingUrl = order ? getStoredSwiggyTrackingUrl(order) : '';
+    const previousDeliveryOtp = String(order?.deliveryOtp || '');
+
+    if (order && acc?.cookies && (order.swiggyOrderId || order.pendingSwiggyOrderId) && !knownTerminal && !getAccountsFn) {
+      live = await checkRealSwiggyPaymentAndExtractTracking(acc, order).catch(() => null);
+      if (live?.paid) {
+        order.liveOrderStatus = normalizeSwiggyLiveOrderStatus(live.orderStatus) || live.orderStatus || order.liveOrderStatus;
+        order.etaMinutes = live.etaMinutes || order.etaMinutes;
+        if (live.deliveryBoy?.name) order.deliveryBoyName = live.deliveryBoy.name;
+        if (live.deliveryBoy?.mobile) order.deliveryBoyMobile = live.deliveryBoy.mobile;
+        if (live.deliveryOtp) order.deliveryOtp = live.deliveryOtp;
+        const providerTrackCandidate = live.nativeShareUrl || live.swiggyWebTrackUrl || '';
+        const providerTrackUrl = providerTrackCandidate
+          ? getStoredSwiggyTrackingUrl({
+              swiggyOrderId: live.swiggyOrderId || order.swiggyOrderId,
+              trackingLink: providerTrackCandidate,
+              trackingLinkSource: 'SWIGGY_API'
+            })
+          : '';
+        if (providerTrackUrl) {
+          order.trackingLink = providerTrackUrl;
+          order.trackingLinkSource = 'SWIGGY_API';
+          order.shareTrackUrl = '';
+        }
+        saveDb(database);
+        if (
+          typeof onLiveDiscovery === 'function' &&
+          (getStoredSwiggyTrackingUrl(order) !== previousTrackingUrl || String(order.deliveryOtp || '') !== previousDeliveryOtp)
+        ) {
+          await Promise.resolve(onLiveDiscovery(order, database)).catch(() => {});
+        }
+      }
+    }
+
+    if (numericId && (!live?.paid || !order || !hasRichDetails)) {
+      scan = await scanOrderAcrossAccounts(numericId, {
+        getAccountsFn,
+        preferredAccountKey: order?.selectedAccount || snap?.accKey || '',
+        budgetMs: 8500,
+        deep: true,
+        concurrency: 4
+      }).catch(() => null);
+
+      if (scan?.hasOrder && order) {
+        applyScanToOrder(order, scan);
+        if (database?.orders?.[order.id]) {
+          saveDb(database);
+        }
+      }
+      snap = getSwiggyOrderSnapshot(numericId) || snap;
+    }
+  }
+
+  if (!order && !snap && !scan?.hasOrder) {
+    return { ok: false, statusCode: 404, error: 'Order not found on any connected Swiggy account' };
+  }
+
+  const finalSwiggyId = String(live?.swiggyOrderId || scan?.swiggyOrderId || order?.swiggyOrderId || order?.pendingSwiggyOrderId || snap?.orderId || numericId || '');
+  const rawFinalStatus = String(live?.orderStatus || scan?.orderStatus || order?.liveOrderStatus || snap?.status || 'Order Confirmed');
+  const finalStatus = normalizeSwiggyLiveOrderStatus(rawFinalStatus) || rawFinalStatus || 'Order Confirmed';
+  const isCancelled = isCancelledOrRefusedStatus(finalStatus);
+  const isDelivered = !isCancelled && /deliv/i.test(finalStatus);
+
+  const rawItems = (Array.isArray(order?.items) && order.items.length > 0)
+    ? order.items
+    : (Array.isArray(scan?.items) && scan.items.length > 0 ? scan.items : (snap?.items || []));
+  const normalizedItems = rawItems.map(it => {
+    if (typeof it === 'string') return { name: it, qty: 1 };
+    return {
+      name: String(it?.name || it?.item_name || 'Item'),
+      qty: Math.max(1, Number(it?.qty || it?.quantity || 1) || 1),
+      ...(Number(it?.price) > 0 ? { price: Number(it.price) } : {})
+    };
+  });
+
+  const mergedAddress = {
+    ...(snap?.deliveryAddress || {}),
+    ...(scan?.deliveryAddress || {}),
+    ...(order?.addressDetails || {}),
+    ...(live?.deliveryAddress || {})
+  };
+  if (!mergedAddress.address && order?.address) {
+    mergedAddress.address = String(order.address);
+  }
+
+  const mergedRider = {
+    name: String(live?.deliveryBoy?.name || scan?.deliveryBoy?.name || order?.deliveryBoyName || snap?.deliveryBoy?.name || ''),
+    mobile: String(live?.deliveryBoy?.mobile || scan?.deliveryBoy?.mobile || order?.deliveryBoyMobile || snap?.deliveryBoy?.mobile || ''),
+    lat: live?.deliveryBoy?.lat ?? scan?.deliveryBoy?.lat ?? order?.deliveryBoyLat ?? snap?.deliveryBoy?.lat ?? null,
+    lng: live?.deliveryBoy?.lng ?? scan?.deliveryBoy?.lng ?? order?.deliveryBoyLng ?? snap?.deliveryBoy?.lng ?? null
+  };
+
+  const officialSwiggyUrl = (order ? getStoredSwiggyTrackingUrl(order) : '') ||
+    (scan?.trackingUrl && validateTrackingUrlForOrder(scan.trackingUrl, { swiggyOrderId: finalSwiggyId }, 'SWIGGY_API') ? scan.trackingUrl : '') ||
+    (snap?.trackingUrl && validateTrackingUrlForOrder(snap.trackingUrl, { swiggyOrderId: finalSwiggyId }, 'SWIGGY_API') ? snap.trackingUrl : '') ||
+    '';
+
+  const placedFrom = (order ? orderPlacedFromPhone(order, database) : '') ||
+    String(scan?.accPhone || snap?.accPhone || '').replace(/^\+?91/, '').replace(/\D/g, '').slice(-10) ||
+    '';
+
+  return {
+    ok: true,
+    statusCode: 200,
+    payload: {
+      ok: true,
+      orderId: String(order?.id || finalSwiggyId || cleanParam),
+      swiggyOrderId: finalSwiggyId,
+      customerName: String(
+        order?.addressDetails?.name ||
+        order?.fwdSenderName ||
+        order?.userName ||
+        scan?.customerName ||
+        snap?.customerName ||
+        mergedAddress?.name ||
+        'Customer'
+      ),
+      placedFrom,
+      restaurantName: String(
+        live?.restaurantName ||
+        scan?.restaurantName ||
+        (order?.restaurantName && !/^swiggy\s+order$/i.test(order.restaurantName) ? order.restaurantName : '') ||
+        snap?.restaurantName ||
+        order?.restaurantName ||
+        'Swiggy Restaurant'
+      ),
+      restaurantAddress: String(live?.restaurantAddress || scan?.restaurantAddress || order?.restaurantAddress || snap?.restaurantAddress || ''),
+      restaurantLat: live?.restaurantLat ?? scan?.restaurantLat ?? order?.restaurantLat ?? snap?.restaurantLat ?? null,
+      restaurantLng: live?.restaurantLng ?? scan?.restaurantLng ?? order?.restaurantLng ?? snap?.restaurantLng ?? null,
+      orderStatus: finalStatus,
+      isDelivered,
+      isCancelled,
+      statusSubText: String(live?.statusSubText || ''),
+      etaMinutes: isDelivered || isCancelled ? '' : String(live?.etaMinutes || scan?.etaMinutes || order?.etaMinutes || snap?.etaMinutes || ''),
+      orderTime: String(
+        scan?.orderTime ||
+        order?.orderTime ||
+        snap?.orderTime ||
+        (order?.completedAt ? new Date(order.completedAt).toLocaleString('en-IN') : '')
+      ),
+      deliveryBoy: mergedRider,
+      deliveryAddress: mergedAddress,
+      items: normalizedItems,
+      finalPayable: Number(order?.finalPayable || scan?.orderTotal || snap?.orderTotal || 0),
+      swiggyWebTrackUrl: officialSwiggyUrl,
+      signedTrackUrl: buildSignedOrderTrackUrl(finalSwiggyId || order?.id || cleanParam),
+      deliveryOtp: String(live?.deliveryOtp || scan?.otp || order?.deliveryOtp || snap?.deliveryOtp || ''),
+      updatedAt: new Date().toISOString()
+    }
+  };
+}
+

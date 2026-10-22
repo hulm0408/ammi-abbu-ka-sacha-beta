@@ -3721,26 +3721,222 @@ export function normalizeSwiggyLiveOrderStatus(rawStatusMsg = '', fallbackOrderS
   return msg || fb || post || '';
 }
 
-const liveSwiggyOrderTrackingVault = new Map(); // swiggyOrderId -> { trackingUrl, deliveryOtp, status, updatedAt }
+let detectedPublicServiceOrigin = '';
 
-function rememberSwiggyOrderTracking(orderId, { trackingUrl = '', deliveryOtp = '', status = '' } = {}) {
+function isPrivateOrLocalHost(hostname) {
+  const h = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return true;
+  if (h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0' || h === '::1' || h.endsWith('.local') || h.endsWith('.internal')) {
+    return true;
+  }
+  if (/^10\.\d+\.\d+\.\d+$/.test(h)) return true;
+  if (/^192\.168\.\d+\.\d+$/.test(h)) return true;
+  const m172 = h.match(/^172\.(\d+)\.\d+\.\d+$/);
+  if (m172 && Number(m172[1]) >= 16 && Number(m172[1]) <= 31) return true;
+  return false;
+}
+
+export function computeTrackHmac(orderId) {
+  const secret = process.env.BOT_TOKEN || 'ammi-abbu-ka-sacha-beta-secret';
+  return crypto.createHmac('sha256', secret).update(`track:${String(orderId || '').trim()}`).digest('hex').slice(0, 24);
+}
+
+export function notePublicServiceOrigin(input) {
+  try {
+    if (!input) return '';
+    if (typeof input === 'string') {
+      const parsed = new URL(input.trim());
+      if (/^https?:$/i.test(parsed.protocol) && !isPrivateOrLocalHost(parsed.hostname)) {
+        detectedPublicServiceOrigin = `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, '');
+      }
+      return detectedPublicServiceOrigin;
+    }
+    const headers = input?.headers || {};
+    const rawHost = String(headers['x-forwarded-host'] || headers.host || '').split(',')[0].trim();
+    if (!rawHost) return detectedPublicServiceOrigin;
+    const hostOnly = rawHost.replace(/:\d+$/, '');
+    if (isPrivateOrLocalHost(hostOnly)) return detectedPublicServiceOrigin;
+    const rawProto = String(headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+    const proto = rawProto === 'http' ? 'http' : 'https';
+    detectedPublicServiceOrigin = `${proto}://${rawHost}`.replace(/\/+$/, '');
+    return detectedPublicServiceOrigin;
+  } catch {
+    return detectedPublicServiceOrigin;
+  }
+}
+
+export function getPublicServiceBaseUrl() {
+  const candidates = [
+    process.env.PUBLIC_URL,
+    process.env.PUBLIC_BASE_URL,
+    process.env.RENDER_EXTERNAL_URL,
+    process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${String(process.env.RAILWAY_PUBLIC_DOMAIN).replace(/^https?:\/\//i, '')}` : '',
+    process.env.RAILWAY_STATIC_URL ? (String(process.env.RAILWAY_STATIC_URL).startsWith('http') ? process.env.RAILWAY_STATIC_URL : `https://${process.env.RAILWAY_STATIC_URL}`) : '',
+    process.env.KOYEB_PUBLIC_DOMAIN ? `https://${String(process.env.KOYEB_PUBLIC_DOMAIN).replace(/^https?:\/\//i, '')}` : '',
+    process.env.FLY_APP_NAME ? `https://${String(process.env.FLY_APP_NAME).trim()}.fly.dev` : '',
+    detectedPublicServiceOrigin,
+    'https://ammi-abbu-ka-sacha-beta.onrender.com'
+  ];
+  for (const cand of candidates) {
+    const clean = String(cand || '').trim().replace(/\/+$/, '');
+    if (!clean) continue;
+    try {
+      const parsed = new URL(clean);
+      if (/^https?:$/i.test(parsed.protocol)) return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, '');
+    } catch {}
+  }
+  return 'https://ammi-abbu-ka-sacha-beta.onrender.com';
+}
+
+export function buildSignedOrderTrackUrl(orderOrId) {
+  let targetId = '';
+  if (typeof orderOrId === 'object' && orderOrId !== null) {
+    const swiggyId = String(orderOrId.swiggyOrderId || orderOrId.pendingSwiggyOrderId || orderOrId.orderId || '').trim();
+    const botId = String(orderOrId.id || '').trim();
+    targetId = /^\d{10,20}$/.test(swiggyId) ? swiggyId : (/^[A-Za-z0-9_-]+$/.test(botId) ? botId : '');
+  } else {
+    const raw = String(orderOrId || '').trim();
+    if (/^[A-Za-z0-9_-]+$/.test(raw)) targetId = raw;
+  }
+  if (!targetId) return '';
+  return `${getPublicServiceBaseUrl()}/track/${encodeURIComponent(targetId)}?sig=${computeTrackHmac(targetId)}`;
+}
+
+function parseLatLngPair(rawLatLng, fallbackLat = null, fallbackLng = null) {
+  if (typeof rawLatLng === 'string' && rawLatLng.includes(',')) {
+    const [la, ln] = rawLatLng.split(',').map(v => Number(v.trim()));
+    if (Number.isFinite(la) && Number.isFinite(ln) && Math.abs(la) > 0.01 && Math.abs(ln) > 0.01) {
+      return { lat: la, lng: ln };
+    }
+  }
+  const la2 = Number(fallbackLat);
+  const ln2 = Number(fallbackLng);
+  if (Number.isFinite(la2) && Number.isFinite(ln2) && Math.abs(la2) > 0.01 && Math.abs(ln2) > 0.01) {
+    return { lat: la2, lng: ln2 };
+  }
+  return { lat: null, lng: null };
+}
+
+function extractSwiggyOrderSnapshotFields(orderObj, detOrder, trkData, deData, accMeta = {}) {
+  const primary = detOrder || orderObj || {};
+  const secondary = orderObj || {};
+  const rawItems = Array.isArray(primary?.order_items) && primary.order_items.length > 0
+    ? primary.order_items
+    : (Array.isArray(secondary?.order_items) ? secondary.order_items : []);
+  const items = rawItems
+    .map(it => {
+      if (!it || typeof it !== 'object') return null;
+      const name = String(it.name || it.item_name || '').trim();
+      if (!name) return null;
+      const qty = Math.max(1, Number(it.quantity || it.qty || 1) || 1);
+      const rawPrice = Number(it.final_price ?? it.total ?? it.subtotal ?? it.base_price ?? it.price ?? 0);
+      const price = rawPrice > 5000 ? Math.round(rawPrice / 100) : Math.round(rawPrice || 0);
+      return { name, qty, ...(price > 0 ? { price } : {}) };
+    })
+    .filter(Boolean);
+
+  const restCoords = parseLatLngPair(
+    primary?.restaurant_lat_lng || secondary?.restaurant_lat_lng || trkData?.restaurant_details?.lat_lng,
+    trkData?.restaurant_details?.lat ?? primary?.restaurant_lat,
+    trkData?.restaurant_details?.lng ?? primary?.restaurant_lng
+  );
+
+  const da = primary?.delivery_address || secondary?.delivery_address || {};
+  const custCoords = parseLatLngPair(
+    da?.lat_lng || trkData?.customer_details?.lat_lng,
+    da?.lat ?? da?.location?.lat ?? trkData?.customer_details?.lat,
+    da?.lng ?? da?.location?.lng ?? trkData?.customer_details?.lng
+  );
+  const fullAddr = [da?.flat_no, da?.address_line1, da?.address, da?.area, da?.city]
+    .map(v => String(v || '').trim())
+    .filter(Boolean)
+    .filter((v, idx, arr) => arr.findIndex(x => x.toLowerCase() === v.toLowerCase()) === idx)
+    .join(', ');
+
+  const riderRaw = deData || primary?.delivery_boy || secondary?.delivery_boy || trkData?.delivery_boy || {};
+  const riderCoords = parseLatLngPair(
+    riderRaw?.lat_lng || riderRaw?.location,
+    riderRaw?.lat ?? riderRaw?.latitude,
+    riderRaw?.lng ?? riderRaw?.longitude
+  );
+
+  const totalRaw = Number(primary?.order_total ?? secondary?.order_total ?? primary?.net_total ?? 0);
+  return {
+    restaurantName: String(primary?.restaurant_name || secondary?.restaurant_name || trkData?.restaurant_details?.name || '').trim(),
+    restaurantAddress: String(primary?.restaurant_address || primary?.restaurant_area_name || secondary?.restaurant_address || secondary?.restaurant_area_name || trkData?.restaurant_details?.address || '').trim(),
+    restaurantLat: restCoords.lat,
+    restaurantLng: restCoords.lng,
+    items,
+    orderTotal: Number.isFinite(totalRaw) && totalRaw > 0 ? Math.round(totalRaw) : 0,
+    orderTime: String(primary?.order_time || secondary?.order_time || '').trim(),
+    customerName: String(da?.name || primary?.customer_name || secondary?.customer_name || '').trim(),
+    deliveryAddress: {
+      ...(da?.name ? { name: String(da.name).trim() } : {}),
+      address: fullAddr || String(da?.address || da?.area || da?.city || '').trim(),
+      ...(da?.area ? { area: String(da.area).trim() } : {}),
+      ...(da?.city ? { city: String(da.city).trim() } : {}),
+      ...(da?.mobile ? { mobile: String(da.mobile).trim() } : {}),
+      lat: custCoords.lat,
+      lng: custCoords.lng
+    },
+    deliveryBoy: {
+      name: String(riderRaw?.name || '').trim(),
+      mobile: String(riderRaw?.mobile || riderRaw?.phone || '').trim(),
+      lat: riderCoords.lat,
+      lng: riderCoords.lng
+    },
+    etaMinutes: String(trkData?.sla_time || primary?.sla_time || secondary?.sla_time || '').trim(),
+    ...(accMeta.accKey ? { accKey: String(accMeta.accKey) } : {}),
+    ...(accMeta.accPhone ? { accPhone: String(accMeta.accPhone).trim() } : {})
+  };
+}
+
+const liveSwiggyOrderTrackingVault = new Map(); // swiggyOrderId -> { trackingUrl, deliveryOtp, status, snapshot..., updatedAt }
+
+function rememberSwiggyOrderTracking(orderId, meta = {}) {
   const cleanId = /^\d{10,20}$/.test(String(orderId || '').trim()) ? String(orderId).trim() : '';
   if (!cleanId) return;
+  const { trackingUrl = '', deliveryOtp = '', status = '', ...snapshotFields } = meta || {};
   const safeUrl = trackingUrl && validateTrackingUrlForOrder(trackingUrl, { swiggyOrderId: cleanId }, 'SWIGGY_API')
     ? String(trackingUrl).trim()
     : '';
   const safeOtp = String(deliveryOtp || '').replace(/\D/g, '').slice(0, 8);
-  if (!safeUrl && !safeOtp) return;
+  const hasSnapshotMeta = Object.values(snapshotFields).some(v => {
+    if (Array.isArray(v)) return v.length > 0;
+    if (v && typeof v === 'object') return Object.values(v).some(Boolean);
+    return Boolean(v);
+  });
+  if (!safeUrl && !safeOtp && !status && !hasSnapshotMeta) return;
 
   const prev = liveSwiggyOrderTrackingVault.get(cleanId) || {};
   const nextUrl = safeUrl || (prev.trackingUrl && validateTrackingUrlForOrder(prev.trackingUrl, { swiggyOrderId: cleanId }, 'SWIGGY_API') ? prev.trackingUrl : '');
   const nextOtp = safeOtp || String(prev.deliveryOtp || '');
-  liveSwiggyOrderTrackingVault.set(cleanId, {
+  const merged = {
+    ...prev,
+    orderId: cleanId,
     trackingUrl: nextUrl,
     deliveryOtp: nextOtp,
     ...(status ? { status: String(status) } : (prev.status ? { status: prev.status } : {})),
+    ...(snapshotFields.restaurantName ? { restaurantName: snapshotFields.restaurantName } : {}),
+    ...(snapshotFields.restaurantAddress ? { restaurantAddress: snapshotFields.restaurantAddress } : {}),
+    ...(snapshotFields.restaurantLat != null ? { restaurantLat: snapshotFields.restaurantLat } : {}),
+    ...(snapshotFields.restaurantLng != null ? { restaurantLng: snapshotFields.restaurantLng } : {}),
+    ...(Array.isArray(snapshotFields.items) && snapshotFields.items.length > 0 ? { items: snapshotFields.items } : {}),
+    ...(snapshotFields.orderTotal > 0 ? { orderTotal: snapshotFields.orderTotal } : {}),
+    ...(snapshotFields.orderTime ? { orderTime: snapshotFields.orderTime } : {}),
+    ...(snapshotFields.customerName ? { customerName: snapshotFields.customerName } : {}),
+    ...(snapshotFields.deliveryAddress && (snapshotFields.deliveryAddress.address || snapshotFields.deliveryAddress.lat != null)
+      ? { deliveryAddress: { ...(prev.deliveryAddress || {}), ...snapshotFields.deliveryAddress } }
+      : {}),
+    ...(snapshotFields.deliveryBoy && (snapshotFields.deliveryBoy.name || snapshotFields.deliveryBoy.mobile || snapshotFields.deliveryBoy.lat != null)
+      ? { deliveryBoy: { ...(prev.deliveryBoy || {}), ...snapshotFields.deliveryBoy } }
+      : {}),
+    ...(snapshotFields.etaMinutes ? { etaMinutes: snapshotFields.etaMinutes } : {}),
+    ...(snapshotFields.accKey ? { accKey: snapshotFields.accKey } : {}),
+    ...(snapshotFields.accPhone ? { accPhone: snapshotFields.accPhone } : {}),
     updatedAt: Date.now()
-  });
+  };
+  liveSwiggyOrderTrackingVault.set(cleanId, merged);
   if (liveSwiggyOrderTrackingVault.size > 500) {
     const oldestKey = liveSwiggyOrderTrackingVault.keys().next().value;
     if (oldestKey) liveSwiggyOrderTrackingVault.delete(oldestKey);
@@ -3748,31 +3944,39 @@ function rememberSwiggyOrderTracking(orderId, { trackingUrl = '', deliveryOtp = 
 
   // Also hydrate any matching tracked bot order in `db.orders` so Delivered orders
   // never lose a genuine Swiggy link captured while the order was live.
-  try {
-    const db = getDb();
-    let orderUpdated = false;
-    if (db?.orders && typeof db.orders === 'object') {
-      for (const ord of Object.values(db.orders)) {
-        if (!ord || typeof ord !== 'object') continue;
-        const oid = String(ord.swiggyOrderId || ord.pendingSwiggyOrderId || '');
-        if (oid !== cleanId) continue;
-        if (nextUrl && !getStoredSwiggyTrackingUrl(ord)) {
-          ord.trackingLink = nextUrl;
-          ord.trackingLinkSource = 'SWIGGY_API';
-          ord.shareTrackUrl = '';
-          ord.trackingFoundAt = ord.trackingFoundAt || new Date().toISOString();
-          orderUpdated = true;
+  if (nextUrl || nextOtp) {
+    try {
+      const db = getDb();
+      let orderUpdated = false;
+      if (db?.orders && typeof db.orders === 'object') {
+        for (const ord of Object.values(db.orders)) {
+          if (!ord || typeof ord !== 'object') continue;
+          const oid = String(ord.swiggyOrderId || ord.pendingSwiggyOrderId || '');
+          if (oid !== cleanId) continue;
+          if (nextUrl && !getStoredSwiggyTrackingUrl(ord)) {
+            ord.trackingLink = nextUrl;
+            ord.trackingLinkSource = 'SWIGGY_API';
+            ord.shareTrackUrl = '';
+            ord.trackingFoundAt = ord.trackingFoundAt || new Date().toISOString();
+            orderUpdated = true;
+          }
+          if (nextOtp && !ord.deliveryOtp) {
+            ord.deliveryOtp = nextOtp;
+            orderUpdated = true;
+          }
         }
-        if (nextOtp && !ord.deliveryOtp) {
-          ord.deliveryOtp = nextOtp;
-          orderUpdated = true;
+        if (orderUpdated) {
+          saveDb(db);
         }
       }
-      if (orderUpdated) {
-        saveDb(db);
-      }
-    }
-  } catch {}
+    } catch {}
+  }
+}
+
+export function getSwiggyOrderSnapshot(orderId) {
+  const cleanId = /^\d{10,20}$/.test(String(orderId || '').trim()) ? String(orderId).trim() : '';
+  if (!cleanId) return null;
+  return liveSwiggyOrderTrackingVault.get(cleanId) || null;
 }
 
 function recallSwiggyOrderTracking(orderId) {
@@ -3844,12 +4048,14 @@ export async function extractRealSwiggyTracking(cookies = '') {
         latest.order_status || detOrder?.order_status,
         latest.order_delivery_status || latest.post_status || detOrder?.post_status
       ) || 'ACTIVE';
-      rememberSwiggyOrderTracking(orderId, { trackingUrl: trackingUrl || '', deliveryOtp, status });
+      const snap = extractSwiggyOrderSnapshotFields(latest, detOrder, trackData, null);
+      rememberSwiggyOrderTracking(orderId, { trackingUrl: trackingUrl || '', deliveryOtp, status, ...snap });
       return {
         trackingUrl,
         deliveryOtp,
         orderId,
-        status
+        status,
+        ...(/deliv/i.test(status) ? { deliveredTrackUrl: buildSignedOrderTrackUrl(orderId) } : {})
       };
     }
   } catch (err) {
@@ -4395,8 +4601,13 @@ export async function fetchAccountOrders(cookiesOrAcc, { enrichLimit = 2 } = {})
           detOrder?.order_status || o.order_status,
           o.order_delivery_status || o.post_status || detOrder?.post_status
         ) || 'Delivered';
-        rememberSwiggyOrderTracking(orderId, { trackingUrl: finalTrackingUrl, deliveryOtp, status: liveStatus });
+        const accPhone = typeof cookiesOrAcc === 'object' && cookiesOrAcc
+          ? String(cookiesOrAcc.phone || cookiesOrAcc.mobile || '').trim()
+          : '';
+        const snap = extractSwiggyOrderSnapshotFields(o, detOrder, trkData, deData, { accPhone });
+        rememberSwiggyOrderTracking(orderId, { trackingUrl: finalTrackingUrl, deliveryOtp, status: liveStatus, ...snap });
         const itemNames = (o.order_items || []).map(it => `${it.name}${it.quantity > 1 ? ' (' + it.quantity + ')' : ''}`);
+        const isDelivStatus = /deliv/i.test(liveStatus) && !/cancel|refus|return/i.test(liveStatus);
 
         return {
           orderId: o.order_id,
@@ -4407,7 +4618,8 @@ export async function fetchAccountOrders(cookiesOrAcc, { enrichLimit = 2 } = {})
           orderTime: o.order_time || '',
           orderTotal: o.order_total || 0,
           trackingUrl: finalTrackingUrl,
-          deliveryOtp: deliveryOtp || ''
+          deliveryOtp: deliveryOtp || '',
+          ...(isDelivStatus && orderId ? { deliveredTrackUrl: buildSignedOrderTrackUrl(orderId) } : {})
         };
       })
     );
@@ -7183,21 +7395,35 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
       details?.order_status || details?.status || orderObject?.order_status || orderObject?.status,
       details?.post_status || orderObject?.post_status || orderObject?.order_delivery_status
     ) || 'Order Confirmed';
-    rememberSwiggyOrderTracking(targetId, { trackingUrl: trackingUrl || '', deliveryOtp: otp, status: statusText });
+    const accPhone = String(acc?.phone || acc?.mobile || '').trim();
+    const snap = extractSwiggyOrderSnapshotFields(orderObject, details, trkData, deData, { accKey: key, accPhone });
+    rememberSwiggyOrderTracking(targetId, { trackingUrl: trackingUrl || '', deliveryOtp: otp, status: statusText, ...snap });
+    const isDeliv = /deliv/i.test(statusText) && !/cancel|refus|return/i.test(statusText);
     return {
       accKey: key,
       acc,
-      accPhone: String(acc?.phone || acc?.mobile || '').trim(),
+      accPhone,
       accName: String(acc?.name || acc?.swiggyName || '').trim(),
       swiggyOrderId: targetId,
       trackingUrl: trackingUrl || '',
+      ...(isDeliv ? { deliveredTrackUrl: buildSignedOrderTrackUrl(targetId) } : {}),
       otp,
       orderStatus: statusText,
       etaMinutes: String(trkData?.sla_time || details?.sla_time || ''),
-      restaurantName: String(details?.restaurant_name || orderObject?.restaurant_name || ''),
+      restaurantName: snap.restaurantName || String(details?.restaurant_name || orderObject?.restaurant_name || ''),
+      restaurantAddress: snap.restaurantAddress || '',
+      restaurantLat: snap.restaurantLat,
+      restaurantLng: snap.restaurantLng,
+      items: snap.items || [],
+      orderTotal: snap.orderTotal || 0,
+      orderTime: snap.orderTime || '',
+      customerName: snap.customerName || '',
+      deliveryAddress: snap.deliveryAddress || {},
       deliveryBoy: {
-        name: String(deData?.name || details?.delivery_boy?.name || orderObject?.delivery_boy?.name || ''),
-        mobile: String(deData?.mobile || details?.delivery_boy?.mobile || orderObject?.delivery_boy?.mobile || '')
+        name: snap.deliveryBoy?.name || String(deData?.name || details?.delivery_boy?.name || orderObject?.delivery_boy?.name || ''),
+        mobile: snap.deliveryBoy?.mobile || String(deData?.mobile || details?.delivery_boy?.mobile || orderObject?.delivery_boy?.mobile || ''),
+        lat: snap.deliveryBoy?.lat ?? null,
+        lng: snap.deliveryBoy?.lng ?? null
       }
     };
   };
