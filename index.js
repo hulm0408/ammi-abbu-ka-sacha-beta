@@ -132,6 +132,7 @@ import {
   setOrderTrackingNotifier,
   orderPlacedFromPhone,
   isTerminalDeliveryStatus,
+  isCancelledOrRefusedStatus,
   resolveTrackEndpointPayload,
 } from './order-tracking.js';
 import {
@@ -11057,7 +11058,7 @@ async function startBotWithRetry() {
 // ---------------------------------------------------------------------------
 // Called by order-tracking.js the moment a genuine Swiggy share/tracking link
 // is discovered. Everything below is best-effort and never throws upward.
-setOrderTrackingNotifier(async (order, { scan } = {}) => {
+async function pushTrackingReadyNotice(order, { scan } = {}) {
   if (!order) return;
   const url = getStoredSwiggyTrackingUrl(order);
   if (!url) return;
@@ -11122,7 +11123,9 @@ setOrderTrackingNotifier(async (order, { scan } = {}) => {
     const bossChat = order.bossChatId || db.config?.bossIds?.[0] || fallbackBoss;
     if (bossChat) await sendOrderDeliveryInfoNotice(bot.telegram, bossChat, order);
   } catch {}
-});
+}
+
+setOrderTrackingNotifier(pushTrackingReadyNotice);
 
 // After a restart, resume tracking for recent confirmed orders that still have
 // no share link — "kal raat se tracking nahi mila" never needs a manual tap.
@@ -11144,6 +11147,27 @@ function resumeAutoTrackingForRecentOrders() {
       startOrderTrackingAuto(order.id, { budgetMs: 12000, deep: false, initialDelayMs: index * 4000 });
     });
     if (candidates.length) console.log(`↻ Auto-tracking resumed for ${candidates.length} recent order(s).`);
+
+    // Catch-up for the old notifier race: orders where Swiggy's genuine link
+    // WAS persisted by the scan but the "Live Swiggy tracking ready" push was
+    // never delivered (e.g. order 251630299198497). Push it exactly once —
+    // `pushTrackingReadyNotice` dedupes per chat by URL via trackingNoticeSentTo.
+    const unannounced = Object.values(db.orders || {})
+      .filter(order => order && order.id && swiggyOrderIdOf(order) && getStoredSwiggyTrackingUrl(order))
+      .filter(order => ['COMPLETED', 'ACCEPTED'].includes(order.status))
+      .filter(order => !isCancelledOrRefusedStatus(order.liveOrderStatus))
+      .filter(order => {
+        const created = new Date(order.completedAt || order.createdAt || 0).getTime();
+        return Number.isFinite(created) && created >= since;
+      })
+      .sort((a, b) => new Date(b.completedAt || b.createdAt || 0) - new Date(a.completedAt || a.createdAt || 0))
+      .slice(0, 6);
+    unannounced.forEach((order, index) => {
+      setTimeout(() => {
+        pushTrackingReadyNotice(order).catch(() => {});
+      }, 5000 + index * 4000);
+    });
+    if (unannounced.length) console.log(`↻ Tracking notice catch-up queued for ${unannounced.length} recent order(s).`);
   } catch (err) {
     console.warn('[order-tracking] resume failed:', err?.message || err);
   }

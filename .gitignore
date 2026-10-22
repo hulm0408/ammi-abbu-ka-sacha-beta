@@ -20,6 +20,7 @@ test_*.mjs
 !test_v27_delivered_order_working_links_e2e.mjs
 !test_v28_auth_delete_newaccount_antibot.mjs
 !test_v29_colorful_parent_ux_and_no_slots_e2e.mjs
+!test_v30_fresh_order_tracking_e2e.mjs
 probe_*.mjs
 inspect_*.mjs
 find_*.mjs

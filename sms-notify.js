@@ -6,6 +6,11 @@ import { getStoredSwiggyTrackingUrl, isOfficialSwiggyTrackingUrl } from './swigg
 
 const SMS_ENABLED = process.env.SMS_ENABLED !== 'false'; // default enabled if gateway configured
 
+// Plain shortcut shown while Swiggy has not published the share link yet
+// (README contract: honest "not published" notice + real Swiggy orders page,
+// never a bot-side /track/<id> page or a URL built from the order id).
+const SWIGGY_ORDERS_PAGE = 'https://www.swiggy.com/orders';
+
 function resolveVerifiedSmsTrackingUrl(order, candidateUrl = '') {
   const explicit = String(candidateUrl || '').trim();
   if (explicit && isOfficialSwiggyTrackingUrl(explicit, { allowProviderShortLink: true })) {
@@ -33,8 +38,14 @@ export async function sendParentSmsNotification(order, trackingUrl = '') {
 
     const bossName = String(order.bossName || order.placedByName || 'Fer aex').trim() || 'Fer aex';
     const displayId = String(order.swiggyOrderId || order.pendingSwiggyOrderId || order.id || '').trim();
-    const trackPart = safeTrackingUrl ? ` Track: ${safeTrackingUrl}` : ' Tracking link jaldi bheja jayega.';
-    const smsText = `${bossName} ne aapke liye Swiggy order place kiya hai. Order ID: ${displayId} for you on Swiggy.${trackPart} - Reply STOP to opt out`;
+    const trackPart = safeTrackingUrl
+      ? ` Track: ${safeTrackingUrl}`
+      : ` Tracking link jaldi bheja jayega. Apne orders dekhne ke liye: ${SWIGGY_ORDERS_PAGE}`;
+    const otpPart = (() => {
+      const otp = String(order?.deliveryOtp || '').replace(/\D/g, '').slice(0, 8);
+      return otp ? ` Delivery OTP: ${otp}.` : '';
+    })();
+    const smsText = `${bossName} ne aapke liye Swiggy order place kiya hai. Order ID: ${displayId} for you on Swiggy.${trackPart}${otpPart} - Reply STOP to opt out`;
 
     // Try external SMS gateway if configured
     const webhook = process.env.SMS_WEBHOOK_URL;
@@ -105,7 +116,7 @@ export async function sendDirectOrderSms(order) {
       `🔔 Swiggy Order Placed!`,
       `Hi ${name}, aapka order #${orderId} (${restaurant}${itemsCount? `, ${itemsCount} items`:''}) place hua hai.`,
       amount? `Amount: ₹${amount}`: null,
-      trackingUrl? `Track: ${trackingUrl}`: `Track: jaldi bheja jayega`,
+      trackingUrl? `Track: ${trackingUrl}`: `Track: jaldi bheja jayega (${SWIGGY_ORDERS_PAGE})`,
       payUrl? `Pay: ${payUrl}`: null,
       `Support: https://t.me/Its_life_001`
     ].filter(Boolean);
