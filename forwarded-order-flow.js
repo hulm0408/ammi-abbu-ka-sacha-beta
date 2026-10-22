@@ -7,9 +7,10 @@ import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from '.
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
+import { startOrderTrackingAuto, ensureOrderTracking, isTerminalDeliveryStatus } from './order-tracking.js';
 
 // Robust order lookup — handles stale callback IDs, case mismatch, or swiggyOrderId passed instead of bot orderId
-function lookupOrder(db, orderId) {
+export function lookupOrder(db, orderId) {
   if (!db?.orders) return null;
   const raw = String(orderId || '').trim();
   if (!raw) return null;
@@ -32,7 +33,7 @@ function lookupOrder(db, orderId) {
   return null;
 }
 
-function orderNotFoundDiag(db, orderId) {
+export function orderNotFoundDiag(db, orderId) {
   try {
     const asked = String(orderId || '').trim();
     const isNumericSwiggy = /^\d{6,20}$/.test(asked);
@@ -1608,27 +1609,14 @@ export async function finalizePaidOrderCard({
   if (livePaidResult.restaurantName) order.restaurantName = livePaidResult.restaurantName;
 
   const providerTrackingCandidate = livePaidResult.nativeShareUrl || livePaidResult.swiggyWebTrackUrl || '';
-  let providerTrackingUrl = '';
-  if (providerTrackingCandidate) {
-    const temp = { ...order, trackingLink: providerTrackingCandidate, trackingLinkSource: 'SWIGGY_API', swiggyOrderId: order.swiggyOrderId, pendingSwiggyOrderId: order.pendingSwiggyOrderId, id: order.id };
-    // Preserve real URL exactly as obtained, validate it belongs to this order before storing
-    const { validateTrackingUrlForOrder } = await import('./swiggy-cart.js').catch(()=>({ validateTrackingUrlForOrder: ()=>false }));
-    if (validateTrackingUrlForOrder(providerTrackingCandidate, temp, 'SWIGGY_API')) {
-      providerTrackingUrl = getStoredSwiggyTrackingUrl(temp);
-    } else {
-      console.warn(`[Tracking] Rejected fabricated or mismatched tracking URL for order ${order.id}: ${providerTrackingCandidate}`);
-      providerTrackingUrl = '';
-    }
-  }
+  const providerTrackingUrl = providerTrackingCandidate
+    ? getStoredSwiggyTrackingUrl({ trackingLink: providerTrackingCandidate, trackingLinkSource: 'SWIGGY_API' })
+    : '';
   const existingTrustedTrackingUrl = getStoredSwiggyTrackingUrl(order);
   order.shareTrackUrl = '';
   order.trackingLink = providerTrackingUrl || existingTrustedTrackingUrl;
   order.trackingLinkSource = providerTrackingUrl ? 'SWIGGY_API' : (existingTrustedTrackingUrl ? order.trackingLinkSource : '');
   order.paidAt = new Date().toISOString();
-  // Separate states: payment confirmed does NOT imply tracking available
-  if (!providerTrackingUrl && !existingTrustedTrackingUrl) {
-    console.log(`[Tracking] Payment verified for order ${order.id} but tracking not yet available. Scheduling retry poller.`);
-  }
 
   // NEW: Try to edit the existing payment QR message in-place to inject tracking link/OTP (user request: payment message auto-edit)
   // If edit succeeds, keep the edited QR visible (do not delete it) and only clear card messages.
@@ -1655,6 +1643,9 @@ export async function finalizePaidOrderCard({
   upsertOrder(order.id, order);
   await sendOrderDeliveryInfoNotice(telegram, chatId, order, { force: true });
   startOrderDeliveryInfoPoller({ telegram, chatId, orderId: order.id, formatOrderBodyFn });
+  // Order confirmed → the bot fetches the genuine Swiggy share link itself and
+  // pushes it to the Boss dashboard + customer as soon as Swiggy publishes it.
+  try { startOrderTrackingAuto(order.id, { budgetMs: 15000 }); } catch {}
   return sent;
 }
 
@@ -1684,14 +1675,12 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
     lines.push(`✓ <b>Payment received — Swiggy order confirmed</b>`);
     if (order.liveOrderStatus) lines.push(`Status: ${escapeHtml(String(order.liveOrderStatus))}`);
   } else {
-    // Payment vs tracking are separate states — do NOT send fabricated link
     lines.push(`✓ <b>Swiggy order update</b>`);
     lines.push(`Order reference: <code>#${escapeHtml(String(order.id))}</code>`);
     if (order.swiggyOrderId) lines.push(`Swiggy order no.: <code>${escapeHtml(String(order.swiggyOrderId))}</code>`);
     if (order.liveOrderStatus) lines.push(`Status: ${escapeHtml(String(order.liveOrderStatus))}`);
-    // Honest limitation: tracking not yet available, will retry
     lines.push('Payment verified successfully. Swiggy tracking is not available yet. I\'ll retry shortly.');
-    console.log(`[Tracking] No reliable tracking source for order ${order.id} (swiggyOrderId=${order.swiggyOrderId||'n/a'}). Will retry via poller.`);
+    console.log(`[Tracking] No reliable tracking source for order ${order.id} (swiggyOrderId=${order.swiggyOrderId || 'unknown'}). Will retry via poller.`);
   }
   if (deliveryOtp) {
     lines.push(`⌕ <b>Delivery OTP:</b> <code>${escapeHtml(deliveryOtp)}</code>`);
@@ -1780,25 +1769,9 @@ export function startOrderDeliveryInfoPoller({
       }
 
       const candidateUrl = update?.trackingUrl || update?.swiggyWebTrackUrl || update?.nativeShareUrl || '';
-      // Validate that candidate belongs to this specific order before storing — prevents cross-order contamination
-      let verifiedUrl = '';
-      if (candidateUrl) {
-        // Explicit validation: URL must be genuine and for this order
-        const tempOrder = { ...order, trackingLink: candidateUrl, trackingLinkSource: 'SWIGGY_API' };
-        const { validateTrackingUrlForOrder } = await import('./swiggy-cart.js').catch(()=>({ validateTrackingUrlForOrder: ()=>false }));
-        // Fallback to getStoredSwiggyTrackingUrl which now includes fabrication check
-        verifiedUrl = getStoredSwiggyTrackingUrl(tempOrder);
-        if (verifiedUrl && tempOrder.swiggyOrderId) {
-          // Additional isolation: if URL contains different order_id, reject (handled in validateTrackingUrlForOrder)
-          if (!validateTrackingUrlForOrder(verifiedUrl, order, 'SWIGGY_API')) {
-            console.warn(`[Tracking] Rejected tracking URL not for order ${order.id}: ${verifiedUrl}`);
-            verifiedUrl = '';
-          }
-        }
-        if (!verifiedUrl) {
-          console.log(`[Tracking] Retry: No valid tracking for order ${order.id} on attempt ${state.attempts}, will continue polling (max 6h)`);
-        }
-      }
+      const verifiedUrl = candidateUrl
+        ? getStoredSwiggyTrackingUrl({ trackingLink: candidateUrl, trackingLinkSource: 'SWIGGY_API' })
+        : '';
       const previousUrl = getStoredSwiggyTrackingUrl(order);
       const otpDigits = String(update?.deliveryOtp || '').replace(/\D/g, '');
       const nextOtp = /^\d{4,8}$/.test(otpDigits) ? otpDigits : '';
@@ -1810,9 +1783,6 @@ export function startOrderDeliveryInfoPoller({
         order.trackingLink = verifiedUrl;
         order.trackingLinkSource = 'SWIGGY_API';
         order.shareTrackUrl = '';
-        console.log(`[Tracking] Genuine tracking obtained for order ${order.id}: ${verifiedUrl}`);
-      } else if (candidateUrl) {
-        console.log(`[Tracking] Candidate rejected for order ${order.id}: ${candidateUrl} — not stored, will retry`);
       }
       if (nextOtp) order.deliveryOtp = nextOtp;
       if (update?.status) order.liveOrderStatus = String(update.status);
@@ -3013,45 +2983,83 @@ export function registerForwardedOrderHandlers(bot, {
   });
 
   // Dedicated Extract Delivery Link — scans ALL logged-in IDs, not just selectedAccount
-  bot.action(/^fwd_extract_all_([A-Za-z0-9_]+)$/, async (ctx) => {
+  bot.action(/^fwd_extract_all_([A-Za-z0-9_-]+)$/, async (ctx) => {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     const db = getDb();
-    let order = lookupOrder(db, orderId);
+    const order = lookupOrder(db, orderId);
     if (!order) {
       console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
       return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
     }
-    await ctx.answerCbQuery('🔍 Scanning all Swiggy IDs for tracking...').catch(()=>{});
-    const scanMsg = await ctx.reply('⏳ <i>Scanning ' + Object.keys(db.config?.accounts || {}).length + ' logged-in IDs for tracking link...</i>', { parse_mode: 'HTML' }).catch(()=>null);
+    await ctx.answerCbQuery('Scanning all Swiggy IDs for the live tracking link…').catch(() => {});
+    const accountCount = Object.keys(db.config?.accounts || {}).length;
+    const scanMsg = await ctx.reply(
+      `⏳ <i>Scanning ${accountCount} logged-in Swiggy IDs for the live tracking link…</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => null);
+
     try {
-      const result = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts });
-      if (scanMsg) try { await ctx.telegram.deleteMessage(ctx.chat.id, scanMsg.message_id); } catch {}
-      if (!result?.trackingUrl) {
-        return ctx.reply('❌ <b>No tracking link found on any ID yet.</b>\n<i>Swiggy may not have published it. Try again in 1 min or paste manually via Add tracking.</i>', { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('↗ Add Swiggy tracking', `boss_tracking_${order.id}`)]]) });
+      const result = await ensureOrderTracking(order.id, { force: true, budgetMs: 20000, deep: true });
+      if (scanMsg) { try { await ctx.telegram.deleteMessage(ctx.chat.id, scanMsg.message_id); } catch {} }
+
+      const fresh = getDb().orders?.[order.id] || order;
+      const trackingUrl = getStoredSwiggyTrackingUrl(fresh);
+      const swiggyId = String(fresh.swiggyOrderId || order.swiggyOrderId || '—');
+      const phone = String(fresh.selectedAccountPhone || order.selectedAccountPhone || '');
+
+      if (!trackingUrl) {
+        if (result?.hasOrder) {
+          const liveStatus = String(fresh.liveOrderStatus || result.orderStatus || 'Order Confirmed');
+          const cancelled = /cancel|refus|return/i.test(liveStatus);
+          const delivered = /deliv/i.test(liveStatus);
+          await ctx.reply(
+            `✅ <b>Order Swiggy par mil gaya</b>\n` +
+            `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
+            `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
+            `▪ <b>Status:</b> <code>${escapeHtml(liveStatus)}</code>` +
+            (fresh.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(fresh.deliveryOtp))}</code>` : '') +
+            (fresh.deliveryBoyName || fresh.deliveryBoyMobile ? `\n▪ <b>Rider:</b> ${escapeHtml([fresh.deliveryBoyName, fresh.deliveryBoyMobile].filter(Boolean).join(' · '))}` : '') +
+            `\n\n` +
+            (cancelled
+              ? `<i>Order cancel ho chuka hai — iske liye tracking link available nahi hai.</i>`
+              : delivered
+                ? `<i>Order delivered hai — Swiggy API ke is response me share URL nahi aaya. Aap neeche se dobara re-check kar sakte hain.</i>`
+                : `<i>Swiggy ne share link abhi publish nahi kiya. Bot background me retry karta rahega aur link aate hi bhej dega.</i>`),
+            {
+              parse_mode: 'HTML',
+              ...(!cancelled
+                ? Markup.inlineKeyboard([[Markup.button.callback('🔄 Re-check Swiggy Link', `fwd_extract_all_${order.id}`)]])
+                : {})
+            }
+          );
+          if (!cancelled && !delivered) startOrderTrackingAuto(order.id, { force: true, budgetMs: 12000 });
+        } else {
+          await ctx.reply(
+            `❌ <b>No tracking link found on any ID yet.</b>\n` +
+            `▪ Scanned <b>${Number(result?.scanned) || 0}</b> IDs${result?.status === 'TIMEOUT' ? ' (time out)' : ''}\n` +
+            `▪ Swiggy order id: <code>${escapeHtml(swiggyId)}</code>\n\n` +
+            `<i>Swiggy may not have published it yet. Bot retry karta rahega — koi fake link nahi banaya jayega.</i>`,
+            { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('↗ Add Swiggy tracking manually', `boss_tracking_${order.id}`)]]) }
+          );
+          startOrderTrackingAuto(order.id, { force: true, budgetMs: 12000 });
+        }
+        return;
       }
-      order.trackingLink = result.trackingUrl;
-      order.trackingLinkSource = 'SWIGGY_API';
-      order.shareTrackUrl = '';
-      if (result.res?.deliveryOtp) order.deliveryOtp = result.res.deliveryOtp;
-      if (result.res?.orderStatus) order.liveOrderStatus = result.res.orderStatus;
-      if (result.res?.swiggyOrderId) order.swiggyOrderId = result.res.swiggyOrderId;
-      if (result.res?.deliveryBoy?.name) order.deliveryBoyName = result.res.deliveryBoy.name;
-      if (result.res?.deliveryBoy?.mobile) order.deliveryBoyMobile = result.res.deliveryBoy.mobile;
-      if (result.accKey) order.selectedAccount = result.accKey;
-      if (order.status !== 'COMPLETED') {
-        order.status = 'COMPLETED';
-        order.cardStage = 'PAID_CONFIRMED';
-        order.paidAt = new Date().toISOString();
-        order.completedAt = new Date().toISOString();
-      }
-      upsertOrder(order.id, order);
-      await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn, { includeQrDelete: false }).catch(()=>{});
-      await sendOrderDeliveryInfoNotice(ctx.telegram, ctx.chat.id, order, { force: true });
-      await ctx.reply('✅ <b>Tracking extracted!</b>\nFound on <b>' + (result.acc?.phone || result.accKey) + '</b>\n🔗 <a href="' + result.trackingUrl + '">Open Swiggy tracking</a>' + (result.res?.deliveryOtp ? '\n🔢 OTP: <code>' + result.res.deliveryOtp + '</code>' : ''), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard([[Markup.button.url('↗ Open tracking', result.trackingUrl)]]) });
+
+      await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, fresh, getDb(), formatOrderBodyFn, { includeQrDelete: false }).catch(() => {});
+      await sendOrderDeliveryInfoNotice(ctx.telegram, ctx.chat.id, fresh, { force: true });
+      await ctx.reply(
+        `✅ <b>Tracking extracted!</b>\n` +
+        `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
+        `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
+        `▪ <b>Tracking:</b> <a href="${escapeHtml(trackingUrl)}">Open Swiggy tracking</a>` +
+        (fresh.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(fresh.deliveryOtp))}</code>` : ''),
+        { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard([[Markup.button.url('↗ Open tracking', trackingUrl)]]) }
+      );
     } catch (e) {
-      if (scanMsg) try { await ctx.telegram.deleteMessage(ctx.chat.id, scanMsg.message_id); } catch {}
-      await ctx.reply('❌ Extract failed: ' + (e?.message || e), { parse_mode: 'HTML' });
+      if (scanMsg) { try { await ctx.telegram.deleteMessage(ctx.chat.id, scanMsg.message_id); } catch {} }
+      await ctx.reply(`❌ Extract failed: ${escapeHtml(String(e?.message || e))}`, { parse_mode: 'HTML' });
     }
   });
 }

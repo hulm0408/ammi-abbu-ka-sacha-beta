@@ -1,6 +1,6 @@
 import { Telegraf, Markup } from 'telegraf';
 import { getDb, saveDb, isBoss, canTransitionOrder } from './store.js';
-import { getStoredSwiggyTrackingUrl } from './swiggy-cart.js';
+import { getStoredSwiggyTrackingUrl, isOfficialSwiggyTrackingUrl } from './swiggy-cart.js';
 import {
   esc,
   heading,
@@ -73,8 +73,76 @@ function billSection(order) {
   return section('Final Bill', table(rows));
 }
 
+// ---------------------------------------------------------------------------
+// Dashboard helpers — every order row always answers three questions:
+//   1. What is the real Swiggy order id?  2. Where is its tracking link?
+//   3. Which Swiggy phone number placed it?
+// ---------------------------------------------------------------------------
+export function swiggyOrderIdOf(order) {
+  const raw = String(order?.swiggyOrderId || order?.pendingSwiggyOrderId || '').trim();
+  return /^\d{10,20}$/.test(raw) ? raw : '';
+}
+
+export function placedFromPhoneOf(order, db) {
+  const direct = String(
+    order?.selectedAccountPhone ||
+    order?.orderAccountPhone ||
+    order?.placedFromPhone ||
+    order?.pendingQrAddressAccount ||
+    ''
+  ).trim();
+  if (direct) return direct.replace(/^\+?91/, '').replace(/\D/g, '').slice(-10) || direct;
+  const accKey = order?.selectedAccount;
+  const acc = accKey ? db?.config?.accounts?.[accKey] : null;
+  const phone = String(acc?.phone || acc?.mobile || '').replace(/^\+?91/, '').replace(/\D/g, '').slice(-10);
+  return phone || '';
+}
+
+function trackingLineOf(order, { short = false } = {}) {
+  const url = getStoredSwiggyTrackingUrl(order);
+  if (url) return `<a href="${esc(url)}">${short ? 'Open live tracking' : esc(url)}</a>`;
+  const status = String(order?.liveOrderStatus || '').toLowerCase();
+  if (/cancelled|canceled|refund|refus/i.test(status)) return `<i>Order ${esc(order.liveOrderStatus)} — no tracking link</i>`;
+  if (/delivered/i.test(status)) {
+    return order?.trackingLastScanAt
+      ? '<i>Order delivered — no share link returned by Swiggy</i>'
+      : '<i>Order delivered — tap Fetch tracking to extract link</i>';
+  }
+  return '<i>⏳ Waiting for Swiggy share link — auto-fetching</i>';
+}
+
+function safeOrderList(db) {
+  return Object.values(db.orders || {}).filter(o => {
+    if (!o || typeof o !== 'object') return false;
+    // Ignore placeholder/test rows and anything without a real order reference.
+    if (String(o.id || '').toUpperCase() === 'TEST') return false;
+    return Boolean(o.id);
+  });
+}
+
+export function buildBossTrackerHome(db) {
+  const orders = safeOrderList(db);
+  const pending = orders.filter(o => o.status === 'PENDING').length;
+  const accepted = orders.filter(o => o.status === 'ACCEPTED').length;
+  const completed = orders.filter(o => o.status === 'COMPLETED' || o.swiggyOrderId).length;
+  const accounts = Object.entries(db.config?.accounts || {});
+  const loggedIn = accounts.filter(([, a]) => a && (a.isLoggedIn || a.cookies || a.tid)).length;
+  const doneOrders = orders.filter(o => o.status === 'COMPLETED');
+  const tracked = doneOrders.filter(o => Boolean(getStoredSwiggyTrackingUrl(o))).length;
+
+  const text = section('📊 Dashboard — Orders & Tracking', [
+    `<b>Swiggy IDs:</b> ${loggedIn} logged in${accounts.length > loggedIn ? ` · ${accounts.length - loggedIn} need login` : ''}`,
+    `<b>Orders:</b> ${orders.length} · Pending ${pending} · In progress ${accepted} · Done ${completed}`,
+    `<b>Tracking links:</b> ${tracked} live${doneOrders.length > tracked ? ` · ${doneOrders.length - tracked} pending` : ''}`,
+    '',
+    sub('Every order below shows its Swiggy order id, the phone that placed it, and its live tracking link.'),
+  ].join('\n'));
+
+  return { text, keyboard: Markup.inlineKeyboard([[Markup.button.callback('★ Boss Panel', 'boss_panel_home')]]) };
+}
+
 export function buildBossPanelHome(db) {
-  const orders = Object.values(db.orders || {});
+  const orders = safeOrderList(db);
   const pending = orders.filter(o => o.status === 'PENDING').length;
   const accepted = orders.filter(o => o.status === 'ACCEPTED').length;
   const completed = orders.filter(o => o.status === 'COMPLETED').length;
@@ -85,21 +153,24 @@ export function buildBossPanelHome(db) {
   for (const [key, acc] of Object.entries(accounts)) {
     accCount++;
     const status = acc.isLoggedIn ? `● Logged In (${acc.phone || 'Ready'})` : '○ Not Logged In';
-    accBody += `${field(esc(acc.name || key), `<b>${status}</b>`)}\n`;
+    accBody += `<b>${esc(acc.name || key)}:</b> <b>${esc(status)}</b>\n`;
   }
 
   const text = section('Boss Panel', [
     section('Swiggy Accounts', accBody || sub('No accounts added yet. Tap Login to add.')),
     section('Orders', [
-      field('Pending', `<b>${pending}</b>`),
-      field('In Progress', `<b>${accepted}</b>`),
-      field('Completed', `<b>${completed}</b>`),
+      `<b>Pending:</b> <b>${pending}</b>`,
+      `<b>In Progress:</b> <b>${accepted}</b>`,
+      `<b>Completed:</b> <b>${completed}</b>`,
     ].join('\n')),
     sub('Manage orders, accounts, and offers from here.'),
   ].join('\n'));
 
   // Clean minimal Boss Panel — only necessary buttons, all dummy buttons removed
   const keyboard = Markup.inlineKeyboard([
+    [
+      { text: '📊 Dashboard (ID + Tracking + Phone)', callback_data: 'boss_dashboard' }
+    ],
     [
       { text: '🔗 Extract Tracking Link', callback_data: 'boss_extract_tracking_prompt' }
     ],
@@ -119,11 +190,98 @@ export function buildBossPanelHome(db) {
   return { text, keyboard };
 }
 
+/**
+ * Dashboard: newest orders first. Each row is a clean block with the real
+ * Swiggy order id, the phone that placed it and its live tracking link.
+ */
+export function buildBossDashboard(db, { limit = 8, onlyMissingTracking = false } = {}) {
+  const allOrders = safeOrderList(db)
+    .sort((a, b) => new Date(b.completedAt || b.createdAt || 0) - new Date(a.completedAt || a.createdAt || 0));
+
+  const relevant = onlyMissingTracking
+    ? allOrders.filter(o => ['COMPLETED', 'ACCEPTED'].includes(o.status) && !getStoredSwiggyTrackingUrl(o))
+    : allOrders;
+
+  const orders = relevant.slice(0, limit);
+  const accounts = Object.entries(db.config?.accounts || {});
+  const loggedIn = accounts.filter(([, a]) => a && (a.isLoggedIn || a.cookies || a.tid)).length;
+  const doneOrders = allOrders.filter(o => o.status === 'COMPLETED');
+  const tracked = doneOrders.filter(o => Boolean(getStoredSwiggyTrackingUrl(o))).length;
+  const missing = doneOrders.filter(o => !getStoredSwiggyTrackingUrl(o)).length;
+
+  const header = [
+    `<b>Swiggy IDs:</b> ${loggedIn} logged in${accounts.length > loggedIn ? ` · ${accounts.length - loggedIn} need login` : ''}`,
+    `<b>Orders:</b> ${allOrders.length} total · ${doneOrders.length} confirmed`,
+    `<b>Tracking:</b> ${tracked} live${missing ? ` · ${missing} auto-fetching` : ''}`,
+  ].join('\n');
+
+  let body = '';
+  if (orders.length === 0) {
+    body = sub(onlyMissingTracking ? 'Every confirmed order already has its tracking link.' : 'No orders yet.');
+  } else {
+    body = orders.map((order, index) => {
+      const swiggyId = swiggyOrderIdOf(order);
+      const phone = placedFromPhoneOf(order, db);
+      const amount = Number(order.finalPayable || order.subtotal || 0);
+      const customer = String(order.fwdSenderName || order.userName || 'Customer').slice(0, 28);
+      const status = String(order.liveOrderStatus || order.status || 'PENDING').slice(0, 34);
+      const lines = [
+        `<b>${index + 1}. ${swiggyId ? `Swiggy #${esc(swiggyId)}` : `Ref #${esc(String(order.id))}`}</b>`,
+        swiggyId ? `▪ <b>Order ref:</b> <code>#${esc(String(order.id))}</code>` : `▪ <b>Swiggy order:</b> <i>not created yet</i>`,
+        `▪ <b>Placed from:</b> ${phone ? `<code>${esc(phone)}</code>` : '<i>account not selected</i>'}`,
+        `▪ <b>Customer:</b> ${esc(customer)} · <b>₹${amount || 0}</b>`,
+        `▪ <b>Status:</b> <code>${esc(status)}</code>`,
+        `▪ <b>Tracking:</b> ${trackingLineOf(order, { short: true })}`,
+      ];
+      return lines.join('\n');
+    }).join('\n\n');
+  }
+
+  const text = section('📊 Dashboard — Order ID · Tracking · Phone', header) +
+    section(onlyMissingTracking ? 'Waiting for tracking' : 'Recent orders', body) +
+    (relevant.length > orders.length ? sub(`Showing latest ${orders.length} of ${relevant.length}.`) : '');
+
+  const rows = [];
+  for (const order of orders.slice(0, 5)) {
+    const url = getStoredSwiggyTrackingUrl(order);
+    const swiggyId = swiggyOrderIdOf(order);
+    const label = swiggyId ? swiggyId.slice(-6) : String(order.id);
+    if (url) {
+      rows.push([Markup.button.url(`🔗 Track #${label}`, url)]);
+    } else if (['COMPLETED', 'ACCEPTED'].includes(order.status)) {
+      rows.push([Markup.button.callback(`🔄 Fetch tracking #${label}`, `boss_track_now_${order.id}`)]);
+    }
+  }
+  rows.push([Markup.button.callback('⚡ Fetch all missing tracking', 'boss_fetch_all_missing')]);
+  rows.push([
+    Markup.button.callback('↻ Refresh Dashboard', 'boss_dashboard'),
+    Markup.button.callback('★ Boss Panel', 'boss_panel_home'),
+  ]);
+
+  return { text, keyboard: Markup.inlineKeyboard(rows), summary: { tracked, missing, total: allOrders.length } };
+}
+
+/**
+ * Honest one-line tracking state for any order row.
+ * A finished order is never promised a link Swiggy will not publish.
+ */
+export function trackingLinkDisplay({ url = '', status = '' } = {}) {
+  const safeUrl = String(url || '').trim();
+  if (safeUrl && isOfficialSwiggyTrackingUrl(safeUrl, { allowProviderShortLink: true })) {
+    return `<a href="${esc(safeUrl)}">Open live tracking</a>`;
+  }
+  const raw = String(status || '');
+  if (/cancel/i.test(raw)) return '<i>No link — order cancelled</i>';
+  if (/refus/i.test(raw)) return '<i>No link — order refused</i>';
+  if (/delivered|completed/i.test(raw)) return '<i>Tap Extract — order delivered</i>';
+  return '<i>⏳ auto-fetching from Swiggy</i>';
+}
+
 // One card per pending order — Boss taps Accept / Reject / Pick Account directly
 export function buildBossPendingList(db) {
   const pendingOrders = Object.values(db.orders || {}).filter(o => o.status === 'PENDING');
   const cards = pendingOrders.map(o => buildBossOrderCard(o, db));
-  const header = section('✉ Pending Requests', field('Count', `<b>${pendingOrders.length}</b>`));
+  const header = section('✉ Pending Requests', `<b>Count:</b> <b>${pendingOrders.length}</b>`);
   return { header, cards };
 }
 
@@ -148,35 +306,72 @@ export function buildBossOrderCard(order, db = getDb()) {
 
   let text = `${heading(`[ ORDER #${order.id} ] · ${statusBadge}`)}\n`;
   text += section('Ordered By', [
-    field('Name', senderLink),
-    field('User ID', idLink),
+    `<b>Name:</b> ${senderLink}`,
+    `<b>User ID:</b> ${idLink}`,
   ].join('\n'));
+
+  // Order identity block — the real Swiggy id, the phone that placed it and the
+  // live tracking link. Never a guessed or synthetic id.
+  const swiggyOrderId = swiggyOrderIdOf(order);
+  const placedFrom = placedFromPhoneOf(order, db);
+  const trackingUrl = getStoredSwiggyTrackingUrl(order);
+  text += section('Order & Tracking', [
+    `<b>Order ref:</b> <code>#${esc(String(order.id))}</code>`,
+    `<b>Swiggy order id:</b> ${swiggyOrderId ? `<code>${esc(swiggyOrderId)}</code>` : '<i>not created yet</i>'}`,
+    `<b>Placed from:</b> ${placedFrom ? `<code>${esc(placedFrom)}</code>` : '<i>account not selected</i>'}`,
+    ...(order.liveOrderStatus ? [`<b>Swiggy status:</b> <code>${esc(String(order.liveOrderStatus))}</code>`] : []),
+    `<b>Tracking:</b> ${trackingUrl
+      ? `<a href="${esc(trackingUrl)}">Open live Swiggy tracking</a>`
+      : (/cancel/i.test(String(order.liveOrderStatus || ''))
+        ? '<i>Order cancelled — no tracking link</i>'
+        : /refus|return/i.test(String(order.liveOrderStatus || ''))
+          ? '<i>Order refused — no tracking link</i>'
+          : /deliv|complet/i.test(String(order.liveOrderStatus || ''))
+            ? (order.trackingLastScanAt
+              ? '<i>Order delivered — no share link returned by Swiggy</i>'
+              : '<i>Order delivered — tap Fetch/Extract below to get link</i>')
+            : '<i>auto-fetching from Swiggy — will appear here</i>')}`,
+  ].join('\n'));
+
   const ad = order.addressDetails || {};
   if (ad.name || ad.mobile || ad.address) {
     const rLines = [];
     if (ad.name) rLines.push(field('Name', esc(ad.name)));
-    if (ad.mobile) rLines.push(field('Phone', `<code>${esc(ad.mobile)}</code> (delivery contact)`));
+    if (ad.mobile) rLines.push(`<b>Phone:</b> <code>${esc(ad.mobile)}</code> · <i>delivery contact</i>`);
     if (ad.address) rLines.push(field('Address', esc(ad.address.length>80?ad.address.slice(0,80)+'…':ad.address)));
     if (rLines.length) text += section('Deliver To (Recipient)', rLines.join('\n') + '\n' + sub('Order placed on recipient\'s name & phone — rider will call them, not you.'));
   }
   text += billSection(order);
   text += `${paymentNote}\n`;
-  const offerLine = order.autoOptimizeError
-    ? `\n${field('Auto offers', `<i>${esc(order.autoOptimizeError)}</i>`)}`
-    : (order.autoOptimized
-        ? `\n${field('Auto offers', `✓ Best account + max coupon locked${order.orderAccount ? ` (${esc(String(order.orderAccount))})` : ''}`)}`
-        : '');
+  let offerLine = '';
+  if (order.autoOptimizeError) {
+    offerLine = `\n<b>Auto offers:</b> <i>${esc(order.autoOptimizeError)}</i>`;
+  } else if (order.autoOptimized) {
+    offerLine = `\n<b>Auto offers:</b> ✓ Best account + max coupon locked${order.orderAccount ? ` (${esc(String(order.orderAccount))})` : ''}`;
+  }
   text += section('Cart & Delivery', [
-    field('Cart', order.cart ? `<a href="${esc(order.cart)}">Open cart link</a>` : '<i>Not added</i>'),
+    `<b>Cart:</b> ${order.cart ? `<a href="${esc(order.cart)}">Open cart link</a>` : '<i>Not added</i>'}`,
     field('Deliver to', esc(addrPreview(order))),
     field('Time', new Date(order.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })),
   ].join('\n') + offerLine);
   if (order.status === 'COMPLETED') {
-    const trackingUrl = getStoredSwiggyTrackingUrl(order);
-    text += section('Swiggy Tracking', trackingUrl
-      ? `<a href="${esc(trackingUrl)}">Open official Swiggy tracking</a>`
-      : '<i>Swiggy has not shared a tracking link yet. It will be sent when available.</i>');
-    if (order.deliveryOtp) text += section('Delivery OTP', `<code>${esc(String(order.deliveryOtp))}</code> · <i>Share with rider</i>`);
+    if (!getStoredSwiggyTrackingUrl(order)) {
+      const liveStatus = String(order.liveOrderStatus || '');
+      const cancelled = /cancel|refus|return/i.test(liveStatus);
+      const delivered = /deliv/i.test(liveStatus);
+      text += section('Tracking status', cancelled
+        ? `<i>Order ${esc(liveStatus || 'cancelled')} — no tracking link available.</i>`
+        : delivered
+          ? `<i>Order delivered (${esc(liveStatus)}) — tap Fetch/Extract below to check Swiggy for its tracking link.</i>`
+          : '<i>Swiggy has not published the share link yet — the bot keeps retrying and will post it here automatically.</i>');
+    }
+    if (order.deliveryOtp) {
+      const live = String(order.liveOrderStatus || '');
+      const otpNote = /cancel/i.test(live)
+        ? 'order cancelled'
+        : (/deliv|complet|refus|return/i.test(live) ? 'delivery recorded' : 'Share with rider');
+      text += section('Delivery OTP', `<code>${esc(String(order.deliveryOtp))}</code> · <i>${otpNote}</i>`);
+    }
     if (order.deliveryBoyName || order.deliveryBoyMobile) {
       const riderLine = [order.deliveryBoyName?esc(order.deliveryBoyName):'', order.deliveryBoyMobile?`<a href="tel:${esc(order.deliveryBoyMobile)}">${esc(order.deliveryBoyMobile)}</a>`:'' ].filter(Boolean).join(' · ');
       if (riderLine) text += section('Rider', riderLine);
@@ -267,6 +462,9 @@ export function buildBossOrderCard(order, db = getDb()) {
         Markup.button.callback('⌕ Add delivery OTP', `boss_delivery_otp_${order.id}`),
         Markup.button.callback('✓ Mark done', `boss_action_done_${order.id}`)
       ]);
+      if (!trackingUrl) {
+        rows.push([Markup.button.callback('🔄 Fetch live tracking now', `boss_track_now_${order.id}`)]);
+      }
       rows.push([
         Markup.button.callback('🔗 Extract Delivery (All IDs)', `fwd_extract_all_${order.id}`),
       ]);
@@ -298,8 +496,8 @@ export function buildBossArchiveList(db) {
 
   const totalRev = completedOrders.reduce((s, o) => s + (o.finalPayable || 0), 0);
   let text = section('★ Order History (All Completed)', [
-    field('Total Orders', `<b>${completedOrders.length}</b>`),
-    field('Total Volume', `<b>₹${totalRev}</b>`),
+    `<b>Total Orders:</b> <b>${completedOrders.length}</b>`,
+    `<b>Total Volume:</b> <b>₹${totalRev}</b>`,
   ].join('\n'));
 
   const rows = [['#', 'Order ID', 'Customer', 'Restaurant', 'Amount', 'Account', 'Done']];
