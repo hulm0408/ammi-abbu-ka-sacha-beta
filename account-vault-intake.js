@@ -110,20 +110,27 @@ async function runWithConcurrencyLimit(items, concurrency, workerFn) {
  */
 export async function ingestAndPersistRawAccountTexts(
   rawEntries,
-  {
+  options = {}
+) {
+  if (rawEntries && !Array.isArray(rawEntries) && typeof rawEntries === 'object') {
+    if (rawEntries.rawEntries || rawEntries.rawTexts) {
+      options = { ...rawEntries, ...options };
+      rawEntries = rawEntries.rawEntries || rawEntries.rawTexts;
+    }
+  }
+  const {
     verifyFn = verifySwiggySessionLive,
     orderProfileFn = inspectAccountOrderHistoryAndOffers,
     claimOffersFn = claimSwiggyBreakfastAndLateNightOffers,
     syncVaultFn = syncCloudVaultNow,
     concurrency = 8
-  } = {}
-) {
+  } = options;
   const candidatePayloads = [];
   const parseErrors = [];
 
-  for (const item of rawEntries || []) {
-    const fileName = item?.fileName || 'session.json';
-    const text = String(item?.text || '').trim();
+  for (const item of (Array.isArray(rawEntries) ? rawEntries : [])) {
+    const fileName = (typeof item === 'object' && item?.fileName) ? item.fileName : 'session.json';
+    const text = String((typeof item === 'object' && item !== null) ? (item.text || '') : item || '').trim();
     if (!text) continue;
 
     // Derive fallback label/phone hint from filename if present (e.g. `9876543210.json` or `acc_12.json`)
@@ -219,11 +226,15 @@ export async function ingestAndPersistRawAccountTexts(
 
     // Quick order-history check so Vault immediately knows `0-Order` (`isZeroOrderAccount`) vs `Used`!
     try {
-      const prof = await orderProfileFn(mergedPayload, null, { timeoutMs: 3200 });
+      const targetKey = mergedPayload.phone ? `acc_${mergedPayload.phone}` : (mergedPayload.account || 'acc_temp');
+      const prof = await orderProfileFn(targetKey, mergedPayload, { force: true, timeoutMs: 3200 });
+      if (prof?.valid === false) {
+        mergedPayload.accountError = prof.error || prof.reason || 'Verification issue';
+      }
       const orderCount = typeof prof?.totalOrdersCount === 'number'
         ? prof.totalOrdersCount
         : (typeof prof?.orderCount === 'number' ? prof.orderCount : null);
-      if (typeof orderCount === 'number' && Number.isFinite(orderCount)) {
+      if (typeof orderCount === 'number' && Number.isFinite(orderCount) && prof?.valid !== false) {
         mergedPayload.totalOrdersCount = orderCount;
         mergedPayload.cachedTotalOrdersCount = orderCount;
         mergedPayload.isZeroOrderAccount = (orderCount === 0);

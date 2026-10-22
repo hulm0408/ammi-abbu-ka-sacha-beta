@@ -6151,12 +6151,20 @@ export function invalidateAccountOrderProfileCache(accKey = null) {
 }
 
 export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force = false } = {}) {
+  // Support polymorphic call: inspectAccountOrderHistoryAndOffers(accObj)
+  if (typeof accKey === 'object' && accKey !== null && !acc) {
+    acc = accKey;
+    accKey = acc.id || acc.account || (acc.phone ? `acc_${acc.phone}` : 'acc_temp');
+  }
+
   if (!acc || !acc.isLoggedIn || (!acc.cookies && !acc.tid && !acc.jwtTid && !acc.token)) {
     return {
       key: accKey,
       valid: false,
-      totalOrdersCount: 999999,
-      isZeroOrderAccount: false,
+      reason: 'NOT_LOGGED_IN',
+      error: 'Account is logged out or missing session cookies/token',
+      totalOrdersCount: typeof acc?.totalOrdersCount === 'number' ? acc.totalOrdersCount : 999999,
+      isZeroOrderAccount: acc?.totalOrdersCount === 0 || Boolean(acc?.isZeroOrderAccount),
       liveActiveOrdersCount: 0,
       hasZeroActiveOrders: true,
       superStatus: 'UNKNOWN',
@@ -6198,11 +6206,19 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
 
   const auth = await getSwiggySessionAuth(acc, false).catch(() => null);
   if (!auth?.userId || String(auth.userId) === '0') {
+    const isWaf = Boolean(auth?.isWaf || auth?.wafBlocked || /waf|challenge|captcha|cloudflare/i.test(String(auth?.statusMessage || '')));
+    const reason = auth?.sessionExpired ? 'SESSION_EXPIRED' : (isWaf ? 'WAF_CHALLENGE' : 'AUTH_FAILED');
+    const diagError = auth?.sessionExpired
+      ? 'Swiggy session expired — re-login needed'
+      : (isWaf ? 'Swiggy security check / WAF rate limit' : (auth?.statusMessage || 'Swiggy authentication failed'));
+
     const invalidProfile = {
       key: accKey,
       valid: false,
-      totalOrdersCount: 999999,
-      isZeroOrderAccount: false,
+      reason,
+      error: diagError,
+      totalOrdersCount: typeof acc?.totalOrdersCount === 'number' ? acc.totalOrdersCount : (acc?.isZeroOrderAccount ? 0 : 999999),
+      isZeroOrderAccount: acc?.totalOrdersCount === 0 || Boolean(acc?.isZeroOrderAccount),
       liveActiveOrdersCount: 0,
       hasZeroActiveOrders: true,
       superStatus: 'UNKNOWN',

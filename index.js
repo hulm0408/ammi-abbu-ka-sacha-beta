@@ -792,12 +792,16 @@ export function formatUserOrderCard(order) {
       ? `${ad.address.slice(0, 50)}${ad.address.length > 50 ? '…' : ''}`
       : (ad?.city ? `${ad.city} Address` : (order.address ? 'Address attached' : 'Pending'));
 
+    const diag = order.lastAccountError || order.autoOptimizeError || order.accountSyncError;
+    const diagLine = diag ? `\n⚠️ <b>Dikkat:</b> <i>${esc(diag)}</i>\n` : '';
+
     text += `${heading(`↗ Order sent to Beta (#${order.id})`)}\n\n` +
       section('Order details', [
         field('Restaurant', esc(rest)),
         field('Delivering to', esc(cleanAddr)),
         field('Status', '<b>Checking best offer</b>')
       ].join('\n')) +
+      diagLine +
       `\n${sub('Bill aur payment QR yahan aayega.')}\n\n` +
       `${field('Support', '@Its_life_001')}`;
   }
@@ -2575,9 +2579,25 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     db.config.activeOrderAccount = targetAcc;
     saveDb(db);
   }
-  if (orderId && db.orders[orderId]) {
-    const order = db.orders[orderId];
+  let linkedOrderId = orderId;
+  if (!linkedOrderId) {
+    const draft = db.drafts?.[userId];
+    if (draft?.activeOrderId && db.orders?.[draft.activeOrderId]) {
+      linkedOrderId = draft.activeOrderId;
+    } else if (draft?.currentOrderId && db.orders?.[draft.currentOrderId]) {
+      linkedOrderId = draft.currentOrderId;
+    } else {
+      const userOrders = Object.values(db.orders || {})
+        .filter(o => o && String(o.userId) === String(userId) && !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status))
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      if (userOrders[0]) linkedOrderId = userOrders[0].id;
+    }
+  }
+
+  if (linkedOrderId && db.orders[linkedOrderId]) {
+    const order = db.orders[linkedOrderId];
     order.selectedAccount = targetAcc;
+    order.orderAccount = phone || targetAcc;
     saveDb(db);
     updateOrderCards(order).catch(() => {});
   }
@@ -2587,10 +2607,14 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
   let orderHistory = null;
   try {
     orderHistory = await inspectAccountOrderHistoryAndOffers(targetAcc, currentAcc, { force: true });
-    if (orderHistory && db.config?.accounts?.[targetAcc]) {
+    if (orderHistory && orderHistory.valid !== false && typeof orderHistory.totalOrdersCount === 'number') {
       db.config.accounts[targetAcc].totalOrdersCount = orderHistory.totalOrdersCount;
       db.config.accounts[targetAcc].cachedTotalOrdersCount = orderHistory.totalOrdersCount;
       db.config.accounts[targetAcc].isZeroOrderAccount = (orderHistory.totalOrdersCount === 0);
+      delete db.config.accounts[targetAcc].accountError;
+      saveDb(db);
+    } else if (orderHistory?.valid === false && db.config?.accounts?.[targetAcc]) {
+      db.config.accounts[targetAcc].accountError = orderHistory.error || 'Verification issue';
       saveDb(db);
     }
   } catch (e) {}
@@ -2619,10 +2643,28 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     saveDb(db);
   }
 
-  const ordersCountNum = orderHistory?.totalOrdersCount ?? currentAcc.totalOrdersCount ?? currentAcc.cachedTotalOrdersCount ?? 0;
-  const pastOrdersText = (ordersCountNum === 0)
-    ? `<b>0 Orders</b> (★ Fresh 0-Order Account)`
-    : `<b>${ordersCountNum} Order${ordersCountNum === 1 ? '' : 's'}</b> (● Used Account)`;
+  const knownOrders = (typeof currentAcc.totalOrdersCount === 'number' && currentAcc.totalOrdersCount !== 999999)
+    ? currentAcc.totalOrdersCount
+    : (typeof currentAcc.cachedTotalOrdersCount === 'number' && currentAcc.cachedTotalOrdersCount !== 999999 ? currentAcc.cachedTotalOrdersCount : null);
+
+  let pastOrdersText = '';
+  let idDiagnosticNote = '';
+
+  if (orderHistory && orderHistory.valid === false) {
+    idDiagnosticNote = `\n⚠️ <b>ID Diagnostic:</b> <i>${escapeHtml(orderHistory.error || 'Session verification issue')}</i>`;
+    if (knownOrders !== null) {
+      pastOrdersText = (knownOrders === 0)
+        ? `<b>0 Orders</b> (★ Fresh 0-Order Account)`
+        : `<b>${knownOrders} Order${knownOrders === 1 ? '' : 's'}</b> (● Used Account)`;
+    } else {
+      pastOrdersText = `<i>⚠️ Verification Incomplete (${escapeHtml(orderHistory.error || 'Check Session')})</i>`;
+    }
+  } else {
+    const ordersCountNum = orderHistory?.totalOrdersCount ?? knownOrders ?? 0;
+    pastOrdersText = (ordersCountNum === 0)
+      ? `<b>0 Orders</b> (★ Fresh 0-Order Account — Max Coupons Eligible!)`
+      : `<b>${ordersCountNum} Order${ordersCountNum === 1 ? '' : 's'}</b> (● Used Account)`;
+  }
 
   const exported = exportSessionJson(targetAcc) || accInfo.exportJson || db.config?.accounts?.[targetAcc];
   const sessionJsonStr = exported ? JSON.stringify(exported, null, 2) : '';
@@ -2653,7 +2695,7 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     (botTag ? `# <b>Bot Tag / Slot:</b> <code>${escapeHtml(botTag)}</code>\n` : '') +
     (!swiggyName && !botTag ? `◉ <b>Account Name:</b> <b>${escapeHtml(displayName)}</b>\n` : '') +
     `# <b>Customer ID:</b> <code>${customerId}</code>\n` +
-    `📦 <b>Past Orders Count:</b> ${pastOrdersText}\n\n` +
+    `📦 <b>Past Orders Count:</b> ${pastOrdersText}${idDiagnosticNote}\n\n` +
     `▣ <b>OFFERS STATUS:</b>\n` +
     `• ◷ <b>Swiggy Late Night:</b> ${lateNightStatusText}\n` +
     `• • <b>Swiggy Breakfast:</b> ${breakfastStatusText}\n\n` +
@@ -2895,6 +2937,15 @@ bot.action(/^boss_use_acc_(.+)$/, async (ctx) => {
   const db = getDb();
   if (db.config.accounts?.[accKey]) {
     db.config.activeOrderAccount = accKey;
+    const phone = db.config.accounts[accKey].phone || db.config.accounts[accKey].mobile || accKey;
+    const draft = db.drafts?.[ctx.from.id];
+    const pendingOrderId = draft?.activeOrderId || draft?.currentOrderId;
+    if (pendingOrderId && db.orders?.[pendingOrderId]) {
+      const ord = db.orders[pendingOrderId];
+      ord.selectedAccount = accKey;
+      ord.orderAccount = phone;
+      updateOrderCards(ord).catch(() => {});
+    }
     saveDb(db);
     await ctx.answerCbQuery(`Selected ${db.config.accounts[accKey].name || accKey} for orders! ✓`).catch(() => {});
     await ctx.reply(`● <b>Account "${escapeHtml(db.config.accounts[accKey].name || accKey)}" is now ACTIVE for all orders!</b>`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
@@ -3301,12 +3352,18 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
       }
 
       if (!result?.success) {
+        order.selectedAccount = accKey;
+        order.orderAccount = accPhone;
+        order.lastAccountError = result?.error || 'Delivery/Cart sync issue';
+        saveDb(db);
         try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
         await ctx.reply(
-          `× <b>Order #${orderId} was not sent to payment.</b>\n\n${escapeHtml(result?.error || 'Delivery address, location, or recipient mobile could not be verified.')}\n\n` +
-          `<i>No default/first-saved address was substituted and no payment QR was created. Correct the recipient details, then retry.</i>`,
+          `× <b>Order #${orderId} — Account Selected: ${escapeHtml(accPhone)}</b>\n\n` +
+          `⚠️ <b>Dikkat:</b> ${escapeHtml(result?.error || 'Delivery address, location, or recipient mobile could not be verified.')}\n\n` +
+          `<i>Account select ho gaya hai, par Swiggy checkout par yeh dikkat aayi. Details check karke dobara retry karein.</i>`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
+        await updateOrderCards(order).catch(() => {});
         return;
       }
 

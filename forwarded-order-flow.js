@@ -1308,12 +1308,17 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
         ? `i Use the buttons below or send ${missingItem} in this chat.`
         : `i Forward ${escapeHtml(order.fwdSenderName)}'s ${missingItem}, or enter it with the buttons below.`);
 
+  const errLine = (order.accountSyncError || order.lastAccountError)
+    ? `\n⚠️ <b>Notice:</b> <i>${escapeHtml(order.accountSyncError || order.lastAccountError)}</i>\n`
+    : '';
+
   const text =
     `✉ <b>NEW ORDER CARD (#${escapeHtml(order.id)})</b>\n` +
     `${senderLine}\n\n` +
     `⌖ <b>Address:</b>\n${addrStatus}\n` +
     `☎ <b>Recipient mobile:</b> ${contactStatus}\n\n` +
     `▤ <b>Cart:</b>\n${cartStatus}\n\n` +
+    errLine +
     `<i>${actionHint}</i>\n` +
     `<i>◈ No account allocated; QR is blocked.</i>`;
 
@@ -2612,7 +2617,6 @@ export function registerForwardedOrderHandlers(bot, {
 
   // 2. Change Auto-Selected Swiggy Account before payment (Auto-cycles to next best ID with ZERO manual picker!)
   bot.action(/^(?:fwd_change_auto_sel|fwd_rechoose_acc)_([A-Za-z0-9_]+)$/, async (ctx) => {
-    if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     stopOrderPaymentPoller(orderId);
     const db = getDb();
@@ -2620,6 +2624,10 @@ export function registerForwardedOrderHandlers(bot, {
     if (!order) {
       console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
       return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
+    }
+    const isOwner = (String(order.userId) === String(ctx.from.id) || String(order.fwdSenderUserId) === String(ctx.from.id));
+    if (!isBoss(ctx.from.id) && !isOwner) {
+      return ctx.answerCbQuery('Unauthorized', { show_alert: true });
     }
     if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
       return ctx.answerCbQuery('Customer bill approval locks account changes.', { show_alert: true });
@@ -2656,8 +2664,10 @@ export function registerForwardedOrderHandlers(bot, {
         });
       } catch (err2) {
         order.cardStage = 'COLLECTING';
+        order.accountSyncError = err2.message || syncErr.message;
         upsertOrder(order.id, order);
         await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
+        await ctx.reply(`⚠️ <b>ID Selection Issue:</b> ${escapeHtml(err2.message || syncErr.message)}\n\n<i>Swiggy account sync me issue aaya. Kripya ID check karein ya naya JSON session drop karein.</i>`, { parse_mode: 'HTML' }).catch(() => {});
       }
     }
   });

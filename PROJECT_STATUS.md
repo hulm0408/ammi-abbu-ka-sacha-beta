@@ -86,6 +86,10 @@ An automated Telegram ordering, billing, and tracking bot designed for family me
 | **FR-12** | Extraction and delivery of genuine official Swiggy tracking links (no bot proxies) | **VERIFIED** |
 | **FR-13** | Delivery OTP extraction and push notification to recipient mobile | **VERIFIED** |
 | **FR-14** | Circuit-breaker and backoff against Swiggy WAF / rate limits | **VERIFIED** |
+| **FR-15** | Accurate order count detection without 999999 fallbacks (`inspectAccountOrderHistoryAndOffers` polymorphic handling) | **VERIFIED** |
+| **FR-16** | Automatic account assignment to active pending draft order upon login | **VERIFIED** |
+| **FR-17** | Seamless account selection & assignment with order persistence across sync retries | **VERIFIED** |
+| **FR-18** | Explicit diagnostic error messaging on account issues (session expired, WAF challenge, auth failure) | **VERIFIED** |
 
 ---
 
@@ -130,6 +134,9 @@ An automated Telegram ordering, billing, and tracking bot designed for family me
 | Single-Card UI & Clean Edits | `index.js`, `forwarded-order-flow.js` | **VERIFIED** | 100% passed in `test_v20_single_card_chat_e2e.mjs` |
 | Real Swiggy Tracking & OTP | `order-tracking.js`, `swiggy-cart.js` | **VERIFIED** | 12/12 passed in `test_v26_real_tracking_and_delivered_links_e2e.mjs` |
 | WAF Circuit Breaker | `waf-pool.js` | **VERIFIED** | 100% passed in `test_v34_waf_pool_breaker_e2e.mjs` |
+| Accurate Order Count & 0-Order Detection | `swiggy-cart.js`, `account-vault-intake.js` | **VERIFIED** | Checks 1-14 passed in `test_v37_order_count_id_assign_choose_diagnostic_e2e.mjs` |
+| Automatic ID Assignment & Account Selection | `index.js`, `forwarded-order-flow.js` | **VERIFIED** | Checks 15-16 passed in `test_v37_order_count_id_assign_choose_diagnostic_e2e.mjs` |
+| ID Issues & Explicit Diagnostic Messages | `index.js`, `swiggy-cart.js` | **VERIFIED** | Checks 17-20 passed in `test_v37_order_count_id_assign_choose_diagnostic_e2e.mjs` |
 
 ---
 
