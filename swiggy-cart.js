@@ -6167,8 +6167,33 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
 
   const sig = `${accKey}|${(acc.jwtTid || acc.tid || '').slice(0, 28)}|${acc.totalOrdersCount ?? ''}`;
   const cached = accountOrderProfileCache.get(sig);
-  if (!force && cached && (Date.now() - cached.ts) < 60 * 1000) {
+  if (!force && cached && (Date.now() - cached.ts) < 15 * 60 * 1000) {
     return cached.profile;
+  }
+
+  // Fast-path: If the account already has a known cachedTotalOrdersCount / totalOrdersCount,
+  // build the profile in 0ms without firing network calls to Swiggy on every cart scan!
+  if (!force && (acc.cachedTotalOrdersCount !== undefined && acc.cachedTotalOrdersCount !== null || typeof acc.totalOrdersCount === 'number')) {
+    const totalOrdersCount = Math.max(0, Number(acc.cachedTotalOrdersCount ?? acc.totalOrdersCount ?? 0));
+    const profile = {
+      key: accKey,
+      valid: true,
+      userId: String(acc.customerId || acc.userId || '1'),
+      phone: acc.phone || acc.mobile || accKey,
+      name: acc.name || accKey,
+      totalOrdersCount,
+      isZeroOrderAccount: totalOrdersCount === 0,
+      liveActiveOrdersCount: 0,
+      hasZeroActiveOrders: true,
+      superStatus: String(acc.superStatus || acc.userSuperStatus || 'UNKNOWN'),
+      preferredOfferValue: Number(acc.preferredOfferValue || 1),
+      walletBalance: Math.max(0, Number(acc.walletBalance || acc.swiggyMoney || 0)),
+      freeCashEstimate: Math.max(0, Number(acc.freeCashBalance || (acc.offers?.bothClaimed ? 50 : 0)))
+    };
+    acc.cachedTotalOrdersCount = totalOrdersCount;
+    acc.isZeroOrderAccount = profile.isZeroOrderAccount;
+    accountOrderProfileCache.set(sig, { ts: Date.now(), profile });
+    return profile;
   }
 
   const auth = await getSwiggySessionAuth(acc, false).catch(() => null);
@@ -6392,10 +6417,19 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     return Number(candidate.probeOrder?.discountAmount || 0) > Number(incumbent.probeOrder?.discountAmount || 0);
   };
 
-  // Keep probing later batches after finding an early winner: coupon and wallet offers can
-  // differ from the cached account tier, so only live bills reveal the actual best account.
-  // `triedKeys` grows on every successful reservation, making this loop strictly finite.
-  for (let wave = 0; wave < validPool.length + 1; wave++) {
+  // Probe in bounded waves: the candidate list is already sorted by highest offer score!
+  // Once a winning 0-Order or max-coupon account is confirmed, stop immediately so parents
+  // never wait 30 minutes!
+  const maxSearchWaves = Math.min(2, validPool.length + 1);
+  for (let wave = 0; wave < maxSearchWaves; wave++) {
+    if (bestOverallProbe && bestOverallProbe.res?.success) {
+      if (preferZeroOrderAccounts && bestOverallProbe.profile?.isZeroOrderAccount) {
+        break;
+      }
+      if (bestOverallProbe.probeOrder?.couponCode || Number(bestOverallProbe.probeOrder?.totalSavings || 0) > 0) {
+        break;
+      }
+    }
     let freshDb = getDb();
     let busyMap = getBusySwiggyAccountsMap(freshDb, orderId);
 
@@ -6431,13 +6465,13 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     const zeroActiveFree = freeCandidates.filter(x => x.profile.hasZeroActiveOrders);
 
     let activeTierPool;
-    if (strictZeroOrdersOnly) {
+    if (preferZeroOrderAccounts && bestOverallProbe?.profile?.isZeroOrderAccount) {
+      // Valid 0-order winner already exists — stop immediately, don't probe more accounts!
+      break;
+    } else if (strictZeroOrdersOnly) {
       activeTierPool = zeroOrderFree;
     } else if (preferZeroOrderAccounts && zeroOrderFree.length > 0) {
       activeTierPool = zeroOrderFree;
-    } else if (preferZeroOrderAccounts && bestOverallProbe?.profile?.isZeroOrderAccount) {
-      // There is no reason to spend time probing older IDs after a valid 0-order winner exists.
-      break;
     } else {
       activeTierPool = zeroActiveFree.length > 0 ? zeroActiveFree : freeCandidates;
     }

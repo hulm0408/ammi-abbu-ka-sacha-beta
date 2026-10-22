@@ -2566,6 +2566,24 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     updateOrderCards(order).catch(() => {});
   }
 
+  // Live order history inspection on upload / login: determine exact past orders placed!
+  const currentAcc = db.config?.accounts?.[targetAcc] || accInfo;
+  let orderHistory = null;
+  try {
+    orderHistory = await inspectAccountOrderHistoryAndOffers(targetAcc, currentAcc, { force: true });
+    if (orderHistory && db.config?.accounts?.[targetAcc]) {
+      db.config.accounts[targetAcc].totalOrdersCount = orderHistory.totalOrdersCount;
+      db.config.accounts[targetAcc].cachedTotalOrdersCount = orderHistory.totalOrdersCount;
+      db.config.accounts[targetAcc].isZeroOrderAccount = (orderHistory.totalOrdersCount === 0);
+      saveDb(db);
+    }
+  } catch (e) {}
+
+  const ordersCountNum = orderHistory?.totalOrdersCount ?? currentAcc.totalOrdersCount ?? currentAcc.cachedTotalOrdersCount ?? 0;
+  const pastOrdersText = (ordersCountNum === 0)
+    ? `<b>0 Orders</b> (★ Fresh 0-Order Account)`
+    : `<b>${ordersCountNum} Order${ordersCountNum === 1 ? '' : 's'}</b> (● Used Account)`;
+
   const exported = exportSessionJson(targetAcc) || accInfo.exportJson || db.config?.accounts?.[targetAcc];
   const sessionJsonStr = exported ? JSON.stringify(exported, null, 2) : '';
   const compactStr = exported ? JSON.stringify(exported) : '';
@@ -2594,7 +2612,8 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     (swiggyName ? `◉ <b>Swiggy Profile Name:</b> <b>${escapeHtml(swiggyName)}</b>\n` : '') +
     (botTag ? `# <b>Bot Tag / Slot:</b> <code>${escapeHtml(botTag)}</code>\n` : '') +
     (!swiggyName && !botTag ? `◉ <b>Account Name:</b> <b>${escapeHtml(displayName)}</b>\n` : '') +
-    `# <b>Customer ID:</b> <code>${customerId}</code>\n\n` +
+    `# <b>Customer ID:</b> <code>${customerId}</code>\n` +
+    `📦 <b>Past Orders Count:</b> ${pastOrdersText}\n\n` +
     `▣ <b>OFFERS STATUS:</b>\n` +
     `• ◷ <b>Swiggy Late Night:</b> ${lateNightStatusText}\n` +
     `• • <b>Swiggy Breakfast:</b> ${breakfastStatusText}\n\n` +
@@ -4742,11 +4761,16 @@ async function buildExportLogoutChecklist(ctx, orderCounts, selections) {
   }
   buttons.push([{ text: 'Back to Accounts', callback_data: 'boss_view_accounts', style: 'primary' }]);
 
+  const usedCount = allKeys.filter(k => (orderCounts[k] || 0) >= 1).length;
+  const zeroCount = allKeys.filter(k => (orderCounts[k] || 0) === 0).length;
+
   const checklistText =
     `<blockquote>⇧ <b>EXPORT & LOGOUT ACCOUNTS</b></blockquote>\n\n` +
     `Accounts select karein jinhe aap bot se <b>export aur permanently logout</b> karna chahte hain:\n` +
     `• <b>Total Accounts:</b> <b>${totalCount}</b>\n` +
-    `• <b>Selected:</b> <b>${selectedCount}/${totalCount}</b>\n\n` +
+    `• 📦 <b>Used IDs (1+ Orders):</b> <b>${usedCount}</b> <i>(Auto-selected ✓)</i>\n` +
+    `• 🟢 <b>Fresh 0-Order IDs:</b> <b>${zeroCount}</b> <i>(Protected ○)</i>\n` +
+    `• <b>Selected for Logout:</b> <b>${selectedCount}/${totalCount}</b>\n\n` +
     (selectedCount > 0
       ? `<i>Confirm karte hi har selected account ki <code>.json</code> session file Telegram par aayegi aur account safely logout ho jayega!</i>`
       : `<i>Koi account select nahi hai. Accounts par tap karke select karein ya 'Select All' dabayein.</i>`);
@@ -4844,10 +4868,11 @@ async function openExportLogoutPicker(ctx, { note = '' } = {}) {
   exportLogoutSelections[userId] = {};
   exportLogoutOrderCounts[userId] = orderCounts;
 
-  // Auto-select all available accounts by default
+  // Auto-select ONLY used accounts with 1+ orders (preserving fresh 0-order accounts in Vault)!
   for (const k of accKeys) {
     const isAvailable = Boolean(accounts[k]?.isLoggedIn || accounts[k]?.cookies || accounts[k]?.tid || exportSessionJson(k));
-    exportLogoutSelections[userId][k] = isAvailable;
+    const cnt = Number(orderCounts[k] || 0);
+    exportLogoutSelections[userId][k] = isAvailable && cnt >= 1;
   }
 
   if (note) {
