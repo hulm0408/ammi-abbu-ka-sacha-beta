@@ -874,9 +874,10 @@ export function buildTelegramUserBillConfirmationCard(order) {
 // orders that only exist in the Boss chat return '' so a summary is never sent
 // back to the Boss by accident.
 export function resolveCustomerChatId(order, bossIds = []) {
-  const target = String(order?.fwdSenderUserId || order?.userId || '').trim();
+  const target = String(order?.fwdSenderUserId || order?.userChatId || order?.userId || '').trim();
   if (!target) return '';
-  if (order?.isDirectBossOrder) return '';
+  if (order?.isDirectBossOrder || order?.isForwardedOrder) return '';
+  if (order?.isCustomerSubmitted === true) return target;
   const bossSet = new Set((bossIds || []).map(id => String(id)));
   if (bossSet.has(target)) return '';
   if (order?.bossChatId && String(order.bossChatId) === target) return '';
@@ -903,7 +904,7 @@ export function shouldSendSummaryToCustomer(order, db = null) {
 // Sends the max-discount bill summary to the customer EXACTLY ONCE.
 // After this the order waits in `APPROVAL_PENDING`: the customer taps
 // "Approve bill" and only then are the official Swiggy payment details sent.
-export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null, force = false, deliver = null } = {}) {
+export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null, force = false, deliver = null, onMessageSent = null } = {}) {
   if (!telegram?.sendMessage || !order?.id) return { sent: false, reason: 'no-telegram' };
 
   const liveDb = db || getDb();
@@ -916,7 +917,14 @@ export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null
 
   if (!force && (order.billSummarySentAt || order.billApprovedByUser)) return { sent: false, reason: 'already-sent' };
   if (['COMPLETED', 'CANCELLED', 'REJECTED', 'PAYMENT_PENDING'].includes(order.status)) return { sent: false, reason: 'not-awaiting-review' };
-  if (Number(order.finalPayable || 0) <= 0) return { sent: false, reason: 'bill-not-ready' };
+  const hasVerifiedZeroBill = Boolean(
+    order.swiggyVerified &&
+    Number(order.subtotal || order.itemTotal || 0) > 0 &&
+    order.finalPayable !== null &&
+    order.finalPayable !== undefined &&
+    Number(order.finalPayable) === 0
+  );
+  if (Number(order.finalPayable || 0) <= 0 && !hasVerifiedZeroBill) return { sent: false, reason: 'bill-not-ready' };
   if (!order.selectedAccount) return { sent: false, reason: 'no-account' };
 
   const summary = buildTelegramUserBillConfirmationCard({ ...order, userId: customerId });
@@ -946,8 +954,9 @@ export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null
     return { sent: true, customerId, viaCard: true };
   }
 
+  let sentMsg = null;
   try {
-    await telegram.sendMessage(customerId, summary.text, {
+    sentMsg = await telegram.sendMessage(customerId, summary.text, {
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
       ...summary.keyboard
@@ -962,6 +971,13 @@ export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null
     return { sent: false, reason: 'telegram-error', error: order.billSummarySendError };
   }
 
+  if (sentMsg?.message_id) {
+    order.billSummaryMessageId = sentMsg.message_id;
+    order.userChatId = order.userChatId || customerId;
+    if (typeof onMessageSent === 'function') {
+      try { onMessageSent(sentMsg); } catch {}
+    }
+  }
   order.status = 'APPROVAL_PENDING';
   order.uxStage = 'SCREEN_03_BILL_CONFIRMATION';
   order.billSummarySentAt = new Date().toISOString();
@@ -973,7 +989,7 @@ export async function sendBillSummaryToCustomerOnce(telegram, order, { db = null
   const freshDb = getDb();
   freshDb.orders[order.id] = order;
   saveDb(freshDb);
-  return { sent: true, customerId };
+  return { sent: true, customerId, messageId: sentMsg?.message_id || null };
 }
 
 function summarizeAddressPreview(order) {
@@ -1894,7 +1910,7 @@ export async function executeOrderBillSyncOnAccount({
     }
   } else {
     const acc = db.config?.accounts?.[accKey];
-    if (!acc || !acc.isLoggedIn || (!acc.cookies && !acc.tid)) {
+    if (!acc || !acc.isLoggedIn || (!acc.cookies && !acc.tid && !acc.jwtTid && !acc.token)) {
       const err = new Error(`Selected Swiggy account (${accKey}) is not logged in.`);
       err.diag = { code: 'ACCOUNT_NOT_LOGGED_IN', stage: 'PICK_SPECIFIC_ACCOUNT' };
       throw err;
