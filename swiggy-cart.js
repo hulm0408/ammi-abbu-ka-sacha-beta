@@ -7315,6 +7315,39 @@ async function runWithConcurrency(items, limit, workerFn) {
 }
 
 /**
+ * Expiry (ms) of the account's stored Swiggy `tid` JWT, if decodable.
+ * App logins mint 30-day tids, but web/OTP-style logins mint SHORT tids
+ * (~40 min) — an already-expired tid means every DAPI call for that account
+ * silently fails and the order looks "not found" on that account.
+ */
+export function accountTidExpiryMs(acc) {
+  const cm = parseCookieMap(String(acc?.cookies || ''));
+  const candidates = [acc?.jwtTid, acc?.tid, cm.tid];
+  for (const c of candidates) {
+    const part = String(c || '').split('.')[1];
+    if (!part || !String(c).includes('.')) continue;
+    try {
+      const payload = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+      const exp = Number(payload?.exp);
+      if (Number.isFinite(exp) && exp > 0) return exp * 1000;
+    } catch {}
+  }
+  return null;
+}
+
+function recordScanFailure(failures, seen, key, acc, reason, detail = '') {
+  if (seen.has(key)) return;
+  seen.add(key);
+  failures.push({
+    key,
+    phone: String(acc?.phone || acc?.mobile || '').replace(/\D/g, '').slice(-10),
+    name: String(acc?.name || '').slice(0, 24),
+    reason,
+    detail: String(detail || '').slice(0, 80)
+  });
+}
+
+/**
  * Scan every logged-in Swiggy ID for one exact order id.
  * Returns quickly with `TRACKING_FOUND` as soon as a real share link appears.
  */
@@ -7329,12 +7362,8 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
   const startedAt = Date.now();
   const targetId = normalizeSwiggyOrderId(swiggyOrderId);
   if (!targetId) {
-    return { status: 'NO_SWIGGY_ID', hasOrder: false, trackingUrl: '', scanned: 0, elapsedMs: 0 };
+    return { status: 'NO_SWIGGY_ID', hasOrder: false, trackingUrl: '', scanned: 0, elapsedMs: 0, failures: [] };
   }
-  const deadline = startedAt + Math.max(3000, Number(budgetMs) || 20000);
-  const remaining = () => deadline - Date.now();
-  const callTimeout = () => Math.max(1200, Math.min(Number(fetchTimeoutMs) || 6000, remaining()));
-
   const accountsMap = resolveTrackingAccountsMap(getAccountsFn);
   const entries = Object.entries(accountsMap)
     .filter(([, acc]) => acc && (acc.isLoggedIn || acc.cookies || acc.tid || acc.token))
@@ -7345,13 +7374,32 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
     });
 
   if (entries.length === 0) {
-    return { status: 'NO_ACCOUNTS', hasOrder: false, trackingUrl: '', scanned: 0, elapsedMs: Date.now() - startedAt };
+    return { status: 'NO_ACCOUNTS', hasOrder: false, trackingUrl: '', scanned: 0, elapsedMs: Date.now() - startedAt, failures: [] };
   }
+
+  // A 27-account vault needs far more than 20s at concurrency 4-6; a too-small
+  // budget silently scans only a subset (live incident: 8/27 scanned, "time
+  // out") and reports a misleading "not found". Scale the budget with account
+  // count (capped at 45s) so full coverage is actually achievable.
+  const requestedBudget = Math.max(3000, Number(budgetMs) || 20000);
+  const scaledBudget = Math.min(45000, Math.max(requestedBudget, entries.length * 1100));
+  const deadline = startedAt + scaledBudget;
+  const remaining = () => deadline - Date.now();
+  const callTimeout = () => Math.max(1200, Math.min(Number(fetchTimeoutMs) || 6000, remaining()));
 
   let best = null;
   let orderFound = null;
   const scannedAccounts = new Set();
   const accountCustomerIds = new Map();
+  // Per-account failures (expired session, WAF block, auth error) so a
+  // NOT_FOUND result can say WHY an account produced nothing — "the order is
+  // on another account" is only true when that account's session was alive.
+  const failures = [];
+  const failedKeys = new Set();
+  // Accounts whose order/all (or session-auth) call actually SUCCEEDED and
+  // returned a real (possibly empty) list — distinguishes "checked, no order"
+  // from "never checkable" in a NOT_FOUND reply.
+  const okScannedKeys = new Set();
   let timedOut = false;
 
   const inspectOrder = async (key, acc, orderObject, customerId = '', preloadedDetailsRes = null) => {
@@ -7434,6 +7482,12 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
     if (remaining() <= 300) { timedOut = true; return; }
     scannedAccounts.add(key);
     try {
+      // NOTE: a stored tid past its JWT `exp` is NOT skipped — Swiggy DAPI does
+      // not always enforce `exp` (the same past-exp token can still serve calls,
+      // e.g. in another bot). We try the real call first; only an actual
+      // rejection is recorded, and the past-exp fact is attached as a hint.
+      const tidExp = accountTidExpiryMs(acc);
+      const tidExpHint = (tidExp && tidExp < Date.now()) ? ` (tid past exp ${new Date(tidExp).toISOString()})` : '';
       // Same source as the "Orders Done" dashboard: the cached session auth
       // (WAF/token aware). Falls back to a direct order/all call only when auth failed.
       let list = [];
@@ -7443,12 +7497,22 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
         callTimeout(),
         null
       );
+      if (auth && auth.sessionExpired) {
+        recordScanFailure(failures, failedKeys, key, acc, 'SESSION_EXPIRED', String(auth.statusMessage || '') + tidExpHint);
+        return;
+      }
       if (auth && Array.isArray(auth.orders)) {
         list = auth.orders;
         customerId = String(auth.userId || customerId || '');
+        okScannedKeys.add(key);
       } else {
         const listRes = await dapiFetch(acc, 'order/all', { timeoutMs: callTimeout() }).catch(() => null);
-        list = Array.isArray(listRes?.json?.data?.orders) ? listRes.json.data.orders : [];
+        if (!listRes || listRes.status !== 200 || !listRes.json || Number(listRes.json.statusCode) !== 0) {
+          recordScanFailure(failures, failedKeys, key, acc, 'AUTH_FAILED', String(listRes?.json?.statusMessage || `HTTP ${listRes?.status ?? 'ERR'}`) + tidExpHint);
+          return;
+        }
+        list = Array.isArray(listRes.json.data.orders) ? listRes.json.data.orders : [];
+        okScannedKeys.add(key);
       }
       if (customerId) accountCustomerIds.set(key, customerId);
       const match = list.find(o => String(o?.order_id || '') === targetId) || null;
@@ -7467,6 +7531,10 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
       scannedAccounts.add(key);
       try {
         const detRes = await dapiFetch(acc, `order/details?order_id=${encodeURIComponent(targetId)}&type=full&version=V2`, { timeoutMs: callTimeout() }).catch(() => null);
+        if (!failedKeys.has(key) && (!detRes || detRes.status !== 200 || !detRes.json || Number(detRes.json.statusCode) !== 0)) {
+          recordScanFailure(failures, failedKeys, key, acc, 'AUTH_FAILED', String(detRes?.json?.statusMessage || `HTTP ${detRes?.status ?? 'ERR'}`));
+          return;
+        }
         const detOrder = detRes?.json?.data?.orders?.[0] || detRes?.json?.data?.order || null;
         if (!detOrder) return;
         const oid = String(detOrder?.order_id || detOrder?.orderId || detOrder?.id || '');
@@ -7484,7 +7552,13 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
     swiggyOrderId: targetId,
     scanned: scannedAccounts.size,
     elapsedMs: Date.now() - startedAt,
-    accountsTotal: entries.length
+    accountsTotal: entries.length,
+    okScanned: okScannedKeys.size,
+    okScannedPhones: [...okScannedKeys].map(k => {
+      const a = accountsMap[k] || {};
+      return String(a?.phone || a?.mobile || '').replace(/\D/g, '').slice(-10);
+    }).filter(Boolean),
+    failures
   };
   if (chosen) {
     return {

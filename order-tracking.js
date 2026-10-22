@@ -191,7 +191,9 @@ export async function ensureOrderTracking(orderRef, {
   budgetMs = 18_000,
   deep = true,
   force = false,
-  concurrency = 4,
+  // 27+ account vaults: concurrency 4 timed out after scanning only ~8 IDs
+  // (live incident 2026-10-22 3:48 PM). 6 keeps full coverage inside budget.
+  concurrency = 6,
   getAccountsFn = null
 } = {}) {
   const db = getDb();

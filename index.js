@@ -5714,9 +5714,52 @@ bot.action(/^boss_remind_fee_(.+)$/, async (ctx) => {
 });
 
 // Common handler for payment verification and real tracking extraction
+/** Render the per-account scan diagnostics for an all-IDs scan: how many
+ *  accounts actually returned a list (OK, no order) vs which failed and why,
+ *  so NOT_FOUND never hides "that account was never checked". */
+function scanFailuresLine(result) {
+  const fails = Array.isArray(result?.failures) ? result.failures : [];
+  const ok = Number(result?.okScanned) || 0;
+  let out = '';
+  // A TIMEOUT that only reached a subset of accounts must NOT be reported as
+  // "kisi bhi ID par nahi mila" — say plainly that the scan is incomplete and
+  // to retry (live incident: 8/27 scanned → user got a false "not found").
+  const total = Number(result?.accountsTotal) || 0;
+  if (result?.status === 'TIMEOUT' && total > 0 && (ok + fails.length) < total) {
+    out += `⚠ <b>Scan incomplete:</b> sirf ${ok + fails.length}/${total} IDs check hue (time out) — <b>dobara bhejo</b>, agle try me baaki bhi scan honge.\n`;
+  }
+  if (ok > 0 || fails.length > 0) {
+    out += `▪ <b>Checked:</b> ${ok} IDs OK (no order)${fails.length ? ` · <b>${fails.length}</b> failed` : ''}\n`;
+  }
+  if (fails.length) {
+    const shown = fails.slice(0, 6).map(f =>
+      `<code>${escapeHtml(String(f.phone || f.key || '?'))}</code> (${f.reason === 'SESSION_EXPIRED' ? 'session expired' : 'auth fail'})`
+    ).join(', ');
+    const more = fails.length > 6 ? ` +${fails.length - 6} aur` : '';
+    out += `▪ <b>Scan errors:</b> ${shown}${more} — in accounts ko <b>My Accounts</b> se dobara login karke retry karo.\n`;
+  }
+  return out;
+}
+
 async function handleConfirmOrderPaid(ctx, orderId, _confirmedBy) {
+  // Telegram expires callback answers after ~10s, but payment verification +
+  // all-IDs tracking scan takes longer → a late answerCbQuery ALWAYS 400s with
+  // "query is too old and response timeout expired". Answer ONCE, instantly
+  // (toast), then deliver the full result as a chat message.
+  await ctx.answerCbQuery('Verifying payment + checking tracking…').catch(() => {});
   const result = await checkOrderPaidStatusOnly(orderId);
-  await ctx.answerCbQuery(result.message || 'Waiting for Swiggy payment verification.', { show_alert: true }).catch(() => {});
+  try {
+    const ord = getDb().orders?.[orderId];
+    const link = ord ? getStoredSwiggyTrackingUrl(ord) : '';
+    const otp = String(ord?.deliveryOtp || '');
+    await ctx.reply(
+      (result?.message ? `◉ ${escapeHtml(result.message)}\n` : '') +
+      (link ? `🔗 <b>Tracking link:</b>\n<a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n` : '') +
+      (otp ? `🔑 <b>Delivery OTP:</b> <code>${escapeHtml(otp)}</code>\n` : '') +
+      `<i>Payment final hai — tracking auto-retry chalta rahega, link aate hi yahan aayega.</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+  } catch {}
 }
 
 bot.action(/^user_confirm_order_(.+)$/, async (ctx) => {
@@ -5818,7 +5861,9 @@ bot.action(/^extract_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
       await ctx.reply(
         `❌ <b>Swiggy order <code>${escapeHtml(q)}</code> kisi bhi logged-in ID par nahi mila.</b>\n\n` +
         `▪ Scanned: <b>${Number(result?.scanned) || 0}</b> IDs${result?.status === 'TIMEOUT' ? ' (time out)' : ''}\n` +
-        `<i>Order id check karein (numeric, 12–18 digits). Bot koi false tracking link nahi banata.</i>`,
+        scanFailuresLine(result) +
+        `▪ <b>Order kisi dusre Swiggy account par hoga</b> — jis account se order hua usko is bot me login karo (<b>My Accounts</b>), phir dobara id bhejo.\n` +
+        `<i>Order id bhi verify karo (numeric, 12–18 digits) — Swiggy app: Profile → My Orders. Bot koi false tracking link nahi banata.</i>`,
         { parse_mode: 'HTML' }
       );
       return;
@@ -8365,7 +8410,9 @@ bot.on('text', async (ctx) => {
               `<i>Boss Panel → accounts login karein, phir dobara try karein.</i>`
             : `❌ <b>Swiggy order <code>${escapeHtml(q)}</code> kisi bhi logged-in ID par nahi mila.</b>\n\n` +
               `▪ IDs scanned: <b>${Number(result?.scanned) || 0}</b>${result?.status === 'TIMEOUT' ? ' (time out)' : ''}\n` +
-              `<i>Order id check karein (numeric, 12–18 digits). Bot koi false link nahi banata.</i>`,
+              scanFailuresLine(result) +
+              `▪ <b>Order kisi dusre Swiggy account par hoga</b> — jis account se order hua usko is bot me login karo (<b>My Accounts</b>), phir dobara id bhejo.\n` +
+              `<i>Order id bhi verify karo (numeric, 12–18 digits) — Swiggy app: Profile → My Orders. Bot koi false link nahi banata.</i>`,
           { parse_mode: 'HTML' }
         );
         delete userWaitState[ctx.from.id];
@@ -10634,8 +10681,18 @@ bot.action(/^user_paid_status_([A-Za-z0-9_-]+)$/, async (ctx) => {
   if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
     return ctx.answerCbQuery('Unauthorized: not your order.', { show_alert: true }).catch(() => {});
   }
+  // Same 10s Telegram callback rule: answer instantly, result comes as a message.
+  await ctx.answerCbQuery('Checking payment + tracking…').catch(() => {});
   const res = await checkOrderPaidStatusOnly(orderId);
-  await ctx.answerCbQuery(res.message, { show_alert: true }).catch(() => {});
+  try {
+    const ord = getDb().orders?.[orderId];
+    const link = ord ? getStoredSwiggyTrackingUrl(ord) : '';
+    await ctx.reply(
+      `◉ ${escapeHtml(res.message)}` +
+      (link ? `\n\n🔗 <b>Tracking link:</b>\n<a href="${escapeHtml(link)}">${escapeHtml(link)}</a>` : ''),
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+  } catch {}
 });
 
 bot.action(/^user_resend_approved_qr_([A-Za-z0-9_-]+)$/, async (ctx) => {
