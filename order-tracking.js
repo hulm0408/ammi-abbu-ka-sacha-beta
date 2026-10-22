@@ -88,6 +88,19 @@ export function orderPlacedFromName(order, db = null) {
   return String(order?.selectedAccountName || acc?.name || acc?.swiggyName || '').trim();
 }
 
+/**
+ * A Swiggy *live* status that means the trip is over. Tracking links are never
+ * published by Swiggy for these orders, so retrying forever is pointless.
+ * NOTE: this is deliberately NOT applied to the bot's own `status` field —
+ * `COMPLETED` there only means "payment confirmed".
+ */
+export function isTerminalDeliveryStatus(value) {
+  // Deliberately narrow: "completed" is NOT matched. A false negative only costs
+  // a few capped retries, while a false positive would silently skip tracking
+  // for a live order — the worse failure.
+  return /delivered|cancelled|canceled|refused|returned/i.test(String(value || ''));
+}
+
 function applyScanToOrder(order, scan) {
   if (!order || !scan) return { changedTracking: false, previousUrl: getStoredSwiggyTrackingUrl(order) };
   const previousUrl = getStoredSwiggyTrackingUrl(order);
@@ -223,6 +236,9 @@ export function startOrderTrackingAuto(orderId, {
   if (getStoredSwiggyTrackingUrl(order)) return null;
   if (!orderSwiggyOrderId(order)) return null;
   if (['CANCELLED', 'REJECTED'].includes(String(order.status || ''))) return null;
+  // Swiggy never publishes a share link for a delivered/cancelled order — do not
+  // spin the retry ladder (and spam Swiggy) for those.
+  if (isTerminalDeliveryStatus(order.liveOrderStatus)) return null;
 
   const existing = autoTimers.get(key);
   if (existing && !existing.stopped && !force) return existing;
@@ -245,6 +261,9 @@ export function startOrderTrackingAuto(orderId, {
       return stopOrderTrackingAuto(key);
     }
     if (getStoredSwiggyTrackingUrl(fresh)) {
+      return stopOrderTrackingAuto(key);
+    }
+    if (isTerminalDeliveryStatus(fresh.liveOrderStatus)) {
       return stopOrderTrackingAuto(key);
     }
     state.attempts += 1;

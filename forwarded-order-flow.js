@@ -7,7 +7,7 @@ import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from '.
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
-import { startOrderTrackingAuto, ensureOrderTracking } from './order-tracking.js';
+import { startOrderTrackingAuto, ensureOrderTracking, isTerminalDeliveryStatus } from './order-tracking.js';
 
 // Robust order lookup — handles stale callback IDs, case mismatch, or swiggyOrderId passed instead of bot orderId
 function lookupOrder(db, orderId) {
@@ -3010,15 +3010,19 @@ export function registerForwardedOrderHandlers(bot, {
 
       if (!trackingUrl) {
         if (result?.hasOrder) {
+          const liveStatus = String(fresh.liveOrderStatus || result.orderStatus || 'Order Confirmed');
+          const finished = isTerminalDeliveryStatus(liveStatus);
           await ctx.reply(
             `✅ <b>Order Swiggy par mil gaya</b>\n` +
             `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
             `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
-            `▪ <b>Status:</b> <code>${escapeHtml(String(fresh.liveOrderStatus || result.orderStatus || 'Order Confirmed'))}</code>\n\n` +
-            `<i>Swiggy ne share link abhi publish nahi kiya. Bot background me retry karta rahega aur link aate hi bhej dega.</i>`,
+            `▪ <b>Status:</b> <code>${escapeHtml(liveStatus)}</code>\n\n` +
+            (finished
+              ? `<i>Order khatam ho chuka hai — Swiggy finished orders ka share link publish nahi karta. Tracking ki zaroorat nahi.</i>`
+              : `<i>Swiggy ne share link abhi publish nahi kiya. Bot background me retry karta rahega aur link aate hi bhej dega.</i>`),
             { parse_mode: 'HTML' }
           );
-          startOrderTrackingAuto(order.id, { force: true, budgetMs: 12000 });
+          if (!finished) startOrderTrackingAuto(order.id, { force: true, budgetMs: 12000 });
         } else {
           await ctx.reply(
             `❌ <b>No tracking link found on any ID yet.</b>\n` +
