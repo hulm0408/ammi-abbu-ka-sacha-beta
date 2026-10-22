@@ -25,6 +25,7 @@ test_*.mjs
 !test_v32_vault_security_hardening_e2e.mjs
 !test_v33_waf_incident_hardening_e2e.mjs
 !test_v34_waf_pool_breaker_e2e.mjs
+!test_v34_customer_auto_max_coupon_and_bill_qr_e2e.mjs
 probe_*.mjs
 inspect_*.mjs
 find_*.mjs

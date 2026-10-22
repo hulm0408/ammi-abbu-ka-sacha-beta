@@ -170,7 +170,8 @@ export function cleanSwiggyCookieString(rawCookies, acc = null) {
     const fbSessionTid = acc._session_tid || acc.session_tid || acc.sessionTid || '';
     if (fbSessionTid && !map.has('_session_tid')) map.set('_session_tid', fbSessionTid);
     if (acc.tid && !map.has('_session_tid') && !String(acc.tid).includes('.')) map.set('_session_tid', acc.tid);
-    if (acc.tid && !map.has('tid')) map.set('tid', acc.tid);
+    const fbJwtTid = (acc.jwtTid && String(acc.jwtTid).includes('.')) ? acc.jwtTid : acc.tid;
+    if (fbJwtTid && !map.has('tid')) map.set('tid', fbJwtTid);
     const fbTok = acc.token || acc.auth_token || acc.access_token || '';
     if (fbTok && !map.has('token')) map.set('token', fbTok);
     const fbSid = acc.sid || acc._sid || '';
@@ -200,7 +201,16 @@ export function buildSwiggyAndroidClientHeaders(accountOrCookies, opts = {}) {
   const cleanCookies = cleanSwiggyCookieString(accountOrCookies, acc);
   const cm = parseCookieMap(cleanCookies);
 
-  const rawTid = String(opts.tid || (acc?.tid && String(acc.tid).includes('.') ? acc.tid : '') || (cm.tid && cm.tid.includes('.') ? cm.tid : '') || acc?.tid || cm.tid || '').trim();
+  const rawTid = String(
+    opts.tid ||
+    (acc?.jwtTid && String(acc.jwtTid).includes('.') ? acc.jwtTid : '') ||
+    (acc?.tid && String(acc.tid).includes('.') ? acc.tid : '') ||
+    (cm.tid && cm.tid.includes('.') ? cm.tid : '') ||
+    acc?.jwtTid ||
+    acc?.tid ||
+    cm.tid ||
+    ''
+  ).trim();
   const token = String(opts.token || acc?.token || acc?.auth_token || acc?.access_token || cm.token || '').trim();
   const sid = String(opts.sid || acc?.sid || acc?._sid || cm._sid || cm.sid || '').trim();
   const deviceId = String(opts.deviceId || acc?.deviceId || acc?.device_id || acc?.swuid || cm._device_id || cm._swuid || '8f3b2c1a-4d5e-6f7a-8b9c-0d1e2f3a4b5c').trim();
@@ -575,7 +585,11 @@ export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = fals
       if (dapiOrderOut?.status === 200 && dapiOrderOut?.json) {
         const json = dapiOrderOut.json;
         if (json && json.statusCode === 0) {
-          let jwtTid = (json?.tid && String(json.tid).includes('.')) ? json.tid : (acc?.tid && String(acc.tid).includes('.') ? acc.tid : '');
+          let jwtTid = (json?.tid && String(json.tid).includes('.'))
+            ? json.tid
+            : ((acc?.jwtTid && String(acc.jwtTid).includes('.'))
+              ? acc.jwtTid
+              : (acc?.tid && String(acc.tid).includes('.') ? acc.tid : ''));
           let claims = jwtTid ? decodeJwtPayload(jwtTid) : null;
           const webJwtExplicitlyGuest = Boolean(
             json?.tid && String(json.tid).includes('.') &&
@@ -634,7 +648,10 @@ export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = fals
           sessionAuthCache.set(sig, { auth, ts: now });
           return auth;
         }
-        webExpiredMsg = json?.statusMessage || '';
+        const statusMsg = String(json?.statusMessage || '');
+        if (json?.statusCode === 999 || json?.statusCode === 401 || /login|unauth|session\s*expired/i.test(statusMsg)) {
+          webExpiredMsg = statusMsg || 'Session expired';
+        }
       }
     } catch (e) {
       console.warn('[SwiggyAuth] Web DAPI auth warning:', e.message);
@@ -709,7 +726,9 @@ export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = fals
   }
 
   // Fallback decode from existing JWT if network timed out transiently
-  const fallbackJwt = (acc?.tid && String(acc.tid).includes('.')) ? acc.tid : (cm.tid && cm.tid.includes('.') ? cm.tid : '');
+  const fallbackJwt = (acc?.jwtTid && String(acc.jwtTid).includes('.'))
+    ? acc.jwtTid
+    : ((acc?.tid && String(acc.tid).includes('.')) ? acc.tid : (cm.tid && cm.tid.includes('.') ? cm.tid : ''));
   const claims = fallbackJwt ? decodeJwtPayload(fallbackJwt) : null;
   const fallbackUid = claims?.user_id && String(claims.user_id) !== '0' ? String(claims.user_id) : (acc?.customerId || null);
   return {
@@ -979,7 +998,7 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
   if (
     accObj &&
     !String(accObj.cookies || '').includes('_session_tid=') &&
-    (accObj.tid || accObj.token || accObj.auth_token || accObj.access_token)
+    (accObj.tid || accObj.jwtTid || accObj.token || accObj.auth_token || accObj.access_token)
   ) {
     await bootstrapSwiggyWebSessionFromAndroidTokens(accObj, Math.min(3500, Math.max(1200, timeoutMs))).catch(() => false);
   }
@@ -1100,7 +1119,7 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
 
   // Pure Android token-only sessions (`!_session_tid`) authenticate on `chkout.swiggy.com` / `mcp.swiggy.com`, NEVER on web `/dapi/*` —
   // never waste 350MB RAM + 3s launching Headless Chromium on Render Free Tier for a token-only account!
-  if (!cleanCookies.includes('_session_tid=') && accountOrCookies && typeof accountOrCookies === 'object' && (accountOrCookies.tid || accountOrCookies.token)) {
+  if (!cleanCookies.includes('_session_tid=') && accountOrCookies && typeof accountOrCookies === 'object' && (accountOrCookies.tid || accountOrCookies.jwtTid || accountOrCookies.token)) {
     return { ok: false, status: 401, json: null };
   }
 
@@ -1443,7 +1462,7 @@ function getCandidateAccounts(preferredAccount = null, preferredHostName = null)
   const pushAcc = (key, acc) => {
     if (!acc || typeof acc !== 'object') return;
     const clean = cleanSwiggyCookieString(acc.cookies || '', acc);
-    if (!clean && !acc.tid) return;
+    if (!clean && !acc.tid && !acc.jwtTid && !acc.token) return;
     const id = key || acc.phone || acc.name || clean.slice(0, 40);
     if (seen.has(id)) return;
     seen.add(id);
@@ -3018,7 +3037,14 @@ export function applyMaxOfferToOrder(order) {
   }
 
   // If Swiggy checkout returned an authoritative `order_total`, keep it intact unless manually changed
-  if (!order.swiggyVerified || !order.finalPayable || Number(order.finalPayable) <= 0) {
+  const hasAuthoritativeVerifiedTotal = Boolean(
+    order.swiggyVerified &&
+    order.finalPayable !== null &&
+    order.finalPayable !== undefined &&
+    Number.isFinite(Number(order.finalPayable)) &&
+    Number(order.finalPayable) >= 0
+  );
+  if (!hasAuthoritativeVerifiedTotal && (!order.finalPayable || Number(order.finalPayable) <= 0)) {
     order.finalPayable = Math.max(
       1,
       Math.round(order.subtotal - discount - tradeDisc - freeCash + swiggyOneFee + delivery + (taxes > 0 ? taxes : packing))
@@ -5282,7 +5308,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
   if (!account) return { success: false, error: 'No account provided' };
 
   const cleanCookies = cleanSwiggyCookieString(account.cookies || '', account);
-  if (!cleanCookies && !account.tid) {
+  if (!cleanCookies && !account.tid && !account.jwtTid && !account.token) {
     return { success: false, error: 'Account has no active session or cookies' };
   }
 
@@ -5295,7 +5321,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       order.items.length > 0 &&
       order.items.every(it => it.itemId || it.menu_item_id)
     );
-    const rawAddrSource = order.addressOriginalText || order.address || '';
+    const rawAddrSource = order.addressOriginalText || order.address || order.addressLink || '';
     const addrResolvePromise = rawAddrSource && !isUsableDeliveryAddress(order.addressDetails)
       ? resolveSwiggyLink(rawAddrSource).catch(() => null)
       : Promise.resolve(null);
@@ -5839,6 +5865,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
 
     if (liveCart && liveCart.items?.length > 0 && (!restaurantId || String(liveCart.restaurantId) === String(restaurantId))) {
       let bestCartState = liveCart;
+      let lastLiveCartState = liveCart;
       let bestCode = liveCart.couponCode || '';
       let appliedAnyTrial = false;
       const validVerifiedCoupons = [];
@@ -5854,6 +5881,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
         appliedAnyTrial = true;
         const tested = await applyLiveCouponToOrder(account, order, cand.code, { fastSingleEngine: (cand.priority || 50) >= 35 });
         if (tested && tested.items?.length > 0) {
+          lastLiveCartState = tested;
           if (tested.couponCode === cand.code && tested.discountAmount > 0) {
             validVerifiedCoupons.push({
               ...cand,
@@ -5882,28 +5910,39 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       }
 
       if (bestCode && appliedAnyTrial) {
-        const restoredWinner = await reapplyWinningCouponAfterTrials({
-          account,
-          order,
-          bestCartState,
-          bestCode,
-          appliedAnyTrial
-        });
-        if (!restoredWinner.success) {
-          return { ...restoredWinner, accountComparison: [] };
+        const alreadyActiveOnServer =
+          String(lastLiveCartState?.couponCode || '').trim().toUpperCase() === String(bestCode).trim().toUpperCase() &&
+          Number(lastLiveCartState?.discountAmount || 0) > 0;
+        if (alreadyActiveOnServer) {
+          bestCartState = lastLiveCartState;
+        } else {
+          const restoredWinner = await reapplyWinningCouponAfterTrials({
+            account,
+            order,
+            bestCartState,
+            bestCode,
+            appliedAnyTrial
+          });
+          if (!restoredWinner.success) {
+            return { ...restoredWinner, accountComparison: [] };
+          }
+          bestCartState = restoredWinner.cart;
         }
-        bestCartState = restoredWinner.cart;
       } else if (!bestCode && appliedAnyTrial) {
-        const cleaned = await applyLiveCouponToOrder(account, order, 'REMOVE', { fastSingleEngine: true }).catch(() => null);
-        if (!cleaned?.items?.length || cleaned.couponCode) {
-          return {
-            success: false,
-            code: 'COUPON_CLEAR_FAILED',
-            error: 'Swiggy did not confirm removal of an unverified coupon. The order is blocked from payment; refresh the cart and retry.',
-            accountComparison: []
-          };
+        if (!lastLiveCartState?.couponCode) {
+          bestCartState = lastLiveCartState;
+        } else {
+          const cleaned = await applyLiveCouponToOrder(account, order, 'REMOVE', { fastSingleEngine: false }).catch(() => null);
+          if (!cleaned?.items?.length || cleaned.couponCode) {
+            return {
+              success: false,
+              code: 'COUPON_CLEAR_FAILED',
+              error: 'Swiggy did not confirm removal of an unverified coupon. The order is blocked from payment; refresh the cart and retry.',
+              accountComparison: []
+            };
+          }
+          bestCartState = cleaned;
         }
-        bestCartState = cleaned;
       }
       // Note: `generateRealSwiggyMerchantUpiQr` automatically enforces `needsSubOrDiscountRelock` right before `order/place`,
       // saving ~750ms here so cold-start `syncGroupCartAndCheckoutForAccount` always completes in ~4.2s (<6.5s budget)!
@@ -6126,7 +6165,7 @@ export function invalidateAccountOrderProfileCache(accKey = null) {
 }
 
 export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force = false } = {}) {
-  if (!acc || !acc.isLoggedIn || (!acc.cookies && !acc.tid && !acc.token)) {
+  if (!acc || !acc.isLoggedIn || (!acc.cookies && !acc.tid && !acc.jwtTid && !acc.token)) {
     return {
       key: accKey,
       valid: false,
@@ -6140,7 +6179,7 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     };
   }
 
-  const sig = `${accKey}|${(acc.tid || '').slice(0, 28)}|${acc.totalOrdersCount ?? ''}`;
+  const sig = `${accKey}|${(acc.jwtTid || acc.tid || '').slice(0, 28)}|${acc.totalOrdersCount ?? ''}`;
   const cached = accountOrderProfileCache.get(sig);
   if (!force && cached && (Date.now() - cached.ts) < 60 * 1000) {
     return cached.profile;
@@ -6159,7 +6198,11 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
       preferredOfferValue: Number(acc.preferredOfferValue || 1),
       walletBalance: 0
     };
-    accountOrderProfileCache.set(sig, { ts: Date.now(), profile: invalidProfile });
+    // Only cache `valid: false` when Swiggy explicitly confirmed session expiry;
+    // never lock out valid accounts for 60s due to transient network/WAF glitches!
+    if (auth?.sessionExpired === true) {
+      accountOrderProfileCache.set(sig, { ts: Date.now(), profile: invalidProfile });
+    }
     return invalidProfile;
   }
 
@@ -6222,13 +6265,17 @@ export function getBusySwiggyAccountsMap(db, excludeOrderId = null) {
     }
   }
   for (const [accKey, entry] of inFlightAccountReservations.entries()) {
-    if ((now - entry.reservedAt) >= RESERVATION_TTL_MS) {
+    const ownerOrder = orders[entry.orderId];
+    if (
+      (now - entry.reservedAt) >= RESERVATION_TTL_MS ||
+      (ownerOrder && ['COMPLETED', 'CANCELLED', 'REJECTED'].includes(ownerOrder.status))
+    ) {
       inFlightAccountReservations.delete(accKey);
       continue;
     }
     if (excludeOrderId && entry.orderId === String(excludeOrderId)) continue;
     if (!busy.has(accKey)) {
-      busy.set(accKey, orders[entry.orderId] || { id: entry.orderId, cardStage: 'AUTO_SELECTING' });
+      busy.set(accKey, ownerOrder || { id: entry.orderId, cardStage: 'AUTO_SELECTING' });
     }
   }
   return busy;
@@ -6270,14 +6317,25 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   const db = getDb();
   const accounts = db?.config?.accounts || {};
 
-  const allEntries = Object.entries(accounts).filter(([, a]) => a && a.isLoggedIn && (a.cookies || a.tid || a.token));
+  const allEntries = Object.entries(accounts).filter(([, a]) => a && a.isLoggedIn && (a.cookies || a.tid || a.jwtTid || a.token));
   if (allEntries.length === 0) {
     return { success: false, error: 'No logged-in Swiggy accounts available.' };
   }
 
-  // Inspect ALL logged-in accounts IN PARALLEL (`~0ms` warm cache, `~650ms` cold) to find exact `0-Order` & `FREE` status!
-  const profilesList = await Promise.all(
-    allEntries.map(([k, a]) => inspectAccountOrderHistoryAndOffers(k, a).then(p => ({ key: k, acc: a, profile: p })))
+  // Inspect logged-in accounts with bounded concurrency (6 workers) so Vault scans stay <1s
+  // without firing a 30-way simultaneous burst that trips Swiggy's AWS WAF!
+  const profilesList = new Array(allEntries.length);
+  let inspectCursor = 0;
+  const inspectWorkerCount = Math.min(6, allEntries.length);
+  await Promise.all(
+    Array.from({ length: inspectWorkerCount }, async () => {
+      while (inspectCursor < allEntries.length) {
+        const idx = inspectCursor++;
+        const [k, a] = allEntries[idx];
+        const p = await inspectAccountOrderHistoryAndOffers(k, a);
+        profilesList[idx] = { key: k, acc: a, profile: p };
+      }
+    })
   );
   const validPool = profilesList.filter(x => x.profile.valid);
   if (validPool.length === 0) {
