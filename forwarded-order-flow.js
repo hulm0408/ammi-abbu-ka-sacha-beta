@@ -830,7 +830,20 @@ export function buildTelegramUserBillConfirmationCard(order) {
     return `▪ ${quantity} × ${escapeHtml(item.name || 'Item')}${lineTotal > 0 ? `: ₹${lineTotal}` : ''}`;
   });
   const address = order?.addressDetails?.address || order?.address || 'Verified delivery address';
-  const total = Number(order?.finalPayable ?? order?.finalTotal ?? order?.subtotal ?? 0);
+  const sub = Number(order?.subtotal || 0);
+  const trade = Number(order?.tradeDiscountTotal || 0);
+  const disc = Number(order?.discountAmount || 0);
+  const fc = Number(order?.freeCashApplied || 0);
+  const oneFee = Number(order?.swiggyOneMembershipFee || 0);
+  const del = Number(order?.deliveryFee || 0);
+  const pack = Number(order?.packingCharges || 0);
+  const taxes = Number(order?.taxesAndCharges || 0);
+  const computedTotal = Math.max(0, Math.round((sub - trade - disc - fc + oneFee + del + pack + taxes) * 100) / 100);
+  let total = Number(order?.finalPayable ?? order?.finalTotal ?? order?.subtotal ?? 0);
+  if (!total || (trade + disc + fc > 0 && total >= sub && computedTotal < total)) {
+    total = computedTotal;
+    if (order) order.finalPayable = total;
+  }
   const billLines = [
     `Restaurant: <b>${escapeHtml(order?.restaurantName || 'Swiggy Order')}</b>`,
     `Deliver to: ${escapeHtml(address)}`,

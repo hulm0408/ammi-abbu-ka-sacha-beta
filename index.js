@@ -507,13 +507,22 @@ function getUserReplyKeyboard(draft = {}) {
   ]).resize();
 }
 
-// Boss Bottom Menu - Single dedicated Extract Tracking button (all dummy buttons removed per user request)
+// Boss Bottom Menu — all slot bot buttons + new Extract Tracking button
 function getBossReplyKeyboard() {
   return Markup.keyboard([
     [
+      { text: '★ Boss Panel' },
+      { text: '▣ Pending Orders' }
+    ],
+    [
+      { text: '📦 Orders Done' },
       { text: '🔗 Extract Tracking Link' }
+    ],
+    [
+      { text: '▤ Order History' },
+      { text: '× Cancelled Orders' }
     ]
-  ]).resize().persistent(false).oneTime(false).selective(false);
+  ]).resize();
 }
 
 bot.hears(['🔗 Extract Tracking Link', 'Extract Tracking Link', 'extract tracking', '/extract', '🔗 extract', '/extractlink', '/tracking'], async (ctx) => {
@@ -2805,7 +2814,7 @@ bot.command(['menu', 'panel'], async (ctx) => {
   await ctx.reply('Boss Panel:', { parse_mode: 'HTML', ...getBossPanelKeyboard() });
 });
 
-bot.hears(['Main Menu', 'Menu', 'Boss Panel', '⌂ Main Menu', '⌂ Boss Panel'], async (ctx) => {
+bot.hears(['Main Menu', 'Menu', 'Boss Panel', '★ Boss Panel', '★ Menu', '⌂ Main Menu', '⌂ Boss Panel'], async (ctx) => {
   delete userWaitState[ctx.from.id];
   if (!isBoss(ctx.from.id)) return;
   await ctx.reply(getBossPanelText(), { parse_mode: 'HTML', ...getBossReplyKeyboard() });
@@ -7119,7 +7128,7 @@ bot.hears(['Claim Free Cash', 'claim free cash', 'Free Cash', 'free cash', '▣ 
 });
 
 // BOSS ONLY BOTTOM BUTTONS
-bot.hears(['Pending Orders', '● Pending Orders'], async (ctx) => {
+bot.hears(['Pending Orders', '● Pending Orders', '▣ Pending Orders'], async (ctx) => {
   if (isBoss(ctx.from.id)) await sendPendingOrdersToBoss(ctx.from.id);
 });
 
@@ -10858,8 +10867,8 @@ bot.action(/^user_resend_approved_qr_([A-Za-z0-9_-]+)$/, async (ctx) => {
   }
 });
 
-// Lightweight health check server + Swiggy tracking endpoints + 24x7 Keep-Alive
-const healthPort = Number(process.env.PORT || 0);
+// Lightweight health check server + Swiggy tracking endpoints + 24x7 Keep-Alive (works on Render, Railway, etc.)
+const healthPort = Number(process.env.PORT || (process.env.RENDER ? 10000 : 0));
 if (healthPort > 0) {
   const server = http.createServer(async (req, res) => {
     try {

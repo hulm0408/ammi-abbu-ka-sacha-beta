@@ -3018,19 +3018,23 @@ export function applyMaxOfferToOrder(order) {
     order.totalSavings = Math.round((freeDelSaved + discount + tradeDisc + freeCash) * 100) / 100;
   }
 
-  // If Swiggy checkout returned an authoritative `order_total`, keep it intact unless manually changed
+  // If Swiggy checkout returned an authoritative `order_total`, keep it intact unless un-discounted
+  const totalDeductions = discount + tradeDisc + freeCash;
+  const calculatedPayable = Math.max(
+    1,
+    Math.round(order.subtotal - discount - tradeDisc - freeCash + swiggyOneFee + delivery + (taxes > 0 ? taxes : packing))
+  );
+
   const hasAuthoritativeVerifiedTotal = Boolean(
     order.swiggyVerified &&
     order.finalPayable !== null &&
     order.finalPayable !== undefined &&
     Number.isFinite(Number(order.finalPayable)) &&
-    Number(order.finalPayable) >= 0
+    Number(order.finalPayable) >= 0 &&
+    (totalDeductions <= 0 || Number(order.finalPayable) < order.subtotal)
   );
-  if (!hasAuthoritativeVerifiedTotal && (!order.finalPayable || Number(order.finalPayable) <= 0)) {
-    order.finalPayable = Math.max(
-      1,
-      Math.round(order.subtotal - discount - tradeDisc - freeCash + swiggyOneFee + delivery + (taxes > 0 ? taxes : packing))
-    );
+  if (!hasAuthoritativeVerifiedTotal || !order.finalPayable || Number(order.finalPayable) <= 0) {
+    order.finalPayable = calculatedPayable;
   }
 
   return order;

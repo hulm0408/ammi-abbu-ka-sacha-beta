@@ -51,31 +51,52 @@ function billSection(order) {
   if (!hasBill) {
     return section('Final Bill', sub('Calculating max coupon and final bill — items not loaded yet'));
   }
-  const rows = [['Final Bill', '']];
-  rows.push(['Items Total', `₹${Number(order.subtotal || 0)}`]);
-  if (order.tradeDiscountTotal > 0) rows.push(['Restaurant Offer Discount', `−₹${Number(order.tradeDiscountTotal)}`]);
-  if (order.couponCode && order.discountAmount > 0) {
-    rows.push([`Coupon ${esc(order.couponCode)}`, `−₹${Number(order.discountAmount)}`]);
-  }
-  if (Number(order.swiggyOneMembershipFee || 0) > 0) {
-    rows.push(['Swiggy One Lite Membership', `+₹${Number(order.swiggyOneMembershipFee)}`]);
-  }
-  if (order.freeCashApplied > 0) rows.push(['Swiggy Money / Free Cash', `−₹${Number(order.freeCashApplied)}`]);
+  const subtotal = Number(order.subtotal || order.itemTotal || 0);
+  const tradeDiscountTotal = Number(order.tradeDiscountTotal || 0);
+  const discountAmount = Number(order.discountAmount || 0);
+  const swiggyOneMembershipFee = Number(order.swiggyOneMembershipFee || 0);
+  const freeCashApplied = Number(order.freeCashApplied || 0);
+  const deliveryFee = Number(order.deliveryFee || 0);
+  const packingCharges = Number(order.packingCharges || 0);
+  const taxesAndCharges = Number(order.taxesAndCharges || 0);
   const savedDel = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
+
+  // Correct mathematically consistent total
+  const computedPayable = Math.max(0, Math.round((subtotal - tradeDiscountTotal - discountAmount - freeCashApplied + swiggyOneMembershipFee + deliveryFee + packingCharges + taxesAndCharges) * 100) / 100);
+
+  let finalPayable = Number(order.finalPayable);
+  const totalDiscounts = tradeDiscountTotal + discountAmount + freeCashApplied;
+  if (!finalPayable || (totalDiscounts > 0 && finalPayable >= subtotal && computedPayable < finalPayable)) {
+    finalPayable = computedPayable;
+    order.finalPayable = finalPayable;
+  }
+
+  const rows = [['Final Bill', '']];
+  rows.push(['Items Total', `₹${subtotal}`]);
+  if (tradeDiscountTotal > 0) rows.push(['Restaurant Offer Discount', `−₹${tradeDiscountTotal}`]);
+  if (order.couponCode && discountAmount > 0) {
+    rows.push([`Coupon ${esc(order.couponCode)}`, `−₹${discountAmount}`]);
+  }
+  if (swiggyOneMembershipFee > 0) {
+    rows.push(['Swiggy One Lite Membership', `+₹${swiggyOneMembershipFee}`]);
+  }
+  if (freeCashApplied > 0) rows.push(['Swiggy Money / Free Cash', `−₹${freeCashApplied}`]);
   const isFreeDel =
-    Number(order.deliveryFee || 0) <= 0 &&
-    (order.swiggyOneApplied || savedDel > 0 || Number(order.swiggyOneMembershipFee || 0) > 0 || order.freeDelivery);
+    deliveryFee <= 0 &&
+    (order.swiggyOneApplied || savedDel > 0 || swiggyOneMembershipFee > 0 || order.freeDelivery);
   if (isFreeDel) {
-    rows.push(['Free Delivery upto 7km', `Delivery Fee: FREE${savedDel > 0 ? ` (₹${savedDel} saved)` : ''}`]);
-  } else if (Number(order.deliveryFee || 0) > 0) {
-    rows.push(['Delivery Fee', `₹${Number(order.deliveryFee)}`]);
+    rows.push(['Delivery Fee', `FREE (Free Delivery upto 7km${savedDel > 0 ? ` · ₹${savedDel} saved` : ''})`]);
+  } else if (deliveryFee > 0) {
+    rows.push(['Delivery Fee', `₹${deliveryFee}`]);
   } else {
     rows.push(['Delivery Fee', 'FREE']);
   }
-  if (order.packingCharges > 0) rows.push(['Packing Charges', `₹${Number(order.packingCharges)}`]);
-  if (order.taxesAndCharges > 0) rows.push(['GST & Other Charges', `₹${Number(order.taxesAndCharges)}`]);
-  if (order.totalSavings > 0) rows.push(['Total Savings', `₹${Number(order.totalSavings)}`]);
-  rows.push([`<b>Final Total</b>`, `<b>₹${Number(order.finalPayable || order.subtotal || 0)}</b>`]);
+  if (packingCharges > 0) rows.push(['Packing Charges', `₹${packingCharges}`]);
+  if (taxesAndCharges > 0) rows.push(['GST & Other Charges', `₹${taxesAndCharges}`]);
+  const calcSavings = Math.round((totalDiscounts + (isFreeDel && savedDel > 0 ? savedDel : 0)) * 100) / 100;
+  const totalSavings = Math.max(Number(order.totalSavings || 0), calcSavings);
+  if (totalSavings > 0) rows.push(['Total Savings', `₹${totalSavings}`]);
+  rows.push([`<b>Final Total</b>`, `<b>₹${finalPayable}</b>`]);
   rows.push(['Payment Options', 'UPI QR, Card, Wallet via Swiggy']);
   return section('Final Bill', table(rows));
 }
@@ -92,6 +113,7 @@ export function swiggyOrderIdOf(order) {
 
 export function placedFromPhoneOf(order, db) {
   const direct = String(
+    order?.orderAccount ||
     order?.selectedAccountPhone ||
     order?.orderAccountPhone ||
     order?.placedFromPhone ||
@@ -177,23 +199,34 @@ export function buildBossPanelHome(db) {
     sub('Manage orders, accounts, and offers from here.'),
   ].join('\n'));
 
-  // Clean minimal Boss Panel — only necessary buttons, all dummy buttons removed
+  // Complete Boss Panel — combines both telegram-slot-bot features & new ammi-abbu features
   const keyboard = Markup.inlineKeyboard([
     [
-      { text: '📊 Dashboard (ID + Tracking + Phone)', callback_data: 'boss_dashboard' }
+      { text: '📊 Dashboard', callback_data: 'boss_dashboard' },
+      { text: '🔗 Extract Tracking', callback_data: 'boss_extract_tracking_prompt' }
     ],
     [
-      { text: '🔗 Extract Tracking Link', callback_data: 'boss_extract_tracking_prompt' }
-    ],
-    [
-      { text: '📦 Orders Done', callback_data: 'boss_view_orders_done' },
+      { text: '📦 Orders Done (All IDs)', callback_data: 'boss_view_orders_done' },
       { text: '▣ Pending Orders', callback_data: 'boss_view_pending' }
     ],
     [
-      { text: '◉ Connected Accounts', callback_data: 'boss_view_accounts' },
-      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' }
+      { text: '☎ Login with Number', callback_data: 'boss_login_with_number' },
+      { text: '▤ Login with JSON', callback_data: 'boss_login_with_json' }
     ],
     [
+      { text: '◉ Connected Accounts', callback_data: 'boss_view_accounts' },
+      { text: '📤 Export & Logout', callback_data: 'boss_export_logout_picker' }
+    ],
+    [
+      { text: '▤ Order History', callback_data: 'boss_view_archive' },
+      { text: '× Cancelled Orders', callback_data: 'boss_view_cancelled_orders' }
+    ],
+    [
+      { text: '🎁 Claim Offers (All)', callback_data: 'boss_claim_all_event_offers' },
+      { text: '🔄 Audit Sessions', callback_data: 'boss_refresh_all_accounts' }
+    ],
+    [
+      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' },
       { text: '× Close', callback_data: 'close_menu' }
     ]
   ]);
@@ -334,7 +367,7 @@ export function buildBossOrderCard(order, db = getDb()) {
       ? `${sub('Status: bill sent to customer — awaiting payment confirmation')}`
       : '';
 
-  let text = `${heading(`[ ORDER #${order.id} ] · ${statusBadge}`)}\n`;
+  let text = `${heading(`[ ORDER #${order.id} ] · ${statusBadge}`)}\n\n`;
   text += section('Ordered By', [
     `<b>Name:</b> ${senderLink}`,
     `<b>User ID:</b> ${idLink}`,
@@ -371,13 +404,15 @@ export function buildBossOrderCard(order, db = getDb()) {
   const ad = order.addressDetails || {};
   if (ad.name || ad.mobile || ad.address) {
     const rLines = [];
-    if (ad.name) rLines.push(field('Name', esc(ad.name)));
+    if (ad.name) rLines.push(field('Name', ad.name));
     if (ad.mobile) rLines.push(`<b>Phone:</b> <code>${esc(ad.mobile)}</code> · <i>delivery contact</i>`);
-    if (ad.address) rLines.push(field('Address', esc(ad.address.length>80?ad.address.slice(0,80)+'…':ad.address)));
+    if (ad.address) rLines.push(field('Address', ad.address.length > 80 ? ad.address.slice(0, 80) + '…' : ad.address));
     if (rLines.length) text += section('Deliver To (Recipient)', rLines.join('\n') + '\n' + sub('Order placed on recipient\'s name & phone — rider will call them, not you.'));
   }
   text += billSection(order);
-  text += `${paymentNote}\n`;
+  if (paymentNote) {
+    text += section('Payment Status', paymentNote);
+  }
   let offerLine = '';
   if (order.autoOptimizeError) {
     offerLine = `\n<b>Auto offers:</b> <i>${esc(order.autoOptimizeError)}</i>`;
@@ -386,7 +421,7 @@ export function buildBossOrderCard(order, db = getDb()) {
   }
   text += section('Cart & Delivery', [
     `<b>Cart:</b> ${order.cart ? `<a href="${esc(order.cart)}">Open cart link</a>` : '<i>Not added</i>'}`,
-    field('Deliver to', esc(addrPreview(order))),
+    field('Deliver to', addrPreview(order)),
     field('Time', new Date(order.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })),
   ].join('\n') + offerLine);
   if (order.status === 'COMPLETED') {

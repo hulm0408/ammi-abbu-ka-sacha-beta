@@ -10,7 +10,7 @@ export const SECTION_GAP = '\n';
 
 export function esc(str = '') {
   return String(str ?? '')
-    .replace(/&/g, '&amp;')
+    .replace(/&(?!(?:amp|lt|gt|quot|apos|#39|#\d+);)/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
