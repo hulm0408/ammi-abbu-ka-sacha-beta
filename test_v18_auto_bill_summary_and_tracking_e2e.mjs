@@ -7,6 +7,11 @@
 //   3. Tapping "Approve bill" sends the official Swiggy payment QR/link.
 //   4. After payment the customer gets the real Swiggy tracking link — never a
 //      bot-side /track/<orderId> page.
+//
+// Current delivery contract (updated): the "order update" notice is SMS-only
+// (Telegram DM disabled per user request — see sendOrderDeliveryInfoNotice),
+// and the bot uses the no-slots UX (approval never consumes slots — v29).
+// SMS is captured through a fake webhook so the exact text is asserted.
 // ============================================================================
 
 process.env.TEST_MODE = '1';
@@ -25,13 +30,30 @@ const restoreDb = () => {
 process.on('exit', restoreDb);
 
 // Offline network: every Swiggy call fails cleanly and fast.
-globalThis.fetch = async () => ({
-  ok: false,
-  status: 503,
-  headers: { get: () => null },
-  text: async () => '',
-  json: async () => ({})
-});
+// A fake SMS webhook captures the exact SMS text so the SMS-only delivery
+// contract can be asserted (Telegram DM for the order notice is disabled).
+const SMS_WEBHOOK = 'https://sms.example/gateway';
+process.env.SMS_WEBHOOK_URL = SMS_WEBHOOK;
+const sentSms = [];
+globalThis.fetch = async (url, init = {}) => {
+  const target = String(url);
+  if (target.startsWith(SMS_WEBHOOK)) {
+    try {
+      const body = JSON.parse(init?.body || '{}');
+      sentSms.push({ to: body.to, text: body.message || '' });
+    } catch {}
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => 'ok', json: async () => ({ ok: true }) };
+  }
+  return {
+    ok: false,
+    status: 503,
+    headers: { get: () => null },
+    text: async () => '',
+    json: async () => ({})
+  };
+};
+const smsText = (mark = 0) => sentSms.slice(mark).map((s) => s.text).join('\n');
+const smsCount = () => sentSms.length;
 
 const results = [];
 function check(label, condition) {
@@ -181,11 +203,12 @@ console.log('\n--- Scenario 2: approve -> payment QR/link to the customer ---');
   check('payment details are the official Swiggy payment request',
     paymentMsgs.some((m) => /Payment QR/.test(m.text) && /Payment status/i.test(JSON.stringify(m.payload))));
   check('payment message never uses a bot tracking page', !customerMessagesSince(before).some((m) => /bot\.example\/track\//.test(m.text)));
-  check('a slot is consumed exactly once', Number(getDb().config.slotsLeft) === slotsBefore - 1 && after.slotConsumed === true);
+  // No-slots UX (v29): approval must never consume slots — the limit is gone.
+  check('approval never consumes slots (no-slots UX)', Number(getDb().config.slotsLeft) === slotsBefore);
 
   const slotsAfterFirst = Number(getDb().config.slotsLeft);
   await approveUserOrderBillAction(CUSTOMER_ID, 'V18_A');
-  check('a repeated approve never consumes a second slot', Number(getDb().config.slotsLeft) === slotsAfterFirst);
+  check('a repeated approve is a no-op (no slot/state drift)', Number(getDb().config.slotsLeft) === slotsAfterFirst);
 }
 
 // ---------------------------------------------------------------------------
@@ -236,28 +259,31 @@ console.log('\n--- Scenario 3: paid order delivers the actual Swiggy tracking li
   const before = sentMessages.length;
   const order = getDb().orders.V18_A;
   const delivered = await sendOrderDeliveryInfoNotice(bot.telegram, '6484999726', order, { force: true });
-  const notice = customerMessagesSince(before)[0] || {};
+  await new Promise((r) => setTimeout(r, 25)); // let fire-and-forget SMS webhook calls settle
+  const notice = smsText(0);
   check('payment confirmation reaches the customer', delivered === true);
-  check('the message names the payment confirmation', /Payment received/i.test(notice.text || ''));
-  check('the real Swiggy tracking link is delivered', (notice.text || '').includes(officialTrack));
+  check('the message names the payment confirmation', /order (?:place|placed)/i.test(notice));
+  check('the real Swiggy tracking link is delivered', notice.includes(officialTrack));
   check('the delivered link is an official Swiggy host',
-    /swiggy\.com\/orders\/track\//.test(notice.text || ''));
-  check('no bot-side tracking page is sent to the customer', !/\/track\/V18_A/.test(notice.text || ''));
-  check('the delivery OTP is included', /4821/.test(notice.text || ''));
+    /swiggy\.com\/orders\/track\//.test(notice));
+  check('no bot-side tracking page is sent to the customer', !/\/track\/V18_A/.test(notice) && !anyBotTrackUrl());
+  check('the delivery OTP is included', /4821/.test(notice));
 
   // Duplicate calls must not spam the customer.
-  const afterFirst = bossCount();
+  const afterFirst = smsCount();
   await sendOrderDeliveryInfoNotice(bot.telegram, '6484999726', getDb().orders.V18_A);
-  check('the same tracking/OTP is never sent twice', bossCount() === afterFirst);
+  await new Promise((r) => setTimeout(r, 25));
+  check('the same tracking/OTP is never sent twice', smsCount() === afterFirst);
 
-  // A newly published link is delivered exactly then.
+  // A newly published link is delivered exactly then (parent + direct SMS).
   const updated = { ...getDb().orders.V18_A, deliveryInfoNotices: { [CUSTOMER_ID]: `${officialTrack}\n4821` } };
   const newerTrack = 'https://www.swiggy.com/orders/track/250070826195484?source=track';
   updated.trackingLink = newerTrack;
   saveDb((() => { const d = getDb(); d.orders.V18_A = updated; return d; })());
-  const beforeNew = bossCount();
+  const beforeNew = smsCount();
   await sendOrderDeliveryInfoNotice(bot.telegram, '6484999726', getDb().orders.V18_A);
-  check('a later official link is pushed to the customer', bossCount() === beforeNew + 1);
+  await new Promise((r) => setTimeout(r, 25));
+  check('a later official link is pushed to the customer', smsCount() > beforeNew && smsText(beforeNew).includes(newerTrack));
 }
 
 // ---------------------------------------------------------------------------
@@ -276,12 +302,14 @@ console.log('\n--- Scenario 4: tracking not published yet ---');
   });
   saveDb(db);
 
-  const before = sentMessages.length;
+  const beforeSms = smsCount();
   await sendOrderDeliveryInfoNotice(bot.telegram, '6484999726', getDb().orders.V18_B, { force: true });
-  const notice = customerMessagesSince(before)[0] || {};
-  check('the customer is told Swiggy has not published tracking', /not (?:yet )?(?:shared|published)/i.test(notice.text || ''));
-  check('the fallback points to the real Swiggy orders page', /swiggy\.com\/orders/.test(notice.text || ''));
-  check('no synthesised tracking URL is produced from the order id', !/track\/250070826195999/.test(notice.text || ''));
+  await new Promise((r) => setTimeout(r, 25));
+  const notice = smsText(beforeSms);
+  check('the customer is told Swiggy has not published tracking', /jaldi bheja jayega|not (?:yet )?(?:shared|published)/i.test(notice));
+  check('the fallback points to the real Swiggy orders page', /swiggy\.com\/orders/.test(notice));
+  check('the no-link notice never points at a bot page', !/(bot\.example|onrender\.com|railway\.app)/.test(notice));
+  check('no synthesised tracking URL is produced from the order id', !/track\/250070826195999/.test(notice));
 }
 
 // ---------------------------------------------------------------------------

@@ -631,13 +631,25 @@ try {
     swiggyOrderId: '250070826195484',
     trackingLink: '',
     trackingLinkSource: '',
-    deliveryOtp: ''
+    deliveryOtp: '',
+    addressDetails: { name: 'Ammi', mobile: '9876500011' }
   };
   saveDb(pollDb);
-  const deliveryNotices = [];
+  // Customer-facing order notices are SMS-only (Telegram DM disabled per user
+  // request) — capture the exact SMS text through a fake webhook.
+  const realFetchForPoll = globalThis.fetch;
+  const deliverySms = [];
+  process.env.SMS_WEBHOOK_URL = 'https://sms.audit.example/gw';
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).startsWith('https://sms.audit.example/gw')) {
+      try { deliverySms.push(JSON.parse(init?.body || '{}').message || ''); } catch {}
+      return { ok: true, status: 200, headers: { get: () => null }, text: async () => 'ok', json: async () => ({ ok: true }) };
+    }
+    return realFetchForPoll(url, init);
+  };
   let trackingFetchCount = 0;
   startOrderDeliveryInfoPoller({
-    telegram: { sendMessage: async (chatId, text) => { deliveryNotices.push({ chatId, text }); } },
+    telegram: { sendMessage: async () => {} },
     chatId: 'TRACKING_BOSS_CHAT',
     orderId: pollOrderId,
     intervalMs: 5,
@@ -650,13 +662,15 @@ try {
   });
   await new Promise(resolve => setTimeout(resolve, 35));
   stopOrderDeliveryInfoPoller(pollOrderId);
+  globalThis.fetch = realFetchForPoll;
+  delete process.env.SMS_WEBHOOK_URL;
   const polledOrder = getDb().orders[pollOrderId];
   assert(
     polledOrder.trackingLink === officialTrackingUrl && polledOrder.trackingLinkSource === 'SWIGGY_API' && polledOrder.deliveryOtp === '4821',
     'Bounded delivery poller persists a later Swiggy tracking URL and delivery OTP with source provenance'
   );
   assert(
-    deliveryNotices.length >= 2 && deliveryNotices.some(notice => notice.text.includes(officialTrackingUrl) && notice.text.includes('4821')),
+    deliverySms.length >= 2 && deliverySms.some(text => text.includes(officialTrackingUrl) && text.includes('4821')),
     'Customer first receives tracking, then receives a follow-up with the delivery OTP when Swiggy publishes it later'
   );
   delete pollDb.orders[pollOrderId];

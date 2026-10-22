@@ -254,20 +254,27 @@ export async function ensureOrderTracking(orderRef, {
       target = { ...order, isExternalOrder: true, isSwiggyIdLookup: true };
       freshDb.orders[target.id] = target;
     }
-    const { changedTracking, previousUrl } = applyScanToOrder(target, scan);
+    applyScanToOrder(target, scan);
     saveDb(freshDb);
 
     // Keep the caller's in-memory object in sync (it is often the same object).
     if (target !== order) applyScanToOrder(order, scan);
 
-    if (changedTracking && trackingNotifier) {
+    // BUGFIX (notifier race): the scan itself may persist a verified link to
+    // disk via `rememberSwiggyOrderTracking`'s order hydration WHILE scanning —
+    // before `applyScanToOrder` above ran. In that case `changedTracking` is
+    // false even though THIS scan is what surfaced the link, and the customer
+    // would never receive the "Live Swiggy tracking ready" push. Compare the
+    // final stored URL against the pre-scan state instead.
+    const finalUrl = getStoredSwiggyTrackingUrl(target) || '';
+    if (finalUrl && finalUrl !== existingUrl && trackingNotifier) {
       try {
-        await trackingNotifier(target, { previousUrl, scan });
+        await trackingNotifier(target, { previousUrl: existingUrl, scan });
       } catch (err) {
         console.warn('[order-tracking] notifier failed:', err?.message || err);
       }
     }
-    return { ...scan, orderId: order.id, trackingUrl: getStoredSwiggyTrackingUrl(target) || scan.trackingUrl || '' };
+    return { ...scan, orderId: order.id, trackingUrl: finalUrl || scan.trackingUrl || '' };
   })().finally(() => inflightScans.delete(inflightKey));
 
   inflightScans.set(inflightKey, run);
