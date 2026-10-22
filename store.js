@@ -552,6 +552,25 @@ export function saveDb(data) {
     }
   }
 
+  // Always stamp the Swiggy account phone/name onto every order that was placed
+  // from a saved account — the Boss dashboard must always be able to answer
+  // "is order ko kis phone se place kiya gaya?" without re-reading the account.
+  try {
+    const accounts = data?.config?.accounts || {};
+    for (const order of Object.values(data?.orders || {})) {
+      if (!order || typeof order !== 'object') continue;
+      const accKey = order.selectedAccount;
+      if (!accKey) continue;
+      const acc = accounts[accKey];
+      if (!acc) continue;
+      const phone = String(acc.phone || acc.mobile || '').replace(/^\+?91/, '').replace(/\D/g, '').slice(-10);
+      if (phone && order.selectedAccountPhone !== phone) order.selectedAccountPhone = phone;
+      const accName = String(acc.name || acc.swiggyName || '').trim();
+      if (accName && !order.selectedAccountName) order.selectedAccountName = accName;
+      if (phone && !order.orderAccount) order.orderAccount = phone;
+    }
+  } catch {}
+
   // Concurrent-Safe Parallel Merge for Orders + Uploaded Accounts + Session Vault!
   // Any account/vault/order written concurrently to disk after `getDb()` was called is 100% preserved unless explicitly mutated/deleted by caller!
   if (data && (data.__baseOrdersJson || data.__baseAccountsJson)) {
