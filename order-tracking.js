@@ -16,8 +16,10 @@ import { getDb, saveDb } from './store.js';
 import {
   scanOrderAcrossAccounts,
   normalizeSwiggyOrderId,
+  normalizeSwiggyLiveOrderStatus,
   getStoredSwiggyTrackingUrl,
   isOfficialSwiggyTrackingUrl,
+  validateTrackingUrlForOrder,
   extractOrderShareUrlDeep,
   dapiFetch
 } from './swiggy-cart.js';
@@ -101,8 +103,11 @@ export function isCancelledOrRefusedStatus(value) {
 export function isTerminalDeliveryStatus(value) {
   // Deliberately narrow: "completed" is NOT matched. A false negative only costs
   // a few capped retries, while a false positive would silently skip tracking
-  // for a live order — the worse failure.
-  return /delivered|cancelled|canceled|refused|returned/i.test(String(value || ''));
+  // for a live order — the worse failure. Swiggy post-delivery prompts on
+  // trackV4 ("Rate your delivery", "How was your food?", etc.) ARE terminal.
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  return /(?:delivered|rate\s+(?:your\s+)?(?:delivery|order|food|experience)|how\s+was\s+your\s+(?:food|order|delivery)|leave\s+a\s+review|tip\s+your\s+(?:delivery|rider|partner)|cancelled|canceled|refused|returned)/i.test(raw);
 }
 
 function applyScanToOrder(order, scan) {
@@ -111,7 +116,10 @@ function applyScanToOrder(order, scan) {
   const candidates = [scan.trackingUrl, scan.nativeShareUrl, scan.swiggyWebTrackUrl]
     .map(value => String(value || '').trim())
     .filter(Boolean);
-  const verifiedUrl = candidates.find(value => isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink: true })) || '';
+  const verifiedUrl = candidates.find(value =>
+    validateTrackingUrlForOrder(value, order, 'SWIGGY_API') ||
+    (isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink: true }) && validateTrackingUrlForOrder(value, { swiggyOrderId: scan.swiggyOrderId || order.swiggyOrderId }, 'SWIGGY_API'))
+  ) || '';
   if (verifiedUrl && verifiedUrl !== previousUrl) {
     order.trackingLink = verifiedUrl;
     order.trackingLinkSource = 'SWIGGY_API';
@@ -119,7 +127,9 @@ function applyScanToOrder(order, scan) {
     order.trackingFoundAt = new Date().toISOString();
   }
   if (scan.otp) order.deliveryOtp = String(scan.otp).replace(/\D/g, '').slice(0, 8);
-  if (scan.orderStatus) order.liveOrderStatus = String(scan.orderStatus);
+  if (scan.orderStatus) {
+    order.liveOrderStatus = normalizeSwiggyLiveOrderStatus(scan.orderStatus) || String(scan.orderStatus);
+  }
   if (scan.etaMinutes) order.etaMinutes = String(scan.etaMinutes);
   if (scan.deliveryBoy?.name) order.deliveryBoyName = String(scan.deliveryBoy.name);
   if (scan.deliveryBoy?.mobile) order.deliveryBoyMobile = String(scan.deliveryBoy.mobile);

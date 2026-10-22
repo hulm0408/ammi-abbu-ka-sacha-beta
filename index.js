@@ -52,6 +52,8 @@ import {
   getGenuinePaymentDetails,
   getStoredSwiggyTrackingUrl,
   isOfficialSwiggyTrackingUrl,
+  isFabricatedTrackingUrl,
+  normalizeSwiggyLiveOrderStatus,
   resolveSwiggyLink,
   fetchAccountAddresses,
   fetchAccountOrders,
@@ -5791,7 +5793,8 @@ bot.action(/^extract_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
     }
     saveDb(saveDbNow);
 
-    const liveStatusNow = String(rec.liveOrderStatus || result?.orderStatus || '');
+    const rawLiveStatusNow = String(rec.liveOrderStatus || result?.orderStatus || '');
+    const liveStatusNow = normalizeSwiggyLiveOrderStatus(rawLiveStatusNow) || rawLiveStatusNow;
     const isCancelledNow = /cancel|refus|return/i.test(liveStatusNow);
     const isDeliveredNow = /deliv/i.test(liveStatusNow);
     if (trackingUrl) {
@@ -8298,7 +8301,8 @@ bot.on('text', async (ctx) => {
       const trackingUrl = getStoredSwiggyTrackingUrl(fresh);
       const swiggyId = swiggyOrderIdOf(fresh) || (isNumericSwiggyId ? q : '');
       const phone = placedFromPhoneOf(fresh, getDb());
-      const liveStatus = String(fresh.liveOrderStatus || result?.orderStatus || '');
+      const rawLiveStatus = String(fresh.liveOrderStatus || result?.orderStatus || '');
+      const liveStatus = normalizeSwiggyLiveOrderStatus(rawLiveStatus) || rawLiveStatus;
 
       if (!result?.hasOrder && !trackingUrl) {
         const noAccounts = result?.status === 'NO_ACCOUNTS' || (Number(result?.scanned) || 0) === 0;
@@ -9789,13 +9793,17 @@ async function handlePreviousOrders(ctx, targetKey = null) {
   const buttons = [];
   for (let i = 0; i < orders.length; i++) {
     const o = orders[i];
-    const validPrevTrack = o.trackingUrl && isOfficialSwiggyTrackingUrl(String(o.trackingUrl).trim(), { allowProviderShortLink: true })
-      ? String(o.trackingUrl).trim()
+    const prevRawLink = o.trackingUrl ? String(o.trackingUrl).trim() : '';
+    const validPrevTrack = prevRawLink &&
+      isOfficialSwiggyTrackingUrl(prevRawLink, { allowProviderShortLink: true }) &&
+      !isFabricatedTrackingUrl(prevRawLink, String(o.orderId || ''))
+      ? prevRawLink
       : '';
-    const statusIcon = (o.status || '').toLowerCase().includes('deliv') ? '●' : '●';
+    const prevStatus = normalizeSwiggyLiveOrderStatus(o.status) || o.status || 'Completed';
+    const statusIcon = String(prevStatus).toLowerCase().includes('deliv') ? '●' : '●';
     text += `<b>${i + 1}. ${escapeHtml(o.restaurantName || 'Swiggy Food')}</b>\n` +
       `• # <b>Order ID:</b> <code>#${o.orderId}</code>\n` +
-      `• ₹ <b>Amount:</b> <b>₹${o.orderTotal || 0}</b> • ${statusIcon} <code>${escapeHtml(o.status || 'Completed')}</code>\n` +
+      `• ₹ <b>Amount:</b> <b>₹${o.orderTotal || 0}</b> • ${statusIcon} <code>${escapeHtml(prevStatus)}</code>\n` +
       (o.items && o.items.length > 0 ? `• ▤ <i>${escapeHtml(o.items.join(', '))}</i>\n` : '') +
       (o.deliveryAddress ? `• ⌖ <code>${escapeHtml(o.deliveryAddress)}</code>\n` : '') +
       (o.deliveryOtp ? `• ⌕ <b>Delivery OTP:</b> <code>${escapeHtml(String(o.deliveryOtp))}</code>\n` : '') +
@@ -9807,7 +9815,7 @@ async function handlePreviousOrders(ctx, targetKey = null) {
       buttons.push([
         Markup.button.url(`↗ Swiggy tracking #${o.orderId} (${o.restaurantName || 'Order'})`, validPrevTrack)
       ]);
-    } else if (o.orderId && !/cancel/i.test(String(o.status || '')) && buttons.length < 20) {
+    } else if (o.orderId && !/cancel/i.test(String(prevStatus)) && buttons.length < 20) {
       buttons.push([
         Markup.button.callback(`🔗 Extract Tracking #${String(o.orderId).slice(-6)}`, `extract_now_${o.orderId}`)
       ]);
@@ -9983,19 +9991,27 @@ async function handleAllOrdersDone(ctx) {
         continue;
       }
 
-      text += `📱 <b>${escapeHtml(accName)}</b> ${phoneStr ? `(Placed from ${phoneStr})` : ''}\n`;
+      const cleanHeaderName = acc.phone
+        ? String(accName).replace(new RegExp(`\\s*\\(\\s*${String(acc.phone).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\)\\s*$`), '').trim() || accName
+        : accName;
+      text += `📱 <b>${escapeHtml(cleanHeaderName)}</b> ${phoneStr ? `(Placed from ${phoneStr})` : ''}\n`;
       totalOrdersFound += orders.length;
       text += `<i>Total Orders: <b>${orders.length}</b></i>\n\n`;
 
       for (let i = 0; i < orders.length; i++) {
         const o = orders[i];
-        const rawTrackLink2 = o.trackingUrl ? String(o.trackingUrl).trim() : '';
-        const validTrackUrl = isOfficialSwiggyTrackingUrl(rawTrackLink2, { allowProviderShortLink: true }) ? rawTrackLink2 : '';
-        const statusRaw = String(o.status || 'COMPLETED');
-        const trackingDisplay = trackingLinkDisplay({ url: validTrackUrl, status: statusRaw });
-        const statusStr = escapeHtml(o.status || 'COMPLETED');
-        const restName = escapeHtml(o.restaurantName || 'Swiggy Food');
         const rowSwiggyId = /^\d{10,20}$/.test(String(o.orderId || '')) ? String(o.orderId) : '';
+        const rawTrackLink2 = o.trackingUrl ? String(o.trackingUrl).trim() : '';
+        const validTrackUrl = rawTrackLink2 &&
+          isOfficialSwiggyTrackingUrl(rawTrackLink2, { allowProviderShortLink: true }) &&
+          !isFabricatedTrackingUrl(rawTrackLink2, rowSwiggyId)
+          ? rawTrackLink2
+          : '';
+        const normalizedStatus = normalizeSwiggyLiveOrderStatus(o.status) || o.status || 'COMPLETED';
+        const statusRaw = String(normalizedStatus);
+        const trackingDisplay = trackingLinkDisplay({ url: validTrackUrl, status: statusRaw, orderId: rowSwiggyId });
+        const statusStr = escapeHtml(statusRaw);
+        const restName = escapeHtml(o.restaurantName || 'Swiggy Food');
         const rowRef = String(o.orderRef || (rowSwiggyId ? '' : (o.orderId || '')));
         const rowPhone = String(o.placedFrom || acc.phone || '');
 
@@ -10028,11 +10044,18 @@ async function handleAllOrdersDone(ctx) {
 
     // Summary for empty accounts instead of spamming per-account 0-orders blocks
     if (emptyAccounts.length > 0) {
+      const formatEmptyAccount = (a) => {
+        const namePart = String(a.name || '').trim();
+        const phonePart = String(a.phone || '').trim();
+        if (phonePart && namePart && !namePart.includes(phonePart)) {
+          return `${escapeHtml(namePart)} (${escapeHtml(phonePart)})`;
+        }
+        return escapeHtml(namePart || phonePart || 'Account');
+      };
+      const emptyList = emptyAccounts.map(formatEmptyAccount).join(', ');
       if (totalOrdersFound > 0) {
-        const emptyList = emptyAccounts.map(a => `${escapeHtml(a.name)} (${escapeHtml(a.phone)})`).join(', ');
         text += `━━━━━━━━━━━━━━━━━━━━\n<i>ℹ️ ${emptyAccounts.length} ID(s) me koi orders nahi mile: ${emptyList}</i>\n\n`;
       } else {
-        const emptyList = emptyAccounts.map(a => `${escapeHtml(a.name)} (${escapeHtml(a.phone)})`).join(', ');
         text += `━━━━━━━━━━━━━━━━━━━━\n<i>ℹ️ ${emptyAccounts.length} ID(s) me koi orders nahi mile: ${emptyList}</i>\n`;
       }
     }
@@ -10044,9 +10067,10 @@ async function handleAllOrdersDone(ctx) {
       for (let i = 0; i < unmatchedBotOrders.length; i++) {
         const dbo = unmatchedBotOrders[i];
         const validTrackUrl = getStoredSwiggyTrackingUrl(dbo);
-        const statusRaw = String(dbo.liveOrderStatus || dbo.status || 'COMPLETED');
-        const trackingDisplay = trackingLinkDisplay({ url: validTrackUrl, status: statusRaw });
         const swiggyId = swiggyOrderIdOf(dbo);
+        const normalizedUnmatchedStatus = normalizeSwiggyLiveOrderStatus(dbo.liveOrderStatus) || dbo.liveOrderStatus || dbo.status || 'COMPLETED';
+        const statusRaw = String(normalizedUnmatchedStatus);
+        const trackingDisplay = trackingLinkDisplay({ url: validTrackUrl, status: statusRaw, orderId: swiggyId });
         const placedFrom = placedFromPhoneOf(dbo, db);
         text += `<b>${i + 1}. ${escapeHtml(dbo.restaurantName || 'Swiggy Food')}</b>\n` +
           `• 🆔 <b>Swiggy order:</b> <code>${escapeHtml(swiggyId || 'not created yet')}</code>\n` +

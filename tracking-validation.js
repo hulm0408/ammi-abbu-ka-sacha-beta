@@ -4,24 +4,79 @@
  * via extractSwiggyProvidedTrackingUrl and must pass isOfficialSwiggyTrackingUrl.
  */
 
+const TV_STATIC_ASSET_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|ico|bmp|avif|css|js|mjs|map|woff2?|ttf|eot|mp4|webm|mp3|wav|pdf|zip)(?:$|\?)/i;
+const TV_NON_TRACKING_PATH_RE = /(?:^|\/)(?:dapi|mapi|api|restaurants?|menu|city|instamart|genie|dineout|minis|support|help|faq|about|careers|terms|privacy|refund|offers?|coupons?|search|collections?|brands?|auth|login|signin|signup|checkout|cart|pay(?:ments?)?|my-account|account|profile|addresses|favourites|favorites|swiggy-super|swiggy-one|one|gift-cards?|corporate|blog|newsroom)(?:\/|$)|\/gc(?:\/|$)|(?:^|\/)ofo\/address(?:\/|$)|save[-_]?address/i;
+const TV_R_SWIGGY_NON_TRACKING_RE = /(?:rate[_-]?app|download|install|playstore|appstore|itunes|menu|restaurant|instamart|dineout|genie|offer|coupon|promo|campaign|unsubscribe|feedback|survey|review|support|help|ofo\/address|\/address\/)/i;
+const TV_BARE_SWIGGY_DUMMY_PATH_RE = /^\/?(?:track|tracking|order|orders|my-account|my-account\/orders|ofo|ofo\/track|swiggy|swiggy\/ofo|swiggy\/ofo\/track|app|download)?\/?$/i;
+
 // Standalone copy of isOfficialSwiggyTrackingUrl to avoid heavy swiggy-cart imports in tests
 export function isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink = false } = {}) {
   try {
-    const url = new URL(String(value || '').trim());
+    const raw = String(value || '').trim();
+    if (!/^https?:\/\//i.test(raw)) return false;
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    if (url.username || url.password || url.port) return false;
+
     const host = url.hostname.toLowerCase();
-    const isProviderShortHost = host === 'swig.gy' || host === 'swiggy.onelink.me';
-    const swiggyHost = isProviderShortHost || host === 'swiggy.com' || host.endsWith('.swiggy.com');
-    const isRswiggyHost = host === 'r.swiggy.com' || host.endsWith('.r.swiggy.com');
-    const pathHasTrackingContext = /track|tracking/i.test(url.pathname) ||
-      (/share/i.test(url.pathname) && /order|track/i.test(url.pathname));
-    const queryHasTrackingContext = /(?:^|[?&])(?:tracking_url|track_url|order_id|orderid)=/i.test(url.search) &&
-      /order|track|share/i.test(url.pathname);
-    const isExplicitSwiggyTrackingRoute = pathHasTrackingContext || queryHasTrackingContext;
-    const isProviderShortLink = allowProviderShortLink && ((isProviderShortHost && url.pathname.length > 1) || (isRswiggyHost && url.pathname.length > 1));
-    const isRswiggyTrackingShort = isRswiggyHost && url.pathname.length > 1;
-    return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password && !url.port && swiggyHost &&
-      (isExplicitSwiggyTrackingRoute || isProviderShortLink || isRswiggyTrackingShort) &&
-      !/support\/issues|\/restaurant(?:s)?(?:\/|$)|\/menu(?:\/|$)|\/gc(?:\/|$)/i.test(url.pathname);
+    const pathLower = url.pathname.toLowerCase();
+    const searchLower = url.search.toLowerCase();
+
+    if (TV_STATIC_ASSET_EXT_RE.test(pathLower)) return false;
+    if (TV_NON_TRACKING_PATH_RE.test(pathLower)) return false;
+
+    const isRSwiggy = host === 'r.swiggy.com' || host.endsWith('.r.swiggy.com');
+    const isSwiggyWeb = host === 'swiggy.com' || host === 'www.swiggy.com' || host === 'm.swiggy.com';
+    const isSwigGy = host === 'swig.gy';
+    const isOneLink = host === 'swiggy.onelink.me';
+
+    if (!isRSwiggy && !isSwiggyWeb && !isSwigGy && !isOneLink) return false;
+
+    if (isRSwiggy) {
+      if (TV_R_SWIGGY_NON_TRACKING_RE.test(pathLower)) return false;
+      const segments = pathLower.split('/').filter(Boolean);
+      if (segments.length === 0) return false;
+      const lastSeg = segments[segments.length - 1];
+      if (lastSeg.length < 3 || /^(?:track|tracking|order|orders|ofo|swiggy|share)$/i.test(lastSeg)) {
+        return false;
+      }
+      return true;
+    }
+
+    if (isSwiggyWeb) {
+      if (TV_BARE_SWIGGY_DUMMY_PATH_RE.test(pathLower) && !url.search) return false;
+      if (/^\/(?:(?:swiggy\/)?ofo\/track|track-order|order-track|orders?\/track|track|tracking|orders?\/share|social\/share\/order)\/[a-z0-9_-]{3,}(?:\/[a-z0-9_-]+)?\/?$/i.test(pathLower)) {
+        return true;
+      }
+      if (/^\/orders?\/(?!track\/?$|share\/?$)[a-z0-9_-]{4,}\/?$/i.test(pathLower)) {
+        return true;
+      }
+      if (/^\/(?:order-tracking|live-track|ofo-track|(?:swiggy\/)?ofo\/track|track-order|order-track|orders?\/track|orders?\/share|track|tracking)\/?$/i.test(pathLower) &&
+          /(?:^|[?&])(?:tracking_url|track_url|order_id|orderid|token|share_id|ofo_id)=[^&]{3,}/i.test(url.search)) {
+        return true;
+      }
+      return false;
+    }
+
+    if (isSwigGy) {
+      const segments = pathLower.split('/').filter(Boolean);
+      if (segments.length === 0) return false;
+      if (/^\/(?:(?:swiggy\/)?ofo\/track|track|orders?\/track)\/[a-z0-9_-]{3,}\/?$/i.test(pathLower)) {
+        return true;
+      }
+      return Boolean(allowProviderShortLink && segments.length === 1 && segments[0].length >= 3);
+    }
+
+    if (isOneLink) {
+      let decoded = `${pathLower}${searchLower}`;
+      try { decoded = decodeURIComponent(decoded).toLowerCase(); } catch {}
+      if (/(?:download|install|explore|ofo\/address|address|save.*address|gc\/|group|restaurant|menu|instamart)/i.test(decoded)) {
+        return false;
+      }
+      return /(?:ofo\/track|track[-_]?order|tracking_url=|track_url=|\/track\/[a-z0-9_-]{3,})/i.test(decoded);
+    }
+
+    return false;
   } catch { return false; }
 }
 
