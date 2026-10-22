@@ -256,6 +256,20 @@ export function buildBossDashboard(db, { limit = 8, onlyMissingTracking = false 
   return { text, keyboard: Markup.inlineKeyboard(rows), summary: { tracked, missing, total: allOrders.length } };
 }
 
+/**
+ * Honest one-line tracking state for any order row.
+ * A finished order is never promised a link Swiggy will not publish.
+ */
+export function trackingLinkDisplay({ url = '', status = '' } = {}) {
+  const safeUrl = String(url || '').trim();
+  if (safeUrl) return `<a href="${esc(safeUrl)}">Open live tracking</a>`;
+  const raw = String(status || '');
+  if (/cancel/i.test(raw)) return '<i>Not needed — order cancelled</i>';
+  if (/refus/i.test(raw)) return '<i>Not needed — order refused</i>';
+  if (/delivered|completed/i.test(raw)) return '<i>Not needed — order delivered</i>';
+  return '<i>⏳ auto-fetching from Swiggy</i>';
+}
+
 // One card per pending order — Boss taps Accept / Reject / Pick Account directly
 export function buildBossPendingList(db) {
   const pendingOrders = Object.values(db.orders || {}).filter(o => o.status === 'PENDING');
@@ -298,7 +312,13 @@ export function buildBossOrderCard(order, db = getDb()) {
     `<b>Order ref:</b> <code>#${esc(String(order.id))}</code>`,
     `<b>Swiggy order id:</b> ${swiggyOrderId ? `<code>${esc(swiggyOrderId)}</code>` : '<i>not created yet</i>'}`,
     `<b>Placed from:</b> ${placedFrom ? `<code>${esc(placedFrom)}</code>` : '<i>account not selected</i>'}`,
-    `<b>Tracking:</b> ${trackingUrl ? `<a href="${esc(trackingUrl)}">Open live Swiggy tracking</a>` : '<i>auto-fetching from Swiggy — will appear here</i>'}`,
+    `<b>Tracking:</b> ${trackingUrl
+      ? `<a href="${esc(trackingUrl)}">Open live Swiggy tracking</a>`
+      : (/cancel/i.test(String(order.liveOrderStatus || ''))
+        ? '<i>Not needed — order cancelled</i>'
+        : /deliv|complet|refus/i.test(String(order.liveOrderStatus || ''))
+          ? '<i>Not needed — order finished</i>'
+          : '<i>auto-fetching from Swiggy — will appear here</i>')}`,
   ].join('\n'));
 
   const ad = order.addressDetails || {};

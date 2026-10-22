@@ -6478,6 +6478,17 @@ function resolveTrackingAccountsMap(getAccountsFn) {
   }
 }
 
+function withTimeout(promise, ms, fallback = null) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), Math.max(300, Number(ms) || 5000));
+    if (typeof timer.unref === 'function') timer.unref();
+    Promise.resolve(promise)
+      .then(value => resolve(value))
+      .catch(() => resolve(fallback))
+      .finally(() => clearTimeout(timer));
+  });
+}
+
 async function runWithConcurrency(items, limit, workerFn) {
   const queue = [...items];
   const workers = [];
@@ -6533,14 +6544,14 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
   let scanned = 0;
   let timedOut = false;
 
-  const inspectOrder = async (key, acc, orderObject) => {
+  const inspectOrder = async (key, acc, orderObject, customerId = '') => {
     const fromOrder = extractOrderShareUrlDeep(orderObject);
     // Enrich the ONE matching order (never all accounts) with the live status,
     // delivery OTP and rider details — this is the "order → share" screen data.
     const timeoutMs = callTimeout();
     const [detailsRes, trkRes, deRes] = await Promise.all([
       dapiFetch(acc, `order/details?order_id=${encodeURIComponent(targetId)}&type=full&version=V2`, { timeoutMs }).catch(() => null),
-      dapiFetch(acc, `order/trackV4?order_id=${encodeURIComponent(targetId)}&type=full&version=V2`, { timeoutMs }).catch(() => null),
+      dapiFetch(acc, `order/trackV4?order_id=${encodeURIComponent(targetId)}&type=full&version=V2${customerId ? `&customer_id=${encodeURIComponent(customerId)}` : ''}`, { timeoutMs }).catch(() => null),
       dapiFetch(acc, `order/trackV2/de?order_id=${encodeURIComponent(targetId)}`, { timeoutMs }).catch(() => null)
     ]);
     const details = detailsRes?.json?.data?.orders?.[0] || detailsRes?.json?.data?.order || orderObject || null;
@@ -6577,11 +6588,25 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
     if (remaining() <= 300) { timedOut = true; return; }
     scanned += 1;
     try {
-      const listRes = await dapiFetch(acc, 'order/all', { timeoutMs: callTimeout() }).catch(() => null);
-      const list = Array.isArray(listRes?.json?.data?.orders) ? listRes.json.data.orders : [];
-      let match = list.find(o => String(o?.order_id || '') === targetId) || null;
+      // Same source as the "Orders Done" dashboard: the cached session auth
+      // (WAF/token aware). Falls back to a direct order/all call.
+      let list = [];
+      let customerId = String(acc?.customerId || acc?.userId || '');
+      const auth = await withTimeout(
+        getSwiggySessionAuth(acc, false).catch(() => null),
+        callTimeout(),
+        null
+      );
+      if (Array.isArray(auth?.orders) && auth.orders.length > 0) {
+        list = auth.orders;
+        customerId = String(auth.userId || customerId || '');
+      } else {
+        const listRes = await dapiFetch(acc, 'order/all', { timeoutMs: callTimeout() }).catch(() => null);
+        list = Array.isArray(listRes?.json?.data?.orders) ? listRes.json.data.orders : [];
+      }
+      const match = list.find(o => String(o?.order_id || '') === targetId) || null;
       if (!match) return;
-      const hit = await inspectOrder(key, acc, match);
+      const hit = await inspectOrder(key, acc, match, customerId);
       if (hit.trackingUrl && !best) best = hit;
       else if (!orderFound) orderFound = hit;
     } catch {}
