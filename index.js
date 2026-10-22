@@ -4675,54 +4675,72 @@ bot.action('boss_logout_all_exec', async (ctx) => {
   );
 });
 
-// ===== 3B. Export & Logout (only accounts with minimum 1 order) =====
+// Lightweight concurrency runner for account batch checks
+async function runWithConcurrency(items, limit, workerFn) {
+  const results = [];
+  const running = new Set();
+  for (const item of items) {
+    const p = Promise.resolve().then(() => workerFn(item));
+    results.push(p);
+    running.add(p);
+    p.finally(() => running.delete(p));
+    if (running.size >= limit) {
+      await Promise.race(running);
+    }
+  }
+  return Promise.allSettled(results);
+}
+
+// ===== 3B. Export & Logout =====
 async function buildExportLogoutChecklist(ctx, orderCounts, selections) {
   const db = getDb();
   const accounts = db.config.accounts || {};
-  const eligibleKeys = Object.keys(accounts).filter(k => {
-    const cnt = orderCounts[k] ?? -1;
-    return cnt >= 1 && (accounts[k]?.isLoggedIn || exportSessionJson(k));
-  });
-  const ineligibleKeys = Object.keys(accounts).filter(k => !eligibleKeys.includes(k));
+  const allKeys = Object.keys(accounts);
 
-  const selectedCount = eligibleKeys.filter(k => selections[k]).length;
-  const totalEligible = eligibleKeys.length;
+  const selectedCount = allKeys.filter(k => selections[k]).length;
+  const totalCount = allKeys.length;
 
   const buttons = [];
-  if (totalEligible > 0) {
-    const allSelected = eligibleKeys.every(k => selections[k]);
-    buttons.push([{ text: allSelected ? 'Deselect All Eligible' : 'Select All Eligible', callback_data: allSelected ? 'boss_exlo_deselect_all' : 'boss_exlo_select_all', style: 'primary' }]);
+  if (totalCount > 0) {
+    const allSelected = allKeys.length > 0 && allKeys.every(k => selections[k]);
+    buttons.push([{
+      text: allSelected ? 'Deselect All' : 'Select All',
+      callback_data: allSelected ? 'boss_exlo_deselect_all' : 'boss_exlo_select_all',
+      style: 'primary'
+    }]);
   }
 
-  for (const k of eligibleKeys) {
+  for (const k of allKeys) {
     const acc = accounts[k];
-    const cnt = orderCounts[k] ?? 0;
+    const cnt = orderCounts[k] ?? (typeof acc.totalOrdersCount === 'number' ? acc.totalOrdersCount : 0);
     const isChecked = Boolean(selections[k]);
     const checkIcon = isChecked ? '✓' : '□';
     const liveBadge = acc.isLoggedIn ? '●' : '○';
-    const label = `${checkIcon} ${liveBadge} ${acc.name || k} (${acc.phone || ''}) — ${cnt} order${cnt>1?'s':''}`;
-    buttons.push([{ text: label, callback_data: `boss_exlo_toggle_${k}`, style: isChecked ? 'success' : 'primary' }]);
-  }
-  for (const k of ineligibleKeys) {
-    const acc = accounts[k];
-    const cnt = orderCounts[k] ?? 0;
-    const liveBadge = acc.isLoggedIn ? '●' : '○';
-    const label = `○ ${liveBadge} ${acc.name || k} (${acc.phone || ''}) — ${cnt} orders (skipped)`;
-    buttons.push([{ text: label, callback_data: `boss_exlo_skip_${k}`, style: 'primary' }]);
+    const label = `${checkIcon} ${liveBadge} ${acc.name || k} (${acc.phone || ''}) — ${cnt} order${cnt === 1 ? '' : 's'}`;
+    buttons.push([{
+      text: label,
+      callback_data: `boss_exlo_toggle_${k}`,
+      style: isChecked ? 'success' : 'primary'
+    }]);
   }
 
-  if (totalEligible > 0) {
-    buttons.push([{ text: `Confirm Export & Logout (${selectedCount}/${totalEligible})`, callback_data: 'boss_exlo_confirm', style: 'success' }]);
+  if (totalCount > 0) {
+    buttons.push([{
+      text: `Confirm Export & Logout (${selectedCount}/${totalCount})`,
+      callback_data: 'boss_exlo_confirm',
+      style: 'success'
+    }]);
   }
   buttons.push([{ text: 'Back to Accounts', callback_data: 'boss_view_accounts', style: 'primary' }]);
 
   const checklistText =
-    `<blockquote>⇧ <b>EXPORT & LOGOUT (1+ ORDERS)</b></blockquote>\n\n` +
-    `Sirf wahi accounts export & logout honge jinme <b>minimum 1 order</b> hai.\n` +
-    `• <b>Eligible:</b> <b>${totalEligible} accounts</b> (1+ orders) — selectable\n` +
-    `• <b>Skipped:</b> <b>${ineligibleKeys.length} accounts</b> (0 orders) — not exported/logged out\n` +
-    `• <b>Selected:</b> <b>${selectedCount}/${totalEligible}</b>\n\n` +
-    (totalEligible === 0 ? `<i>⚠️ Koi bhi account me 1+ orders nahi mile — export & logout ke liye koi eligible account nahi hai.</i>` : `<i>Select karein, confirm karte hi har eligible account ki full <code>.json</code> + logout ek saath hoga!</i>`);
+    `<blockquote>⇧ <b>EXPORT & LOGOUT ACCOUNTS</b></blockquote>\n\n` +
+    `Accounts select karein jinhe aap bot se <b>export aur permanently logout</b> karna chahte hain:\n` +
+    `• <b>Total Accounts:</b> <b>${totalCount}</b>\n` +
+    `• <b>Selected:</b> <b>${selectedCount}/${totalCount}</b>\n\n` +
+    (selectedCount > 0
+      ? `<i>Confirm karte hi har selected account ki <code>.json</code> session file Telegram par aayegi aur account safely logout ho jayega!</i>`
+      : `<i>Koi account select nahi hai. Accounts par tap karke select karein ya 'Select All' dabayein.</i>`);
 
   try {
     await ctx.editMessageText(checklistText, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
@@ -4732,8 +4750,6 @@ async function buildExportLogoutChecklist(ctx, orderCounts, selections) {
 }
 
 // Shared by the picker button and by `boss_exlo_confirm`'s state-loss fallback
-// (a bot restart wipes the in-memory selection state — instead of the
-// confusing "Koi eligible account select nahi hai", re-open the picker).
 async function openExportLogoutPicker(ctx, { note = '' } = {}) {
   const userId = ctx.from.id;
   const db = getDb();
@@ -4744,89 +4760,91 @@ async function openExportLogoutPicker(ctx, { note = '' } = {}) {
     return ctx.reply('! No accounts found to export.');
   }
 
-  await ctx.answerCbQuery('Checking orders for 1+ filter... ⏳').catch(() => {});
+  await ctx.answerCbQuery('Checking orders & accounts... ⏳').catch(() => {});
   let statusMsg = null;
   try {
-    statusMsg = await ctx.reply('⏳ <i>Har logged-in ID ke orders check ho rahe hain (1+ filter)... Isme 5-8 sec lag sakte hain</i>', { parse_mode: 'HTML' });
+    statusMsg = await ctx.reply('⏳ <i>Accounts ke live orders check ho rahe hain... Isme 2-4 sec lag sakte hain</i>', { parse_mode: 'HTML' });
   } catch (e) {}
 
-  // Fetch order counts in parallel with timeout
+  // Pre-warm shared WAF token first so calls don't get challenged
+  await getCachedWafToken(false).catch(() => {});
+
   const orderCounts = {};
-  const loggedInEntries = Object.entries(accounts).filter(([, a]) => a && (a.isLoggedIn || a.cookies || a.tid));
-  if (loggedInEntries.length === 0) {
+  const activeEntries = Object.entries(accounts).filter(([, a]) => a && (a.isLoggedIn || a.cookies || a.tid));
+
+  if (activeEntries.length === 0) {
     if (statusMsg) try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
     return ctx.reply('! <b>Koi bhi logged-in account nahi hai!</b> Pehle login karein.', { parse_mode: 'HTML' });
   }
 
-  const results = await Promise.allSettled(
-    loggedInEntries.map(async ([key, acc]) => {
-      try {
-        const orders = await Promise.race([
-          fetchAccountOrders(acc),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 9000))
-        ]);
-        const cnt = Array.isArray(orders) ? orders.length : 0;
+  // Fast order count fetch using dapiFetch('order/all') directly with concurrency = 5 and 40ms pacing
+  const fetchSingleOrderCount = async ([key, acc]) => {
+    try {
+      const orderRes = await dapiFetch(acc, 'order/all', { timeoutMs: 6000 }).catch(() => null);
+      if (orderRes?.status === 200 && orderRes.json?.statusCode === 0) {
+        const list = Array.isArray(orderRes.json.data?.orders) ? orderRes.json.data.orders : [];
+        const cnt = list.length;
+        acc.totalOrdersCount = cnt;
+        acc.isZeroOrderAccount = (cnt === 0);
         return { key, cnt };
-      } catch (err) {
-        // Fallback to cached totalOrdersCount if available
-        const cached = typeof acc.totalOrdersCount === 'number' ? acc.totalOrdersCount : (typeof acc.cachedTotalOrdersCount === 'number' ? acc.cachedTotalOrdersCount : 0);
-        return { key, cnt: cached || 0, error: err?.message };
       }
-    })
-  );
+      const cached = typeof acc.totalOrdersCount === 'number' ? acc.totalOrdersCount : (typeof acc.cachedTotalOrdersCount === 'number' ? acc.cachedTotalOrdersCount : null);
+      if (cached !== null) {
+        return { key, cnt: cached };
+      }
+      return { key, cnt: 0 };
+    } catch {
+      return { key, cnt: typeof acc.totalOrdersCount === 'number' ? acc.totalOrdersCount : 0 };
+    }
+  };
+
+  const results = await runWithConcurrency(activeEntries, 5, async (entry) => {
+    const res = await fetchSingleOrderCount(entry);
+    await new Promise(r => setTimeout(r, 40));
+    return res;
+  });
 
   for (const r of results) {
     if (r.status === 'fulfilled' && r.value) {
       orderCounts[r.value.key] = r.value.cnt;
     }
   }
-  // For non-logged-in / not fetched accounts, default 0
-  for (const k of accKeys) if (!(k in orderCounts)) orderCounts[k] = 0;
-  // How many live order-checks Swiggy rejected (WAF/rate-limit) — those
-  // accounts fell back to cached counts; if it's a majority the picker must
-  // warn instead of silently showing stale "0 orders".
-  const liveRejected = results.filter(r => r.status === 'fulfilled' && r.value?.error).length;
 
-  // Also consider db-tracked completed orders as valid (bot ke andar 1+ order ka proof)
+  // Also consider db-tracked completed orders as valid
   const dbOrders = Object.values(db.orders || {}).filter(o => o.status === 'COMPLETED' || o.swiggyOrderId);
   for (const dbo of dbOrders) {
     if (dbo.selectedAccount && !(dbo.selectedAccount in orderCounts)) orderCounts[dbo.selectedAccount] = 1;
     else if (dbo.selectedAccount && orderCounts[dbo.selectedAccount] === 0) orderCounts[dbo.selectedAccount] = Math.max(orderCounts[dbo.selectedAccount], 1);
     if (dbo.orderAccount) {
       for (const [k, a] of Object.entries(accounts)) {
-        if (a.phone && String(dbo.orderAccount).includes(a.phone) && orderCounts[k] === 0) orderCounts[k] = 1;
+        if (a.phone && String(dbo.orderAccount).includes(a.phone) && (orderCounts[k] ?? 0) === 0) orderCounts[k] = 1;
       }
     }
   }
 
+  for (const k of accKeys) {
+    if (!(k in orderCounts)) {
+      orderCounts[k] = typeof accounts[k]?.totalOrdersCount === 'number' ? accounts[k].totalOrdersCount : 0;
+    }
+  }
+
+  saveDb(db);
+
   if (statusMsg) try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
 
-  if (!exportLogoutSelections[userId]) exportLogoutSelections[userId] = {};
-  if (!exportLogoutOrderCounts[userId]) exportLogoutOrderCounts[userId] = {};
+  exportLogoutSelections[userId] = {};
   exportLogoutOrderCounts[userId] = orderCounts;
 
-  const eligibleKeys = accKeys.filter(k => (orderCounts[k] ?? 0) >= 1 && (accounts[k]?.isLoggedIn || exportSessionJson(k)));
-  // Preselect all eligible by default
+  // Auto-select all available accounts by default
   for (const k of accKeys) {
-    if (eligibleKeys.includes(k)) {
-      if (!(k in exportLogoutSelections[userId])) exportLogoutSelections[userId][k] = true;
-    } else {
-      exportLogoutSelections[userId][k] = false;
-    }
+    const isAvailable = Boolean(accounts[k]?.isLoggedIn || accounts[k]?.cookies || accounts[k]?.tid || exportSessionJson(k));
+    exportLogoutSelections[userId][k] = isAvailable;
   }
 
   if (note) {
     try { await ctx.reply(note, { parse_mode: 'HTML' }); } catch {}
   }
-  if (liveRejected >= 3) {
-    try {
-      await ctx.reply(
-        `⚠ <b>${liveRejected} live order-checks Swiggy ne reject kar diye</b> (rate-limit/WAF) — inke liye <b>cached counts</b> use hue hain. ` +
-        `Agar koi account "0 orders" dikh raha hai par aapko pata hai order tha, toh <b>10–15 min</b> baad dobara kholo — fresh counts milenge.`,
-        { parse_mode: 'HTML' }
-      );
-    } catch {}
-  }
+
   await buildExportLogoutChecklist(ctx, orderCounts, exportLogoutSelections[userId]);
 }
 
@@ -4835,8 +4853,8 @@ bot.action('boss_export_logout_picker', async (ctx) => {
   await openExportLogoutPicker(ctx);
 });
 
-// Toggle / Select All / Skip info for Export & Logout
-bot.action(['boss_exlo_select_all', 'boss_exlo_deselect_all', /^boss_exlo_toggle_(.+)$/, /^boss_exlo_skip_(.+)$/], async (ctx) => {
+// Toggle / Select All / Deselect All for Export & Logout
+bot.action(['boss_exlo_select_all', 'boss_exlo_deselect_all', /^boss_exlo_toggle_(.+)$/], async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const userId = ctx.from.id;
   const db = getDb();
@@ -4847,40 +4865,28 @@ bot.action(['boss_exlo_select_all', 'boss_exlo_deselect_all', /^boss_exlo_toggle
 
   const data = ctx.callbackQuery?.data || '';
   if (data === 'boss_exlo_select_all') {
-    for (const k of accKeys) if ((exportLogoutOrderCounts[userId][k] ?? 0) >= 1) exportLogoutSelections[userId][k] = true;
-    await ctx.answerCbQuery('All eligible selected ✓').catch(() => {});
+    for (const k of accKeys) exportLogoutSelections[userId][k] = true;
+    await ctx.answerCbQuery('All selected ✓').catch(() => {});
   } else if (data === 'boss_exlo_deselect_all') {
     for (const k of accKeys) exportLogoutSelections[userId][k] = false;
     await ctx.answerCbQuery('All deselected ○').catch(() => {});
   } else if (data.startsWith('boss_exlo_toggle_')) {
     const toggleKey = data.replace('boss_exlo_toggle_', '');
-    const cnt = exportLogoutOrderCounts[userId][toggleKey] ?? 0;
-    if (cnt < 1) {
-      await ctx.answerCbQuery(`Skipped: ${accounts[toggleKey]?.phone || toggleKey} me 0 orders — minimum 1 chahiye!`, { show_alert: true }).catch(() => {});
-      return;
-    }
     exportLogoutSelections[userId][toggleKey] = !exportLogoutSelections[userId][toggleKey];
     await ctx.answerCbQuery().catch(() => {});
-  } else if (data.startsWith('boss_exlo_skip_')) {
-    const k = data.replace('boss_exlo_skip_', '');
-    await ctx.answerCbQuery(`Not eligible: ${accounts[k]?.phone || k} has 0 orders — skipped`, { show_alert: true }).catch(() => {});
-    return;
   }
 
   await buildExportLogoutChecklist(ctx, exportLogoutOrderCounts[userId], exportLogoutSelections[userId]);
 });
 
-// Confirm Export & Logout (only 1+ orders)
+// Confirm Export & Logout
 bot.action('boss_exlo_confirm', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const userId = ctx.from.id;
 
-  // Selection state is in-memory: a deploy/restart between "select" and
-  // "confirm" wipes it. Re-open the picker with a clear note instead of the
-  // dead-end "Koi eligible account select nahi hai!" alert.
   if (!exportLogoutSelections[userId] || Object.keys(exportLogoutSelections[userId]).length === 0) {
     await ctx.answerCbQuery('Selection reset ho gayi thi (bot restart) — picker dobara khula hai…', { show_alert: true }).catch(() => {});
-    await openExportLogoutPicker(ctx, { note: '⚠ <b>Pichhli selection bot-restart me reset ho gayi thi.</b> Apne accounts dobara select karke <b>CONFIRM</b> dabao — is baar select ke turant baad dabana best hai.' });
+    await openExportLogoutPicker(ctx, { note: '⚠ <b>Pichhli selection bot-restart me reset ho gayi thi.</b> Apne accounts dobara select karke <b>CONFIRM</b> dabayein.' });
     return;
   }
 
@@ -4889,18 +4895,17 @@ bot.action('boss_exlo_confirm', async (ctx) => {
   const selections = exportLogoutSelections[userId] || {};
   const orderCounts = exportLogoutOrderCounts[userId] || {};
 
-  const selectedKeys = Object.keys(accounts0).filter(k => selections[k] && (orderCounts[k] ?? 0) >= 1);
+  const selectedKeys = Object.keys(accounts0).filter(k => selections[k]);
 
   if (selectedKeys.length === 0) {
-    return ctx.answerCbQuery('Koi eligible account select nahi hai! (1+ orders chahiye)', { show_alert: true }).catch(() => {});
+    return ctx.answerCbQuery('Koi account select nahi hai! Kripya select karein.', { show_alert: true }).catch(() => {});
   }
 
   await ctx.answerCbQuery(`Exporting & logging out ${selectedKeys.length} accounts... ⇧`).catch(() => {});
-  await ctx.reply(`⏳ <b>Export & Logout shuru:</b> ${selectedKeys.length} accounts (1+ orders) — pehle export, phir logout...`, { parse_mode: 'HTML' });
+  const statusMsg = await ctx.reply(`⏳ <b>Export & Logout shuru:</b> ${selectedKeys.length} accounts — pehle file export, phir permanent logout...`, { parse_mode: 'HTML' });
 
   let exportedCount = 0;
   let loggedOutCount = 0;
-  let skippedZero = 0;
   const skippedDetails = [];
 
   for (const key of selectedKeys) {
@@ -4909,31 +4914,10 @@ bot.action('boss_exlo_confirm', async (ctx) => {
       skippedDetails.push(`${key}: not found`);
       continue;
     }
-    const cnt = orderCounts[key] ?? 0;
-    if (cnt < 1) {
-      skippedZero++;
-      skippedDetails.push(`${acc.phone || key}: 0 orders — skipped`);
-      continue;
-    }
-
-    // Double-check live orders before final logout (safety: re-verify minimum 1 order still holds)
-    try {
-      const liveOrders = await Promise.race([
-        fetchAccountOrders(acc),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 7000))
-      ]);
-      const liveCnt = Array.isArray(liveOrders) ? liveOrders.length : cnt;
-      if (liveCnt < 1 && cnt < 1) {
-        skippedZero++;
-        skippedDetails.push(`${acc.phone || key}: live check 0 orders — skipped`);
-        continue;
-      }
-    } catch (e) {
-      // If live check fails, trust cached cnt >=1
-    }
+    const cnt = orderCounts[key] ?? acc.totalOrdersCount ?? 0;
 
     const exported = exportSessionJson(key) || acc;
-    if (!exported || (!exported.cookies && !acc.cookies)) {
+    if (!exported || (!exported.cookies && !acc.cookies && !acc.tid && !exported.tid)) {
       skippedDetails.push(`${acc.phone || key}: export failed (no session)`);
       continue;
     }
@@ -4947,7 +4931,7 @@ bot.action('boss_exlo_confirm', async (ctx) => {
     try {
       await ctx.replyWithDocument(
         { source: Buffer.from(jsonStr, 'utf-8'), filename: fileName },
-        { caption: `⇧ <b>Exported:</b> <code>${fileName}</code> (${cnt} orders) — ${escapeHtml(acc.name || key)}`, parse_mode: 'HTML' }
+        { caption: `⇧ <b>Exported & Logged Out:</b> <code>${fileName}</code> (${cnt} orders) — ${escapeHtml(acc.name || key)}`, parse_mode: 'HTML' }
       );
       await ctx.reply(
         `<b>${escapeHtml(acc.name || key)}</b> (<code>${phone}</code>) — <b>${cnt} orders</b>\n` +
@@ -4976,25 +4960,24 @@ bot.action('boss_exlo_confirm', async (ctx) => {
       await ctx.reply(`⚠️ Export hua par logout fail for ${escapeHtml(phone)}: ${escapeHtml(e.message)}`, { parse_mode: 'HTML' });
     }
 
-    // Small delay to avoid Telegram flood control (29 accounts × 3 messages
-    // at 400ms used to hit 429 mid-run and silently drop exports).
-    await new Promise(r => setTimeout(r, 900));
+    // Small delay to avoid Telegram flood control
+    await new Promise(r => setTimeout(r, 450));
   }
+
+  try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
 
   await ctx.reply(
     `<blockquote>⇧ <b>EXPORT & LOGOUT COMPLETE</b></blockquote>\n\n` +
-    `• <b>Exported:</b> ${exportedCount} accounts\n` +
-    `• <b>Logged out:</b> ${loggedOutCount} accounts\n` +
-    (skippedZero ? `• <b>Skipped (0 orders):</b> ${skippedZero}\n` : ``) +
-    (skippedDetails.length ? `\n<i>${skippedDetails.map(s=>escapeHtml(s)).join('\n')}</i>` : ``) +
-    `\n\n<i>Note: Sirf 1+ orders wale accounts hi export & logout hue — 0 orders wale automatically skipped rahe.</i>`,
+    `• <b>Exported:</b> ${exportedCount} accounts (JSON files sent above)\n` +
+    `• <b>Logged out:</b> ${loggedOutCount} accounts permanently removed\n` +
+    (skippedDetails.length ? `\n<i>${skippedDetails.map(s => escapeHtml(s)).join('\n')}</i>` : ``) +
+    `\n\n<i>Sabhi exported accounts ki files aur session codes upar send ho gaye hain aur bot se unhe safely logout kar diya gaya hai.</i>`,
     {
       parse_mode: 'HTML',
       ...getBossPanelKeyboard()
     }
   );
 
-  // Clear selections after done
   delete exportLogoutSelections[userId];
   delete exportLogoutOrderCounts[userId];
 });
