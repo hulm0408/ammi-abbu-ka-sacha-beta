@@ -1,27 +1,80 @@
 import zlib from 'node:zlib';
+import crypto from 'node:crypto';
 
 const VAULT_OWNER = process.env.GITHUB_VAULT_OWNER || 'hulm0408';
 const VAULT_REPO = process.env.GITHUB_VAULT_REPO || 'ammi-abbu-ka-sacha-beta';
 const VAULT_BRANCH = process.env.GITHUB_VAULT_BRANCH || 'bot-vault';
 const VAULT_PATH = 'vault/accounts-vault.json';
 
-// Runtime XOR mask helper so Render zero-env containers work out-of-the-box without literal token patterns in source
-const _MASK_KEY = 'sacha-beta-vault-v15-key';
-const _ENC_DEFAULT_HEX = '14091337545e235c3e2c6e1d5320073b4e075b5e6a11540b4b3922023b74082e300b1c2159110d45';
-
-function resolveVaultToken() {
+// SECURITY (2026-10-22 incident): a GitHub PAT was previously XOR-masked and
+// hardcoded in this public repo — anyone with read access could reconstruct
+// it. Tokens now come EXCLUSIVELY from environment variables (Render env).
+// Never embed credentials in source, even obfuscated.
+let _noTokenWarned = false;
+export function resolveVaultToken() {
   const fromEnv = (process.env.GITHUB_VAULT_TOKEN || process.env.GH_VAULT_TOKEN || '').trim();
   if (fromEnv) return fromEnv;
   if (process.env.DISABLE_CLOUD_VAULT === '1') return '';
-  try {
-    const buf = Buffer.from(_ENC_DEFAULT_HEX, 'hex');
-    const out = Buffer.alloc(buf.length);
-    for (let i = 0; i < buf.length; i++) {
-      out[i] = buf[i] ^ _MASK_KEY.charCodeAt(i % _MASK_KEY.length);
+  if (!_noTokenWarned) {
+    _noTokenWarned = true;
+    console.warn('[CloudVault] GITHUB_VAULT_TOKEN env not set — cloud vault sync disabled (set it in Render env; NEVER embed tokens in source).');
+  }
+  return '';
+}
+
+// ── Vault-at-rest encryption (AES-256-GCM) ──────────────────────────────────
+// The vault payload (raw Swiggy cookies/tids/tokens) is encrypted before it
+// is ever written to the `bot-vault` branch. Key = scrypt(VAULT_ENCRYPTION_KEY
+// env). Legacy plaintext files still hydrate fine and get re-encrypted on the
+// next push (self-healing).
+const VAULT_ENC_MARKER = 'v2-aes256gcm';
+const VAULT_ENC_SALT = 'sacha-beta-vault-salt-v2';
+
+function vaultEncryptionKey() {
+  const raw = (process.env.VAULT_ENCRYPTION_KEY || '').trim();
+  if (!raw) return null;
+  return crypto.scryptSync(raw, VAULT_ENC_SALT, 32);
+}
+
+let _noEncKeyWarned = false;
+function encryptVaultPayloadText(payloadObj) {
+  const key = vaultEncryptionKey();
+  const plain = JSON.stringify(payloadObj);
+  if (!key) {
+    if (!_noEncKeyWarned) {
+      _noEncKeyWarned = true;
+      console.warn('[CloudVault] VAULT_ENCRYPTION_KEY env not set — pushing vault UNENCRYPTED (set it in Render env).');
     }
-    return out.toString('utf8');
-  } catch {
-    return '';
+    return plain;
+  }
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const enc = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+  return JSON.stringify({
+    __vaultEnc: VAULT_ENC_MARKER,
+    iv: iv.toString('hex'),
+    tag: cipher.getAuthTag().toString('hex'),
+    data: enc.toString('hex')
+  });
+}
+
+export function decryptVaultPayloadText(rawText) {
+  let obj;
+  try { obj = JSON.parse(rawText); } catch (err) { throw new Error(`vault payload is not JSON: ${err.message}`); }
+  if (!obj || obj.__vaultEnc !== VAULT_ENC_MARKER) return obj; // legacy plaintext → pass through
+  const key = vaultEncryptionKey();
+  if (!key) {
+    console.warn('[CloudVault] vault file is encrypted but VAULT_ENCRYPTION_KEY env is missing — cannot decrypt.');
+    return null;
+  }
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(obj.iv, 'hex'));
+    decipher.setAuthTag(Buffer.from(obj.tag, 'hex'));
+    const dec = Buffer.concat([decipher.update(Buffer.from(obj.data, 'hex')), decipher.final()]);
+    return JSON.parse(dec.toString('utf8'));
+  } catch (err) {
+    console.warn('[CloudVault] vault decrypt failed (wrong VAULT_ENCRYPTION_KEY?):', err.message);
+    return null;
   }
 }
 
@@ -176,7 +229,7 @@ export async function pullAccountsFromCloudVault() {
     const meta = await res.json();
     if (!meta?.content) return null;
     const raw = Buffer.from(meta.content.replace(/\s+/g, ''), 'base64').toString('utf8');
-    return JSON.parse(raw);
+    return decryptVaultPayloadText(raw);
   } catch (err) {
     console.warn('[CloudVault] Pull skipped:', err.message);
     return null;
@@ -198,7 +251,7 @@ export async function pushAccountsToCloudVaultNow(payloadObj) {
       const existingJson = existingRes.ok ? await existingRes.json().catch(() => null) : null;
       const body = {
         message: `chore(vault): sync ${Object.keys(payloadObj.accounts || {}).length} saved Swiggy accounts`,
-        content: Buffer.from(JSON.stringify(payloadObj, null, 2), 'utf8').toString('base64'),
+        content: Buffer.from(encryptVaultPayloadText(payloadObj), 'utf8').toString('base64'),
         branch: VAULT_BRANCH,
         ...(existingJson?.sha ? { sha: existingJson.sha } : {})
       };

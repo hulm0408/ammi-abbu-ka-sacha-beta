@@ -22,6 +22,7 @@ test_*.mjs
 !test_v29_colorful_parent_ux_and_no_slots_e2e.mjs
 !test_v30_fresh_order_tracking_e2e.mjs
 !test_v31_scan_failure_transparency_e2e.mjs
+!test_v32_vault_security_hardening_e2e.mjs
 probe_*.mjs
 inspect_*.mjs
 find_*.mjs
@@ -38,7 +39,9 @@ checkout_*.mjs
 !package.json
 !package-lock.json
 !data/db.json
-!accounts.json
+# `accounts.json` is a LIVE session mirror (cookies/tids) — runtime file only,
+# NEVER committed (was a public leak; vault-at-rest encryption + bot-vault branch
+# is the only persistence).
 scratch/
 scratch_*
 *.mp4
