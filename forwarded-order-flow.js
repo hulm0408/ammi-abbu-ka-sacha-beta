@@ -1268,17 +1268,20 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
 
   // Stage 2A & 2B: Automatic Account Selection by default (No manual picker needed!)
   if (hasAddress && hasDeliveryContact && hasCart) {
-    order.cardStage = 'AUTO_SELECTING';
+    order.cardStage = (order.accountSyncError || order.lastAccountError) ? 'NEED_ACCOUNT' : 'AUTO_SELECTING';
+    const errNotice = (order.accountSyncError || order.lastAccountError)
+      ? `\n\n⚠️ <b>Dikkat:</b> <i>${escapeHtml(order.accountSyncError || order.lastAccountError)}</i>\n<i>Please resolve the account issue or tap below to retry auto-selection.</i>`
+      : '';
     const text =
       `! <b>AUTO-SELECTING BEST 0-ORDER SWIGGY ID (#${escapeHtml(order.id)})...</b>\n` +
       `${senderLine}\n\n` +
       `⌖ <b>Address:</b> ${summarizeAddressPreview(order)}\n` +
       `▤ <b>Cart:</b> ${summarizeCartPreview(order)}\n\n` +
-      `<i>› Finding free 0-Order Swiggy ID + applying Maximum Coupon, Item Offers, Free Cash &amp; Free Delivery in parallel...</i>`;
+      `<i>› Finding free 0-Order Swiggy ID + applying Maximum Coupon, Item Offers, Free Cash &amp; Free Delivery in parallel...</i>${errNotice}`;
     return {
       text,
       keyboard: Markup.inlineKeyboard([
-        [Markup.button.callback('🔄 Change Auto Selection', `fwd_change_auto_sel_${order.id}`)],
+        [Markup.button.callback(order.accountSyncError || order.lastAccountError ? '🔄 Retry Auto Selection' : '🔄 Change Auto Selection', `fwd_change_auto_sel_${order.id}`)],
         [cancelBtn]
       ])
     };
@@ -2391,6 +2394,8 @@ export async function handleBossForwardedOrderInput(
           const failedOrd = errDb.orders?.[targetOrderId] || order;
           releaseSwiggyAccountReservation(failedOrd.selectedAccount, targetOrderId);
           failedOrd.cardStage = 'NEED_ACCOUNT';
+          failedOrd.accountSyncError = syncErr.message || 'Could not auto-select Swiggy account.';
+          failedOrd.lastAccountError = syncErr.message || 'Could not auto-select Swiggy account.';
           upsertOrder(targetOrderId, failedOrd);
           await postOrReplaceForwardedCard(ctx.telegram, targetChatId, failedOrd, getDb(), formatOrderBodyFn).catch(() => {});
           await sendBossDiagnosticError(ctx, targetChatId, syncErr, {

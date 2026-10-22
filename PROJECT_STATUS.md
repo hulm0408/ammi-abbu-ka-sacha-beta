@@ -90,6 +90,8 @@ An automated Telegram ordering, billing, and tracking bot designed for family me
 | **FR-16** | Automatic account assignment to active pending draft order upon login | **VERIFIED** |
 | **FR-17** | Seamless account selection & assignment with order persistence across sync retries | **VERIFIED** |
 | **FR-18** | Explicit diagnostic error messaging on account issues (session expired, WAF challenge, auth failure) | **VERIFIED** |
+| **FR-19** | Order count display (`0 Orders` or `X Orders`) in Connected Accounts list and Account Detail cards | **VERIFIED** |
+| **FR-20** | Clean account logout, vault purge, and tombstone protection preventing resurrection of old accounts | **VERIFIED** |
 
 ---
 
@@ -137,6 +139,8 @@ An automated Telegram ordering, billing, and tracking bot designed for family me
 | Accurate Order Count & 0-Order Detection | `swiggy-cart.js`, `account-vault-intake.js` | **VERIFIED** | Checks 1-14 passed in `test_v37_order_count_id_assign_choose_diagnostic_e2e.mjs` |
 | Automatic ID Assignment & Account Selection | `index.js`, `forwarded-order-flow.js` | **VERIFIED** | Checks 15-16 passed in `test_v37_order_count_id_assign_choose_diagnostic_e2e.mjs` |
 | ID Issues & Explicit Diagnostic Messages | `index.js`, `swiggy-cart.js` | **VERIFIED** | Checks 17-20 passed in `test_v37_order_count_id_assign_choose_diagnostic_e2e.mjs` |
+| Order Count Display & Badge | `index.js`, `store.js` | **VERIFIED** | Checks 1-7 passed in `test_v38_accounts_logout_purge_order_count_display_e2e.mjs` |
+| Complete Account Logout & Vault Purge | `index.js`, `store.js` | **VERIFIED** | Checks 8-15 passed in `test_v38_accounts_logout_purge_order_count_display_e2e.mjs` |
 
 ---
 

@@ -326,7 +326,7 @@ export function cleanEssentialSwiggyCookies(cookieStr = '', fallback = {}) {
 }
 
 export function isAccountLoggedInSession(acc) {
-  return Boolean(acc && acc.isLoggedIn && (acc.cookies || acc.tid || acc.token));
+  return Boolean(acc && acc.isLoggedIn && !acc.isLoggedOut && !acc.sessionExpired && (acc.cookies || acc.tid || acc.token));
 }
 
 function normalizeTenDigitPhone(raw = '') {
@@ -515,14 +515,12 @@ export async function hydrateAccountsFromCloudVault() {
       if (existingSamePhoneKey && isAccountLoggedInSession(db.config.accounts[existingSamePhoneKey])) continue;
 
       const cur = db.config.accounts[k];
-      // Respect explicit local logout if Boss logged out locally more recently than remote `savedAt`
-      if (cur && cur.isLoggedIn === false && cur.loggedOutAt) {
-        const loMs = Date.parse(cur.loggedOutAt);
-        const remMs = remAcc.savedAt ? Date.parse(remAcc.savedAt) : 0;
-        if (Number.isFinite(loMs) && (!Number.isFinite(remMs) || loMs >= remMs)) continue;
+      // Never resurrect an account that was explicitly logged out or marked expired locally
+      if (cur && (cur.isLoggedOut || cur.sessionExpired || cur.isLoggedIn === false)) {
+        continue;
       }
 
-      if (!cur || !isAccountLoggedInSession(cur)) {
+      if (!cur) {
         const cleanC = cleanEssentialSwiggyCookies(remAcc.cookies || '', remAcc);
         db.config.accounts[k] = {
           ...remAcc,
@@ -613,7 +611,7 @@ function seedAccountsFromJson(data) {
             const key = preferredKey || (cleanPhone ? `acc_${cleanPhone}` : 'acc_' + Date.now());
             // Never resurrect explicitly deleted, logged-out, or already-present phone accounts!
             if (isAccountTombstoned(data.config.deletedAccounts, key, cleanPhone)) continue;
-            if (data.config.accounts[key] && data.config.accounts[key].isLoggedIn === false) continue;
+            if (data.config.accounts[key] && (data.config.accounts[key].isLoggedIn === false || data.config.accounts[key].isLoggedOut || data.config.accounts[key].sessionExpired)) continue;
             const existingSamePhoneKey = cleanPhone ? findAccountKeyByPhone(data.config.accounts, cleanPhone, key) : null;
             if (existingSamePhoneKey) continue;
 
@@ -959,6 +957,8 @@ export function updateAccount(key, updates) {
 
   if (merged.isLoggedIn) {
     delete merged.loggedOutAt;
+    delete merged.isLoggedOut;
+    merged.sessionExpired = false;
     merged.freshlyAuthenticated = true;
   }
 

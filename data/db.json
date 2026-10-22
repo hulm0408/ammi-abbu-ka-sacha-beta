@@ -8,143 +8,72 @@
     ],
     "bossUpiId": "swiggy.bundl@icici",
     "familyMembers": {},
-    "accounts": {
-      "acc_9935123518": {
-        "name": "prithvi",
-        "swiggyName": "prithvi",
-        "botTag": "User 1",
-        "email": "",
-        "phone": "9935123518",
-        "mobile": "9935123518",
-        "customerId": "283703858",
-        "tid": "mock-rotated-tid",
-        "sid": "u870b88b801-690f-49c3-8372-f23876194",
-        "deviceId": "cad5e8d0-098c-7992-da53-fae3f73790d8",
-        "token": "mock-rotated-token-acc_9935123518",
-        "isLoggedIn": true,
-        "cookies": "_session_tid=mock-rotated; token=mock-rotated-token-acc_9935123518",
-        "offers": {
-          "success": true,
-          "bothClaimed": true,
-          "offerValue": 1,
-          "offerLabel": "₹50 Free Cash (>₹199)",
-          "lockedMap": {
-            "byo-ln-v5-15": 1,
-            "byo-bf-v10-15": 1,
-            "byo-ln-v5-16": 1,
-            "byo-bf-v10-16": 1
-          },
-          "sessionExpired": false,
-          "breakfast": {
-            "name": "Breakfast Morning (7AM–11AM)",
-            "campaign": "byo-bf-v10-15",
-            "lockedDaysCount": 2,
-            "upcomingCampaigns": [
-              "byo-bf-v10-15",
-              "byo-bf-v10-16"
-            ],
-            "slotState": "LOCKED_FOR_TODAY",
-            "status": "CLAIMED",
-            "statusCode": 200,
-            "discount": "₹50 Free Cash (>₹199)",
-            "offerValue": 1,
-            "rawMessage": "Campaign data has been updated",
-            "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
-          },
-          "lateNight": {
-            "name": "Late Night (9PM–6AM)",
-            "campaign": "byo-ln-v5-15",
-            "lockedDaysCount": 2,
-            "upcomingCampaigns": [
-              "byo-ln-v5-15",
-              "byo-ln-v5-16"
-            ],
-            "slotState": "LOCKED_FOR_TODAY",
-            "status": "CLAIMED",
-            "statusCode": 200,
-            "discount": "₹50 Free Cash (>₹199)",
-            "offerValue": 1,
-            "rawMessage": "Campaign data has been updated",
-            "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
-          }
-        },
-        "savedAt": "2026-10-17T01:54:15.307Z",
-        "_session_tid": "mock-rotated-sid",
-        "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI1NDUwNjIsInNpZCI6InVhdTM1YTYyMjA0LTc0NzYtNGFkZi05ZTVlLWI2ZWI3MmIwOCIsInN1YiI6IjdjZmQ1OGM4LWNmYWYtNDU3Mi1iZTIxLWE2YTEwMGQ3Nzk1YyIsImlzcyI6ImhhcCIsInNlc3Npb25fZGF0YSI6Ik8rcXN2Q0VUR00wWWVQelpTYThKa2phWklvUDVFcjNSenhwUWJZWE5tY1Y1MVdlS2NKUVhPMGs3TElkWXNZNzRlazIxRHV4azNzNG8zYUlWNFhESEF5bm5sdzdUNGJEZWZLQWVYbVFzU3A3ZlhWOVlQZllBVHIrVStKMzZCMlVZdVg3aWJCb2tPMG5zV3IwdVJKcGdTWE1ZaW5jVlVmQys0NC8valVjdm1sODBVcVdyMnJkQzllR0NvSHlndXlwU0lFRi8wVHF2YndFYkFwbGFXZUZqK1ZscFV5TkJGNnFQZm40Q1laV1B3VzRQZm1CRWphTjdTWmpQY2JJQUU4NGVDQ29nZkRWNG11Zz0iLCJ1c2VyX2lkIjoiMjgzNzAzODU4IiwiZXhwIjoxNzk1MTM3MDYyfQ.KpTYZtdTMKt1X6NbIrjyEW77PuauWK8z-31GtB8YoSI",
-        "preferredOfferValue": 1
-      },
-      "acc_6296591407": {
-        "name": "Rahul (6296591407)",
-        "swiggyName": "Umbashiya",
-        "botTag": "User 1",
-        "phone": "6296591407",
-        "mobile": "6296591407",
-        "customerId": "285591864",
-        "tid": "mock-rotated-tid",
-        "sid": "u913f8eb0f9-9786-47a3-8139-733931f05",
-        "deviceId": "55a09fe4-deca-be8f-372c-72c12430a5bf",
-        "token": "mock-rotated-token-acc_6296591407",
-        "cookies": "_session_tid=mock-rotated; token=mock-rotated-token-acc_6296591407",
-        "isLoggedIn": true,
-        "savedAt": "2026-10-18T08:19:34.910Z",
-        "id": "acc_6296591407",
-        "_session_tid": "mock-rotated-sid",
-        "userId": "285591864",
-        "preferredOfferValue": 1,
-        "offers": {
-          "success": true,
-          "bothClaimed": true,
-          "offerValue": 1,
-          "offerLabel": "₹50 Free Cash (>₹199)",
-          "lockedMap": {
-            "byo-bf-v10-15": 1,
-            "byo-ln-v5-15": 1,
-            "byo-bf-v10-16": 1,
-            "byo-ln-v5-16": 1
-          },
-          "sessionExpired": false,
-          "breakfast": {
-            "name": "Breakfast Morning (7AM–11AM)",
-            "campaign": "byo-bf-v10-15",
-            "lockedDaysCount": 2,
-            "upcomingCampaigns": [
-              "byo-bf-v10-15",
-              "byo-bf-v10-16"
-            ],
-            "slotState": "LOCKED_FOR_TODAY",
-            "status": "CLAIMED",
-            "statusCode": 200,
-            "discount": "₹50 Free Cash (>₹199)",
-            "offerValue": 1,
-            "rawMessage": "Already active",
-            "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 7:00 AM • +1 next days pre-locked)"
-          },
-          "lateNight": {
-            "name": "Late Night (9PM–6AM)",
-            "campaign": "byo-ln-v5-15",
-            "lockedDaysCount": 2,
-            "upcomingCampaigns": [
-              "byo-ln-v5-15",
-              "byo-ln-v5-16"
-            ],
-            "slotState": "LOCKED_FOR_TODAY",
-            "status": "CLAIMED",
-            "statusCode": 200,
-            "discount": "₹50 Free Cash (>₹199)",
-            "offerValue": 1,
-            "rawMessage": "Already active",
-            "message": "✅ Booked Before Cutoff (₹50 Free Cash (>₹199) • activates 9:00 PM • +1 next days pre-locked)"
-          }
-        },
-        "jwtTid": "eyJLSUQiOiIyIiwiYWxnIjoiSFMyNTYiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3OTI1Mjk0MDEsInNpZCI6InVhcDI3MDMzMDdmLWJjZDEtNDE0Ny1iY2ZiLTcwMmYxNTM5ZSIsInNlc3Npb25fZGF0YSI6IlZDVzJBa0hXeWZRQ0o3ak5uT251YzgzVEdPLzdzMEVMaVgveHdCZFVycEJGNzNLY0YrTEhGZkNCTG11cS9uOTBkWWZxb2tZaUV4d0VDUUdLaDRoVE4xNVAvYzJsVytMa0tpNUdvcFdNUFlsZWUrbDlsb1NicG51aEkva1RPclNFZnQ0bFJ4NXJyS0VpRnVybmM4NFpoRDJ2ZEtWY0lRc2twM0p6SmJ0UTFPblNwei9KVjZpNkRYRlJEODlURHB3QkRhdmtobEd2ME03LytLSkw1WHllN20vdDBVdExiL29zZ3RadzJtbWdrNlpsTk1RNlczMmJUVVJIa0RMOHVubVVWeExsdUNsVkd1Njl1Zz09IiwiaXNzIjoiaGFwIiwic3ViIjoiYmIwNjRmMDktMWEzMy00MjY0LWFkNjEtNDYyNWY3MTkwZDA0IiwidXNlcl9pZCI6IjI4NTU5MTg2NCIsImV4cCI6MTc5NTEyMTQwMX0.q_jXOCRkoD1N0_fix3W8kV-cG6swyISdftsEMYmLOZE",
-        "totalOrdersCount": 0,
-        "isZeroOrderAccount": true
-      }
-    },
-    "activeOrderAccount": "acc_6296591407",
-    "deletedAccounts": {}
+    "accounts": {},
+    "activeOrderAccount": null,
+    "deletedAccounts": {
+      "acc_9935123518": true,
+      "9935123518": true,
+      "acc_6296591407": true,
+      "6296591407": true,
+      "acc_9111111111": true,
+      "9111111111": true,
+      "acc_9222222222": true,
+      "9222222222": true
+    }
   },
   "orders": {
+    "824400": {
+      "id": "824400",
+      "userId": 7770161,
+      "userName": "Ammi",
+      "handle": null,
+      "type": "SWIGGY_ORDER",
+      "address": "Shyam Baba Mandir, Shivaji Nagar, Gullowara, Darbhanga, Bihar 846004",
+      "addressOriginalText": "Shyam Baba Mandir, Shivaji Nagar, Gullowara, Darbhanga, Bihar 846004",
+      "addressLink": null,
+      "cart": "https://swig.gy/gc/1467977/TestHost-642855918",
+      "restaurantId": "1467977",
+      "groupCartId": "642855918",
+      "hostName": "TestHost",
+      "status": "PENDING",
+      "paymentStatus": "UNPAID",
+      "isCustomerSubmitted": true,
+      "createdAt": "2026-10-22T19:59:28.247Z",
+      "autoOptimizeStartedAt": "2026-10-22T20:00:15.925Z",
+      "userChatId": 7770161,
+      "userMessageId": 99,
+      "bossMessageIds": {
+        "6484999726": 12
+      },
+      "addressDetails": {
+        "name": "SHANU SAHANI",
+        "mobile": "9876500011",
+        "city": "Darbhanga",
+        "address": "Shyam Baba Mandir, Shivaji Nagar, Gullowara, Darbhanga, Bihar 846004",
+        "lat": "26.0829899",
+        "lng": "86.0324951",
+        "flat_no": "Shyam Baba Mandir",
+        "area": "Darbhanga",
+        "landmark": "Gullowara"
+      },
+      "restaurantName": "TestHost's Group Order",
+      "items": [
+        {
+          "name": "Egg Roll [2 Egg]",
+          "price": 109,
+          "qty": 2,
+          "lineTotal": 218,
+          "itemId": "111"
+        }
+      ],
+      "itemTotal": 218,
+      "subtotal": 218,
+      "totalSavings": 0,
+      "finalPayable": 218,
+      "cardStage": "PENDING",
+      "autoOptimizeError": "Swiggy did not accept the verified delivery address. No default or first-saved address was selected; please recheck the pin, street, and receiver number.. Remaining account(s) are busy (acc_9935123518).",
+      "autoOptimizeFailedAt": "2026-10-22T20:01:01.684Z"
+    },
     "TEST": {
       "id": "AUTO_READY_1",
       "userId": 424242,
@@ -185,7 +114,15 @@
       "userMessageId": 7,
       "cardStage": "BILL_READY",
       "autoOptimized": true,
-      "billSummarySentAt": "2026-10-21T18:17:23.181Z"
+      "billSummarySentAt": "2026-10-21T18:17:23.181Z",
+      "selectedAccountPhone": "9935123518",
+      "selectedAccountName": "prithvi"
+    },
+    "V35_FINISH": {
+      "id": "V35_FINISH",
+      "userId": 7859821553,
+      "status": "COMPLETED",
+      "topicsFinished": true
     }
   },
   "drafts": {
@@ -210,25 +147,24 @@
       "addressLink": "https://swiggy.onelink.me/JgkQ/kubail4a",
       "addressOriginalText": "https://swiggy.onelink.me/JgkQ/kubail4a",
       "addressDetails": null
+    },
+    "7859821553": {
+      "address": null,
+      "cart": null,
+      "submitted": false,
+      "currentOrderId": null
     }
   },
   "bossState": null,
   "userStates": {},
-  "sessionVault": {
-    "6296591407": {
-      "account": "acc_6296591407",
-      "name": "Rahul (6296591407)",
-      "swiggyName": "Umbashiya",
-      "mobile": "6296591407",
-      "phone": "6296591407",
-      "customerId": "285591864",
-      "token": "mock-rotated-token-sv",
-      "tid": "mock-rotated-tid",
-      "sid": "u913f8eb0f9-9786-47a3-8139-733931f05",
-      "deviceId": "55a09fe4-deca-be8f-372c-72c12430a5bf",
-      "cookies": "_session_tid=mock-rotated; token=mock-rotated-token-sv",
-      "savedAt": "2026-10-18T08:19:34.910Z"
-    }
-  },
-  "auditLog": []
+  "sessionVault": {},
+  "auditLog": [],
+  "waf": {
+    "token": "24629277-0885-41c7-babd-b6e2a9b9029d:BQoAenCT75gZAwAA:Taby+jBJexIXLwg6WsLW1nytpdtHhvAPgXwCu6V2B6VCmX3RtAgOmNr/sn/tiL7bOy8mNTFfmIAu4Q8eeb9enkDRxWOAa7WWY1ERONdYbeHPxiq5AZQloY0kkT3GKcaRRdmbzgHjSmePRuH1xRCe5hQMeomv1oQgKWZvICTmfabYMJUO2K/CLCZKdkJS1FyYIK5APuTML1QDrOAWDvnagkct2ilOMl5H0mWvgYMDxsOnpvaLttEkT4lCbos2WYvUat7h3ailiACEbRFMEbUGFu5xaoVlWSI4VM0=",
+    "acquiredAt": 1792699261673,
+    "source": "chromium",
+    "cooldownUntil": 0,
+    "hitStreak": 0,
+    "windowStart": 0
+  }
 }

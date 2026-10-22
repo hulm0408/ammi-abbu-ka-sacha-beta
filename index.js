@@ -4228,7 +4228,8 @@ bot.action(/^boss_remove_local_(.+)$/, async (ctx) => {
   }
 
   await deactivateSwiggyAccountViaBridge(userId, key, false).catch(() => {});
-  deleteAccount(key, { purgeVault: false });
+  permanentLogoutAccount(key, { purgeVault: true });
+  deleteAccount(key, { purgeVault: true });
 
   await ctx.answerCbQuery('Removed from Bot DB! ×').catch(() => {});
   await ctx.reply(
@@ -4688,10 +4689,10 @@ bot.action('boss_logout_picker', async (ctx) => {
   const db = getDb();
   const accounts = db.config.accounts || {};
 
-  const loggedInEntries = Object.entries(accounts).filter(([, a]) => a.isLoggedIn);
-  if (loggedInEntries.length === 0) {
+  const allEntries = Object.entries(accounts);
+  if (allEntries.length === 0) {
     return ctx.reply(
-      '! <b>Koi bhi active logged-in account nahi hai!</b>\nNiche se account login ya re-login karein:',
+      '! <b>Koi bhi connected account nahi hai!</b>\nNiche se account login ya re-login karein:',
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
@@ -4708,14 +4709,18 @@ bot.action('boss_logout_picker', async (ctx) => {
   const buttons = [];
   buttons.push([{ text: '! LOGOUT ALL ACCOUNTS', callback_data: 'boss_logout_all_confirm', style: 'danger' }]);
 
-  for (const [k, a] of loggedInEntries) {
-    buttons.push([{ text: `↗ Logout ${a.name || k} (${a.phone || ''})`, callback_data: `boss_logout_single_${k}`, style: 'primary' }]);
+  for (const [k, a] of allEntries) {
+    const isLive = isAccountLoggedInSession(a);
+    const cnt = typeof a.totalOrdersCount === 'number' ? a.totalOrdersCount : (typeof a.cachedTotalOrdersCount === 'number' ? a.cachedTotalOrdersCount : null);
+    const ordBadge = cnt === 0 ? '[0 ord]' : (cnt !== null ? `[${cnt} ord]` : '');
+    const statusIcon = isLive ? '●' : (a.sessionExpired ? '⚠️' : '○');
+    buttons.push([{ text: `↗ Logout ${statusIcon} ${a.name || k} (${a.phone || ''}) ${ordBadge}`.trim(), callback_data: `boss_logout_single_${k}`, style: isLive ? 'primary' : 'danger' }]);
   }
   buttons.push([{ text: '← Back', callback_data: 'boss_view_accounts', style: 'primary' }]);
 
   await ctx.reply(
     `<blockquote>↗ <b>LOGOUT ACCOUNTS MANAGER</b></blockquote>\n\n` +
-    `Jis account ko bot se logout karna chahte hain uspe tap karein (aapka copy kiya hua Session Code Swiggy par active rahega taaki baad me 1-tap Re-Login ho sake!):`,
+    `Jis account ko bot se logout karna chahte hain uspe tap karein:`,
     {
       parse_mode: 'HTML',
       reply_markup: { inline_keyboard: buttons }
@@ -4727,30 +4732,33 @@ bot.action(/^boss_logout_single_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const key = ctx.match[1];
   const db = getDb();
-  const acc = db.config.accounts?.[key];
-  if (!acc) return ctx.answerCbQuery('Account not found').catch(() => {});
+  const acc = db.config.accounts?.[key] || db.sessionVault?.[key] || null;
 
-  const phone = acc.phone || acc.mobile || '';
-  const accName = acc.name || key;
+  const phone = acc?.phone || acc?.mobile || key.replace(/^acc_/, '');
+  const cleanPhone = normalizeIndianMobileNumber(phone) || '';
+  const accName = acc?.name || key;
   await deactivateSwiggyAccountViaBridge(ctx.from.id, key, false).catch(() => {});
-  permanentLogoutAccount(key);
+  permanentLogoutAccount(key, { purgeVault: true });
+  deleteAccount(key, { purgeVault: true });
 
   await ctx.answerCbQuery('Logged out cleanly! ✓').catch(() => {});
   await ctx.reply(
     `<blockquote>↗ <b>LOGOUT COMPLETED</b></blockquote>\n\n` +
     `☎ <b>Account:</b> <code>${escapeHtml(phone)}</code>\n` +
     `◉ <b>Name:</b> <b>${escapeHtml(accName)}</b>\n` +
-    `◈ <b>Status:</b> Logged Out from Bot (Session Vault saved — Re-Login anytime below!):`,
+    `◈ <b>Status:</b> Completely Logged Out & Purged from Bot.`,
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([
         [
-          Markup.button.callback(`◈ Re-Login ${phone || accName} (OTP)`, `boss_login_acc_otp_${key}`),
-          Markup.button.callback('▤ Re-Login with Code', `boss_login_acc_json_${key}`)
+          ...(/^\d{10}$/.test(cleanPhone || phone)
+            ? [Markup.button.callback(`◈ Re-Login ${cleanPhone || phone} (OTP)`, `relogin_phone_${cleanPhone || phone}`)]
+            : [Markup.button.callback('☎ Login with Number', 'boss_login_with_number')]),
+          Markup.button.callback('▤ Login with Code', 'boss_login_with_json')
         ],
         [
-          Markup.button.callback('× Remove from Bot DB', `boss_remove_local_${key}`),
-          Markup.button.callback('◉ View Accounts', 'boss_view_accounts')
+          Markup.button.callback('◉ View Accounts', 'boss_view_accounts'),
+          Markup.button.callback('⌂ Main Menu', 'boss_panel_home')
         ]
       ])
     }
@@ -4783,10 +4791,9 @@ bot.action('boss_logout_all_exec', async (ctx) => {
 
   let count = 0;
   for (const [k, a] of Object.entries(accounts)) {
-    if (a.isLoggedIn) {
-      permanentLogoutAccount(k);
-      count++;
-    }
+    permanentLogoutAccount(k, { purgeVault: true });
+    deleteAccount(k, { purgeVault: true });
+    count++;
   }
 
   await ctx.reply(
@@ -6212,7 +6219,7 @@ bot.hears('◉ Family Accounts', async (ctx) => {
   await showFamilyAccounts(ctx);
 });
 
-async function showFamilyAccounts(ctx) {
+export async function showFamilyAccounts(ctx) {
   const db = getDb();
   const accounts = db.config.accounts || {};
   const activeKey = db.config.activeOrderAccount;
@@ -6225,10 +6232,17 @@ async function showFamilyAccounts(ctx) {
     text += `<i>Koi bhi account connected nahi hai.\nNiche diye buttons se JSON ya Number se login karein!</i>\n\n`;
   } else {
     for (const [key, acc] of entries) {
-      const status = isAccountLoggedInSession(acc) ? `● Logged In` : '○ Logged Out';
+      const isLive = isAccountLoggedInSession(acc);
+      const status = isLive ? `● Logged In` : (acc.sessionExpired ? `⚠️ Session Expired` : '○ Logged Out');
       const isActive = key === activeKey ? ' ★ <b>[ACTIVE]</b>' : '';
+      const cnt = typeof acc.totalOrdersCount === 'number'
+        ? acc.totalOrdersCount
+        : (typeof acc.cachedTotalOrdersCount === 'number' ? acc.cachedTotalOrdersCount : null);
+      const orderBadge = cnt === 0
+        ? '★ 0 Orders (Fresh 0-Order ID)'
+        : (cnt !== null ? `● ${cnt} Order${cnt === 1 ? '' : 's'}` : '○ Orders: Not checked');
       text += `• <b>${escapeHtml(acc.name || key)}</b>${isActive} — <b>${status}</b>\n` +
-        `  ☎ <code>${acc.phone || 'Not set'}</code>\n`;
+        `  ☎ <code>${acc.phone || 'Not set'}</code> • 📦 <b>${orderBadge}</b>\n`;
     }
     text += `\n<i>↓ Kisi bhi account par tap karein (Copy Code / Claim Offer / Logout / Re-Login / Delete ke liye):</i>`;
   }
@@ -6239,13 +6253,19 @@ async function showFamilyAccounts(ctx) {
     const row = [];
     const [k1, a1] = entries[i];
     const live1 = isAccountLoggedInSession(a1);
-    const icon1 = live1 ? (k1 === activeKey ? '★' : '●') : '○';
-    row.push({ text: `${icon1} ${a1.phone || a1.name || k1}`, callback_data: `acc_view_detail_${k1}`, style: live1 ? 'success' : 'primary' });
+    const icon1 = live1 ? (k1 === activeKey ? '★' : '●') : (a1.sessionExpired ? '⚠️' : '○');
+    const cnt1 = typeof a1.totalOrdersCount === 'number' ? a1.totalOrdersCount : (typeof a1.cachedTotalOrdersCount === 'number' ? a1.cachedTotalOrdersCount : null);
+    const ordBadge1 = cnt1 === 0 ? '[0 ord]' : (cnt1 !== null ? `[${cnt1} ord]` : '');
+    const label1 = `${icon1} ${a1.phone || a1.name || k1} ${ordBadge1}`.trim();
+    row.push({ text: label1, callback_data: `acc_view_detail_${k1}`, style: live1 ? 'success' : 'primary' });
     if (entries[i + 1]) {
       const [k2, a2] = entries[i + 1];
       const live2 = isAccountLoggedInSession(a2);
-      const icon2 = live2 ? (k2 === activeKey ? '★' : '●') : '○';
-      row.push({ text: `${icon2} ${a2.phone || a2.name || k2}`, callback_data: `acc_view_detail_${k2}`, style: live2 ? 'success' : 'primary' });
+      const icon2 = live2 ? (k2 === activeKey ? '★' : '●') : (a2.sessionExpired ? '⚠️' : '○');
+      const cnt2 = typeof a2.totalOrdersCount === 'number' ? a2.totalOrdersCount : (typeof a2.cachedTotalOrdersCount === 'number' ? a2.cachedTotalOrdersCount : null);
+      const ordBadge2 = cnt2 === 0 ? '[0 ord]' : (cnt2 !== null ? `[${cnt2} ord]` : '');
+      const label2 = `${icon2} ${a2.phone || a2.name || k2} ${ordBadge2}`.trim();
+      row.push({ text: label2, callback_data: `acc_view_detail_${k2}`, style: live2 ? 'success' : 'primary' });
     }
     buttons.push(row);
   }
@@ -9864,11 +9884,24 @@ bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
   const phone = acc.phone || acc.mobile || '';
   const codeBlock = sessionJsonStr.length <= 3400 ? sessionJsonStr : compactStr;
 
+  const cnt = typeof acc.totalOrdersCount === 'number'
+    ? acc.totalOrdersCount
+    : (typeof acc.cachedTotalOrdersCount === 'number' ? acc.cachedTotalOrdersCount : null);
+  const orderCountText = cnt === 0
+    ? '★ 0 Orders (Fresh Zero-Order ID)'
+    : (cnt !== null ? `● ${cnt} Past Order${cnt === 1 ? '' : 's'}` : '○ Not checked yet');
+
+  const statusText = isLogged
+    ? '● Logged In'
+    : (acc.sessionExpired ? '⚠️ Session Expired (Re-login required)' : '○ Logged Out');
+
   const text = `<b>Swiggy Account Control</b>\n\n` +
     `◉ <b>${escapeHtml(acc.name || key)}</b>\n` +
     `☎ <code>${phone || 'No phone set'}</code>\n` +
-    `◈ Status: <b>${isLogged ? '● Logged In' : '○ Logged Out / Expired'}</b>\n` +
+    `◈ Status: <b>${statusText}</b>\n` +
+    `📦 <b>Past Orders:</b> <b>${orderCountText}</b>\n` +
     (isActive ? `★ <b>(Currently Active Order Hub)</b>\n` : '') +
+    (acc.sessionExpired ? `\n⚠️ <i>Swiggy session has expired. Please re-login via OTP or drop a fresh JSON below to use this account for orders!</i>\n` : '') +
     `\n` +
     (codeBlock ? `▤ <b>Full Session Code (${codeBlock.length} chars):</b>\n<pre><code class="language-json">${escapeHtml(codeBlock)}</code></pre>\n\n` : '') +
     `Select an option:`;
@@ -9913,6 +9946,10 @@ bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
       { text: '▤ Re-Login with Code', callback_data: `boss_login_acc_json_${key}`, style: 'primary' }
     ]);
     buttons.push([
+      { text: 'Previous Orders', callback_data: `acc_view_orders_${key}`, style: 'primary' },
+      { text: '↗ Logout & Remove', callback_data: `boss_logout_single_${key}`, style: 'danger' }
+    ]);
+    buttons.push([
       { text: '× Remove from Bot DB', callback_data: `boss_remove_local_${key}`, style: 'danger' }
     ]);
   }
@@ -9948,7 +9985,8 @@ bot.action(/^acc_perm_logout_(.+)$/, async (ctx) => {
   const name = acc?.name || key;
   const phone = acc?.phone || '';
 
-  permanentLogoutAccount(key);
+  permanentLogoutAccount(key, { purgeVault: true });
+  deleteAccount(key, { purgeVault: true });
   await ctx.answerCbQuery('Permanent Logout Successful ↗').catch(() => {});
   await ctx.reply(
     `<b>Permanent Logout Successful</b>\n\n` +
@@ -9973,6 +10011,12 @@ async function handlePreviousOrders(ctx, targetKey = null) {
   }
 
   const orders = await fetchAccountOrders(acc);
+  if (Array.isArray(orders)) {
+    acc.totalOrdersCount = orders.length;
+    acc.cachedTotalOrdersCount = orders.length;
+    acc.isZeroOrderAccount = (orders.length === 0);
+    saveDb(db);
+  }
 
   if (!orders || orders.length === 0) {
     const emptyText = 

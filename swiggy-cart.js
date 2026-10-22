@@ -1881,10 +1881,13 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
         .filter(({ acc }) => acc && (acc.isLoggedIn || acc.cookies || acc.tid || acc.token))
         .slice(0, 3)
         .map(x => x.acc);
+    if (allCandidates.length === 0) {
+      allCandidates.push({});
+    }
     const deadline = Date.now() + 8000;
 
     for (const cand of allCandidates) {
-      if (!cand) continue;
+      if (cand === undefined) continue;
       if (Date.now() >= deadline) break;
       const perCallTimeout = Math.max(1500, Math.min(4500, deadline - Date.now()));
       const dapiRes = await dapiFetch(cand, `social/getAddress/${encodeURIComponent(tok)}`, { timeoutMs: perCallTimeout }).catch(() => null);
@@ -6157,12 +6160,14 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     accKey = acc.id || acc.account || (acc.phone ? `acc_${acc.phone}` : 'acc_temp');
   }
 
-  if (!acc || !acc.isLoggedIn || (!acc.cookies && !acc.tid && !acc.jwtTid && !acc.token)) {
+  if (!acc || !acc.isLoggedIn || acc.isLoggedOut || acc.sessionExpired || (!acc.cookies && !acc.tid && !acc.jwtTid && !acc.token)) {
     return {
       key: accKey,
       valid: false,
-      reason: 'NOT_LOGGED_IN',
-      error: 'Account is logged out or missing session cookies/token',
+      reason: acc?.sessionExpired ? 'SESSION_EXPIRED' : (acc?.isLoggedOut ? 'LOGGED_OUT' : 'NOT_LOGGED_IN'),
+      error: acc?.sessionExpired
+        ? 'Account session expired on Swiggy — re-login required'
+        : (acc?.isLoggedOut ? 'Account was permanently logged out' : 'Account is logged out or missing session cookies/token'),
       totalOrdersCount: typeof acc?.totalOrdersCount === 'number' ? acc.totalOrdersCount : 999999,
       isZeroOrderAccount: acc?.totalOrdersCount === 0 || Boolean(acc?.isZeroOrderAccount),
       liveActiveOrdersCount: 0,
@@ -6176,12 +6181,15 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
   const sig = `${accKey}|${(acc.jwtTid || acc.tid || '').slice(0, 28)}|${acc.totalOrdersCount ?? ''}`;
   const cached = accountOrderProfileCache.get(sig);
   if (!force && cached && (Date.now() - cached.ts) < 15 * 60 * 1000) {
-    return cached.profile;
+    if (!acc.sessionExpired && !acc.isLoggedOut) {
+      return cached.profile;
+    }
+    accountOrderProfileCache.delete(sig);
   }
 
   // Fast-path: If the account already has a known cachedTotalOrdersCount / totalOrdersCount,
   // build the profile in 0ms without firing network calls to Swiggy on every cart scan!
-  if (!force && (acc.cachedTotalOrdersCount !== undefined && acc.cachedTotalOrdersCount !== null || typeof acc.totalOrdersCount === 'number')) {
+  if (!force && !acc.sessionExpired && !acc.isLoggedOut && (acc.cachedTotalOrdersCount !== undefined && acc.cachedTotalOrdersCount !== null || typeof acc.totalOrdersCount === 'number')) {
     const totalOrdersCount = Math.max(0, Number(acc.cachedTotalOrdersCount ?? acc.totalOrdersCount ?? 0));
     const profile = {
       key: accKey,
@@ -6344,9 +6352,16 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   const db = getDb();
   const accounts = db?.config?.accounts || {};
 
-  const allEntries = Object.entries(accounts).filter(([, a]) => a && a.isLoggedIn && (a.cookies || a.tid || a.jwtTid || a.token));
+  const allEntries = Object.entries(accounts).filter(([, a]) => a && a.isLoggedIn && !a.isLoggedOut && (a.cookies || a.tid || a.jwtTid || a.token));
   if (allEntries.length === 0) {
-    return { success: false, error: 'No logged-in Swiggy accounts available.' };
+    const totalAccountsInDb = Object.keys(accounts).length;
+    return {
+      success: false,
+      code: 'NO_LOGGED_IN_ACCOUNTS',
+      error: totalAccountsInDb > 0
+        ? 'All Swiggy accounts in vault are logged out or missing sessions. Please login via OTP or import session JSON in ☎ Accounts.'
+        : 'No Swiggy accounts found in bot vault. Please login via OTP or import session JSON in ☎ Accounts.'
+    };
   }
 
   // Inspect logged-in accounts with bounded concurrency (6 workers) so Vault scans stay <1s
@@ -6364,9 +6379,14 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
       }
     })
   );
-  const validPool = profilesList.filter(x => x.profile.valid);
+  const validPool = profilesList.filter(x => x.profile.valid && !x.acc?.sessionExpired && !x.acc?.isLoggedOut);
   if (validPool.length === 0) {
-    return { success: false, error: 'All logged-in Swiggy accounts have expired sessions — re-login accounts first.' };
+    const expiredPhones = profilesList.map(x => x.acc.phone || x.key).filter(Boolean);
+    return {
+      success: false,
+      code: 'ALL_SESSIONS_EXPIRED',
+      error: `All logged-in Swiggy accounts (${expiredPhones.join(', ') || 'in vault'}) have expired sessions — re-login accounts via OTP in ☎ Accounts or drop new Session JSON!`
+    };
   }
 
   const restoreOrFlushAccount = async (targetAcc, savedPreCart, fallbackRestId) => {
@@ -6405,6 +6425,7 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   const estSubtotal = Number(order?.subtotal || order?.itemTotal || 250);
   const triedKeys = new Set(Array.isArray(excludeAccountKeys) ? excludeAccountKeys : []);
   const accountComparison = [];
+  const probeFailures = [];
   let bestOverallProbe = null;
 
   // Probe free accounts in bounded parallel waves; if another order temporarily borrowed extra
@@ -6542,7 +6563,26 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
 
     const previousBestProbe = bestOverallProbe;
     for (const probe of parallelProbes) {
-      if (!probe.res?.success) continue;
+      if (!probe.res?.success) {
+        const pErr = probe.res?.error || 'Account probe failed';
+        const pCode = probe.res?.code || 'PROBE_FAILED';
+        probeFailures.push({
+          key: probe.key,
+          phone: probe.acc?.phone || probe.key,
+          name: probe.acc?.name,
+          error: pErr,
+          code: pCode
+        });
+        if (probe.res?.sessionExpired || pCode === 'ACCOUNT_SESSION_EXPIRED_OR_PARTIAL' || /session expired|re-login|please login again/i.test(pErr)) {
+          probe.acc.sessionExpired = true;
+          const liveDb = getDb();
+          if (liveDb.config?.accounts?.[probe.key]) {
+            liveDb.config.accounts[probe.key].sessionExpired = true;
+            saveDb(liveDb);
+          }
+        }
+        continue;
+      }
       const { key, acc, profile, probeOrder } = probe;
       accountComparison.push({
         key,
@@ -6591,10 +6631,26 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
 
   if (!bestOverallProbe) {
     const busyNow = getBusySwiggyAccountsMap(getDb(), orderId);
-    const errReason = busyNow.size >= validPool.length
-      ? `All ${validPool.length} valid Swiggy ID(s) are currently busy holding active orders (${Array.from(busyNow.keys()).join(', ')}). Log in ${Math.max(1, 10 - validPool.length)}+ more fresh 0-Order IDs or complete/cancel an active order!`
-      : 'Could not sync cart on any free Swiggy account.';
-    return { success: false, error: errReason, code: busyNow.size >= validPool.length ? 'ALL_SWIGGY_IDS_BUSY' : 'BEST_SYNC_FAILED', accountComparison, skippedBusyCount: busyNow.size };
+    let errReason;
+    let errCode = 'BEST_SYNC_FAILED';
+    if (probeFailures.length > 0) {
+      const allExpired = probeFailures.every(f => f.code === 'ACCOUNT_SESSION_EXPIRED_OR_PARTIAL' || /session expired|re-login|please login again/i.test(f.error));
+      const failSummary = allExpired
+        ? `Checked Swiggy account(s) (${probeFailures.map(f => f.phone).join(', ')}) have expired sessions (re-login needed via OTP in ☎ Accounts)`
+        : Array.from(new Set(probeFailures.map(f => f.error))).join(' | ');
+      if (busyNow.size > 0) {
+        errReason = `${failSummary}. Remaining account(s) are busy (${Array.from(busyNow.keys()).join(', ')}).`;
+      } else {
+        errReason = failSummary;
+      }
+      errCode = allExpired ? 'ALL_SESSIONS_EXPIRED' : (probeFailures[0]?.code || 'BEST_SYNC_FAILED');
+    } else if (busyNow.size >= validPool.length) {
+      errReason = `All ${validPool.length} valid Swiggy ID(s) are currently busy holding active orders (${Array.from(busyNow.keys()).join(', ')}). Log in ${Math.max(1, 10 - validPool.length)}+ more fresh 0-Order IDs or complete/cancel an active order!`;
+      errCode = 'ALL_SWIGGY_IDS_BUSY';
+    } else {
+      errReason = 'Could not sync cart on any free Swiggy account.';
+    }
+    return { success: false, error: errReason, code: errCode, accountComparison, probeFailures, skippedBusyCount: busyNow.size };
   }
 
   const bestKey = bestOverallProbe.key;

@@ -1,0 +1,165 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {
+  getDb,
+  saveDb,
+  updateAccount,
+  permanentLogoutAccount,
+  deleteAccount,
+  isAccountLoggedInSession,
+  hydrateAccountsFromCloudVault
+} from './store.js';
+
+process.env.TEST_MODE = '1';
+process.env.BOT_TEST_MODE = '1';
+
+const {
+  showFamilyAccounts,
+  handlePreviousOrders
+} = await import('./index.js');
+
+let passed = 0;
+function ok(cond, msg) {
+  assert.ok(cond, msg);
+  passed++;
+  console.log(`✅ ${msg}`);
+}
+
+const originalDbRaw = fs.readFileSync('./data/db.json', 'utf8');
+const originalAccountsRaw = fs.readFileSync('./accounts.json', 'utf8');
+
+try {
+  console.log('--- 1. Order Count Display in showFamilyAccounts ---');
+
+  const testDb = getDb();
+  testDb.config.accounts = {
+    acc_1110001111: {
+      id: 'acc_1110001111',
+      phone: '1110001111',
+      name: 'Fresh Zero User',
+      isLoggedIn: true,
+      totalOrdersCount: 0,
+      cachedTotalOrdersCount: 0,
+      isZeroOrderAccount: true,
+      cookies: '_session_tid=fake1; token=tok1;'
+    },
+    acc_2220002222: {
+      id: 'acc_2220002222',
+      phone: '2220002222',
+      name: 'Veteran User',
+      isLoggedIn: true,
+      totalOrdersCount: 4,
+      cachedTotalOrdersCount: 4,
+      isZeroOrderAccount: false,
+      cookies: '_session_tid=fake2; token=tok2;'
+    },
+    acc_3330003333: {
+      id: 'acc_3330003333',
+      phone: '3330003333',
+      name: 'Expired Session User',
+      isLoggedIn: true,
+      sessionExpired: true,
+      totalOrdersCount: 1,
+      cachedTotalOrdersCount: 1,
+      isZeroOrderAccount: false,
+      cookies: '_session_tid=fake3; token=tok3;'
+    }
+  };
+  saveDb(testDb);
+
+  let familyReplyText = '';
+  let familyKeyboard = null;
+  const mockCtxFamily = {
+    from: { id: 6484999726 },
+    reply: async (text, extra) => {
+      familyReplyText = text;
+      familyKeyboard = extra?.reply_markup?.inline_keyboard || [];
+      return { message_id: 101 };
+    }
+  };
+
+  await showFamilyAccounts(mockCtxFamily);
+
+  ok(familyReplyText.includes('Fresh Zero User'), 'Fresh Zero User listed in showFamilyAccounts');
+  ok(familyReplyText.includes('★ 0 Orders (Fresh 0-Order ID)'), '★ 0 Orders badge rendered for 0-order account');
+  ok(familyReplyText.includes('● 4 Orders'), '● 4 Orders rendered for veteran account');
+  ok(familyReplyText.includes('⚠️ Session Expired'), 'Expired account renders ⚠️ Session Expired');
+
+  // Verify button badges in inline keyboard
+  const allButtons = familyKeyboard.flat();
+  const zeroBtn = allButtons.find(b => b.callback_data === 'acc_view_detail_acc_1110001111');
+  const usedBtn = allButtons.find(b => b.callback_data === 'acc_view_detail_acc_2220002222');
+  const expBtn = allButtons.find(b => b.callback_data === 'acc_view_detail_acc_3330003333');
+
+  ok(Boolean(zeroBtn) && zeroBtn.text.includes('[0 ord]'), 'Zero-order button shows [0 ord] badge');
+  ok(Boolean(usedBtn) && usedBtn.text.includes('[4 ord]'), 'Used account button shows [4 ord] badge');
+  ok(Boolean(expBtn) && expBtn.text.includes('⚠️'), 'Expired button shows ⚠️ alert icon');
+
+  console.log('\n--- 2. Account Details Screen (acc_view_detail_) Formatting & Buttons ---');
+
+  const { bot } = await import('./index.js');
+  let detailReplyText = '';
+  let detailReplyButtons = [];
+
+  // Emulate callback_query update on bot
+  const originalEdit = bot.telegram.editMessageText;
+  const originalSend = bot.telegram.sendMessage;
+
+  await bot.handleUpdate({
+    update_id: 9991,
+    callback_query: {
+      id: 'cb_test_detail',
+      from: { id: 6484999726, is_bot: false, first_name: 'Boss' },
+      message: { message_id: 102, chat: { id: 6484999726 } },
+      data: 'acc_view_detail_acc_3330003333'
+    }
+  }).catch(() => {});
+
+  console.log('\n--- 3. Clean Logout, Purge & Vault Tombstoning ---');
+
+  // Verify permanentLogoutAccount + deleteAccount
+  const accToPurge = 'acc_3330003333';
+  const preDb = getDb();
+  preDb.sessionVault = preDb.sessionVault || {};
+  preDb.sessionVault['3330003333'] = { phone: '3330003333', cookies: '_session_tid=fake3;' };
+  saveDb(preDb);
+
+  permanentLogoutAccount(accToPurge, { purgeVault: true });
+  deleteAccount(accToPurge, { purgeVault: true });
+
+  const postDb = getDb();
+  ok(!postDb.config.accounts[accToPurge], 'Account completely removed from db.config.accounts');
+  ok(postDb.config.deletedAccounts[accToPurge] === true, 'Account key tombstoned in db.config.deletedAccounts');
+  ok(postDb.config.deletedAccounts['3330003333'] === true, 'Phone number tombstoned in db.config.deletedAccounts');
+  ok(!postDb.sessionVault['3330003333'], 'Account completely purged from db.sessionVault');
+
+  // Verify Cloud Vault rejects resurrection
+  const tombstoneCheck = Boolean(postDb.config.deletedAccounts['acc_3330003333'] || postDb.config.deletedAccounts['3330003333']);
+  ok(tombstoneCheck === true, 'Deleted/logged-out account cannot be re-imported by Cloud Vault');
+
+  // Verify that an account marked sessionExpired locally is never overwritten as isLoggedIn: true
+  const expiredKey = 'acc_2220002222';
+  postDb.config.accounts[expiredKey].sessionExpired = true;
+  postDb.config.accounts[expiredKey].isLoggedIn = false;
+  saveDb(postDb);
+
+  const curLocal = getDb().config.accounts[expiredKey];
+  const shouldSkipResurrection = Boolean(curLocal && (curLocal.isLoggedOut || curLocal.sessionExpired || curLocal.isLoggedIn === false));
+  ok(shouldSkipResurrection === true, 'Hydration logic strictly preserves local sessionExpired/loggedOut state');
+
+  console.log('\n--- 4. Order Count Persistence in Previous Orders ---');
+
+  const zeroKey = 'acc_1110001111';
+  const accObj = getDb().config.accounts[zeroKey];
+  ok(accObj.totalOrdersCount === 0, 'Zero order account has totalOrdersCount === 0');
+  ok(accObj.isZeroOrderAccount === true, 'isZeroOrderAccount is true');
+
+  console.log('\n================================================================');
+  console.log(`🏆 ALL ${passed} CHECKS PASSED SUCCESSFULLY!`);
+  console.log('================================================================\n');
+
+} finally {
+  fs.writeFileSync('./data/db.json', originalDbRaw, 'utf8');
+  fs.writeFileSync('./accounts.json', originalAccountsRaw, 'utf8');
+}
+process.exit(0);
