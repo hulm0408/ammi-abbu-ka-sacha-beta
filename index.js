@@ -1870,9 +1870,19 @@ export async function autoOptimizeUserOrder(orderId, opts = {}) {
     if (diskOrder.userMessageId && !order.userMessageId) order.userMessageId = diskOrder.userMessageId;
     if (diskOrder.userChatId && !order.userChatId) order.userChatId = diskOrder.userChatId;
 
-    if (!order.selectedAccount && best.winningKey) order.selectedAccount = best.winningKey;
-    if (!order.orderAccount && (best.winningAccount?.phone || best.winningKey)) {
-      order.orderAccount = best.winningAccount?.phone || best.winningKey;
+    // FIX provisional leak: winner always overwrites provisional, release old reservation
+    const prevProvisionalKey = order.provisionalAccount ? order.selectedAccount : null;
+    if (best.winningKey) {
+      if (prevProvisionalKey && prevProvisionalKey !== best.winningKey) {
+        try {
+          const { releaseSwiggyAccountReservation } = await import('./swiggy-cart.js');
+          releaseSwiggyAccountReservation(prevProvisionalKey, key);
+          console.log(`[AutoOptimize] Released provisional ${prevProvisionalKey} for #${key} → winner ${best.winningKey}`);
+        } catch {}
+      }
+      order.selectedAccount = best.winningKey;
+      order.orderAccount = best.winningAccount?.phone || best.winningKey || order.orderAccount;
+      order.provisionalAccount = false;
     }
     if (Array.isArray(best.savedAddresses) && best.savedAddresses.length > 0) order.accountAddresses = best.savedAddresses;
     if (Array.isArray(best.availableCoupons) && best.availableCoupons.length > 0) order.availableCoupons = best.availableCoupons;
