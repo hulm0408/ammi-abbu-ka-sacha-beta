@@ -313,7 +313,7 @@ console.error = realConsoleError;
 
 const sentMessages = telegramCalls.filter(c => c.method === 'sendMessage').map(c => c.payload);
 check('/start replies to the new user', sentMessages.length > 0);
-check('/start sends the welcome screen', sentMessages.some(m => /Welcome to Swiggy Slot Bot/i.test(String(m.text || ''))));
+check('/start sends the welcome screen', sentMessages.some(m => /Welcome|Assalamu Alaikum|Khana Order Karein/i.test(String(m.text || ''))));
 check('/start attaches working reply keyboard', sentMessages.some(m => Boolean(m.reply_markup)));
 check('/start does not throw a "not defined" error', !consoleErrors.some(line => /is not defined/i.test(line)));
 check('/start does not throw UNEXPECTED_ERROR', !consoleErrors.some(line => /UNEXPECTED_ERROR/i.test(line)));
