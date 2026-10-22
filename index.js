@@ -5714,16 +5714,24 @@ bot.action(/^boss_remind_fee_(.+)$/, async (ctx) => {
 });
 
 // Common handler for payment verification and real tracking extraction
-/** Render the "scan errors" line for an all-IDs scan: which accounts failed
- *  and why (expired session vs auth error), so NOT_FOUND is never ambiguous. */
+/** Render the per-account scan diagnostics for an all-IDs scan: how many
+ *  accounts actually returned a list (OK, no order) vs which failed and why,
+ *  so NOT_FOUND never hides "that account was never checked". */
 function scanFailuresLine(result) {
   const fails = Array.isArray(result?.failures) ? result.failures : [];
-  if (!fails.length) return '';
-  const shown = fails.slice(0, 6).map(f =>
-    `<code>${escapeHtml(String(f.phone || f.key || '?'))}</code> (${f.reason === 'SESSION_EXPIRED' ? 'session expired' : 'auth fail'})`
-  ).join(', ');
-  const more = fails.length > 6 ? ` +${fails.length - 6} aur` : '';
-  return `▪ <b>Scan errors:</b> ${shown}${more} — in accounts ko <b>My Accounts</b> se dobara login karke retry karo.\n`;
+  const ok = Number(result?.okScanned) || 0;
+  let out = '';
+  if (ok > 0 || fails.length > 0) {
+    out += `▪ <b>Checked:</b> ${ok} IDs OK (no order)${fails.length ? ` · <b>${fails.length}</b> failed` : ''}\n`;
+  }
+  if (fails.length) {
+    const shown = fails.slice(0, 6).map(f =>
+      `<code>${escapeHtml(String(f.phone || f.key || '?'))}</code> (${f.reason === 'SESSION_EXPIRED' ? 'session expired' : 'auth fail'})`
+    ).join(', ');
+    const more = fails.length > 6 ? ` +${fails.length - 6} aur` : '';
+    out += `▪ <b>Scan errors:</b> ${shown}${more} — in accounts ko <b>My Accounts</b> se dobara login karke retry karo.\n`;
+  }
+  return out;
 }
 
 async function handleConfirmOrderPaid(ctx, orderId, _confirmedBy) {

@@ -7390,6 +7390,10 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
   // on another account" is only true when that account's session was alive.
   const failures = [];
   const failedKeys = new Set();
+  // Accounts whose order/all (or session-auth) call actually SUCCEEDED and
+  // returned a real (possibly empty) list — distinguishes "checked, no order"
+  // from "never checkable" in a NOT_FOUND reply.
+  const okScannedKeys = new Set();
   let timedOut = false;
 
   const inspectOrder = async (key, acc, orderObject, customerId = '', preloadedDetailsRes = null) => {
@@ -7472,14 +7476,12 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
     if (remaining() <= 300) { timedOut = true; return; }
     scannedAccounts.add(key);
     try {
-      // Fast deterministic pre-check: a stored tid JWT that is ALREADY expired
-      // means every DAPI call for this account will be rejected — record it
-      // instead of silently counting the account as "scanned, no order".
+      // NOTE: a stored tid past its JWT `exp` is NOT skipped — Swiggy DAPI does
+      // not always enforce `exp` (the same past-exp token can still serve calls,
+      // e.g. in another bot). We try the real call first; only an actual
+      // rejection is recorded, and the past-exp fact is attached as a hint.
       const tidExp = accountTidExpiryMs(acc);
-      if (tidExp && tidExp < Date.now()) {
-        recordScanFailure(failures, failedKeys, key, acc, 'SESSION_EXPIRED', `tid expired ${new Date(tidExp).toISOString()}`);
-        return;
-      }
+      const tidExpHint = (tidExp && tidExp < Date.now()) ? ` (tid past exp ${new Date(tidExp).toISOString()})` : '';
       // Same source as the "Orders Done" dashboard: the cached session auth
       // (WAF/token aware). Falls back to a direct order/all call only when auth failed.
       let list = [];
@@ -7490,19 +7492,21 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
         null
       );
       if (auth && auth.sessionExpired) {
-        recordScanFailure(failures, failedKeys, key, acc, 'SESSION_EXPIRED', String(auth.statusMessage || ''));
+        recordScanFailure(failures, failedKeys, key, acc, 'SESSION_EXPIRED', String(auth.statusMessage || '') + tidExpHint);
         return;
       }
       if (auth && Array.isArray(auth.orders)) {
         list = auth.orders;
         customerId = String(auth.userId || customerId || '');
+        okScannedKeys.add(key);
       } else {
         const listRes = await dapiFetch(acc, 'order/all', { timeoutMs: callTimeout() }).catch(() => null);
         if (!listRes || listRes.status !== 200 || !listRes.json || Number(listRes.json.statusCode) !== 0) {
-          recordScanFailure(failures, failedKeys, key, acc, 'AUTH_FAILED', String(listRes?.json?.statusMessage || `HTTP ${listRes?.status ?? 'ERR'}`));
+          recordScanFailure(failures, failedKeys, key, acc, 'AUTH_FAILED', String(listRes?.json?.statusMessage || `HTTP ${listRes?.status ?? 'ERR'}`) + tidExpHint);
           return;
         }
         list = Array.isArray(listRes.json.data.orders) ? listRes.json.data.orders : [];
+        okScannedKeys.add(key);
       }
       if (customerId) accountCustomerIds.set(key, customerId);
       const match = list.find(o => String(o?.order_id || '') === targetId) || null;
@@ -7543,6 +7547,11 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
     scanned: scannedAccounts.size,
     elapsedMs: Date.now() - startedAt,
     accountsTotal: entries.length,
+    okScanned: okScannedKeys.size,
+    okScannedPhones: [...okScannedKeys].map(k => {
+      const a = accountsMap[k] || {};
+      return String(a?.phone || a?.mobile || '').replace(/\D/g, '').slice(-10);
+    }).filter(Boolean),
     failures
   };
   if (chosen) {
