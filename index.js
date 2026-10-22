@@ -1126,12 +1126,12 @@ function makeFullSessionCopyButton(_ctx, label, accKey, fullValue, fallbackCallb
 }
 
 // Single card in-place updater for Boss and User
-async function updateOrderCards(order) {
+async function updateOrderCards(order, { skipUserCard = false, skipBossCard = false } = {}) {
   const db = getDb();
   const result = { bossCardUpdated: false, userCardUpdated: false };
 
   // 1. Update Boss card in-place
-  if (order.bossMessageIds) {
+  if (!skipBossCard && order.bossMessageIds) {
     const bossCard = formatBossOrderCard(order);
     for (const [bossId, msgId] of Object.entries(order.bossMessageIds)) {
       try {
@@ -1143,12 +1143,16 @@ async function updateOrderCards(order) {
           { parse_mode: 'HTML', ...bossCard.keyboard }
         );
         result.bossCardUpdated = true;
-      } catch (e) {}
+      } catch (e) {
+        if (/message is not modified/i.test(String(e?.description || e?.message || ''))) {
+          result.bossCardUpdated = true;
+        }
+      }
     }
   }
 
   // 2. Update User card in-place
-  if (order.userChatId && order.userMessageId) {
+  if (!skipUserCard && order.userChatId && order.userMessageId) {
     const userCard = formatUserOrderCard(order);
     try {
       await bot.telegram.editMessageText(
@@ -1159,7 +1163,11 @@ async function updateOrderCards(order) {
         { parse_mode: 'HTML', ...userCard.keyboard }
       );
       result.userCardUpdated = true;
-    } catch (e) {}
+    } catch (e) {
+      if (/message is not modified/i.test(String(e?.description || e?.message || ''))) {
+        result.userCardUpdated = true;
+      }
+    }
   }
   return result;
 }
@@ -1220,17 +1228,24 @@ async function deliverBillSummaryIntoSingleCard(order, _summary) {
   const uid = order?.userChatId || order?.userId;
   if (!uid) return false;
   const state = userChatCards.get(String(uid));
-  if (!state?.messageId) return false;
+  const targetMessageId = order?.userMessageId || state?.messageId;
+  if (!targetMessageId) return false;
   const preview = {
     ...order,
     status: 'APPROVAL_PENDING',
     uxStage: 'SCREEN_03_BILL_CONFIRMATION',
     billSummarySentAt: order.billSummarySentAt || new Date().toISOString(),
     userChatId: uid,
-    userMessageId: state.messageId
+    userMessageId: targetMessageId
   };
   const res = await updateOrderCards(preview).catch(() => null);
-  return Boolean(res?.userCardUpdated);
+  if (res?.userCardUpdated) {
+    order.userChatId = uid;
+    order.userMessageId = targetMessageId;
+    rememberUserCard(uid, { message_id: targetMessageId, chat: { id: uid } });
+    return true;
+  }
+  return false;
 }
 
 // Delete order card messages from all boss chats and customer chat
@@ -1372,7 +1387,7 @@ async function sendPaymentQrToUser(order) {
 }
 
 // Asynchronous Cart & Address Inspection (runs on order submission or manual refresh — resolves live Group Cart, geocodes address, and preloads saved account addresses)
-async function triggerBackgroundCartFetch(orderId) {
+async function triggerBackgroundCartFetch(orderId, { skipAccountScan = false } = {}) {
   const db = getDb();
   const order = db.orders[orderId];
   if (!order) return;
@@ -1437,13 +1452,9 @@ async function triggerBackgroundCartFetch(orderId) {
     } catch (e) {}
   }
 
-  // Preload saved addresses across all logged-in Swiggy accounts for 1-tap Boss picker & bare-shortlink fallback
-  try {
-    const allSaved = await fetchAllAccountsSavedAddresses();
-    if (allSaved.length > 0) {
-      order.accountAddresses = allSaved;
-    }
-  } catch (e) {}
+  // Never blast all logged-in Swiggy accounts with `fetchAllAccountsSavedAddresses()` here:
+  // querying 25-30 accounts simultaneously trips Swiggy's AWS WAF right before Auto Max Coupon runs,
+  // and `syncGroupCartAndCheckoutForAccount` already returns `savedAddresses` for the chosen account!
 
   // 2. Resolve live Group Cart / Restaurant Menu / Personal Cart
   if (order.cart) {
@@ -1484,8 +1495,8 @@ async function triggerBackgroundCartFetch(orderId) {
         }
       }
 
-      // Auto-sync live Group Cart & apply Max Coupon across saved JSON Vault accounts immediately upon order arrival (ZERO OTP!)
-      if (order.groupCartId && order.items?.length > 0 && !order.selectedAccount) {
+      // Auto-sync live Group Cart & apply Max Coupon when not followed immediately by `autoOptimizeUserOrder`
+      if (!skipAccountScan && order.groupCartId && order.items?.length > 0 && !order.selectedAccount) {
         const bestRes = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false }).catch(() => null);
         if (bestRes?.availableCoupons?.length > 0) {
           order.availableCoupons = bestRes.availableCoupons;
@@ -1499,7 +1510,7 @@ async function triggerBackgroundCartFetch(orderId) {
       if ((!order.items || order.items.length === 0) && !order.groupCartId) {
         const targetKey = order.selectedAccount || getActiveOrderAccountKey(db);
         const targetAcc = db.config?.accounts?.[targetKey];
-        if (targetAcc?.cookies) {
+        if (targetAcc && (targetAcc.cookies || targetAcc.tid || targetAcc.jwtTid || targetAcc.token)) {
           const livePersonal = await inspectCartForAccount(targetAcc);
           if (livePersonal?.items?.length > 0 && (!order.restaurantId || String(livePersonal.restaurantId) === String(order.restaurantId))) {
             order.items = livePersonal.items;
@@ -1529,8 +1540,18 @@ async function triggerBackgroundCartFetch(orderId) {
     order.restaurantName = order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : (order.hostName ? `${order.hostName}'s Group Order` : 'Swiggy Food Order');
   }
 
-  saveDb(db);
-  await updateOrderCards(order);
+  const freshDb = getDb();
+  const latestOrder = freshDb.orders?.[orderId] || {};
+  const mergedOrder = {
+    ...latestOrder,
+    ...order,
+    bossMessageIds: { ...(order.bossMessageIds || {}), ...(latestOrder.bossMessageIds || {}) },
+    userMessageId: latestOrder.userMessageId || order.userMessageId || null,
+    userChatId: latestOrder.userChatId || order.userChatId || null
+  };
+  freshDb.orders[orderId] = mergedOrder;
+  saveDb(freshDb);
+  await updateOrderCards(mergedOrder);
 }
 
 // ---------------------------------------------------------------------------
@@ -1566,7 +1587,14 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
     }
 
     // Background cart fetch may already have picked the best account + live bill.
-    const alreadyPicked = Boolean(order.selectedAccount) && Number(order.finalPayable || 0) > 0;
+    const hasVerifiedZeroBill = Boolean(
+      order.swiggyVerified &&
+      Number(order.subtotal || order.itemTotal || 0) > 0 &&
+      order.finalPayable !== null &&
+      order.finalPayable !== undefined &&
+      Number(order.finalPayable) === 0
+    );
+    const alreadyPicked = Boolean(order.selectedAccount) && (Number(order.finalPayable || 0) > 0 || hasVerifiedZeroBill);
     if (alreadyPicked) {
       order.cardStage = 'BILL_READY';
       order.autoOptimized = true;
@@ -1576,8 +1604,9 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
 
       // Still send the one-time bill summary so the customer can confirm the QR.
       let summarySent = false;
+      let summarySend = null;
       try {
-        const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+        summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
           db: getDb(),
           deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary)
         });
@@ -1587,7 +1616,8 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
       }
 
       order = getDb().orders?.[key] || order;
-      await updateOrderCards(order).catch(() => {});
+      const skipUserOnReuse = Boolean(summarySend?.viaCard || summarySend?.reason === 'already-sent');
+      await updateOrderCards(order, { skipUserCard: skipUserOnReuse }).catch(() => {});
       if (summarySent) await ensureBossBillSummary(order).catch(() => {});
       return { success: true, reused: true, summarySent, order };
     }
@@ -1609,15 +1639,32 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
       order.status = statusBefore;
       order.autoOptimizeError = best?.error || 'Could not sync cart on any free Swiggy account.';
       order.autoOptimizeFailedAt = new Date().toISOString();
+      db.orders[key] = order;
       saveDb(db);
       await updateOrderCards(order).catch(() => {});
       console.warn(`[AutoOptimize] Order #${key} failed: ${order.autoOptimizeError}`);
       return { success: false, error: order.autoOptimizeError, code: best?.code };
     }
 
+    // CRITICAL: `getDb()` parses a fresh snapshot from disk on every call!
+    // Never overwrite `order` (which `findBestMaxCouponAccountForOrder` just populated with
+    // `selectedAccount`, `orderAccount`, `couponCode`, `finalPayable`, `items`, `addressDetails`!)
+    // with the pre-scan disk object — merge concurrent card IDs into `order` and persist `order`!
     db = getDb();
-    order = db.orders?.[key] || order;
+    const diskOrder = db.orders?.[key] || {};
+    if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(diskOrder.status)) {
+      return { skipped: true, reason: 'closed' };
+    }
+    if (diskOrder.bossMessageIds) {
+      order.bossMessageIds = { ...diskOrder.bossMessageIds, ...(order.bossMessageIds || {}) };
+    }
+    if (diskOrder.userMessageId && !order.userMessageId) order.userMessageId = diskOrder.userMessageId;
+    if (diskOrder.userChatId && !order.userChatId) order.userChatId = diskOrder.userChatId;
 
+    if (!order.selectedAccount && best.winningKey) order.selectedAccount = best.winningKey;
+    if (!order.orderAccount && (best.winningAccount?.phone || best.winningKey)) {
+      order.orderAccount = best.winningAccount?.phone || best.winningKey;
+    }
     if (Array.isArray(best.savedAddresses) && best.savedAddresses.length > 0) order.accountAddresses = best.savedAddresses;
     if (Array.isArray(best.availableCoupons) && best.availableCoupons.length > 0) order.availableCoupons = best.availableCoupons;
     if (best.paymentUrl) order.swiggyPaymentUrl = best.paymentUrl;
@@ -1630,23 +1677,29 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
     order.autoOptimizedAt = new Date().toISOString();
     order.accountComparison = best.accountComparison || [];
     delete order.autoOptimizeError;
+    db.orders[key] = order;
     saveDb(db);
 
     // One-time max-discount bill summary -> customer approves -> QR is generated.
     let summarySent = false;
+    let summarySend = null;
     try {
-      const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+      summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
         db: getDb(),
         deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary)
       });
       summarySent = Boolean(summarySend?.sent);
-      if (summarySent) console.log(`[AutoOptimize] Bill summary sent for Order #${key} -> ${summarySend.customerId}`);
+      if (summarySent) {
+        console.log(`[AutoOptimize] Bill summary sent for Order #${key} -> ${summarySend.customerId}`);
+      } else {
+        console.warn(`[AutoOptimize] Bill summary not sent for Order #${key}: reason=${summarySend?.reason || 'unknown'}`);
+      }
     } catch (summaryErr) {
       console.warn('[AutoOptimize] Bill summary skipped:', summaryErr?.message || summaryErr);
     }
 
     order = getDb().orders?.[key] || order;
-    await updateOrderCards(order).catch(() => {});
+    await updateOrderCards(order, { skipUserCard: Boolean(summarySend?.viaCard) }).catch(() => {});
     if (summarySent) await ensureBossBillSummary(order).catch(() => {});
 
     console.log(
@@ -3136,7 +3189,17 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
         }).catch(() => null);
 
         if (fallbackBest?.success && fallbackBest.winningKey) {
-          saveDb(db);
+          const fbDb = getDb();
+          fbDb.orders[order.id] = order;
+          saveDb(fbDb);
+          try {
+            await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+              db: getDb(),
+              deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary),
+              onMessageSent: (sentMsg) => rememberUserCard(order.userChatId || order.userId, sentMsg)
+            });
+          } catch {}
+          order = getDb().orders?.[order.id] || order;
           try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
           await updateOrderCards(order);
           return;
@@ -3250,7 +3313,17 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
         }
       }
 
-      saveDb(db);
+      const freshSelectDb = getDb();
+      freshSelectDb.orders[order.id] = order;
+      saveDb(freshSelectDb);
+      try {
+        await sendBillSummaryToCustomerOnce(bot.telegram, order, {
+          db: getDb(),
+          deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary),
+          onMessageSent: (sentMsg) => rememberUserCard(order.userChatId || order.userId, sentMsg)
+        });
+      } catch {}
+      order = getDb().orders?.[order.id] || order;
 
       // Update Customer's card
       await updateOrderCards(order);
@@ -3349,17 +3422,21 @@ bot.action(/^boss_auto_max_coupon_(.+)$/, async (ctx) => {
         } catch (e) {}
       }
 
-      saveDb(db);
+      const freshMaxDb = getDb();
+      freshMaxDb.orders[order.id] = order;
+      saveDb(freshMaxDb);
       try {
         const summarySend = await sendBillSummaryToCustomerOnce(bot.telegram, order, {
           db: getDb(),
-          deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary)
+          deliver: (summary) => deliverBillSummaryIntoSingleCard(order, summary),
+          onMessageSent: (sentMsg) => rememberUserCard(order.userChatId || order.userId, sentMsg)
         });
         if (summarySend?.sent) console.log(`[MaxCoupon] Bill summary sent for Order #${order.id}`);
       } catch (summaryErr) {
         console.warn('[MaxCoupon] Bill summary skipped:', summaryErr?.message || summaryErr);
       }
-      await updateOrderCards(order);
+      const updatedMaxOrder = getDb().orders?.[order.id] || order;
+      await updateOrderCards(updatedMaxOrder);
       try { await bot.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch (e) {}
 
       const reviewCard = formatBossAccountReviewCard(order);
@@ -9140,6 +9217,7 @@ async function handleSendToBoss(ctx) {
     hostName: draft.hostName || null,
     status: 'PENDING',
     paymentStatus: 'UNPAID',
+    isCustomerSubmitted: true,
     createdAt: new Date().toISOString(),
     userChatId: userId,
     userMessageId: ctx.callbackQuery?.message?.message_id || null,
@@ -9219,18 +9297,26 @@ async function handleSendToBoss(ctx) {
     rememberUserCard(userId, ctx.callbackQuery.message);
   }
 
-  // Edit User's single card in-place if initiated via inline button, else send and save message ID
+  // Edit User's single card in-place if initiated via inline button, else send and sync `userChatCards`!
   const userCard = formatUserOrderCard(newOrder);
   if (ctx.callbackQuery?.message?.message_id) {
     try {
       await ctx.editMessageText(userCard.text, { parse_mode: 'HTML', ...userCard.keyboard });
     } catch (e) {
-      const msg = await ctx.reply(userCard.text, { parse_mode: 'HTML', ...userCard.keyboard });
-      newOrder.userMessageId = msg.message_id;
+      if (!/message is not modified/i.test(String(e?.description || e?.message || ''))) {
+        const msg = await ctx.reply(userCard.text, { parse_mode: 'HTML', ...userCard.keyboard });
+        newOrder.userMessageId = msg.message_id;
+        rememberUserCard(userId, msg);
+      }
     }
   } else {
+    const prevCard = userChatCards.get(String(userId));
     const msg = await ctx.reply(userCard.text, { parse_mode: 'HTML', ...userCard.keyboard });
     newOrder.userMessageId = msg.message_id;
+    if (prevCard?.messageId && prevCard.messageId !== msg.message_id) {
+      bot.telegram.deleteMessage(userId, prevCard.messageId).catch(() => {});
+    }
+    rememberUserCard(userId, msg);
   }
 
   // Deliver single card to Boss so Admin can DECIDE
@@ -9248,8 +9334,8 @@ async function handleSendToBoss(ctx) {
   saveDb(db);
 
   // Background pipeline for customer submissions — same treatment as a forwarded order:
-  // 1) resolve the live cart + address, 2) auto-pick the best account, 3) lock the max offer.
-  triggerBackgroundCartFetch(orderId)
+  // 1) resolve the live cart + address (without duplicate vault scan), 2) auto-pick the best account, 3) lock the max offer & send bill confirmation.
+  triggerBackgroundCartFetch(orderId, { skipAccountScan: true })
     .then(() => autoOptimizeUserOrder(orderId, { reason: 'CUSTOMER_SEND_TO_BETA' }))
     .catch(err => console.error(`[BackgroundFetch] Order #${orderId} error:`, err?.stack || err?.message || err));
 }
@@ -10262,18 +10348,15 @@ export async function sendApprovedOrderPaymentToUser(uidStr, order, { force = fa
 
   let upiUri = String(order.pendingSwiggyUpiUri || order.realUpiIntentUri || '').trim();
   const paymentUrl = String(order.swiggyPaymentUrl || '').trim();
+  const isGenericCheckoutPlaceholder = /^https?:\/\/(?:www\.)?swiggy\.com\/(?:checkout|payments)\/?$/i.test(paymentUrl);
+  const specificPaymentUrl = isGenericCheckoutPlaceholder ? '' : paymentUrl;
   const amount = Number(order.finalPayable || order.finalTotal || 0);
   const restaurant = escapeHtml(order.restaurantName || 'Swiggy Order');
-  const rows = [];
-  if (paymentUrl) rows.push([Markup.button.url('Pay via Swiggy (UPI/Card)', paymentUrl)]);
-  rows.push([Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]);
-  if (upiUri || paymentUrl) rows.push([Markup.button.callback('Resend payment QR', `user_resend_approved_qr_${order.id}`)]);
-  const keyboard = Markup.inlineKeyboard(rows);
 
-  // If Swiggy did not return a UPI intent, fall back to the configured collection
-  // UPI so the customer always gets a scannable PERSONALISED QR (name + amount).
+  // If Swiggy did not return a UPI intent or an order-specific payment URL, fall back to
+  // the configured collection UPI so the customer always gets a scannable PERSONALISED QR (name + amount).
   let usingFallbackUpi = false;
-  if (!upiUri && !paymentUrl && amount > 0) {
+  if (!upiUri && !specificPaymentUrl && amount > 0) {
     const fallbackUpiId = String(getDb().config?.bossUpiId || '6296591407@ybl').trim();
     upiUri = sanitizeUpiUriForQr(
       `upi://pay?pa=${encodeURIComponent(fallbackUpiId)}&pn=${encodeURIComponent(order.restaurantName || 'Swiggy')}` +
@@ -10281,6 +10364,12 @@ export async function sendApprovedOrderPaymentToUser(uidStr, order, { force = fa
     );
     usingFallbackUpi = true;
   }
+
+  const rows = [];
+  if (paymentUrl) rows.push([Markup.button.url('Pay via Swiggy (UPI/Card)', paymentUrl)]);
+  rows.push([Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]);
+  if (upiUri || paymentUrl) rows.push([Markup.button.callback('Resend payment QR', `user_resend_approved_qr_${order.id}`)]);
+  const keyboard = Markup.inlineKeyboard(rows);
 
   if (upiUri) {
     // Same branded, personalised QR the Boss cards use: orange header with the
