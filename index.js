@@ -2595,6 +2595,30 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     }
   } catch (e) {}
 
+  // If 0 orders in past, immediately pre-fetch & lock Breakfast & Late Night offers and compute possible discounts count!
+  if (db.config?.accounts?.[targetAcc]) {
+    const accTarget = db.config.accounts[targetAcc];
+    if (accTarget.isZeroOrderAccount || accTarget.totalOrdersCount === 0) {
+      try {
+        const claimOut = await claimSwiggyBreakfastAndLateNightOffers(accTarget, { force: true, offerValue: 1 });
+        if (claimOut) {
+          accTarget.offers = claimOut.offers || accTarget.offers || {};
+          accTarget.hasBreakfast = Boolean(claimOut.breakfast?.status === 'CLAIMED');
+          accTarget.hasLateNight = Boolean(claimOut.lateNight?.status === 'CLAIMED');
+          if (!accInfo.offers) accInfo.offers = {};
+          if (claimOut.offers?.lateNight) accInfo.offers.lateNight = claimOut.offers.lateNight;
+          if (claimOut.offers?.breakfast) accInfo.offers.breakfast = claimOut.offers.breakfast;
+        }
+      } catch (e) {}
+    }
+    let possibleCount = (accTarget.isZeroOrderAccount || accTarget.totalOrdersCount === 0) ? 1 : 0;
+    if (accTarget.hasBreakfast || accTarget.offers?.breakfast?.status === 'CLAIMED') possibleCount += 1;
+    if (accTarget.hasLateNight || accTarget.offers?.lateNight?.status === 'CLAIMED') possibleCount += 1;
+    if (accTarget.preferredOfferValue > 0) possibleCount += 1;
+    accTarget.possibleDiscountsCount = possibleCount;
+    saveDb(db);
+  }
+
   const ordersCountNum = orderHistory?.totalOrdersCount ?? currentAcc.totalOrdersCount ?? currentAcc.cachedTotalOrdersCount ?? 0;
   const pastOrdersText = (ordersCountNum === 0)
     ? `<b>0 Orders</b> (★ Fresh 0-Order Account)`
@@ -8813,11 +8837,13 @@ bot.on('text', async (ctx) => {
     let addedAddress = false;
     let hadFake = false;
 
+    // Fetch both Cart and Address links simultaneously in parallel via Promise.all!
+    const [cartMeta, addrMeta] = await Promise.all([
+      validCartLink ? resolveSwiggyLink(validCartLink).catch(() => null) : Promise.resolve(null),
+      validAddrLink ? resolveSwiggyLink(validAddrLink).catch(() => null) : (parsedAddrDirect ? resolveSwiggyLink(rawText).catch(() => null) : Promise.resolve(null))
+    ]);
+
     if (validCartLink || parsedCartDirect) {
-      let cartMeta = null;
-      if (validCartLink) {
-        try { cartMeta = await resolveSwiggyLink(validCartLink); } catch (e) {}
-      }
       const mergedCartDetails = {
         ...(parsedCartDirect || {}),
         ...(cartMeta?.cartDetails || {})
@@ -8837,14 +8863,17 @@ bot.on('text', async (ctx) => {
 
     if (parsedAddrDirect || validAddrLink) {
       let geoAddr = parsedAddrDirect;
-      try {
-        const addrMeta = await resolveSwiggyLink(validAddrLink || rawText);
-        if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
-          geoAddr = { ...(geoAddr || {}), ...addrMeta.addressDetails };
-        } else if (geoAddr) {
-          geoAddr = await geocodeAddressDetails(geoAddr);
-        }
-      } catch (e) {}
+      if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
+        geoAddr = { ...(geoAddr || {}), ...addrMeta.addressDetails };
+      } else if (geoAddr) {
+        try { geoAddr = await geocodeAddressDetails(geoAddr); } catch (e) {}
+      }
+
+      // If mobile number was included in message text, preserve it
+      const phoneMatch = rawText.match(/(?:(?:phone|mobile|contact|tel|call)[\s:.-]*)?(?:(?:\+?91[\s-]?)|(?:0[\s-]?))?([6-9]\d{4}[\s-]?\d{5})\b/i);
+      if (geoAddr && !geoAddr.mobile && phoneMatch) {
+        geoAddr.mobile = phoneMatch[1].replace(/\D/g, '');
+      }
 
       // NEVER overwrite clean street address with bare JgkQ URL!
       updateDraft(userId, {

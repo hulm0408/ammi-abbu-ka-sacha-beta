@@ -220,9 +220,13 @@ export async function ingestAndPersistRawAccountTexts(
     // Quick order-history check so Vault immediately knows `0-Order` (`isZeroOrderAccount`) vs `Used`!
     try {
       const prof = await orderProfileFn(mergedPayload, null, { timeoutMs: 3200 });
-      if (prof && typeof prof.orderCount === 'number' && Number.isFinite(prof.orderCount)) {
-        mergedPayload.totalOrdersCount = prof.orderCount;
-        mergedPayload.isZeroOrderAccount = prof.orderCount === 0;
+      const orderCount = typeof prof?.totalOrdersCount === 'number'
+        ? prof.totalOrdersCount
+        : (typeof prof?.orderCount === 'number' ? prof.orderCount : null);
+      if (typeof orderCount === 'number' && Number.isFinite(orderCount)) {
+        mergedPayload.totalOrdersCount = orderCount;
+        mergedPayload.cachedTotalOrdersCount = orderCount;
+        mergedPayload.isZeroOrderAccount = (orderCount === 0);
       }
     } catch {}
 
@@ -250,17 +254,29 @@ export async function ingestAndPersistRawAccountTexts(
     // Immediately flush to persistent Cloud Vault (`bot-vault` branch) so Render restarts NEVER lose any file!
     await Promise.resolve(syncVaultFn(getDb())).catch(() => {});
 
-    // Trigger non-blocking `₹50 OFF` Breakfast + Late Night auto-prebook across newly saved accounts
+    // Trigger immediate evaluation & pre-fetch of Breakfast + Late Night offers + possible discounts on login!
     Promise.allSettled(
-      savedAccounts.slice(0, 25).map(({ account }) =>
-        Promise.resolve(claimOffersFn({
-          cookies: account.cookies,
-          tid: account.tid,
-          sid: account.sid,
-          deviceId: account.deviceId,
-          offerValue: account.preferredOfferValue || 1
-        })).catch(() => null)
-      )
+      savedAccounts.slice(0, 25).map(async ({ account, key }) => {
+        try {
+          const claimOut = await claimOffersFn(account, {
+            force: true,
+            offerValue: account.preferredOfferValue || 1
+          });
+          const freshDb = getDb();
+          const target = freshDb.config?.accounts?.[key] || account;
+          if (target && claimOut) {
+            target.offers = claimOut.offers || target.offers || {};
+            target.hasBreakfast = Boolean(claimOut.breakfast?.status === 'CLAIMED');
+            target.hasLateNight = Boolean(claimOut.lateNight?.status === 'CLAIMED');
+            let possibleDiscounts = (target.isZeroOrderAccount || target.totalOrdersCount === 0) ? 1 : 0;
+            if (target.hasBreakfast) possibleDiscounts += 1;
+            if (target.hasLateNight) possibleDiscounts += 1;
+            if (target.preferredOfferValue > 0) possibleDiscounts += 1;
+            target.possibleDiscountsCount = possibleDiscounts;
+            saveDb(freshDb);
+          }
+        } catch {}
+      })
     ).catch(() => {});
   }
 

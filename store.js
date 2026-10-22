@@ -1370,39 +1370,61 @@ export function setActiveOrderAccountKey(key) {
   return db.config.accounts?.[key] || null;
 }
 
-// Logs out locally in the Bot DB (keeps copied Session JSON alive on Swiggy servers so Re-Login with Code works!)
-export function permanentLogoutAccount(key) {
+// Permanently logs out and purges account from active pool and tombstones so Cloud Vault never revives it
+export function permanentLogoutAccount(key, { purgeVault = true } = {}) {
   const db = getDb();
+  if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
+  if (!db.config.accounts) db.config.accounts = {};
   const acc = db.config?.accounts?.[key];
-  if (!acc) return null;
+  if (!acc) {
+    db.config.deletedAccounts[key] = true;
+    saveDb(db);
+    syncAccountsJsonMirror(db);
+    syncCloudVaultNow(db).catch(() => {});
+    return null;
+  }
 
-  // Snapshot into vault BEFORE clearing active fields so previously exported code never loses `_session_tid`
-  const phone = normalizeTenDigitPhone(acc.phone || acc.mobile || '') || String(acc.phone || acc.mobile || '').replace(/[^0-9]/g, '').slice(-10);
-  if (acc.cookies || acc.tid || acc.token) {
-    if (!db.sessionVault) db.sessionVault = {};
-    const vaultKey = (!isExplicitDifferentPhoneCloneKey(key, phone) && phone) ? phone : key;
-    db.sessionVault[vaultKey] = {
-      account: key,
-      name: acc.name || key,
-      mobile: phone,
-      phone,
-      customerId: acc.customerId || '',
-      token: acc.token || '',
-      tid: acc.tid || '',
-      sid: acc.sid || '',
-      deviceId: acc.deviceId || '',
-      cookies: cleanEssentialSwiggyCookies(acc.cookies || '', acc),
-      savedAt: acc.savedAt || new Date().toISOString()
-    };
+  const rawPhone = acc.phone || acc.mobile || '';
+  const phone = normalizeTenDigitPhone(rawPhone) || String(rawPhone).replace(/[^0-9]/g, '').slice(-10);
+  const isCloneKey = isExplicitDifferentPhoneCloneKey(key, phone);
+
+  // Tombstone so hydrateAccountsFromCloudVault NEVER re-imports it as logged-in
+  db.config.deletedAccounts[key] = true;
+  if (phone && !isCloneKey) {
+    db.config.deletedAccounts[`acc_${phone}`] = true;
+    db.config.deletedAccounts[phone] = true;
   }
 
   acc.isLoggedIn = false;
+  acc.isLoggedOut = true;
   acc.loggedOutAt = new Date().toISOString();
   delete acc.freshlyAuthenticated;
   acc.cookies = '';
   acc.tid = '';
   acc.sid = '';
   acc.token = '';
+  acc.jwtTid = '';
+  acc._session_tid = '';
+  acc.deviceId = '';
+
+  // Delete from active accounts dictionary
+  delete db.config.accounts[key];
+  if (phone && !isCloneKey) {
+    for (const [sibKey, sibAcc] of Object.entries(db.config.accounts || {})) {
+      if (!sibAcc || isExplicitDifferentPhoneCloneKey(sibKey, phone)) continue;
+      const sibPhone = normalizeTenDigitPhone(sibAcc.phone || sibAcc.mobile || String(sibKey).replace(/^acc_/, ''));
+      if (sibPhone === phone) {
+        db.config.deletedAccounts[sibKey] = true;
+        delete db.config.accounts[sibKey];
+      }
+    }
+  }
+
+  // Purge from sessionVault so old tokens never leak back into future scans
+  if (purgeVault && db.sessionVault) {
+    if (phone && !isCloneKey) delete db.sessionVault[phone];
+    delete db.sessionVault[key];
+  }
 
   if (db.config.activeOrderAccount === key) {
     const nextKey = pickNextActiveAccountKey(db.config.accounts, key);
@@ -1412,7 +1434,8 @@ export function permanentLogoutAccount(key) {
 
   saveDb(db);
   syncAccountsJsonMirror(db);
-  appendAuditEvent('logout', { accountKey: key, phone: acc.phone || '' });
+  syncCloudVaultNow(db).catch(() => {});
+  appendAuditEvent('logout', { accountKey: key, phone: phone || '' });
   return acc;
 }
 

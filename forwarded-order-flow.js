@@ -116,22 +116,30 @@ export function classifyRawOrderInputFast(rawText = '', location = null) {
     if (isOfficialSwiggyTrackingUrl(u)) {
       continue;
     }
-    if (/(maps\.app\.goo\.gl|google\.com\/maps|goo\.gl\/maps)/i.test(u)) {
+    const isMaps = /(maps\.app\.goo\.gl|google\.com\/maps|goo\.gl\/maps)/i.test(u);
+    const isCartHint = /\/gc\/|shared_cart|group[_-]?cart|\/cart|restaurant_id=/i.test(u);
+    const isAddrHint = /save my address on swiggy/i.test(s) || /onelink\.me\/jgkq\//i.test(u) || /address|shareaddress|delivery/i.test(u) || /(?:^|\/)(?:ofo\/)?address/i.test(u);
+
+    if (isMaps || (isAddrHint && !isCartHint)) {
       hasAddress = true;
-    } else if (/save my address on swiggy/i.test(s) && /onelink\.me\/jgkq\//i.test(u) && !/\/gc\//i.test(u)) {
-      hasAddress = true;
+    } else if (isCartHint) {
+      hasCart = true;
+      if (!primaryCartUrl) primaryCartUrl = u;
     } else if (/(swiggy\.com|swig\.gy|onelink\.me)/i.test(u)) {
-      // Distinguish Swiggy address share link from cart/group-cart link if whole text has `save my address`
-      if (/\/gc\//i.test(u) || /shared_cart/i.test(u) || (/group[_-]?cart/i.test(u)) || (/\/cart/i.test(u)) || (/restaurant_id=/i.test(u))) {
-        hasCart = true;
-        if (!primaryCartUrl) primaryCartUrl = u;
-      } else if (!/save my address on swiggy/i.test(s)) {
+      if (!hasCart) {
         hasCart = true;
         if (!primaryCartUrl) primaryCartUrl = u;
       } else {
+        // If hasCart is already set from another URL, the second Swiggy/Onelink URL is the address!
         hasAddress = true;
       }
     }
+  }
+
+  // If there are 2 or more URLs and one is a cart, any other URL is treated as address
+  if (hasCart && !hasAddress && allUrls.length >= 2) {
+    const secondUrl = allUrls.find(u => u !== primaryCartUrl && !isOfficialSwiggyTrackingUrl(u));
+    if (secondUrl) hasAddress = true;
   }
 
   const textWithoutUrls = stripSharedLinks(s);
@@ -1242,7 +1250,7 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     }
     rows.push([
       Markup.button.callback('▣ Re-Scan Max Offer', `fwd_rescan_max_${order.id}`),
-      Markup.button.callback('↻ Change Account', `fwd_rechoose_acc_${order.id}`)
+      Markup.button.callback('🔄 Change Auto Selection', `fwd_change_auto_sel_${order.id}`)
     ]);
     if (order.fwdSenderUserId && !order.isDirectBossOrder && !order.billApprovedByUser && !['APPROVAL_PENDING', 'PAYMENT_PENDING', 'COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status)) {
       rows.push([Markup.button.callback('↑ Send Bill Summary ›', `fwd_send_summary_${order.id}`)]);
@@ -1258,94 +1266,22 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     return { text, keyboard: Markup.inlineKeyboard(rows) };
   }
 
-  // Stage 2A: Instant Parallel Auto-Account Selection (`0-Order ID` + `Max Offer`) In Progress!
-  if (hasAddress && hasDeliveryContact && hasCart && order.cardStage === 'AUTO_SELECTING') {
+  // Stage 2A & 2B: Automatic Account Selection by default (No manual picker needed!)
+  if (hasAddress && hasDeliveryContact && hasCart) {
+    order.cardStage = 'AUTO_SELECTING';
     const text =
       `! <b>AUTO-SELECTING BEST 0-ORDER SWIGGY ID (#${escapeHtml(order.id)})...</b>\n` +
       `${senderLine}\n\n` +
       `⌖ <b>Address:</b> ${summarizeAddressPreview(order)}\n` +
       `▤ <b>Cart:</b> ${summarizeCartPreview(order)}\n\n` +
       `<i>› Finding free 0-Order Swiggy ID + applying Maximum Coupon, Item Offers, Free Cash &amp; Free Delivery in parallel...</i>`;
-    return { text, keyboard: Markup.inlineKeyboard([[cancelBtn]]) };
-  }
-
-  // Stage 2B: Manual Multi-ID Account Chooser (FREE vs BUSY vs Re-Login — also accessible via `↻ Change Account`)
-  if (hasAddress && hasDeliveryContact && hasCart) {
-    order.cardStage = 'NEED_ACCOUNT';
-    const busyMap = getBusySwiggyAccountsMap(db, order.id);
-    const allLoggedAccounts = Object.entries(db?.config?.accounts || {}).filter(([, a]) => a.isLoggedIn && (a.cookies || a.tid));
-
-    // Sort: + Valid + 0-Orders + FREE -> ● Valid & FREE -> ● Valid & BUSY -> ! Missing `_session_tid`
-    const sortedAccounts = [...allLoggedAccounts].sort(([ka, a], [kb, b]) => {
-      const validA = hasLiveWebSessionCookie(a) ? 1 : 0;
-      const validB = hasLiveWebSessionCookie(b) ? 1 : 0;
-      if (validA !== validB) return validB - validA;
-      const busyA = busyMap.has(ka) ? 1 : 0;
-      const busyB = busyMap.has(kb) ? 1 : 0;
-      if (busyA !== busyB) return busyA - busyB;
-      const zeroA = a.isZeroOrderAccount || a.totalOrdersCount === 0 ? 1 : 0;
-      const zeroB = b.isZeroOrderAccount || b.totalOrdersCount === 0 ? 1 : 0;
-      return zeroB - zeroA;
-    });
-
-    const freeValidCount = sortedAccounts.filter(([k, a]) => hasLiveWebSessionCookie(a) && !busyMap.has(k)).length;
-    const readyOrders = getReadyOrdersWaitingForAccount(db);
-
-    const rows = [];
-    if (readyOrders.length >= 2) {
-      rows.push([
-        Markup.button.callback(
-          `! Fetch All ${readyOrders.length} Ready Orders Now (Parallel Multi-ID)`,
-          `fwd_parallel_fetch_all`
-        )
-      ]);
-    }
-    if (sortedAccounts.length > 0) {
-      rows.push([
-        Markup.button.callback(
-          `★ Auto-Pick Best FREE 0-Order Account (${freeValidCount} Free / ${sortedAccounts.length} IDs)`,
-          `fwd_pick_acc_${order.id}__BEST`
-        )
-      ]);
-      for (const [k, a] of sortedAccounts) {
-        const cleanName = String(a.name || 'Account').replace(/\s*\(\d{10}\)\s*$/g, '').trim();
-        const phoneStr = a.phone ? ` (${a.phone})` : '';
-        const webOk = hasLiveWebSessionCookie(a);
-        const busyOrder = busyMap.get(k);
-        const zeroTag = (a.isZeroOrderAccount || a.totalOrdersCount === 0) ? '+ 0-Order • ' : '';
-        let badge = `${zeroTag}● FREE`;
-        if (!webOk) {
-          badge = '! Re-Login OTP';
-        } else if (busyOrder) {
-          badge = `● Busy #${busyOrder.id}`;
-        }
-        rows.push([
-          Markup.button.callback(
-            `${badge} • ${cleanName}${phoneStr}`,
-            `fwd_pick_acc_${order.id}__${k}`
-          )
-        ]);
-      }
-    }
-    rows.push([cancelBtn]);
-
-    const noAccWarn = sortedAccounts.length === 0
-      ? `\n\n! <i>No Swiggy account is logged in right now — log in from Boss Panel first.</i>`
-      : '';
-
-    const multiHint = readyOrders.length >= 2
-      ? `\n! <b>${readyOrders.length} orders ready!</b> Tap individual IDs simultaneously without waiting, or tap <b>Fetch All ${readyOrders.length} Ready Orders Now</b>!`
-      : `\n! <i>Multi-ID Parallel Ready: ${freeValidCount} ID(s) FREE for simultaneous order fetching &amp; placing!</i>`;
-
-    const text =
-      `▤ <b>ORDER READY — CHOOSE SWIGGY ACCOUNT (#${escapeHtml(order.id)})</b>\n` +
-      `${senderLine}\n\n` +
-      `⌖ <b>Address:</b> ${summarizeAddressPreview(order)}\n` +
-      `▤ <b>Cart:</b> ${summarizeCartPreview(order)}\n\n` +
-      `↓ <b>Select which Swiggy ID to fetch Final Bill &amp; apply Max Coupon:</b>` +
-      `${multiHint}${noAccWarn}`;
-
-    return { text, keyboard: Markup.inlineKeyboard(rows) };
+    return {
+      text,
+      keyboard: Markup.inlineKeyboard([
+        [Markup.button.callback('🔄 Change Auto Selection', `fwd_change_auto_sel_${order.id}`)],
+        [cancelBtn]
+      ])
+    };
   }
 
   // Stage 1: Partial Card (Waiting for missing Cart or missing Address)
@@ -1484,7 +1420,9 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
     const looksLikeAddressShare =
       resolved?.linkType === 'ADDRESS' ||
       Boolean(resolved?.addressDetails) ||
-      (/save my address on swiggy/i.test(trimmed) && !/\/gc\//i.test(url));
+      (/save my address on swiggy/i.test(trimmed) && !/\/gc\//i.test(url)) ||
+      (/(?:swiggy\.onelink\.me|onelink\.me\/jgkq)/i.test(url) && !/\/gc\//i.test(url)) ||
+      (/(?:swiggy\.com|swig\.gy).*(?:address|shareaddress)/i.test(url));
 
     if (looksLikeAddressShare) {
       // The address link is authoritative. `preGeocodedPlainAd` is always null here
@@ -1503,6 +1441,15 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
         order.address = url;
         order.addressLink = url;
       }
+
+      // If mobile is not inside the onelink, extract recipient mobile from the message text
+      if (order.addressDetails && !order.addressDetails.mobile) {
+        const phoneMatch = trimmed.match(/(?:(?:phone|mobile|contact|tel|call)[\s:.-]*)?(?:(?:\+?91[\s-]?)|(?:0[\s-]?))?([6-9]\d{4}[\s-]?\d{5})\b/i);
+        if (phoneMatch) {
+          order.addressDetails.mobile = phoneMatch[1].replace(/\D/g, '');
+        }
+      }
+
       order.addressOriginalText = order.address;
       updatedAddress = true;
     } else if (isValidCartInput(url)) {
@@ -1904,7 +1851,8 @@ export async function executeOrderBillSyncOnAccount({
   chatId,
   orderId,
   accKey,
-  formatOrderBodyFn
+  formatOrderBodyFn,
+  excludeAccountKeys = []
 }) {
   const db = getDb();
   let order = lookupOrder(db, orderId);
@@ -1915,7 +1863,7 @@ export async function executeOrderBillSyncOnAccount({
 
   let syncRes = null;
   if (accKey === 'BEST') {
-    syncRes = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false });
+    syncRes = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false, excludeAccountKeys });
     if (!syncRes?.success) {
       const err = new Error(syncRes?.error || 'Could not sync cart across logged-in accounts.');
       err.diag = { code: 'BEST_ACCOUNT_SYNC_FAILED', stage: 'PICK_BEST_ACCOUNT', comparison: syncRes?.accountComparison };
@@ -2662,8 +2610,8 @@ export function registerForwardedOrderHandlers(bot, {
     }
   });
 
-  // 2. Switch Swiggy Account before payment
-  bot.action(/^fwd_rechoose_acc_([A-Za-z0-9_]+)$/, async (ctx) => {
+  // 2. Change Auto-Selected Swiggy Account before payment (Auto-cycles to next best ID with ZERO manual picker!)
+  bot.action(/^(?:fwd_change_auto_sel|fwd_rechoose_acc)_([A-Za-z0-9_]+)$/, async (ctx) => {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
     stopOrderPaymentPoller(orderId);
@@ -2677,13 +2625,41 @@ export function registerForwardedOrderHandlers(bot, {
       return ctx.answerCbQuery('Customer bill approval locks account changes.', { show_alert: true });
     }
 
-    if (order.selectedAccount) {
-      releaseSwiggyAccountReservation(order.selectedAccount, orderId);
+    const prevAccount = order.selectedAccount;
+    if (prevAccount) {
+      releaseSwiggyAccountReservation(prevAccount, orderId);
     }
-    order.cardStage = 'NEED_ACCOUNT';
+    order.selectedAccount = null;
+    order.cardStage = 'AUTO_SELECTING';
     upsertOrder(order.id, order);
-    await ctx.answerCbQuery('Select Swiggy account');
-    await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn, { includeQrDelete: true });
+
+    await ctx.answerCbQuery('🔄 Re-selecting best Swiggy ID in parallel...').catch(() => {});
+    await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn, { includeQrDelete: true }).catch(() => {});
+
+    try {
+      await executeOrderBillSyncOnAccount({
+        telegram: ctx.telegram,
+        chatId: ctx.chat.id,
+        orderId,
+        accKey: 'BEST',
+        formatOrderBodyFn,
+        excludeAccountKeys: prevAccount ? [prevAccount] : []
+      });
+    } catch (syncErr) {
+      try {
+        await executeOrderBillSyncOnAccount({
+          telegram: ctx.telegram,
+          chatId: ctx.chat.id,
+          orderId,
+          accKey: 'BEST',
+          formatOrderBodyFn
+        });
+      } catch (err2) {
+        order.cardStage = 'COLLECTING';
+        upsertOrder(order.id, order);
+        await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
+      }
+    }
   });
 
   // 3. Generate 100% REAL Swiggy Dynamic Merchant UPI QR (parallel across distinct Swiggy IDs!)

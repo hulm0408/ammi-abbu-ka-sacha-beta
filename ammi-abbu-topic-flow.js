@@ -80,9 +80,31 @@ export function buildTopicNavKeyboardRows(currentTopic = 1, orderId = 'draft') {
     style: t === 4 ? 'success' : 'primary'
   };
 
+  const prevTopic = Math.max(1, t - 1);
+  const nextTopic = Math.min(4, t + 1);
+
+  const slidePrevBtn = {
+    text: t > 1 ? '◀ Previous' : '• Start',
+    callback_data: `topic_nav_${prevTopic}_${safeId}`,
+    style: 'primary'
+  };
+
+  const slideIndicatorBtn = {
+    text: `Topic ${t} of 4`,
+    callback_data: `topic_nav_${t}_${safeId}`,
+    style: 'primary'
+  };
+
+  const slideNextBtn = {
+    text: t < 4 ? (t < nextTopic && t >= currentTopic ? '🔒 Next ▶' : 'Next ▶') : '✓ Done',
+    callback_data: `topic_nav_${nextTopic}_${safeId}`,
+    style: 'primary'
+  };
+
   return [
     [btn1, btn2],
-    [btn3, btn4]
+    [btn3, btn4],
+    [slidePrevBtn, slideIndicatorBtn, slideNextBtn]
   ];
 }
 
