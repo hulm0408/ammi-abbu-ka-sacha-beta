@@ -32,7 +32,12 @@ const autoTimers = new Map();
 
 // Retry cadence: instant, then backing off to 30 min. Swiggy usually publishes
 // the share link within the first minute after the kitchen accepts the order.
-const DEFAULT_AUTO_DELAYS = [0, 10_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000];
+// WAF-aware retry cadence (2026-10-22 incident: the old [0,10s,30s,60s,2m,5m,
+// 10m,15m,30m] burst — 9 full-vault scans in the first 30 minutes — triggered
+// Swiggy's WAF rate-limit and blocked EVERY account for ~30+ min). The first
+// two quick tries cover the common "link appears in 15-30s" case, then the
+// cadence spaces out to 3–8 min gaps so the bot's IP stays under Swiggy's radar.
+export const DEFAULT_AUTO_DELAYS = [0, 15_000, 180_000, 300_000, 480_000, 900_000, 1_500_000, 2_400_000];
 
 let trackingNotifier = null;
 

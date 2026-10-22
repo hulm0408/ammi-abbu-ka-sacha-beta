@@ -409,12 +409,21 @@ export function buildCloudVaultSnapshot(data = null) {
     if (!a || (!a.cookies && !a.tid && !a.token && !a.isLoggedIn)) continue;
     accountsOut[k] = { ...a };
   }
+  // Orders are persisted too (2026-10-22: Render deploys wiped the local
+  // in-memory order list → auto-tracking died on restart, Export & Logout
+  // lost its "1+ orders" proof, and the boss had to re-scan everything).
+  const ordersOut = {};
+  for (const [k, o] of Object.entries(src?.orders || {})) {
+    if (!o || !o.id) continue;
+    ordersOut[k] = { ...o };
+  }
   return {
     version: 15,
     updatedAt: new Date().toISOString(),
     accounts: accountsOut,
     deletedAccounts: { ...(src?.config?.deletedAccounts || {}) },
-    sessionVault: { ...(src?.sessionVault || {}) }
+    sessionVault: { ...(src?.sessionVault || {}) },
+    orders: ordersOut
   };
 }
 
@@ -459,6 +468,26 @@ export async function hydrateAccountsFromCloudVault() {
       if (isAccountTombstoned(db.config.deletedAccounts, vVal.account || vKey, vPhone)) continue;
       db.sessionVault[vKey] = vVal;
       mutated = true;
+    }
+
+    // Restore order history that lived on the previous instance's disk.
+    // Local (live) orders always win; we only fill what is missing and merge
+    // a few critical fields the local copy might be missing (tracking link
+    // found by the other instance, etc.).
+    if (!db.orders) db.orders = {};
+    for (const [oKey, oVal] of Object.entries(remote.orders || {})) {
+      if (!oVal || !oVal.id) continue;
+      if (!db.orders[oKey]) {
+        db.orders[oKey] = oVal;
+        mutated = true;
+        continue;
+      }
+      const local = db.orders[oKey];
+      let merged = false;
+      for (const f of ['swiggyOrderId', 'pendingSwiggyOrderId', 'trackingLink', 'trackingLinkSource', 'deliveryOtp', 'selectedAccount', 'liveOrderStatus']) {
+        if (oVal[f] && !local[f]) { local[f] = oVal[f]; merged = true; }
+      }
+      if (merged) mutated = true;
     }
 
     for (const [k, remAcc] of Object.entries(remote.accounts || {})) {
