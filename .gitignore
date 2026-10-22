@@ -15,6 +15,7 @@ test_*.mjs
 !test_v22_orders_done_all_ids_e2e.mjs
 !test_v23_auto_tracking_dashboard_e2e.mjs
 !test_v24_extract_tracking_fix_e2e.mjs
+!test_v25_finished_order_otp_status_e2e.mjs
 probe_*.mjs
 inspect_*.mjs
 find_*.mjs

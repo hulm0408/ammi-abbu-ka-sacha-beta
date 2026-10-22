@@ -3016,9 +3016,12 @@ export function registerForwardedOrderHandlers(bot, {
             `✅ <b>Order Swiggy par mil gaya</b>\n` +
             `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
             `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
-            `▪ <b>Status:</b> <code>${escapeHtml(liveStatus)}</code>\n\n` +
+            `▪ <b>Status:</b> <code>${escapeHtml(liveStatus)}</code>` +
+            (fresh.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(fresh.deliveryOtp))}</code>` : '') +
+            (fresh.deliveryBoyName || fresh.deliveryBoyMobile ? `\n▪ <b>Rider:</b> ${escapeHtml([fresh.deliveryBoyName, fresh.deliveryBoyMobile].filter(Boolean).join(' · '))}` : '') +
+            `\n\n` +
             (finished
-              ? `<i>Order khatam ho chuka hai — Swiggy finished orders ka share link publish nahi karta. Tracking ki zaroorat nahi.</i>`
+              ? `<i>Order khatam ho chuka hai — Swiggy finished orders ka share link publish nahi karta. Tracking ki zaroorat nahi. Status${fresh.deliveryOtp ? ' + OTP' : ''} upar diya hai.</i>`
               : `<i>Swiggy ne share link abhi publish nahi kiya. Bot background me retry karta rahega aur link aate hi bhej dega.</i>`),
             { parse_mode: 'HTML' }
           );

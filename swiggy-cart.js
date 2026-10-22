@@ -3823,9 +3823,11 @@ export async function fetchAccountOrders(cookiesOrAcc, { enrichLimit = 2 } = {})
 
     const customerId = auth?.userId || acc?.customerId || '';
     const recent = rawOrders.slice(0, 10);
-    // Only the newest few ACTIVE orders get the expensive trackV4/trackV2 pair.
-    // Older entries reuse links already present in the order payload, so a
-    // 24-account dashboard stays fast instead of firing ~480 HTTP requests.
+    // Only the newest few orders get the expensive trackV4/trackV2 pair. Older
+    // entries reuse whatever the order payload already carries, so a 24-account
+    // dashboard stays fast instead of firing ~480 HTTP requests.
+    // Delivered orders ARE enriched too: Swiggy keeps the delivery OTP / final
+    // status on them, and the boss asked to see OTP+status even without a link.
     const maxEnrich = Math.max(0, Math.min(10, Number(enrichLimit)));
 
     const enriched = await Promise.allSettled(
@@ -3835,9 +3837,9 @@ export async function fetchAccountOrders(cookiesOrAcc, { enrichLimit = 2 } = {})
         let deData = null;
 
         if (orderId) {
-          const isOlderDelivered = /delivered|completed|cancelled/i.test(String(o.order_status || ''));
-          // For the newest active orders, fetch trackV4 to extract live share tracking link & delivery OTP
-          if (!isOlderDelivered && index < maxEnrich) {
+          // Newest orders (active OR finished) → trackV4 for the live status /
+          // share link, then trackV2/de for the delivery OTP.
+          if (index < maxEnrich) {
             const trkRes = await dapiFetch(
               cookiesOrAcc,
               `order/trackV4?order_id=${encodeURIComponent(orderId)}&type=full&version=V2${customerId ? `&customer_id=${encodeURIComponent(customerId)}` : ''}`,
