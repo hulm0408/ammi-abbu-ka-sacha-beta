@@ -13,6 +13,7 @@
 //   • Every scan runs under a time budget with capped concurrency.
 
 import { getDb, saveDb } from './store.js';
+import * as wafPool from './waf-pool.js';
 import {
   scanOrderAcrossAccounts,
   normalizeSwiggyOrderId,
@@ -224,6 +225,14 @@ export async function ensureOrderTracking(orderRef, {
     };
   }
 
+  // WAF circuit breaker: while Swiggy's rate-limit is hot, STOP sending more
+  // bursts — hammering is exactly what keeps the block alive. Cooldown is
+  // 3/5/10 min (escalating); scans resume automatically when it clears.
+  const wafCooldownMs = wafPool.cooldownRemainingMs();
+  if (wafCooldownMs > 0) {
+    return { status: 'WAF_COOLDOWN', hasOrder: false, trackingUrl: '', scanned: 0, cooldownMs: wafCooldownMs };
+  }
+
   const inflightKey = `${order.id}:${swiggyOrderId}`;
   if (inflightScans.has(inflightKey)) return inflightScans.get(inflightKey);
 
@@ -342,6 +351,13 @@ export function startOrderTrackingAuto(orderId, {
 
   const runAttempt = async () => {
     if (state.stopped) return;
+    // Wait out the WAF cooldown WITHOUT burning a retry attempt — the block
+    // needs the quiet time to clear, and the ladder should not run out early.
+    const wafCd = wafPool.cooldownRemainingMs();
+    if (wafCd > 5000) {
+      schedule(Math.min(wafCd + 5000, 15 * 60 * 1000));
+      return;
+    }
     const fresh = findOrderRecord(key);
     if (!fresh || ['CANCELLED', 'REJECTED'].includes(String(fresh.status || ''))) {
       return stopOrderTrackingAuto(key);

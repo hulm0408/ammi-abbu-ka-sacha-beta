@@ -47,6 +47,7 @@ import {
 } from './account-vault-intake.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { scanFailuresLine } from './scan-diagnostics.js';
+import * as wafPool from './waf-pool.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
@@ -2063,6 +2064,20 @@ bot.start(async (ctx) => {
       console.error('[START] fallback reply failed:', e2?.message || e2);
     }
   }
+});
+
+bot.command('waf', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.reply('⛔ Sirf Boss ye command use kar sakta hai.').catch(() => {});
+  const s = wafPool.getSummary();
+  const tokenLine = s.hasToken
+    ? `▪ Token: <b>ACTIVE</b> — ${s.tokenAgeMin} min purana (source: ${s.source})`
+    : (s.stale ? `▪ Token: <b>STALE</b> (${s.tokenAgeMin} min purana) — background refresh chal raha hai` : '▪ Token: abhi nahi mila — background fetch try hoga');
+  await ctx.reply(
+    '🛡 <b>WAF Status</b>\n\n' +
+    tokenLine + '\n' +
+    (s.cooldownMin > 0 ? `▪ Cooldown: <b>${s.cooldownMin} min</b> (scans paused, phir khud resume honge)` : '▪ Cooldown: nahi (scans active)'),
+    { parse_mode: 'HTML' }
+  );
 });
 
 bot.command('help', async (ctx) => {
@@ -5940,6 +5955,15 @@ bot.action(/^extract_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
     const result = await ensureOrderTracking(order, { force: true, budgetMs: 20000, deep: true });
     if (statusMsg) { try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch {} }
 
+    if (result?.status === 'WAF_COOLDOWN') {
+      const min = Math.max(1, Math.ceil((result.cooldownMs || 0) / 60000));
+      await ctx.reply(
+        `⏳ <b>Swiggy WAF cooldown — ${min} min bane.</b>\n\n<i>Bot ne saare scans ${min} min ke liye pause kar diye taaki block thanda ho jaye (zyada retry se block aur der tak rehta hai). ${min} min baad <code>${escapeHtml(q)}</code> dobara bhej dena — auto-scan bhi khud resume ho jayega.</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+
     const fresh = getDb().orders?.[order.id] || order;
     const trackingUrl = getStoredSwiggyTrackingUrl(fresh);
     const swiggyId = swiggyOrderIdOf(fresh) || q;
@@ -8482,6 +8506,16 @@ bot.on('text', async (ctx) => {
       // entirely ("Scanned: 0 IDs") instead of searching all logged-in IDs.
       const result = await ensureOrderTracking(order, { force: true, budgetMs: 20000, deep: true });
       if (statusMsg) { try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch {} }
+
+      if (result?.status === 'WAF_COOLDOWN') {
+        const min = Math.max(1, Math.ceil((result.cooldownMs || 0) / 60000));
+        await ctx.reply(
+          `⏳ <b>Swiggy WAF cooldown — ${min} min bane.</b>\n\n<i>Bot ne saare scans ${min} min ke liye pause kar diye taaki block thanda ho jaye (zyada retry se block aur der tak rehta hai). ${min} min baad <code>${escapeHtml(q)}</code> dobara bhej dena — auto-scan bhi khud resume ho jayega.</i>`,
+          { parse_mode: 'HTML' }
+        );
+        delete userWaitState[ctx.from.id];
+        return;
+      }
 
       const fresh = getDb().orders?.[order.id] || order;
       const trackingUrl = getStoredSwiggyTrackingUrl(fresh);
@@ -11178,6 +11212,9 @@ async function startBotWithRetry() {
   try {
     // Restore ALL saved `.json` accounts from Persistent Cloud Vault BEFORE serving orders!
     await hydrateAccountsFromCloudVault().catch(e => console.warn('CloudVault boot warning:', e.message));
+    // Rehydrate the shared WAF token + breaker state (the vault hydrate above
+    // may have written a newer token into db.waf).
+    wafPool.loadFromDb();
 
     const me = await bot.telegram.getMe();
     console.log(`⚙ Logged in as @${me.username} (${me.first_name}) [ID: ${me.id}]`);

@@ -418,12 +418,17 @@ export function buildCloudVaultSnapshot(data = null) {
     ordersOut[k] = { ...o };
   }
   return {
-    version: 15,
+    version: 16,
     updatedAt: new Date().toISOString(),
     accounts: accountsOut,
     deletedAccounts: { ...(src?.config?.deletedAccounts || {}) },
     sessionVault: { ...(src?.sessionVault || {}) },
-    orders: ordersOut
+    orders: ordersOut,
+    // Shared WAF token (encrypted at rest by the vault transport) so a fresh
+    // Render deploy starts WARM — no cold-start challenge storm on scans.
+    waf: (src?.waf && typeof src.waf.token === 'string' && src.waf.token.length > 50)
+      ? { token: src.waf.token, acquiredAt: src.waf.acquiredAt || 0, source: src.waf.source || '' }
+      : null
   };
 }
 
@@ -488,6 +493,18 @@ export async function hydrateAccountsFromCloudVault() {
         if (oVal[f] && !local[f]) { local[f] = oVal[f]; merged = true; }
       }
       if (merged) mutated = true;
+    }
+
+    // Shared WAF token: a newer vault copy wins, so a fresh instance
+    // hydrates a warm token before Chromium even has a chance to run.
+    const remoteWaf = remote.waf || null;
+    if (remoteWaf && typeof remoteWaf.token === 'string' && remoteWaf.token.length > 50) {
+      const localAcq = Number(db.waf?.acquiredAt) || 0;
+      const remAcq = Number(remoteWaf.acquiredAt) || 0;
+      if (remAcq >= localAcq) {
+        db.waf = { ...(db.waf || {}), token: remoteWaf.token, acquiredAt: remAcq, source: remoteWaf.source || 'vault' };
+        mutated = true;
+      }
     }
 
     for (const [k, remAcc] of Object.entries(remote.accounts || {})) {
