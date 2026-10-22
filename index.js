@@ -767,14 +767,14 @@ export function formatUserOrderCard(order) {
         order.autoOptimizeError ? field('Note', esc(String(order.autoOptimizeError).slice(0,90))) : null
       ].filter(Boolean).join('\n')) +
       `\n${sub(order.provisionalAccount ? 'Account turant select ho gaya hai — 20 sec me final bill aa jayega.' : 'Final bill yahan update ho jayega.')}` +
-      (order.provisionalAccount ? `\n${sub('Ammi/Abbu ko kuch aur dabane ki zarurat nahi — bill auto-approve hoke QR aa jayega.')}` : '');
+      (order.provisionalAccount ? `\n${sub('Ammi/Abbu Approve dabayenge tab hi QR ayega — aapko yaad dilana nahi padega.')}` : '');
   } else if (order.cardStage === 'BILL_READY' && order.provisionalAccount) {
-    // Provisional bill ready — show immediately with clear message
+    // Provisional bill ready — show immediately with clear message (manual approve as user requested)
     text += `${heading(`✓ Bill taiyaar (#${order.id}) - Final check chal raha hai`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
-      section('Confirm', `${heading('Bill check karke Approve karein')}\n${sub('Ya kuch na karein — 25 sec me auto-approve hoke QR aa jayega (Ammi/Abbu ke liye)')}`) +
+      section('Confirm', `${heading('Bill check karke Approve karein')}\n${sub('Ammi/Abbu Approve dabayenge tab turant QR aa jayega')}`) +
       `\n${field('Support', '@Its_life_001')}`;
-    buttons.push([{ text: '✓ Approve bill (ya auto hoga)', callback_data: `user_approve_bill_${order.id}`, style: 'success' }]);
+    buttons.push([{ text: '✓ Approve bill', callback_data: `user_approve_bill_${order.id}`, style: 'success' }]);
     buttons.push([{ text: '! Something is wrong', callback_data: `user_bill_issue_${order.id}`, style: 'danger' }]);
     // Return early — already pushed buttons, skip default footer
     buttons.push([
@@ -1578,16 +1578,18 @@ async function triggerBackgroundCartFetch(orderId, { skipAccountScan = false } =
 
 // ---------------------------------------------------------------------------
 // ELDERLY-PARENT OPTIMIZED AUTO-SELECTION (Gulf-son mode)
-// Enables zero-touch for Ammi/Abbu: instant provisional pick, bounded scan,
-// automatic retries, and family auto-approve so they never have to remember.
+// User clarified: bill Ammi/Abbu approve karenge tab hi QR auto send hoga.
+// So auto-approve is OFF by default (manual approve), instant pick + retries stay.
 // ---------------------------------------------------------------------------
 function isFamilyAutoApproveEnabled(db, userId) {
-  if (db?.config?.familyAutoApprove === false) return false;
-  if (!userId) return true;
+  // User clarified: bill Ammi/Abbu approve karenge tab hi QR auto send hoga.
+  // So default is OFF — only ON when Boss explicitly enables /family_auto_approve on
+  if (db?.config?.familyAutoApprove !== true) return false;
+  if (!userId) return false;
   const role = String(getFamilyRole(Number(userId), '') || '').toLowerCase();
   if (role === 'ammi' || role === 'abbu' || role === 'parent') return true;
   if (!isBoss(Number(userId))) return true;
-  return false;
+  return true;
 }
 async function tryInstantProvisionalAccountPick(order) {
   try {
@@ -2365,20 +2367,20 @@ bot.command(['family_auto_approve', 'family_auto', 'ammi_auto'], async (ctx) => 
   if (arg === 'off' || arg === 'disable' || arg === '0') {
     db.config.familyAutoApprove = false;
     saveDb(db);
-    return ctx.reply('🔴 <b>Family auto-approve OFF</b> — Ammi/Abbu ko ab khud Approve dabana hoga.', {parse_mode:'HTML'});
+    return ctx.reply('🔴 <b>Family auto-approve OFF</b> — Ammi/Abbu khud Approve dabayenge tab hi QR ayega (aapka current flow).', {parse_mode:'HTML'});
   } else if (arg === 'on' || arg === 'enable' || arg === '1') {
     db.config.familyAutoApprove = true;
     if (parts[2]) db.config.familyAutoApproveGraceSec = Math.max(5, Math.min(120, Number(parts[2])||25));
     saveDb(db);
-    return ctx.reply(`🟢 <b>Family auto-approve ON</b> — Ammi/Abbu ka bill ${db.config.familyAutoApproveGraceSec||25}s me auto-approve hoke QR chala jayega (Gulf se aapko notify hoga).\nCustomize: <code>/family_auto_approve on 40</code>`, {parse_mode:'HTML'});
+    return ctx.reply(`🟢 <b>Family auto-approve ON</b> — Ammi/Abbu ka bill ${db.config.familyAutoApproveGraceSec||25}s me bina dabaye khud approve hoke QR chala jayega.\nCustomize: <code>/family_auto_approve on 40</code>`, {parse_mode:'HTML'});
   }
-  const curOn = db.config.familyAutoApprove !== false;
+  const curOn = db.config.familyAutoApprove === true;
   const sec = db.config.familyAutoApproveGraceSec || 25;
   return ctx.reply(
-    `${curOn ? '🟢 <b>ON</b>' : '🔴 <b>OFF</b>'} — Family auto-approve ${curOn ? `active (${sec}s grace)` : 'disabled'}\n`+
+    `${curOn ? '🟢 <b>ON</b>' : '🔴 <b>OFF</b> (manual approve)'} — Family auto-approve ${curOn ? `active (${sec}s grace)` : 'OFF hai — Ammi/Abbu Approve dabayenge tab hi QR ayega'}\n`+
     `• ON:  <code>/family_auto_approve on</code> ya <code>/family_auto_approve on 15</code>\n`+
     `• OFF: <code>/family_auto_approve off</code>\n\n`+
-    `<i>Gulf wale bete ke liye banaya: Ammi/Abbu bhool jaye to bhi QR auto chala jayega, aapko Boss panel me notify hoga.</i>`,
+    `<i>Default OFF rakha hai jaise aapne kaha: bill Ammi/Abbu approve karenge tab hi QR auto send hoga.</i>`,
     {parse_mode:'HTML'});
 });
 
