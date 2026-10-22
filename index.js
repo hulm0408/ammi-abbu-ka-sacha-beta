@@ -46,6 +46,7 @@ import {
   createBulkDocumentBatchCollector,
 } from './account-vault-intake.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
+import { scanFailuresLine } from './scan-diagnostics.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
@@ -4636,8 +4637,10 @@ async function buildExportLogoutChecklist(ctx, orderCounts, selections) {
   }
 }
 
-bot.action('boss_export_logout_picker', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+// Shared by the picker button and by `boss_exlo_confirm`'s state-loss fallback
+// (a bot restart wipes the in-memory selection state — instead of the
+// confusing "Koi eligible account select nahi hai", re-open the picker).
+async function openExportLogoutPicker(ctx, { note = '' } = {}) {
   const userId = ctx.from.id;
   const db = getDb();
   const accounts = db.config.accounts || {};
@@ -4685,6 +4688,10 @@ bot.action('boss_export_logout_picker', async (ctx) => {
   }
   // For non-logged-in / not fetched accounts, default 0
   for (const k of accKeys) if (!(k in orderCounts)) orderCounts[k] = 0;
+  // How many live order-checks Swiggy rejected (WAF/rate-limit) — those
+  // accounts fell back to cached counts; if it's a majority the picker must
+  // warn instead of silently showing stale "0 orders".
+  const liveRejected = results.filter(r => r.status === 'fulfilled' && r.value?.error).length;
 
   // Also consider db-tracked completed orders as valid (bot ke andar 1+ order ka proof)
   const dbOrders = Object.values(db.orders || {}).filter(o => o.status === 'COMPLETED' || o.swiggyOrderId);
@@ -4714,7 +4721,24 @@ bot.action('boss_export_logout_picker', async (ctx) => {
     }
   }
 
+  if (note) {
+    try { await ctx.reply(note, { parse_mode: 'HTML' }); } catch {}
+  }
+  if (liveRejected >= 3) {
+    try {
+      await ctx.reply(
+        `⚠ <b>${liveRejected} live order-checks Swiggy ne reject kar diye</b> (rate-limit/WAF) — inke liye <b>cached counts</b> use hue hain. ` +
+        `Agar koi account "0 orders" dikh raha hai par aapko pata hai order tha, toh <b>10–15 min</b> baad dobara kholo — fresh counts milenge.`,
+        { parse_mode: 'HTML' }
+      );
+    } catch {}
+  }
   await buildExportLogoutChecklist(ctx, orderCounts, exportLogoutSelections[userId]);
+}
+
+bot.action('boss_export_logout_picker', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await openExportLogoutPicker(ctx);
 });
 
 // Toggle / Select All / Skip info for Export & Logout
@@ -4756,6 +4780,16 @@ bot.action(['boss_exlo_select_all', 'boss_exlo_deselect_all', /^boss_exlo_toggle
 bot.action('boss_exlo_confirm', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   const userId = ctx.from.id;
+
+  // Selection state is in-memory: a deploy/restart between "select" and
+  // "confirm" wipes it. Re-open the picker with a clear note instead of the
+  // dead-end "Koi eligible account select nahi hai!" alert.
+  if (!exportLogoutSelections[userId] || Object.keys(exportLogoutSelections[userId]).length === 0) {
+    await ctx.answerCbQuery('Selection reset ho gayi thi (bot restart) — picker dobara khula hai…', { show_alert: true }).catch(() => {});
+    await openExportLogoutPicker(ctx, { note: '⚠ <b>Pichhli selection bot-restart me reset ho gayi thi.</b> Apne accounts dobara select karke <b>CONFIRM</b> dabao — is baar select ke turant baad dabana best hai.' });
+    return;
+  }
+
   const db0 = getDb();
   const accounts0 = db0.config.accounts || {};
   const selections = exportLogoutSelections[userId] || {};
@@ -4848,8 +4882,9 @@ bot.action('boss_exlo_confirm', async (ctx) => {
       await ctx.reply(`⚠️ Export hua par logout fail for ${escapeHtml(phone)}: ${escapeHtml(e.message)}`, { parse_mode: 'HTML' });
     }
 
-    // Small delay to avoid flood
-    await new Promise(r => setTimeout(r, 400));
+    // Small delay to avoid Telegram flood control (29 accounts × 3 messages
+    // at 400ms used to hit 429 mid-run and silently drop exports).
+    await new Promise(r => setTimeout(r, 900));
   }
 
   await ctx.reply(
@@ -5717,30 +5752,6 @@ bot.action(/^boss_remind_fee_(.+)$/, async (ctx) => {
 /** Render the per-account scan diagnostics for an all-IDs scan: how many
  *  accounts actually returned a list (OK, no order) vs which failed and why,
  *  so NOT_FOUND never hides "that account was never checked". */
-function scanFailuresLine(result) {
-  const fails = Array.isArray(result?.failures) ? result.failures : [];
-  const ok = Number(result?.okScanned) || 0;
-  let out = '';
-  // A TIMEOUT that only reached a subset of accounts must NOT be reported as
-  // "kisi bhi ID par nahi mila" — say plainly that the scan is incomplete and
-  // to retry (live incident: 8/27 scanned → user got a false "not found").
-  const total = Number(result?.accountsTotal) || 0;
-  if (result?.status === 'TIMEOUT' && total > 0 && (ok + fails.length) < total) {
-    out += `⚠ <b>Scan incomplete:</b> sirf ${ok + fails.length}/${total} IDs check hue (time out) — <b>dobara bhejo</b>, agle try me baaki bhi scan honge.\n`;
-  }
-  if (ok > 0 || fails.length > 0) {
-    out += `▪ <b>Checked:</b> ${ok} IDs OK (no order)${fails.length ? ` · <b>${fails.length}</b> failed` : ''}\n`;
-  }
-  if (fails.length) {
-    const shown = fails.slice(0, 6).map(f =>
-      `<code>${escapeHtml(String(f.phone || f.key || '?'))}</code> (${f.reason === 'SESSION_EXPIRED' ? 'session expired' : 'auth fail'})`
-    ).join(', ');
-    const more = fails.length > 6 ? ` +${fails.length - 6} aur` : '';
-    out += `▪ <b>Scan errors:</b> ${shown}${more} — in accounts ko <b>My Accounts</b> se dobara login karke retry karo.\n`;
-  }
-  return out;
-}
-
 async function handleConfirmOrderPaid(ctx, orderId, _confirmedBy) {
   // Telegram expires callback answers after ~10s, but payment verification +
   // all-IDs tracking scan takes longer → a late answerCbQuery ALWAYS 400s with
@@ -11199,9 +11210,12 @@ function resumeAutoTrackingForRecentOrders() {
       })
       .sort((a, b) => new Date(b.completedAt || b.createdAt || 0) - new Date(a.completedAt || a.createdAt || 0))
       .slice(0, 6);
-    // Stagger the boot scans so 6 orders × 24 IDs never hammer Swiggy at once.
+    // Stagger the boot scans so recent orders never hammer Swiggy at once.
+    // 2026-10-22: the old 4s stagger burst (6 orders × 29 IDs in ~20s, right
+    // after a deploy) was a big part of what tripped Swiggy's WAF. 20s apart
+    // keeps the same coverage without the burst.
     candidates.forEach((order, index) => {
-      startOrderTrackingAuto(order.id, { budgetMs: 12000, deep: false, initialDelayMs: index * 4000 });
+      startOrderTrackingAuto(order.id, { budgetMs: 12000, deep: false, initialDelayMs: 10_000 + index * 20_000 });
     });
     if (candidates.length) console.log(`↻ Auto-tracking resumed for ${candidates.length} recent order(s).`);
 
