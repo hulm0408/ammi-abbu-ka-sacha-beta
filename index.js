@@ -5714,6 +5714,18 @@ bot.action(/^boss_remind_fee_(.+)$/, async (ctx) => {
 });
 
 // Common handler for payment verification and real tracking extraction
+/** Render the "scan errors" line for an all-IDs scan: which accounts failed
+ *  and why (expired session vs auth error), so NOT_FOUND is never ambiguous. */
+function scanFailuresLine(result) {
+  const fails = Array.isArray(result?.failures) ? result.failures : [];
+  if (!fails.length) return '';
+  const shown = fails.slice(0, 6).map(f =>
+    `<code>${escapeHtml(String(f.phone || f.key || '?'))}</code> (${f.reason === 'SESSION_EXPIRED' ? 'session expired' : 'auth fail'})`
+  ).join(', ');
+  const more = fails.length > 6 ? ` +${fails.length - 6} aur` : '';
+  return `▪ <b>Scan errors:</b> ${shown}${more} — in accounts ko <b>My Accounts</b> se dobara login karke retry karo.\n`;
+}
+
 async function handleConfirmOrderPaid(ctx, orderId, _confirmedBy) {
   const result = await checkOrderPaidStatusOnly(orderId);
   await ctx.answerCbQuery(result.message || 'Waiting for Swiggy payment verification.', { show_alert: true }).catch(() => {});
@@ -5818,6 +5830,7 @@ bot.action(/^extract_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
       await ctx.reply(
         `❌ <b>Swiggy order <code>${escapeHtml(q)}</code> kisi bhi logged-in ID par nahi mila.</b>\n\n` +
         `▪ Scanned: <b>${Number(result?.scanned) || 0}</b> IDs${result?.status === 'TIMEOUT' ? ' (time out)' : ''}\n` +
+        scanFailuresLine(result) +
         `▪ <b>Order kisi dusre Swiggy account par hoga</b> — jis account se order hua usko is bot me login karo (<b>My Accounts</b>), phir dobara id bhejo.\n` +
         `<i>Order id bhi verify karo (numeric, 12–18 digits) — Swiggy app: Profile → My Orders. Bot koi false tracking link nahi banata.</i>`,
         { parse_mode: 'HTML' }
@@ -8366,6 +8379,7 @@ bot.on('text', async (ctx) => {
               `<i>Boss Panel → accounts login karein, phir dobara try karein.</i>`
             : `❌ <b>Swiggy order <code>${escapeHtml(q)}</code> kisi bhi logged-in ID par nahi mila.</b>\n\n` +
               `▪ IDs scanned: <b>${Number(result?.scanned) || 0}</b>${result?.status === 'TIMEOUT' ? ' (time out)' : ''}\n` +
+              scanFailuresLine(result) +
               `▪ <b>Order kisi dusre Swiggy account par hoga</b> — jis account se order hua usko is bot me login karo (<b>My Accounts</b>), phir dobara id bhejo.\n` +
               `<i>Order id bhi verify karo (numeric, 12–18 digits) — Swiggy app: Profile → My Orders. Bot koi false link nahi banata.</i>`,
           { parse_mode: 'HTML' }

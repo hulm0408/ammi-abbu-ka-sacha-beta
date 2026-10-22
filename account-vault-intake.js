@@ -11,7 +11,8 @@ import { extractStandaloneMobileNumber } from './phone-utils.js';
 export { extractStandaloneMobileNumber, normalizeIndianMobileNumber } from './phone-utils.js';
 import {
   verifySwiggySessionLive,
-  inspectAccountOrderHistoryAndOffers
+  inspectAccountOrderHistoryAndOffers,
+  accountTidExpiryMs
 } from './swiggy-cart.js';
 import {
   claimSwiggyBreakfastAndLateNightOffers,
@@ -320,6 +321,16 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
     ? `\n\n× <b>Skipped Dead/Logged-Out (${expiredList.length}):</b> ${expiredList.slice(0, 6).map(e => `<code>${e.phone || e.fileName}</code>`).join(', ')}${expiredList.length > 6 ? '...' : ''}`
     : '';
 
+  // Web/OTP-style logins mint SHORT-lived tids (~40 min) unlike 30-day app
+  // logins. An account imported with a short session will silently stop
+  // working for orders/tracking right after expiry — warn at import time.
+  const shortSessions = savedAccounts
+    .map((item) => ({ label: String(item.account?.phone || item.key || '').slice(0, 12), exp: accountTidExpiryMs(item.account || {}) }))
+    .filter((s) => s.exp && (s.exp - Date.now()) < 6 * 60 * 60 * 1000);
+  const shortNote = shortSessions.length > 0
+    ? `\n\n! <b>Short session (${shortSessions.length}):</b> ${shortSessions.slice(0, 6).map((s) => `<code>${s.label}</code>`).join(', ')}${shortSessions.length > 6 ? '...' : ''} — inka token ~${Math.max(1, Math.round((Math.min(...shortSessions.map((s) => s.exp)) - Date.now()) / 60000))} min me expire hoga (web login). Expire hone par us account se tracking/orders fail honge — fresh app session dobara upload karna.`
+    : '';
+
   const summaryTable = [
     ['▤ Files Processed', String(filesCount)],
     ['+ Fresh 0-Order IDs', String(zeroOrderCount)],
@@ -334,6 +345,7 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
       previewLines,
       moreNote,
       skippedNote,
+      shortNote,
     ].filter(Boolean).join('\n')) +
     `\n\n${sub('› Ab jab bhi Cart + Address aayega, bot bina OTP maange apne aap Best 0-Order + Max Offer account select karke bill nikal dega!')}`
   );
