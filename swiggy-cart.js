@@ -7,7 +7,7 @@ import QRCode from 'qrcode';
 import { getDb, saveDb, updateAccount } from './store.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
-import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers } from './swiggy-bridge.js';
+import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken } from './swiggy-bridge.js';
 
 const CHROME_PATH = findChromePath();
 const PUPPETEER_HEADLESS = (process.platform === 'linux' || process.env.RAILWAY_ENVIRONMENT || process.env.HEADLESS === 'true') ? 'new' : false;
@@ -34,12 +34,27 @@ async function installAntiFnaStealthOnPage(page) {
     req.continue().catch(() => {});
   });
   await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    try {
+      delete Object.getPrototypeOf(navigator).webdriver;
+    } catch (e) {}
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
     Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-    window.chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}), app: {} };
+    if (!window.chrome) window.chrome = {};
+    window.chrome.runtime = window.chrome.runtime || { connect: () => {}, sendMessage: () => {} };
+    window.chrome.loadTimes = window.chrome.loadTimes || (() => ({}));
+    window.chrome.csi = window.chrome.csi || (() => ({}));
+    window.chrome.app = window.chrome.app || {};
     Object.defineProperty(navigator, 'languages', { get: () => ['en-IN', 'en-US', 'en'] });
+    if (!navigator.plugins || navigator.plugins.length === 0) {
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' }
+        ]
+      });
+    }
   });
 }
 
@@ -892,7 +907,7 @@ export async function swiggyCartFlush(accountOrCookies, { lat = '26.8658609', ln
 }
 
 // ---------------------------------------------------------------------------
-// CACHED AWS WAF TOKEN GENERATOR (Solves once in ~2.5s, cached 8m across all API calls)
+// CACHED AWS WAF TOKEN GENERATOR (Solves with stealth browser in ~1.5s, shared across entire bot)
 // ---------------------------------------------------------------------------
 export async function getCachedWafToken(forceRefresh = false) {
   const now = Date.now();
@@ -907,53 +922,13 @@ export async function getCachedWafToken(forceRefresh = false) {
   if (!forceRefresh && cachedWafToken && (now - cachedWafAt) < WAF_TTL_MS) {
     return cachedWafToken;
   }
-  if (wafFetchPromise) return wafFetchPromise;
-
-  wafFetchPromise = (async () => {
-    let browser = null;
-    try {
-      browser = await puppeteer.launch({
-        executablePath: CHROME_PATH,
-        headless: PUPPETEER_HEADLESS,
-        timeout: 14000,
-        protocolTimeout: 18000,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--no-first-run',
-          '--disable-extensions',
-          '--disable-blink-features=AutomationControlled'
-        ]
-      });
-      const page = await browser.newPage();
-      await installAntiFnaStealthOnPage(page);
-      await page.setUserAgent(DESKTOP_UA);
-      await page.goto('https://www.swiggy.com/', { waitUntil: 'domcontentloaded', timeout: 14000 }).catch(() => {});
-      for (let i = 0; i < 16; i++) {
-        const cList = await page.cookies('https://www.swiggy.com').catch(() => []);
-        const waf = cList.find(c => c.name === 'aws-waf-token');
-        if (waf && waf.value && waf.value.length > 50) {
-          cachedWafToken = waf.value;
-          cachedWafAt = Date.now();
-          wafPool.seedToken(waf.value, { source: 'chromium' });
-          break;
-        }
-        await new Promise(r => setTimeout(r, 350));
-      }
-      await browser.close().catch(() => {});
-      return cachedWafToken;
-    } catch (err) {
-      if (browser) await browser.close().catch(() => {});
-      console.warn('[WAF] Failed to acquire fresh aws-waf-token:', err.message);
-      return cachedWafToken || '';
-    } finally {
-      wafFetchPromise = null;
-    }
-  })();
-
-  return wafFetchPromise;
+  const token = await getLiveSwiggyWafToken(forceRefresh);
+  if (token) {
+    cachedWafToken = token;
+    cachedWafAt = Date.now();
+    wafPool.seedToken(token, { source: 'chromium' });
+  }
+  return token || cachedWafToken || poolToken || '';
 }
 
 let wafWarmLoopTimer = null;
@@ -1094,9 +1069,8 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
       }
 
       if (fastRes && (fastRes.status === 403 || fastRes.status === 202 || Boolean(fastRes.headers.get('x-amzn-waf-action')))) {
-        // WAF challenged this request → open the circuit (3/5/10 min) and
-        // refresh the shared token in the background (throttled to 1/min).
-        wafPool.markWafHit();
+        // Fast path encountered WAF challenge — do NOT trip circuit breaker on fast path!
+        // Fallback Path 1 will resolve with live WAF token. Throttled background kick:
         const nNow = Date.now();
         if (nNow - lastWafRefreshKickAt > 60_000) {
           lastWafRefreshKickAt = nNow;
@@ -1161,6 +1135,11 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
       if (csrf) finalBody._csrf = csrf;
     }
 
+    const isOrderRoute = /^(order)(\/|\?|$)/i.test(relEndpoint);
+    const referer = isOrderRoute
+      ? 'https://www.swiggy.com/my-account'
+      : (isMobileWebRoute ? 'https://www.swiggy.com/checkout' : 'https://www.swiggy.com/');
+
     const res = await fetch(url, {
       method,
       headers: {
@@ -1169,7 +1148,7 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
         'Origin': 'https://www.swiggy.com',
-        'Referer': 'https://www.swiggy.com/checkout',
+        'Referer': referer,
         ...extraHeaders
       },
       ...(finalBody ? { body: JSON.stringify(finalBody) } : {}),
@@ -1177,8 +1156,11 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
     });
 
     if (res.status === 202 || res.headers.get('x-amzn-waf-action')) {
+      if (attempt === 0) {
+        await new Promise(r => setTimeout(r, 200));
+        continue;
+      }
       wafPool.markWafHit();
-      if (attempt === 0) continue;
     }
 
     const text = await res.text();

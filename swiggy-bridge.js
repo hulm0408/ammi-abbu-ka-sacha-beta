@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import puppeteer from 'puppeteer-core';
 import { updateAccount, getNextAutoUserName, cleanEssentialSwiggyCookies } from './store.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
+import * as wafPool from './waf-pool.js';
 
 export function findChromePath() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -53,8 +54,12 @@ let prewarmedBrowser = null;
 let prewarmedPage = null;
 let isPrewarming = false;
 let prewarmedAt = 0;
+let latestSharedWafToken = '';
+let latestSharedWafAt = 0;
+let wafSolvePromise = null;
+const WAF_CACHE_TTL_MS = 8 * 60 * 1000; // 8 minutes
 
-const SWIGGY_WAF_COOKIE_WAIT_MS = 8000;
+const SWIGGY_WAF_COOKIE_WAIT_MS = 15000;
 const SWIGGY_WAF_COOKIE_POLL_MS = 250;
 const AUTH_PAGE_EVALUATE_TIMEOUT_MS = 9000;
 
@@ -663,9 +668,9 @@ async function launchStealthSwiggyBrowser() {
     executablePath: CHROME_PATH,
     headless: HEADLESS_MODE,
     protocolTimeout: 60000,
+    ignoreDefaultArgs: ['--enable-automation'],
     args: [
       '--disable-blink-features=AutomationControlled',
-      ...(IS_LINUX ? [] : ['--window-position=-32000,-32000']),
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-gpu',
@@ -706,12 +711,27 @@ async function launchStealthSwiggyBrowser() {
   });
 
   await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    try {
+      delete Object.getPrototypeOf(navigator).webdriver;
+    } catch (e) {}
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
     Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-    window.chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}), app: {} };
+    if (!window.chrome) window.chrome = {};
+    window.chrome.runtime = window.chrome.runtime || { connect: () => {}, sendMessage: () => {} };
+    window.chrome.loadTimes = window.chrome.loadTimes || (() => ({}));
+    window.chrome.csi = window.chrome.csi || (() => ({}));
+    window.chrome.app = window.chrome.app || {};
     Object.defineProperty(navigator, 'languages', { get: () => ['en-IN', 'en-US', 'en'] });
+    if (!navigator.plugins || navigator.plugins.length === 0) {
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' }
+        ]
+      });
+    }
   });
   return { browser, page };
 }
@@ -1092,13 +1112,17 @@ export async function prewarmBrowser() {
     }
 
     const { browser, page } = await launchStealthSwiggyBrowser();
-    await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+    await page.goto('https://www.swiggy.com/restaurants', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
 
-    const wafToken = await waitForSwiggyWafCookie(page, 2500);
+    const wafToken = await waitForSwiggyWafCookie(page, 4000);
     if (!wafToken) {
       await browser.close().catch(() => {});
       return;
     }
+
+    latestSharedWafToken = wafToken;
+    latestSharedWafAt = Date.now();
+    try { wafPool.seedToken(wafToken, { source: 'chromium' }); } catch {}
 
     prewarmedBrowser = browser;
     prewarmedPage = page;
@@ -1112,6 +1136,71 @@ export async function prewarmBrowser() {
   } finally {
     isPrewarming = false;
   }
+}
+
+// Universal cached / live AWS WAF token provider for both swiggy-bridge and swiggy-cart
+export async function getLiveSwiggyWafToken(forceRefresh = false) {
+  const now = Date.now();
+  // Check shared pool token first:
+  const poolToken = wafPool.getTokenSync?.();
+  if (!forceRefresh && poolToken) {
+    latestSharedWafToken = poolToken;
+    latestSharedWafAt = Date.now();
+    return poolToken;
+  }
+  if (!forceRefresh && latestSharedWafToken && (now - latestSharedWafAt < WAF_CACHE_TTL_MS)) {
+    return latestSharedWafToken;
+  }
+
+  // 1. Check if prewarmedPage is alive and has an active WAF cookie (<5ms check):
+  if (!forceRefresh && prewarmedPage && prewarmedBrowser?.connected) {
+    try {
+      const cookies = await prewarmedPage.cookies('https://www.swiggy.com').catch(() => []);
+      const waf = cookies.find(c => c.name === 'aws-waf-token' && String(c.value || '').length > 50);
+      if (waf && waf.value) {
+        latestSharedWafToken = waf.value;
+        latestSharedWafAt = Date.now();
+        try { wafPool.seedToken(waf.value, { source: 'chromium' }); } catch {}
+        return latestSharedWafToken;
+      }
+    } catch {}
+  }
+
+  // 2. Coalesce concurrent requests so we only launch one solver:
+  if (wafSolvePromise) return wafSolvePromise;
+
+  wafSolvePromise = (async () => {
+    let browser = null;
+    try {
+      const launched = await launchStealthSwiggyBrowser();
+      browser = launched.browser;
+      const page = launched.page;
+
+      await page.goto('https://www.swiggy.com/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      }).catch(() => {});
+
+      const token = await waitForSwiggyWafCookie(page, SWIGGY_WAF_COOKIE_WAIT_MS);
+      if (token) {
+        latestSharedWafToken = token;
+        latestSharedWafAt = Date.now();
+        try { wafPool.seedToken(token, { source: 'chromium' }); } catch {}
+        // Allow challenge reload/navigation to settle
+        await new Promise(r => setTimeout(r, 1500));
+      }
+      await browser.close().catch(() => {});
+      return latestSharedWafToken || '';
+    } catch (err) {
+      if (browser) await browser.close().catch(() => {});
+      console.warn('[SwiggyBridge] WAF solver error:', err.message);
+      return latestSharedWafToken || '';
+    } finally {
+      wafSolvePromise = null;
+    }
+  })();
+
+  return wafSolvePromise;
 }
 
 export async function safeEvaluateAuthOnce(page, fn, ...args) {
