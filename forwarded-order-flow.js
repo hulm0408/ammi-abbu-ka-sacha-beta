@@ -10,7 +10,7 @@ import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } fro
 import { startOrderTrackingAuto, ensureOrderTracking, isTerminalDeliveryStatus } from './order-tracking.js';
 
 // Robust order lookup — handles stale callback IDs, case mismatch, or swiggyOrderId passed instead of bot orderId
-function lookupOrder(db, orderId) {
+export function lookupOrder(db, orderId) {
   if (!db?.orders) return null;
   const raw = String(orderId || '').trim();
   if (!raw) return null;
@@ -33,7 +33,7 @@ function lookupOrder(db, orderId) {
   return null;
 }
 
-function orderNotFoundDiag(db, orderId) {
+export function orderNotFoundDiag(db, orderId) {
   try {
     const asked = String(orderId || '').trim();
     const isNumericSwiggy = /^\d{6,20}$/.test(asked);
@@ -3011,7 +3011,8 @@ export function registerForwardedOrderHandlers(bot, {
       if (!trackingUrl) {
         if (result?.hasOrder) {
           const liveStatus = String(fresh.liveOrderStatus || result.orderStatus || 'Order Confirmed');
-          const finished = isTerminalDeliveryStatus(liveStatus);
+          const cancelled = /cancel|refus|return/i.test(liveStatus);
+          const delivered = /deliv/i.test(liveStatus);
           await ctx.reply(
             `✅ <b>Order Swiggy par mil gaya</b>\n` +
             `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
@@ -3020,12 +3021,19 @@ export function registerForwardedOrderHandlers(bot, {
             (fresh.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(fresh.deliveryOtp))}</code>` : '') +
             (fresh.deliveryBoyName || fresh.deliveryBoyMobile ? `\n▪ <b>Rider:</b> ${escapeHtml([fresh.deliveryBoyName, fresh.deliveryBoyMobile].filter(Boolean).join(' · '))}` : '') +
             `\n\n` +
-            (finished
-              ? `<i>Order khatam ho chuka hai — Swiggy finished orders ka share link publish nahi karta. Tracking ki zaroorat nahi. Status${fresh.deliveryOtp ? ' + OTP' : ''} upar diya hai.</i>`
-              : `<i>Swiggy ne share link abhi publish nahi kiya. Bot background me retry karta rahega aur link aate hi bhej dega.</i>`),
-            { parse_mode: 'HTML' }
+            (cancelled
+              ? `<i>Order cancel ho chuka hai — iske liye tracking link available nahi hai.</i>`
+              : delivered
+                ? `<i>Order delivered hai — Swiggy API ke is response me share URL nahi aaya. Aap neeche se dobara re-check kar sakte hain.</i>`
+                : `<i>Swiggy ne share link abhi publish nahi kiya. Bot background me retry karta rahega aur link aate hi bhej dega.</i>`),
+            {
+              parse_mode: 'HTML',
+              ...(!cancelled
+                ? Markup.inlineKeyboard([[Markup.button.callback('🔄 Re-check Swiggy Link', `fwd_extract_all_${order.id}`)]])
+                : {})
+            }
           );
-          if (!finished) startOrderTrackingAuto(order.id, { force: true, budgetMs: 12000 });
+          if (!cancelled && !delivered) startOrderTrackingAuto(order.id, { force: true, budgetMs: 12000 });
         } else {
           await ctx.reply(
             `❌ <b>No tracking link found on any ID yet.</b>\n` +

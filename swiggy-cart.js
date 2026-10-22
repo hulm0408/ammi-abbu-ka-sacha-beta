@@ -957,14 +957,28 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
     timeoutMs = 10000
   } = options;
 
-  const cleanCookies = accountOrCookies ? cleanSwiggyCookieString(accountOrCookies) : '';
-  const sig = cleanCookies ? cleanCookies.slice(0, 180) : 'guest';
-  const relEndpoint = endpoint.replace(/^\/?(dapi\/)?/, '');
-  const url = endpoint.startsWith('http') ? endpoint : `https://www.swiggy.com/dapi/${relEndpoint}`;
-  const isDesktopWafCartRoute = /^(cart|menu)(\/|\?|$)/i.test(relEndpoint);
-  const isMobileWebOffersRoute = /^offers(\/|\?|$)/i.test(relEndpoint);
+  const accObj = (typeof accountOrCookies === 'object' && accountOrCookies && !Array.isArray(accountOrCookies))
+    ? accountOrCookies
+    : null;
+  if (
+    accObj &&
+    !String(accObj.cookies || '').includes('_session_tid=') &&
+    (accObj.tid || accObj.token || accObj.auth_token || accObj.access_token)
+  ) {
+    await bootstrapSwiggyWebSessionFromAndroidTokens(accObj, Math.min(3500, Math.max(1200, timeoutMs))).catch(() => false);
+  }
 
-  // Fast Path 0: Zero-Chromium HTTP for ALL non-`/cart`/`/menu` DAPI endpoints!
+  const cleanCookies = accountOrCookies ? cleanSwiggyCookieString(accountOrCookies, accObj) : '';
+  const sig = cleanCookies ? cleanCookies.slice(0, 180) : 'guest';
+  const isMapiRoute = /^\/?mapi\//i.test(endpoint);
+  const relEndpoint = endpoint.replace(/^\/?((?:dapi|mapi)\/)?/i, '');
+  const url = endpoint.startsWith('http')
+    ? endpoint
+    : `https://www.swiggy.com/${isMapiRoute ? 'mapi' : 'dapi'}/${relEndpoint}`;
+  const isDesktopWafCartRoute = !isMapiRoute && /^(cart|menu)(\/|\?|$)/i.test(relEndpoint);
+  const isMobileWebOffersRoute = !isMapiRoute && /^offers(\/|\?|$)/i.test(relEndpoint);
+
+  // Fast Path 0: Zero-Chromium HTTP for ALL non-`/cart`/`/menu` DAPI/MAPI endpoints!
   // CRITICAL: `/dapi/offers/*` MUST use `MOBILE_WEB_UA` (`Mobile Safari/537.36` -> `200 OK`, `waf=null`, full real coupon cards),
   // NEVER `Swiggy-Android` (which returns `{ statusCode: 0, data: { pages: 0, cards: [] } }` empty offers)!
   if (!isDesktopWafCartRoute) {
@@ -980,12 +994,22 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
         }))}`);
       }
 
+      const androidHeaders = !isMobileWebOffersRoute && accountOrCookies
+        ? Object.fromEntries(
+            Object.entries(buildSwiggyAndroidClientHeaders(accountOrCookies, {
+              ...(lat ? { lat } : {}),
+              ...(lng ? { lng } : {})
+            })).filter(([, v]) => v !== '' && v !== null && v !== undefined)
+          )
+        : {};
+
       let fastBody = body ? { ...body } : null;
       if (method !== 'GET' && fastBody && fastBody._csrf === undefined) {
         let csrf = csrfTokenCache.get(sig)?.csrf || '';
         if (!csrf && cleanCookies) {
           const ordRes = await fetch('https://www.swiggy.com/dapi/order/all', {
             headers: {
+              ...androidHeaders,
               'Cookie': zeroWafCookieParts.join('; '),
               'User-Agent': 'Swiggy-Android',
               'Accept': 'application/json',
@@ -1008,7 +1032,8 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
           fastRes = await fetch(url, {
             method,
             headers: {
-              'Cookie': zeroWafCookieParts.join('; '),
+              ...androidHeaders,
+              ...(zeroWafCookieParts.length ? { 'Cookie': zeroWafCookieParts.join('; ') } : {}),
               'User-Agent': isMobileWebOffersRoute ? MOBILE_WEB_UA : 'Swiggy-Android',
               'Accept': 'application/json',
               'Content-Type': 'application/json',
@@ -3206,27 +3231,82 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '', accountSessi
   };
 }
 
+const STATIC_ASSET_EXT_RE = /\.(?:png|jpe?g|webp|gif|svg|ico|avif|bmp|mp4|webm|mp3|wav|lottie|json|m?js|css|woff2?|ttf|eot|pdf|zip|xml)$/i;
+const NON_TRACKING_PATH_RE = /^\/(?:dapi|mapi|api)(?:\/|$)|\/(?:restaurant(?:s)?|menu|gc|group[-_]?cart|cart|checkout|payment(?:s)?|support|help|issues|instamart|genie|dineout|minis|city|collections|search|auth|login|my-account\/settings|ofo\/address|address(?:es)?|addr)(?:\/|$)/i;
+const R_SWIGGY_NON_TRACKING_RE = /(?:^|\/)(?:rate[_-]?app|playstore|appstore|download|install|home|explore|unsubscribe|feedback|promo|offer(?:s)?|ofo\/address|address)(?:\/|$)/i;
+const BARE_SWIGGY_DUMMY_PATH_RE = /^\/(?:|track|tracking|track-order|order-track|orders|orders\/track|order|my-account|my-account\/orders)\/?$/i;
+const NON_TRACKING_KEY_CONTEXT_RE = /(?:^|[\s._-])(?:payment|pay_link|pay_url|upi|invoice|receipt|download_summary|summary_download|restaurant_logo|restaurant_image|image|img|icon|logo|avatar|banner|thumbnail|lottie|animation|menu_url|cart_url|address_url|address_link)(?:$|[\s._-])/i;
+
 export function isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink = false } = {}) {
   try {
-    const url = new URL(String(value || '').trim());
+    const raw = String(value || '').trim();
+    if (!/^https?:\/\//i.test(raw)) return false;
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    if (url.username || url.password || url.port) return false;
+
     const host = url.hostname.toLowerCase();
-    const isProviderShortHost = host === 'swig.gy' || host === 'swiggy.onelink.me';
-    const swiggyHost = isProviderShortHost || host === 'swiggy.com' || host.endsWith('.swiggy.com');
-    const isRswiggyHost = host === 'r.swiggy.com' || host.endsWith('.r.swiggy.com');
-    const pathHasTrackingContext = /track|tracking/i.test(url.pathname) ||
-      (/share/i.test(url.pathname) && /order|track/i.test(url.pathname));
-    const queryHasTrackingContext = /(?:^|[?&])(?:tracking_url|track_url|order_id|orderid)=/i.test(url.search) &&
-      /order|track|share/i.test(url.pathname);
-    // A real Swiggy order page URL (`/orders/<15-digit id>`) is a genuine tracking
-    // destination when Swiggy itself returned it (share button / order payload).
-    const isSwiggyOrderIdRoute = /^\/orders?\/(?:track\/)?\d{9,20}\/?$/i.test(url.pathname);
-    const isExplicitSwiggyTrackingRoute = pathHasTrackingContext || queryHasTrackingContext || isSwiggyOrderIdRoute;
-    const isProviderShortLink = allowProviderShortLink && ((isProviderShortHost && url.pathname.length > 1) || (isRswiggyHost && url.pathname.length > 1));
-    // r.swiggy.com short links are always considered tracking when Swiggy API provides them (no track keyword required)
-    const isRswiggyTrackingShort = isRswiggyHost && url.pathname.length > 1;
-    return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password && !url.port && swiggyHost &&
-      (isExplicitSwiggyTrackingRoute || isProviderShortLink || isRswiggyTrackingShort) &&
-      !/support\/issues|\/restaurant(?:s)?(?:\/|$)|\/menu(?:\/|$)|\/gc(?:\/|$)/i.test(url.pathname);
+    const pathLower = url.pathname.toLowerCase();
+    const searchLower = url.search.toLowerCase();
+
+    if (STATIC_ASSET_EXT_RE.test(pathLower)) return false;
+    if (NON_TRACKING_PATH_RE.test(pathLower)) return false;
+
+    const isRSwiggy = host === 'r.swiggy.com' || host.endsWith('.r.swiggy.com');
+    const isSwiggyWeb = host === 'swiggy.com' || host === 'www.swiggy.com' || host === 'm.swiggy.com';
+    const isSwigGy = host === 'swig.gy';
+    const isOneLink = host === 'swiggy.onelink.me';
+
+    if (!isRSwiggy && !isSwiggyWeb && !isSwigGy && !isOneLink) return false;
+
+    if (isRSwiggy) {
+      if (R_SWIGGY_NON_TRACKING_RE.test(pathLower)) return false;
+      const segments = pathLower.split('/').filter(Boolean);
+      if (segments.length === 0) return false;
+      const lastSeg = segments[segments.length - 1];
+      if (lastSeg.length < 3 || /^(?:track|tracking|order|orders|ofo|swiggy|share)$/i.test(lastSeg)) {
+        return false;
+      }
+      return true;
+    }
+
+    if (isSwiggyWeb) {
+      if (BARE_SWIGGY_DUMMY_PATH_RE.test(pathLower)) return false;
+      // Explicit tracking routes with a non-empty order ID or share token segment
+      if (/^\/(?:(?:swiggy\/)?ofo\/track|track-order|order-track|orders?\/track|track|tracking|orders?\/share|social\/share\/order)\/[a-z0-9_-]{3,}(?:\/[a-z0-9_-]+)?\/?$/i.test(pathLower)) {
+        return true;
+      }
+      // Genuine Swiggy order detail/share page (`/orders/<idOrToken>`)
+      if (/^\/orders?\/(?!track\/?$|share\/?$)[a-z0-9_-]{4,}\/?$/i.test(pathLower)) {
+        return true;
+      }
+      // Query-driven live tracking route (never bare `/orders` or `/my-account/orders`)
+      if (/^\/(?:order-tracking|live-track|ofo-track)\/?$/i.test(pathLower) &&
+          /(?:^|[?&])(?:tracking_url|track_url|order_id|orderid|token)=[^&]{3,}/i.test(url.search)) {
+        return true;
+      }
+      return false;
+    }
+
+    if (isSwigGy) {
+      const segments = pathLower.split('/').filter(Boolean);
+      if (segments.length === 0) return false;
+      if (/^\/(?:(?:swiggy\/)?ofo\/track|track|orders?\/track)\/[a-z0-9_-]{3,}\/?$/i.test(pathLower)) {
+        return true;
+      }
+      return Boolean(allowProviderShortLink && segments.length === 1 && segments[0].length >= 3);
+    }
+
+    if (isOneLink) {
+      let decoded = `${pathLower}${searchLower}`;
+      try { decoded = decodeURIComponent(decoded).toLowerCase(); } catch {}
+      if (/(?:download|install|explore|ofo\/address|address|save.*address|gc\/|group|restaurant|menu|instamart)/i.test(decoded)) {
+        return false;
+      }
+      return /(?:ofo\/track|track[-_]?order|tracking_url=|track_url=|\/track\/[a-z0-9_-]{3,})/i.test(decoded);
+    }
+
+    return false;
   } catch {
     return false;
   }
@@ -3239,13 +3319,127 @@ export function getStoredSwiggyTrackingUrl(order) {
   return isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink: source === 'SWIGGY_API' }) ? value : '';
 }
 
+function cleanCandidateUrlToken(rawToken) {
+  let token = String(rawToken || '').trim();
+  if (!token) return '';
+  // Collapse markdown `[text](url)` or `url](url` wrappers
+  const mdIdx = token.indexOf('](');
+  if (mdIdx !== -1) token = token.slice(mdIdx + 2);
+  token = token.replace(/^[<("'\[{]+/, '').replace(/[>)"'\]}.,;:!?]+$/, '');
+  return token.trim();
+}
+
+export function extractTrackingCandidateUrlsFromString(rawValue) {
+  const out = [];
+  if (typeof rawValue !== 'string') return out;
+  let text = rawValue.trim();
+  if (!text) return out;
+  if (text.includes('\\/')) text = text.replace(/\\\//g, '/');
+
+  // 1. Swiggy app deep links (`swiggy://order?tracking_url=...`)
+  const deepLinkMatches = text.match(/swiggy:\/\/[^\s"'<>\]\\)]+/gi) || [];
+  for (const dl of deepLinkMatches) {
+    try {
+      const qIndex = dl.indexOf('?');
+      if (qIndex !== -1) {
+        const qs = new URLSearchParams(dl.slice(qIndex + 1));
+        for (const param of ['tracking_url', 'track_url', 'shareable_url', 'share_url', 'ofo_share_url', 'ofo_url', 'url', 'link', 'redirect_url']) {
+          const val = qs.get(param);
+          if (val) {
+            let decoded = val;
+            try { if (/^https?%3a/i.test(decoded)) decoded = decodeURIComponent(decoded); } catch {}
+            const cleaned = cleanCandidateUrlToken(decoded);
+            if (/^https?:\/\//i.test(cleaned)) out.push(cleaned);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Percent-encoded http(s) URLs (`https%3A%2F%2Fr.swiggy.com%2F...`)
+  const encodedMatches = text.match(/https?%3A%2F%2F[^\s"'<>\]\\)&]+/gi) || [];
+  for (const enc of encodedMatches) {
+    try {
+      const cleaned = cleanCandidateUrlToken(decodeURIComponent(enc));
+      if (/^https?:\/\//i.test(cleaned)) out.push(cleaned);
+    } catch {}
+  }
+
+  // 3. Direct or sentence-embedded http(s) URLs (e.g. `"Click this link to track: http://r.swiggy.com/swiggy/ofo/track/..."`)
+  const httpMatches = text.match(/https?:\/\/[^\s"'<>\\]+/gi) || [];
+  for (const rawUrl of httpMatches) {
+    const cleaned = cleanCandidateUrlToken(rawUrl);
+    if (/^https?:\/\//i.test(cleaned)) out.push(cleaned);
+  }
+
+  return [...new Set(out)];
+}
+
+function scoreSwiggyTrackingUrl(url, keyContext = '') {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    const hasShareOrTrackKey = /(?:ofo|shareable|share_url|share_link|share_message|tracking_url|track_url|tracking_link|track_link|order_share)/i.test(keyContext);
+    const hasBroadTrackCtx = /(?:track|tracking|share|ofo)/i.test(keyContext);
+
+    if ((host === 'r.swiggy.com' || host.endsWith('.r.swiggy.com')) && /(?:ofo\/track|\/track\/)/i.test(path)) {
+      return 100;
+    }
+    if (host === 'r.swiggy.com' || host.endsWith('.r.swiggy.com')) {
+      return hasShareOrTrackKey ? 94 : (hasBroadTrackCtx ? 90 : 82);
+    }
+    if (/^\/(?:(?:swiggy\/)?ofo\/track|track-order|order-track|orders?\/track)\//i.test(path)) {
+      return hasShareOrTrackKey ? 88 : 84;
+    }
+    if (host === 'swig.gy') {
+      return hasShareOrTrackKey ? 80 : 72;
+    }
+    if (host === 'swiggy.onelink.me') {
+      return 74;
+    }
+    if (/^\/orders?\/[a-z0-9_-]{4,}\/?$/i.test(path)) {
+      return hasShareOrTrackKey ? 68 : 60;
+    }
+    return hasBroadTrackCtx ? 55 : 45;
+  } catch {
+    return 0;
+  }
+}
+
 // Accept a tracking/share URL only when Swiggy's own response includes it under a
-// tracking/share field (or an action explicitly labelled for tracking/sharing).
+// tracking/share field (or an action/message explicitly carrying a Swiggy tracking link).
 export function extractSwiggyProvidedTrackingUrl(...sources) {
-  const candidates = [];
-  const seen = new Set();
+  const scored = new Map();
   const walk = (node, context = '', depth = 0) => {
-    if (!node || depth > 10) return;
+    if (node === null || node === undefined || depth > 12) return;
+    if (typeof node === 'string') {
+      const trimmed = node.trim();
+      if (
+        depth < 4 &&
+        trimmed.length >= 2 &&
+        trimmed.length <= 30000 &&
+        ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) &&
+        /swiggy|swig\.gy|track|share|ofo/i.test(trimmed)
+      ) {
+        try {
+          walk(JSON.parse(trimmed), context, depth + 1);
+          return;
+        } catch {}
+      }
+      for (const url of extractTrackingCandidateUrlsFromString(trimmed)) {
+        const isExplicitTrackUrl = /r\.swiggy\.com\//i.test(url) || /swiggy\.com\/(?:(?:swiggy\/)?ofo\/track|track-order|order-track|orders?\/track)\//i.test(url);
+        const isTrackingContext = /track|tracking|share|ofo/i.test(context);
+        const isBlockedField = NON_TRACKING_KEY_CONTEXT_RE.test(context) && !/(?:ofo\/track|r\.swiggy\.com\/.*\/track\/)/i.test(url);
+        if (isBlockedField) continue;
+        if ((isTrackingContext || isExplicitTrackUrl) &&
+            isOfficialSwiggyTrackingUrl(url, { allowProviderShortLink: isTrackingContext || /r\.swiggy\.com/i.test(url) })) {
+          const score = scoreSwiggyTrackingUrl(url, context);
+          if (!scored.has(url) || scored.get(url) < score) scored.set(url, score);
+        }
+      }
+      return;
+    }
     if (Array.isArray(node)) {
       for (const value of node) walk(value, context, depth + 1);
       return;
@@ -3253,29 +3447,21 @@ export function extractSwiggyProvidedTrackingUrl(...sources) {
     if (typeof node !== 'object') return;
 
     const labelContext = Object.entries(node)
-      .filter(([key, value]) => /^(?:title|label|name|text|action_name|display_name)$/i.test(key) && typeof value === 'string')
+      .filter(([key, value]) => /^(?:title|label|name|text|action_name|display_name|header|subtitle|description)$/i.test(key) && typeof value === 'string')
       .map(([, value]) => value)
-      .filter(value => /track|share|order/i.test(value))
+      .filter(value => /track|share|ofo/i.test(value))
       .join(' ');
     const localContext = `${context} ${labelContext}`.toLowerCase();
     for (const [key, value] of Object.entries(node)) {
       const nextContext = `${localContext} ${key}`.toLowerCase();
-      if (typeof value === 'string' && /^https?:\/\//i.test(value.trim())) {
-        const url = value.trim();
-        const isTrackingContext = /track|tracking|share/i.test(nextContext);
-        const isSwiggyTrackUrl = /r\.swiggy\.com\//i.test(url) || /swiggy\.com\/.*track/i.test(url) || /swiggy\.onelink\.me/i.test(url);
-        if (!seen.has(url) && (isTrackingContext || isSwiggyTrackUrl) && isOfficialSwiggyTrackingUrl(url, { allowProviderShortLink: true })) {
-          seen.add(url);
-          candidates.push(url);
-        }
-      }
-      if (value && typeof value === 'object') {
+      if (typeof value === 'string' || (value && typeof value === 'object')) {
         walk(value, nextContext, depth + 1);
       }
     }
   };
   for (const source of sources) walk(source);
-  return candidates[0] || null;
+  if (scored.size === 0) return null;
+  return [...scored.entries()].sort((a, b) => b[1] - a[1])[0][0];
 }
 
 // Only return delivery/rider hand-off codes, never login/payment OTPs.
@@ -3334,13 +3520,23 @@ export async function extractRealSwiggyTracking(cookies = '') {
     const latest = auth?.orders?.[0];
     if (latest?.order_id) {
       const orderId = String(latest.order_id);
-      const tracking = await dapiFetch(cookies, `order/trackV4?order_id=${encodeURIComponent(orderId)}&type=full&version=V2`).catch(() => null);
+      const customerId = String(auth?.userId || latest?.customer_id || '');
+      const [tracking, detailsRes] = await Promise.all([
+        dapiFetch(cookies, `order/trackV4?order_id=${encodeURIComponent(orderId)}&type=full&version=V2${customerId ? `&customer_id=${encodeURIComponent(customerId)}` : ''}`).catch(() => null),
+        dapiFetch(cookies, `order/details?order_id=${encodeURIComponent(orderId)}&type=full&version=V2`).catch(() => null)
+      ]);
       const trackData = tracking?.json?.data || {};
+      const detOrder = detailsRes?.json?.data?.orders?.[0] || detailsRes?.json?.data?.order || null;
+      let trackingUrl = extractOrderShareUrlDeep(latest, detOrder, trackData) || null;
+      if (!trackingUrl) {
+        const extra = await fetchSecondaryOrderSharePayloads(cookies, orderId, customerId, { timeoutMs: 3500, allowMapiTrackV4: true });
+        trackingUrl = extra.shareUrl || null;
+      }
       return {
-        trackingUrl: extractSwiggyProvidedTrackingUrl(latest, trackData),
-        deliveryOtp: extractSwiggyDeliveryOtp(latest, trackData),
+        trackingUrl,
+        deliveryOtp: extractSwiggyDeliveryOtp(latest, detOrder, trackData),
         orderId,
-        status: latest.order_status || trackData.order_status || 'ACTIVE'
+        status: latest.order_status || trackData?.order_status_details?.status_message || trackData.order_status || 'ACTIVE'
       };
     }
   } catch (err) {
@@ -3835,10 +4031,13 @@ export async function fetchAccountOrders(cookiesOrAcc, { enrichLimit = 2 } = {})
         const orderId = String(o.order_id || '');
         let trkData = null;
         let deData = null;
+        let detOrder = null;
+        let secondaryUrl = '';
 
         if (orderId) {
-          // Newest orders (active OR finished) → trackV4 for the live status /
-          // share link, then trackV2/de for the delivery OTP.
+          // Newest orders (active OR delivered) → trackV4 for the live/final status &
+          // share link, trackV2/de for the delivery OTP, plus details/share fallback
+          // when trackV4 switched to post-delivery cards.
           if (index < maxEnrich) {
             const trkRes = await dapiFetch(
               cookiesOrAcc,
@@ -3855,15 +4054,27 @@ export async function fetchAccountOrders(cookiesOrAcc, { enrichLimit = 2 } = {})
               ).catch(() => null);
               deData = deRes?.json?.data || null;
             }
+
+            if (!extractOrderShareUrlDeep(o, trkData, deData)) {
+              const [detRes, extra] = await Promise.all([
+                dapiFetch(cookiesOrAcc, `order/details?order_id=${encodeURIComponent(orderId)}&type=full&version=V2`, { timeoutMs: 4000 }).catch(() => null),
+                fetchSecondaryOrderSharePayloads(cookiesOrAcc, orderId, customerId, { timeoutMs: 3500, allowMapiTrackV4: false })
+              ]);
+              const candidateDet = detRes?.json?.data?.orders?.[0] || detRes?.json?.data?.order || null;
+              if (candidateDet && String(candidateDet?.order_id || candidateDet?.orderId || candidateDet?.id || '') === orderId) {
+                detOrder = candidateDet;
+              }
+              secondaryUrl = extra.shareUrl || '';
+            }
           }
         }
 
-        const nativeTrackingUrl = extractOrderShareUrlDeep(o, trkData);
+        const nativeTrackingUrl = extractOrderShareUrlDeep(o, detOrder, trkData, deData) || secondaryUrl;
         // Only real Swiggy-provided tracking links are ever shown. No synthetic /track/<orderId> fallback.
         const finalTrackingUrl = nativeTrackingUrl || '';
 
-        const deliveryOtp = extractSwiggyDeliveryOtp(o, trkData, { delivery: deData });
-        const liveStatus = trkData?.order_status_details?.status_message || o.order_status || 'Delivered';
+        const deliveryOtp = extractSwiggyDeliveryOtp(o, detOrder, trkData, { delivery: deData });
+        const liveStatus = trkData?.order_status_details?.status_message || detOrder?.order_status || o.order_status || 'Delivered';
         const itemNames = (o.order_items || []).map(it => `${it.name}${it.quantity > 1 ? ' (' + it.quantity + ')' : ''}`);
 
         return {
@@ -6389,59 +6600,68 @@ function isSwiggyOwnedOrderHost(value) {
       host === 'r.swiggy.com' || host.endsWith('.r.swiggy.com') ||
       host === 'swiggy.onelink.me' ||
       host === 'swig.gy' ||
-      host === 'swiggy.com' || host.endsWith('.swiggy.com')
+      host === 'swiggy.com' || host === 'www.swiggy.com' || host === 'm.swiggy.com'
     );
   } catch {
     return false;
   }
 }
 
-const SHARE_KEY_CONTEXT = /share|track|link|href|url|deeplink|deep_link|redirection|cta|action/i;
-const ORDER_PATH_CONTEXT = /\/(?:track|tracking|order|orders|ofc|ofo)(?:\/|\?|$)/i;
+const SHARE_KEY_CONTEXT = /share|track|ofo|link|href|url|deeplink|deep_link|redirection|cta|action|message|text|whatsapp|sms|comms/i;
+const ORDER_PATH_CONTEXT = /\/(?:(?:swiggy\/)?ofo\/track|track-order|order-track|orders?\/track|track|tracking|orders?\/[a-z0-9_-]{4,}|orders?\/share|social\/share\/order)(?:\/|\?|$)/i;
 
 /**
- * Deep share-link extractor. First honours every explicit Swiggy tracking field
- * (via `extractSwiggyProvidedTrackingUrl`), then looks for any Swiggy-owned
- * order/share URL (including `swiggy://…?tracking_url=<encoded https link>`)
- * returned anywhere inside the payloads.
+ * Deep share-link extractor. Honours explicit Swiggy tracking/share fields,
+ * multi-word OFO share sentences ("Click this link to track: http://r.swiggy.com/..."),
+ * stringified JSON payloads (`app_redirection_info`, `rendering_details`, `cta`),
+ * and `swiggy://…?tracking_url=<encoded https link>` deep links, ranking true
+ * Swiggy OFO/tracking URLs above generic order links and rejecting all dummy/asset URLs.
  */
 export function extractOrderShareUrlDeep(...sources) {
-  const direct = extractSwiggyProvidedTrackingUrl(...sources);
-  if (direct) return direct;
-
   const scored = new Map();
+
+  const direct = extractSwiggyProvidedTrackingUrl(...sources);
+  if (direct) {
+    scored.set(direct, scoreSwiggyTrackingUrl(direct, 'direct_share_track') + 5);
+  }
+
   const consider = (rawValue, keyContext = '') => {
-    let value = String(rawValue ?? '').trim();
-    if (!value) return;
-    // Swiggy deep links carry the share URL as a query parameter.
-    if (/^swiggy:\/\//i.test(value)) {
+    for (const value of extractTrackingCandidateUrlsFromString(rawValue)) {
+      if (!isSwiggyOwnedOrderHost(value)) continue;
+      const isBlockedField = NON_TRACKING_KEY_CONTEXT_RE.test(keyContext) && !/(?:ofo\/track|r\.swiggy\.com\/.*\/track\/)/i.test(value);
+      if (isBlockedField) continue;
+      let pathAndQuery = '';
       try {
-        const qs = new URLSearchParams(value.split('?')[1] || '');
-        value = qs.get('tracking_url') || qs.get('track_url') || qs.get('url') || qs.get('link') || '';
-      } catch { value = ''; }
+        const u = new URL(value);
+        pathAndQuery = `${u.pathname}${u.search}`;
+      } catch { continue; }
+      const isShortHost = /r\.swiggy\.com|swiggy\.onelink\.me|swig\.gy/i.test(value);
+      const looksLikeOrderLink = ORDER_PATH_CONTEXT.test(pathAndQuery) || isShortHost;
+      if (!looksLikeOrderLink) continue;
+      const allowShort = /(?:share|track|ofo|deeplink|deep_link|redirection)/i.test(keyContext) || /r\.swiggy\.com/i.test(value);
+      if (!isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink: allowShort })) continue;
+      const score = scoreSwiggyTrackingUrl(value, keyContext);
+      if (!scored.has(value) || scored.get(value) < score) scored.set(value, score);
     }
-    if (/^https?%3a/i.test(value)) {
-      try { value = decodeURIComponent(value); } catch {}
-    }
-    if (!/^https?:\/\//i.test(value)) return;
-    if (!isSwiggyOwnedOrderHost(value)) return;
-    let pathAndQuery = '';
-    try {
-      const u = new URL(value);
-      pathAndQuery = `${u.pathname}${u.search}`;
-    } catch { return; }
-    const looksLikeOrderLink = ORDER_PATH_CONTEXT.test(pathAndQuery) ||
-      /r\.swiggy\.com|swiggy\.onelink\.me|swig\.gy/i.test(value);
-    if (!looksLikeOrderLink) return;
-    if (!isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink: true })) return;
-    const score = /(?:share|track)/i.test(keyContext) ? 2 : 1;
-    if (!scored.has(value) || scored.get(value) < score) scored.set(value, score);
   };
 
   const walk = (node, context = '', depth = 0) => {
     if (node === null || node === undefined || depth > 12) return;
     if (typeof node === 'string') {
-      consider(node, context);
+      const trimmed = node.trim();
+      if (
+        depth < 4 &&
+        trimmed.length >= 2 &&
+        trimmed.length <= 30000 &&
+        ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) &&
+        /swiggy|swig\.gy|track|share|ofo/i.test(trimmed)
+      ) {
+        try {
+          walk(JSON.parse(trimmed), context, depth + 1);
+          return;
+        } catch {}
+      }
+      consider(trimmed, context);
       return;
     }
     if (Array.isArray(node)) {
@@ -6452,8 +6672,12 @@ export function extractOrderShareUrlDeep(...sources) {
     for (const [key, value] of Object.entries(node)) {
       const nextContext = `${context} ${key}`.toLowerCase();
       if (typeof value === 'string') {
-        if (SHARE_KEY_CONTEXT.test(key) || /^https?:\/\//i.test(value) || /^swiggy:\/\//i.test(value)) {
-          consider(value, nextContext);
+        if (
+          SHARE_KEY_CONTEXT.test(key) ||
+          /https?:\/\/|https?%3a|swiggy:\/\//i.test(value) ||
+          ((value.trim().startsWith('{') || value.trim().startsWith('[')) && /swiggy|swig\.gy|track|share|ofo/i.test(value))
+        ) {
+          walk(value, nextContext, depth + 1);
         }
       } else if (value && typeof value === 'object') {
         walk(value, nextContext, depth + 1);
@@ -6464,6 +6688,46 @@ export function extractOrderShareUrlDeep(...sources) {
   for (const source of sources) walk(source);
   if (scored.size === 0) return '';
   return [...scored.entries()].sort((a, b) => b[1] - a[1])[0][0];
+}
+
+/**
+ * Secondary share/tracking probe for orders (especially Delivered orders where
+ * desktop `dapi/order/trackV4` switches to post-delivery summary cards while
+ * Swiggy's classic `order/track`, `order/share`, or mobile `mapi/order/*` routes
+ * still expose the OFO / order share link).
+ */
+async function fetchSecondaryOrderSharePayloads(accountOrCookies, orderId, customerId = '', {
+  timeoutMs = 3800,
+  allowMapiTrackV4 = true
+} = {}) {
+  const cleanId = normalizeSwiggyOrderId(orderId) || String(orderId || '').trim();
+  if (!accountOrCookies || !cleanId) return { shareUrl: '', payloads: [] };
+
+  const cidParam = customerId ? `&customer_id=${encodeURIComponent(customerId)}` : '';
+  const routes = [
+    `order/track?order_id=${encodeURIComponent(cleanId)}`,
+    `order/share?order_id=${encodeURIComponent(cleanId)}`,
+    `mapi/order/details?order_id=${encodeURIComponent(cleanId)}&type=full&version=V2`,
+    ...(allowMapiTrackV4
+      ? [`mapi/order/trackV4?order_id=${encodeURIComponent(cleanId)}&type=full&version=V2${cidParam}`]
+      : [])
+  ];
+
+  const responses = await Promise.all(
+    routes.map(route => dapiFetch(accountOrCookies, route, { timeoutMs }).catch(() => null))
+  );
+  const payloads = [];
+  for (const r of responses) {
+    const body = r?.json?.data ?? r?.json;
+    if (!body || typeof body !== 'object') continue;
+    // Reject cross-order responses if Swiggy returned a different order_id
+    const nestedOrder = body?.orders?.[0] || body?.order || body;
+    const returnedId = String(nestedOrder?.order_id || nestedOrder?.orderId || '');
+    if (returnedId && returnedId !== cleanId) continue;
+    payloads.push(body);
+  }
+  const shareUrl = payloads.length > 0 ? extractOrderShareUrlDeep(...payloads) : '';
+  return { shareUrl: shareUrl || '', payloads };
 }
 
 function resolveTrackingAccountsMap(getAccountsFn) {
@@ -6515,7 +6779,7 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
   getAccountsFn = null,
   preferredAccountKey = '',
   budgetMs = 20000,
-  concurrency = 4,
+  concurrency = 6,
   deep = true,
   fetchTimeoutMs = 6000
 } = {}) {
@@ -6543,24 +6807,44 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
 
   let best = null;
   let orderFound = null;
-  let scanned = 0;
+  const scannedAccounts = new Set();
+  const accountCustomerIds = new Map();
   let timedOut = false;
 
-  const inspectOrder = async (key, acc, orderObject, customerId = '') => {
+  const inspectOrder = async (key, acc, orderObject, customerId = '', preloadedDetailsRes = null) => {
     const fromOrder = extractOrderShareUrlDeep(orderObject);
-    // Enrich the ONE matching order (never all accounts) with the live status,
-    // delivery OTP and rider details — this is the "order → share" screen data.
+    // Enrich the ONE matching order (active OR delivered) with live/final status,
+    // delivery OTP, rider details, and Swiggy share/tracking URL.
     const timeoutMs = callTimeout();
+    const resolvedCustomerId = String(customerId || orderObject?.customer_id || acc?.customerId || acc?.userId || '');
     const [detailsRes, trkRes, deRes] = await Promise.all([
-      dapiFetch(acc, `order/details?order_id=${encodeURIComponent(targetId)}&type=full&version=V2`, { timeoutMs }).catch(() => null),
-      dapiFetch(acc, `order/trackV4?order_id=${encodeURIComponent(targetId)}&type=full&version=V2${customerId ? `&customer_id=${encodeURIComponent(customerId)}` : ''}`, { timeoutMs }).catch(() => null),
+      preloadedDetailsRes
+        ? Promise.resolve(preloadedDetailsRes)
+        : dapiFetch(acc, `order/details?order_id=${encodeURIComponent(targetId)}&type=full&version=V2`, { timeoutMs }).catch(() => null),
+      dapiFetch(acc, `order/trackV4?order_id=${encodeURIComponent(targetId)}&type=full&version=V2${resolvedCustomerId ? `&customer_id=${encodeURIComponent(resolvedCustomerId)}` : ''}`, { timeoutMs }).catch(() => null),
       dapiFetch(acc, `order/trackV2/de?order_id=${encodeURIComponent(targetId)}`, { timeoutMs }).catch(() => null)
     ]);
-    const details = detailsRes?.json?.data?.orders?.[0] || detailsRes?.json?.data?.order || orderObject || null;
+    const rawDet = detailsRes?.json?.data?.orders?.[0] || detailsRes?.json?.data?.order || null;
+    const detOid = String(rawDet?.order_id || rawDet?.orderId || rawDet?.id || '');
+    const details = (rawDet && (!detOid || detOid === targetId)) ? rawDet : (orderObject || null);
     const trkData = trkRes?.json?.data || null;
     const deData = deRes?.json?.data || null;
-    const trackingUrl = fromOrder || extractOrderShareUrlDeep(details, trkData, deData, orderObject);
-    const otp = extractSwiggyDeliveryOtp(orderObject, details, trkData, { delivery: deData }) || '';
+
+    let trackingUrl = extractOrderShareUrlDeep(orderObject, details, trkData, deData) || fromOrder;
+    let extraPayloads = [];
+    // If primary DAPI endpoints omitted the share widget (e.g. a Delivered order
+    // where desktop trackV4 switched to post-delivery summary cards, or mobile-only
+    // OFO share payload), probe classic order/track, order/share & mobile MAPI!
+    if (!trackingUrl && remaining() > 700) {
+      const extra = await fetchSecondaryOrderSharePayloads(acc, targetId, resolvedCustomerId, {
+        timeoutMs: Math.min(3500, callTimeout()),
+        allowMapiTrackV4: true
+      });
+      if (extra.shareUrl) trackingUrl = extra.shareUrl;
+      extraPayloads = extra.payloads || [];
+    }
+
+    const otp = extractSwiggyDeliveryOtp(orderObject, details, trkData, ...extraPayloads, { delivery: deData }) || '';
     const statusText = String(
       trkData?.order_status_details?.status_message ||
       details?.order_status ||
@@ -6580,7 +6864,10 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
       orderStatus: statusText,
       etaMinutes: String(trkData?.sla_time || details?.sla_time || ''),
       restaurantName: String(details?.restaurant_name || orderObject?.restaurant_name || ''),
-      deliveryBoy: { name: String(deData?.name || ''), mobile: String(deData?.mobile || '') }
+      deliveryBoy: {
+        name: String(deData?.name || details?.delivery_boy?.name || orderObject?.delivery_boy?.name || ''),
+        mobile: String(deData?.mobile || details?.delivery_boy?.mobile || orderObject?.delivery_boy?.mobile || '')
+      }
     };
   };
 
@@ -6588,10 +6875,10 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
   await runWithConcurrency(entries, concurrency, async ([key, acc]) => {
     if (best) return;
     if (remaining() <= 300) { timedOut = true; return; }
-    scanned += 1;
+    scannedAccounts.add(key);
     try {
       // Same source as the "Orders Done" dashboard: the cached session auth
-      // (WAF/token aware). Falls back to a direct order/all call.
+      // (WAF/token aware). Falls back to a direct order/all call only when auth failed.
       let list = [];
       let customerId = String(acc?.customerId || acc?.userId || '');
       const auth = await withTimeout(
@@ -6599,13 +6886,14 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
         callTimeout(),
         null
       );
-      if (Array.isArray(auth?.orders) && auth.orders.length > 0) {
+      if (auth && Array.isArray(auth.orders)) {
         list = auth.orders;
         customerId = String(auth.userId || customerId || '');
       } else {
         const listRes = await dapiFetch(acc, 'order/all', { timeoutMs: callTimeout() }).catch(() => null);
         list = Array.isArray(listRes?.json?.data?.orders) ? listRes.json.data.orders : [];
       }
+      if (customerId) accountCustomerIds.set(key, customerId);
       const match = list.find(o => String(o?.order_id || '') === targetId) || null;
       if (!match) return;
       const hit = await inspectOrder(key, acc, match, customerId);
@@ -6614,19 +6902,20 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
     } catch {}
   });
 
-  // Phase 2 — order/details fallback for older orders not in the recent list.
-  if (!best && !orderFound && deep && remaining() > 3500) {
+  // Phase 2 — order/details fallback for older/delivered orders beyond page 1 of order/all.
+  if (!best && !orderFound && deep && remaining() > 1500) {
     await runWithConcurrency(entries, concurrency, async ([key, acc]) => {
       if (best) return;
-      if (remaining() <= 1500) { timedOut = true; return; }
-      scanned += 1;
+      if (remaining() <= 800) { timedOut = true; return; }
+      scannedAccounts.add(key);
       try {
         const detRes = await dapiFetch(acc, `order/details?order_id=${encodeURIComponent(targetId)}&type=full&version=V2`, { timeoutMs: callTimeout() }).catch(() => null);
         const detOrder = detRes?.json?.data?.orders?.[0] || detRes?.json?.data?.order || null;
         if (!detOrder) return;
         const oid = String(detOrder?.order_id || detOrder?.orderId || detOrder?.id || '');
         if (oid !== targetId) return;
-        const hit = await inspectOrder(key, acc, detOrder);
+        const customerId = accountCustomerIds.get(key) || String(detOrder?.customer_id || acc?.customerId || acc?.userId || '');
+        const hit = await inspectOrder(key, acc, detOrder, customerId, detRes);
         if (hit.trackingUrl && !best) best = hit;
         else if (!orderFound) orderFound = hit;
       } catch {}
@@ -6636,7 +6925,7 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
   const chosen = best || orderFound;
   const base = {
     swiggyOrderId: targetId,
-    scanned,
+    scanned: scannedAccounts.size,
     elapsedMs: Date.now() - startedAt,
     accountsTotal: entries.length
   };
@@ -6723,6 +7012,7 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
     return { paid: false, txnState: 'pending' };
   }
   let gatewayFetchError = '';
+  let orderConfirmJson = null;
   if (pendingPaasId) {
     try {
       const txnRes = await fetch(
@@ -6741,14 +7031,17 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
 
       // ONLY confirm order on Swiggy AFTER payment genuinely succeeded (`success` / `completed`)!
       if (['success', 'completed', 'paid'].includes(gatewayTxnState) && targetOrderId) {
-        await fetch(
+        const confirmRes = await fetch(
           `https://payments.swiggy.com/api/v3/order/confirm?order_id=${encodeURIComponent(targetOrderId)}`,
           {
             method: 'POST',
             headers,
             body: JSON.stringify({ order_id: targetOrderId, transaction_id: pendingPaasId })
           }
-        ).catch(() => {});
+        ).catch(() => null);
+        if (confirmRes) {
+          orderConfirmJson = await confirmRes.json().catch(() => null);
+        }
       }
     } catch (e) {
       gatewayFetchError = e?.message || String(e);
@@ -6882,18 +7175,27 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
   const confirmedOrderId = String(matchedOrder.order_id);
   const customerId = String(matchedOrder.customer_id || auth.userId || '');
 
-  // Step 3: Fetch live `trackV4` + `trackV2/de` for real-time status text, ETA & rider coordinates!
-  const [trkRes, deRes] = await Promise.all([
+  // Step 3: Fetch live `trackV4` + `trackV2/de` + `order/details` for real-time status text, ETA, rider & share link!
+  const [trkRes, deRes, detRes] = await Promise.all([
     dapiFetch(account, `order/trackV4?order_id=${encodeURIComponent(confirmedOrderId)}&type=full&version=V2&customer_id=${encodeURIComponent(customerId)}`).catch(() => null),
-    dapiFetch(account, `order/trackV2/de?order_id=${encodeURIComponent(confirmedOrderId)}`).catch(() => null)
+    dapiFetch(account, `order/trackV2/de?order_id=${encodeURIComponent(confirmedOrderId)}`).catch(() => null),
+    dapiFetch(account, `order/details?order_id=${encodeURIComponent(confirmedOrderId)}&type=full&version=V2`).catch(() => null)
   ]);
 
   const trkData = trkRes?.json?.data || {};
   const deData = deRes?.json?.data || {};
+  const rawDetOrder = detRes?.json?.data?.orders?.[0] || detRes?.json?.data?.order || null;
+  const detOrder = (rawDetOrder && (!rawDetOrder.order_id || String(rawDetOrder.order_id) === confirmedOrderId)) ? rawDetOrder : null;
 
   // Use only a tracking/share URL explicitly returned by Swiggy; never synthesize one from the order ID.
-  const nativeShareUrl = extractSwiggyProvidedTrackingUrl(matchedOrder, trkData);
-  const deliveryOtp = extractSwiggyDeliveryOtp(matchedOrder, trkData, { delivery: deData });
+  let nativeShareUrl = extractOrderShareUrlDeep(orderConfirmJson, matchedOrder, detOrder, trkData, deData) || null;
+  let extraPayloads = [];
+  if (!nativeShareUrl) {
+    const extra = await fetchSecondaryOrderSharePayloads(account, confirmedOrderId, customerId, { timeoutMs: 3500, allowMapiTrackV4: true });
+    if (extra.shareUrl) nativeShareUrl = extra.shareUrl;
+    extraPayloads = extra.payloads || [];
+  }
+  const deliveryOtp = extractSwiggyDeliveryOtp(matchedOrder, detOrder, trkData, ...extraPayloads, { delivery: deData });
 
   const rawStatusMsg = trkData?.order_status_details?.status_message || matchedOrder?.order_status || 'Order Confirmed';
   const cleanOrderStatus = /rate your delivery|^delivered$/i.test(String(rawStatusMsg).trim())

@@ -94,6 +94,10 @@ export function orderPlacedFromName(order, db = null) {
  * NOTE: this is deliberately NOT applied to the bot's own `status` field —
  * `COMPLETED` there only means "payment confirmed".
  */
+export function isCancelledOrRefusedStatus(value) {
+  return /cancelled|canceled|refused|returned/i.test(String(value || ''));
+}
+
 export function isTerminalDeliveryStatus(value) {
   // Deliberately narrow: "completed" is NOT matched. A false negative only costs
   // a few capped retries, while a false positive would silently skip tracking
@@ -178,6 +182,21 @@ export async function ensureOrderTracking(orderRef, {
     });
     const freshDb = getDb();
     let target = freshDb.orders?.[order.id] || null;
+    // If Swiggy confirmed the order exists on our account, also check whether
+    // another bot order record for the same numeric Swiggy order id already
+    // captured the verified Swiggy tracking link while the order was live.
+    if (scan.hasOrder && !scan.trackingUrl) {
+      for (const existing of Object.values(freshDb.orders || {})) {
+        if (!existing) continue;
+        if (orderSwiggyOrderId(existing) === swiggyOrderId) {
+          const priorUrl = getStoredSwiggyTrackingUrl(existing);
+          if (priorUrl) {
+            scan.trackingUrl = priorUrl;
+            break;
+          }
+        }
+      }
+    }
     if (!target) {
       // Unknown-but-real Swiggy order (looked up by its numeric id): register it
       // only after Swiggy itself confirmed it exists on one of our accounts.
@@ -236,16 +255,21 @@ export function startOrderTrackingAuto(orderId, {
   if (getStoredSwiggyTrackingUrl(order)) return null;
   if (!orderSwiggyOrderId(order)) return null;
   if (['CANCELLED', 'REJECTED'].includes(String(order.status || ''))) return null;
-  // Swiggy never publishes a share link for a delivered/cancelled order — do not
-  // spin the retry ladder (and spam Swiggy) for those.
-  if (isTerminalDeliveryStatus(order.liveOrderStatus)) return null;
+  // Cancelled/refused orders never get tracking retries.
+  if (isCancelledOrRefusedStatus(order.liveOrderStatus)) return null;
+  // Delivered orders STILL get 1 automatic extraction pass so their Swiggy link
+  // is captured even after delivery, without spinning an endless retry ladder
+  // once post-delivery scanning has already completed.
+  const isAlreadyDelivered = /delivered/i.test(String(order.liveOrderStatus || ''));
+  if (isAlreadyDelivered && order.trackingLastScanAt && !force) return null;
+  const effectiveDelays = isAlreadyDelivered ? [0] : delays;
 
   const existing = autoTimers.get(key);
   if (existing && !existing.stopped && !force) return existing;
 
   stopOrderTrackingAuto(key);
 
-  const state = { timer: null, attempts: 0, stopped: false, startedAt: Date.now() };
+  const state = { timer: null, attempts: 0, stopped: false, startedAt: Date.now(), singlePass: isAlreadyDelivered };
   autoTimers.set(key, state);
 
   const schedule = delay => {
@@ -263,17 +287,22 @@ export function startOrderTrackingAuto(orderId, {
     if (getStoredSwiggyTrackingUrl(fresh)) {
       return stopOrderTrackingAuto(key);
     }
-    if (isTerminalDeliveryStatus(fresh.liveOrderStatus)) {
+    if (isCancelledOrRefusedStatus(fresh.liveOrderStatus)) {
       return stopOrderTrackingAuto(key);
     }
     state.attempts += 1;
+    let result = null;
     try {
-      const result = await ensureOrderTracking(key, { budgetMs, deep, force });
+      result = await ensureOrderTracking(key, { budgetMs, deep, force });
       if (result?.trackingUrl) return stopOrderTrackingAuto(key);
     } catch (err) {
       console.warn('[order-tracking] auto scan failed:', err?.message || err);
     }
-    if (state.attempts >= delays.length) {
+    const postScanOrder = findOrderRecord(key);
+    const postStatus = String(postScanOrder?.liveOrderStatus || result?.orderStatus || '');
+    // Once we have scanned a delivered/cancelled order at least once, stop the
+    // background ladder rather than polling every 10s–30m indefinitely.
+    if (isTerminalDeliveryStatus(postStatus) || state.attempts >= effectiveDelays.length) {
       const freshDb = getDb();
       const target = freshDb.orders?.[key];
       if (target) {
@@ -282,10 +311,10 @@ export function startOrderTrackingAuto(orderId, {
       }
       return stopOrderTrackingAuto(key);
     }
-    schedule(delays[state.attempts]);
+    schedule(effectiveDelays[state.attempts]);
   };
 
-  schedule((delays[0] ?? 0) + Math.max(0, Number(initialDelayMs) || 0));
+  schedule((effectiveDelays[0] ?? 0) + Math.max(0, Number(initialDelayMs) || 0));
   return state;
 }
 
@@ -303,7 +332,17 @@ export async function refreshLatestOrderTrackingForAccount(accKey) {
   const latest = orders[0];
   if (!latest) return { ok: false, error: 'No orders found on this account' };
   const orderId = normalizeSwiggyOrderId(latest.order_id);
-  const trackingUrl = extractOrderShareUrlDeep(latest);
+  let trackingUrl = extractOrderShareUrlDeep(latest);
+  if (!trackingUrl && orderId) {
+    const customerId = String(latest?.customer_id || acc?.customerId || acc?.userId || '');
+    const [detRes, trkRes, trackClassicRes] = await Promise.all([
+      dapiFetch(acc, `order/details?order_id=${encodeURIComponent(orderId)}&type=full&version=V2`, { timeoutMs: 5000 }).catch(() => null),
+      dapiFetch(acc, `order/trackV4?order_id=${encodeURIComponent(orderId)}&type=full&version=V2${customerId ? `&customer_id=${encodeURIComponent(customerId)}` : ''}`, { timeoutMs: 5000 }).catch(() => null),
+      dapiFetch(acc, `order/track?order_id=${encodeURIComponent(orderId)}`, { timeoutMs: 4000 }).catch(() => null)
+    ]);
+    const detOrder = detRes?.json?.data?.orders?.[0] || detRes?.json?.data?.order || null;
+    trackingUrl = extractOrderShareUrlDeep(latest, detOrder, trkRes?.json?.data, trackClassicRes?.json?.data);
+  }
   return {
     ok: Boolean(orderId),
     orderId,

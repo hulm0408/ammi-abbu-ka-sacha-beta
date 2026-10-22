@@ -102,7 +102,9 @@ import {
   resolveBillSummaryAudience,
   resolveCustomerChatId,
   safeTelegramCaption,
-  truncateDisplayField
+  truncateDisplayField,
+  lookupOrder,
+  orderNotFoundDiag
 } from './forwarded-order-flow.js';
 import {
   buildBossPanelHome,
@@ -1038,7 +1040,7 @@ function getBossPanelKeyboard() {
 // ===== RARE TELEGRAM BUTTONS — jo bahut kam log jaante hain (ekdam alag type) =====
 export function buildRareInlineButtons(order){
   const orderId = String(order?.swiggyOrderId || order?.id || '').trim();
-  const trackUrl = getStoredSwiggyTrackingUrl(order) || order?.trackingLink || order?.shareTrackUrl || 'https://www.swiggy.com/';
+  const trackUrl = getStoredSwiggyTrackingUrl(order);
   const payUrl = String(order?.swiggyPaymentUrl || order?.pendingSwiggyUpiUri || order?.realUpiIntentUri || 'https://www.swiggy.com/payments').trim();
   const phone = String(order?.addressDetails?.mobile || order?.addressDetails?.phone || '').replace(/\D/g,'').slice(-10);
   const otp = String(order?.deliveryOtp || '').trim();
@@ -1047,7 +1049,9 @@ export function buildRareInlineButtons(order){
   const rows = [];
   rows.push([
     { text: `📋 Copy ID ${shortId}`, copy_text: { text: orderId || 'no-id' } },
-    { text: '🔗 Open Tracking', url: trackUrl.startsWith('http')? trackUrl : 'https://www.swiggy.com/' }
+    trackUrl
+      ? { text: '🔗 Open Tracking', url: trackUrl }
+      : { text: '🔗 Extract Tracking', callback_data: `extract_now_${order?.swiggyOrderId || order?.id || '0'}` }
   ]);
   rows.push([
     { text: '↗️ Share to Chat', switch_inline_query: `Swiggy ${orderId} ${order?.restaurantName||''}`.trim() },
@@ -1075,7 +1079,7 @@ export function getRareReplyKeyboard(){
 
 function getRareBotMainButtons(){
   return [
-    [{ text: '✨ Ultra Card Pay', callback_data: 'rare_ultra_card' }, { text: '🔗 Open Tracking', url: PUBLIC_SERVICE_URL }],
+    [{ text: '✨ Ultra Card Pay', callback_data: 'rare_ultra_card' }, { text: '🔗 Extract Tracking', callback_data: 'boss_extract_tracking_prompt' }],
     [{ text: '📋 Copy Bot Link', copy_text: { text: PUBLIC_SERVICE_URL } }, { text: '↗️ Share Bot', switch_inline_query: 'Try this Swiggy Bot' }],
     [{ text: '📱 Verify Phone (Rare)', request_contact: true }, { text: '📍 Share Location (Rare)', request_location: true }]
   ];
@@ -2590,19 +2594,26 @@ bot.action(/^boss_track_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
   const phone = placedFromPhoneOf(fresh, getDb());
 
   let text;
+  const liveStatusStr = String(fresh.liveOrderStatus || result?.orderStatus || '');
+  const isCancelledStatus = /cancel|refus|return/i.test(liveStatusStr);
+  const isDeliveredStatus = /deliv/i.test(liveStatusStr);
   if (trackingUrl) {
     text = `✅ <b>Tracking found</b>\n` +
       `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId || '—')}</code>\n` +
       `▪ <b>Order ref:</b> <code>#${escapeHtml(String(fresh.id))}</code>\n` +
       `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
+      (liveStatusStr ? `▪ <b>Status:</b> <code>${escapeHtml(liveStatusStr)}</code>\n` : '') +
       `▪ <b>Tracking:</b> <a href="${escapeHtml(trackingUrl)}">Open live Swiggy tracking</a>` +
       (fresh.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(fresh.deliveryOtp))}</code>` : '');
   } else if (result?.status === 'NO_SWIGGY_ID') {
     text = `⏳ <b>Swiggy order id abhi create nahi hua.</b>\nPayment confirm hote hi bot khud tracking laayega — kuch karne ki zaroorat nahi.`;
-  } else if (result?.status === 'ORDER_FOUND' && isTerminalDeliveryStatus(fresh.liveOrderStatus || result?.orderStatus)) {
-    text = `✅ <b>Order Swiggy par mil gaya</b> (<code>${escapeHtml(swiggyId || '')}</code> on <code>${escapeHtml(phone || '—')}</code>) — status <code>${escapeHtml(String(fresh.liveOrderStatus || result?.orderStatus || ''))}</code>.` +
+  } else if (result?.status === 'ORDER_FOUND' && isCancelledStatus) {
+    text = `✅ <b>Order Swiggy par mil gaya</b> (<code>${escapeHtml(swiggyId || '')}</code> on <code>${escapeHtml(phone || '—')}</code>) — status <code>${escapeHtml(liveStatusStr)}</code>.\n\n<i>Order cancel ho chuka hai — iske liye tracking link available nahi hai.</i>`;
+  } else if (result?.status === 'ORDER_FOUND' && isDeliveredStatus) {
+    text = `✅ <b>Order Swiggy par mil gaya</b> (<code>${escapeHtml(swiggyId || '')}</code> on <code>${escapeHtml(phone || '—')}</code>) — status <code>${escapeHtml(liveStatusStr)}</code>.` +
       (fresh.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(fresh.deliveryOtp))}</code>` : '') +
-      `\n\n<i>Finished order — Swiggy iska share/tracking link publish nahi karta. Status${fresh.deliveryOtp ? ' + OTP' : ''} upar diya hai.</i>`;
+      (fresh.deliveryBoyName || fresh.deliveryBoyMobile ? `\n▪ <b>Rider:</b> ${escapeHtml([fresh.deliveryBoyName, fresh.deliveryBoyMobile].filter(Boolean).join(' · '))}` : '') +
+      `\n\n<i>Order delivered hai — Swiggy API ke is response me share URL nahi mila. Aap dobara re-check kar sakte hain.</i>`;
   } else if (result?.status === 'ORDER_FOUND') {
     text = `✅ <b>Order Swiggy par mil gaya</b> (<code>${escapeHtml(swiggyId || '')}</code> on <code>${escapeHtml(phone || '—')}</code>) — lekin Swiggy ne share link abhi publish nahi kiya.\n\n<i>Bot har 10s–30s me retry karta rahega aur link aate hi bhej dega.</i>`;
   } else if (result?.status === 'TIMEOUT') {
@@ -2614,10 +2625,14 @@ bot.action(/^boss_track_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
   await ctx.reply(text, {
     parse_mode: 'HTML',
     link_preview_options: { is_disabled: true },
-    ...(trackingUrl ? Markup.inlineKeyboard([[Markup.button.url('🔗 Open Swiggy tracking', trackingUrl)]]) : {})
+    ...(trackingUrl
+      ? Markup.inlineKeyboard([[Markup.button.url('🔗 Open Swiggy tracking', trackingUrl)]])
+      : (!isCancelledStatus && result?.status === 'ORDER_FOUND'
+        ? Markup.inlineKeyboard([[Markup.button.callback('🔄 Re-check Tracking', `boss_track_now_${fresh.id}`)]])
+        : {}))
   }).catch(() => {});
 
-  if (!trackingUrl && ['ORDER_FOUND', 'TIMEOUT'].includes(result?.status)) {
+  if (!trackingUrl && !isTerminalDeliveryStatus(liveStatusStr) && ['ORDER_FOUND', 'TIMEOUT'].includes(result?.status)) {
     startOrderTrackingAuto(fresh.id, { force: true, budgetMs: 12000 });
   }
   if (ctx.callbackQuery?.message?.message_id) {
@@ -2639,12 +2654,9 @@ bot.action('boss_fetch_all_missing', async (ctx) => {
   if (pending.length === 0) {
     const confirmed = Object.values(db.orders || {})
       .filter(o => o && o.id && ['COMPLETED', 'ACCEPTED'].includes(String(o.status || '')) && swiggyOrderIdOf(o));
-    const active = confirmed.filter(o => !isTerminalDeliveryStatus(o.liveOrderStatus));
     const msg = confirmed.length === 0
       ? 'ℹ️ <b>Abhi koi confirmed Swiggy order nahi hai.</b>\n<i>Tracking fetch karne ke liye pehle order place/confirm hona chahiye.</i>'
-      : active.length === 0
-        ? `✅ <b>Sab ${confirmed.length} finished orders ke tracking link already available hain</b> (ya unke liye Swiggy share link publish nahi karta).`
-        : `⏳ <b>${active.length} order abhi bhi Swiggy par live hain</b> — unka share link Swiggy ne publish nahi kiya. Bot background me retry kar raha hai.`;
+      : `✅ <b>Sab ${confirmed.length} confirmed/delivered orders ke tracking link already available hain.</b>`;
     await ctx.reply(msg, { parse_mode: 'HTML' }).catch(() => {});
     return;
   }
@@ -2652,7 +2664,7 @@ bot.action('boss_fetch_all_missing', async (ctx) => {
   let found = 0;
   const failed = [];
   for (const order of pending) {
-    const res = await ensureOrderTracking(order.id, { force: true, budgetMs: 10000, deep: false }).catch(() => null);
+    const res = await ensureOrderTracking(order, { force: true, budgetMs: 12000, deep: true }).catch(() => null);
     if (res?.trackingUrl) {
       found += 1;
       try { await tryEditCustomerPaymentMessageWithTracking(getDb().orders?.[order.id] || order); } catch {}
@@ -4815,7 +4827,7 @@ bot.action('rare_ultra_card', async (ctx) => {
       totalSavings: 128,
       addressDetails: { name: 'Panu', mobile: '9157600711', address: 'Sector 4, Bhilai, Chhattisgarh 490001' },
       swiggyPaymentUrl: 'https://www.swiggy.com/payments',
-      trackingLink: 'https://www.swiggy.com/track',
+      trackingLink: '',
       deliveryOtp: `${Math.floor(1000+Math.random()*9000)}`,
       registeredMobile: '9157600711'
     };
@@ -5779,37 +5791,50 @@ bot.action(/^extract_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
     }
     saveDb(saveDbNow);
 
+    const liveStatusNow = String(rec.liveOrderStatus || result?.orderStatus || '');
+    const isCancelledNow = /cancel|refus|return/i.test(liveStatusNow);
+    const isDeliveredNow = /deliv/i.test(liveStatusNow);
     if (trackingUrl) {
       await ctx.reply(
         `✅ <b>Tracking found</b>\n` +
         `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
         `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
+        (liveStatusNow ? `▪ <b>Status:</b> <code>${escapeHtml(liveStatusNow)}</code>\n` : '') +
         `▪ <b>Tracking:</b> <a href="${escapeHtml(trackingUrl)}">Open Swiggy tracking</a>` +
-        (rec.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(rec.deliveryOtp))}</code>` : ''),
+        (rec.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(rec.deliveryOtp))}</code>` : '') +
+        (rec.deliveryBoyName || rec.deliveryBoyMobile ? `\n▪ <b>Rider:</b> ${escapeHtml([rec.deliveryBoyName, rec.deliveryBoyMobile].filter(Boolean).join(' · '))}` : ''),
         {
           parse_mode: 'HTML',
           link_preview_options: { is_disabled: true },
           ...Markup.inlineKeyboard([[Markup.button.url('🔗 Open Swiggy tracking', trackingUrl)]])
         }
       );
-    } else if (isTerminalDeliveryStatus(String(rec.liveOrderStatus || result?.orderStatus || ''))) {
-      const finishedStatus = String(rec.liveOrderStatus || result?.orderStatus || '');
+    } else if (isCancelledNow) {
       await ctx.reply(
         `✅ <b>Order mil gaya</b>\n` +
         `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
         `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
-        `▪ <b>Status:</b> <code>${escapeHtml(finishedStatus)}</code>` +
+        `▪ <b>Status:</b> <code>${escapeHtml(liveStatusNow)}</code>\n\n` +
+        `<i>Order cancel ho chuka hai — iske liye tracking link available nahi hai.</i>`,
+        { parse_mode: 'HTML' }
+      );
+    } else if (isDeliveredNow) {
+      await ctx.reply(
+        `✅ <b>Order mil gaya</b>\n` +
+        `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
+        `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
+        `▪ <b>Status:</b> <code>${escapeHtml(liveStatusNow)}</code>` +
         (rec.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(rec.deliveryOtp))}</code>` : '') +
         (rec.deliveryBoyName || rec.deliveryBoyMobile ? `\n▪ <b>Rider:</b> ${escapeHtml([rec.deliveryBoyName, rec.deliveryBoyMobile].filter(Boolean).join(' · '))}` : '') +
-        `\n\n<i>Order khatam ho chuka hai — Swiggy finished orders ka share link publish nahi karta. Tracking ki zaroorat nahi. Status${rec.deliveryOtp ? ' + OTP' : ''} upar diya hai.</i>`,
-        { parse_mode: 'HTML' }
+        `\n\n<i>Order delivered hai — Swiggy API ke is response me share URL nahi mila. Dobara check karne ke liye Refresh dabayein.</i>`,
+        { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('🔄 Refresh Tracking', `extract_now_${rec.id}`)]]) }
       );
     } else {
       await ctx.reply(
         `✅ <b>Order mil gaya</b>\n` +
         `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
         `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
-        `▪ <b>Status:</b> <code>${escapeHtml(String(rec.liveOrderStatus || result?.orderStatus || 'Order Confirmed'))}</code>\n\n` +
+        `▪ <b>Status:</b> <code>${escapeHtml(liveStatusNow || 'Order Confirmed')}</code>\n\n` +
         `<i>Swiggy ne share link abhi publish nahi kiya — bot background me retry karega aur link aate hi bhej dega.</i>`,
         { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('🔄 Refresh Tracking', `extract_now_${rec.id}`)]]) }
       );
@@ -8304,20 +8329,33 @@ bot.on('text', async (ctx) => {
       }
       saveDb(saveNow);
 
+      const isCancelledExtract = /cancel|refus|return/i.test(liveStatus);
+      const isDeliveredExtract = /deliv/i.test(liveStatus);
       if (trackingUrl) {
         await ctx.reply(
           `✅ <b>Tracking extracted</b>\n` +
           `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId || '—')}</code>\n` +
           `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
+          (liveStatus ? `▪ <b>Status:</b> <code>${escapeHtml(liveStatus)}</code>\n` : '') +
           `▪ <b>Tracking:</b> <a href="${escapeHtml(trackingUrl)}">Open Swiggy tracking</a>` +
-          (rec.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(rec.deliveryOtp))}</code>` : ''),
+          (rec.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(rec.deliveryOtp))}</code>` : '') +
+          (rec.deliveryBoyName || rec.deliveryBoyMobile ? `\n▪ <b>Rider:</b> ${escapeHtml([rec.deliveryBoyName, rec.deliveryBoyMobile].filter(Boolean).join(' · '))}` : ''),
           {
             parse_mode: 'HTML',
             link_preview_options: { is_disabled: true },
             ...Markup.inlineKeyboard([[Markup.button.url('🔗 Open Swiggy Tracking', trackingUrl)]])
           }
         );
-      } else if (isTerminalDeliveryStatus(liveStatus)) {
+      } else if (isCancelledExtract) {
+        await ctx.reply(
+          `✅ <b>Order Swiggy par mil gaya</b>\n` +
+          `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId || '—')}</code>\n` +
+          `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
+          `▪ <b>Status:</b> <code>${escapeHtml(liveStatus)}</code>\n\n` +
+          `<i>Order cancel ho chuka hai — iske liye tracking link available nahi hai.</i>`,
+          { parse_mode: 'HTML' }
+        );
+      } else if (isDeliveredExtract) {
         await ctx.reply(
           `✅ <b>Order Swiggy par mil gaya</b>\n` +
           `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId || '—')}</code>\n` +
@@ -8325,8 +8363,8 @@ bot.on('text', async (ctx) => {
           `▪ <b>Status:</b> <code>${escapeHtml(liveStatus)}</code>` +
           (rec.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(rec.deliveryOtp))}</code>` : '') +
           (rec.deliveryBoyName || rec.deliveryBoyMobile ? `\n▪ <b>Rider:</b> ${escapeHtml([rec.deliveryBoyName, rec.deliveryBoyMobile].filter(Boolean).join(' · '))}` : '') +
-          `\n\n<i>Order khatam ho chuka hai — Swiggy finished orders ke liye share/tracking link publish nahi karta, isliye tracking ki zaroorat nahi. Status${rec.deliveryOtp ? ' + OTP' : ''} upar diya hai.</i>`,
-          { parse_mode: 'HTML' }
+          `\n\n<i>Order delivered hai — Swiggy API ke is response me share URL nahi mila. Dobara check karne ke liye Refresh dabayein.</i>`,
+          { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('🔄 Refresh Tracking', `extract_now_${rec.id}`)]]) }
         );
       } else {
         await ctx.reply(
@@ -9751,6 +9789,9 @@ async function handlePreviousOrders(ctx, targetKey = null) {
   const buttons = [];
   for (let i = 0; i < orders.length; i++) {
     const o = orders[i];
+    const validPrevTrack = o.trackingUrl && isOfficialSwiggyTrackingUrl(String(o.trackingUrl).trim(), { allowProviderShortLink: true })
+      ? String(o.trackingUrl).trim()
+      : '';
     const statusIcon = (o.status || '').toLowerCase().includes('deliv') ? '●' : '●';
     text += `<b>${i + 1}. ${escapeHtml(o.restaurantName || 'Swiggy Food')}</b>\n` +
       `• # <b>Order ID:</b> <code>#${o.orderId}</code>\n` +
@@ -9758,12 +9799,17 @@ async function handlePreviousOrders(ctx, targetKey = null) {
       (o.items && o.items.length > 0 ? `• ▤ <i>${escapeHtml(o.items.join(', '))}</i>\n` : '') +
       (o.deliveryAddress ? `• ⌖ <code>${escapeHtml(o.deliveryAddress)}</code>\n` : '') +
       (o.deliveryOtp ? `• ⌕ <b>Delivery OTP:</b> <code>${escapeHtml(String(o.deliveryOtp))}</code>\n` : '') +
+      (validPrevTrack ? `• 🔗 <b>Tracking:</b> <a href="${escapeHtml(validPrevTrack)}">Open Swiggy tracking</a>\n` : '') +
       (o.orderTime ? `• ◷ <i>${escapeHtml(o.orderTime)}</i>\n` : '') +
       `\n`;
 
-    if (o.trackingUrl) {
+    if (validPrevTrack) {
       buttons.push([
-        Markup.button.url(`↗ Swiggy tracking #${o.orderId} (${o.restaurantName || 'Order'})`, o.trackingUrl)
+        Markup.button.url(`↗ Swiggy tracking #${o.orderId} (${o.restaurantName || 'Order'})`, validPrevTrack)
+      ]);
+    } else if (o.orderId && !/cancel/i.test(String(o.status || '')) && buttons.length < 20) {
+      buttons.push([
+        Markup.button.callback(`🔗 Extract Tracking #${String(o.orderId).slice(-6)}`, `extract_now_${o.orderId}`)
       ]);
     }
   }
@@ -9892,40 +9938,42 @@ async function handleAllOrdersDone(ctx) {
       const phoneStr = acc.phone ? `<code>${acc.phone}</code>` : '';
       const badge = isActive ? '🟢 <b>Active Logged-in ID:</b>' : '📱 <b>Logged-in ID:</b>';
 
-      // Augment orders with any db.orders that were placed from this account
-      for (const dbo of dbCompletedOrders) {
+      // Augment orders with any db.orders matching by Swiggy order id OR placing account
+      for (const dbo of Object.values(db.orders || {})) {
+        if (!dbo || typeof dbo !== 'object') continue;
+        const swiggyId = String(dbo.swiggyOrderId || dbo.pendingSwiggyOrderId || dbo.id || '');
+        const existingById = swiggyId ? orders.find(o => String(o.orderId || '') === swiggyId) : null;
+        if (existingById) {
+          matchedDbOrderIds.add(String(dbo.id || dbo.swiggyOrderId));
+          const storedTrack = getStoredSwiggyTrackingUrl(dbo);
+          if (!existingById.trackingUrl && storedTrack) {
+            existingById.trackingUrl = storedTrack;
+          }
+          if (!existingById.deliveryOtp && dbo.deliveryOtp) {
+            existingById.deliveryOtp = dbo.deliveryOtp;
+          }
+          continue;
+        }
         const matchesAccount = (dbo.selectedAccount && dbo.selectedAccount === key) ||
           (dbo.selectedAccountPhone && acc.phone && dbo.selectedAccountPhone === acc.phone) ||
           (dbo.orderAccount && acc.phone && String(dbo.orderAccount).includes(acc.phone));
-        if (matchesAccount) {
-          const swiggyId = String(dbo.swiggyOrderId || dbo.id || '');
-          const existing = orders.find(o => String(o.orderId || '') === swiggyId);
-          if (existing) {
-            matchedDbOrderIds.add(String(dbo.id || dbo.swiggyOrderId));
-            if (!existing.trackingUrl && dbo.trackingLink) {
-              existing.trackingUrl = dbo.trackingLink;
-            }
-            if (!existing.deliveryOtp && dbo.deliveryOtp) {
-              existing.deliveryOtp = dbo.deliveryOtp;
-            }
-          } else if (dbo.status === 'COMPLETED' || dbo.swiggyOrderId) {
-            matchedDbOrderIds.add(String(dbo.id || dbo.swiggyOrderId));
-            // Never synthesize a tracking URL — only real Swiggy links are shown
-            const realTrack = dbo.trackingLink && isOfficialSwiggyTrackingUrl(dbo.trackingLink, { allowProviderShortLink: true }) ? dbo.trackingLink : '';
-            orders.unshift({
-              orderId: dbo.swiggyOrderId || '',
-              orderRef: String(dbo.id || ''),
-              restaurantName: dbo.restaurantName || 'Swiggy Food',
-              status: dbo.liveOrderStatus || dbo.status || 'COMPLETED',
-              items: (dbo.items || []).map(i => `${i.name}${i.qty > 1 ? ` (${i.qty})` : ''}`),
-              deliveryAddress: dbo.addressDetails?.address || dbo.address || '',
-              orderTotal: dbo.finalPayable || 0,
-              trackingUrl: realTrack,
-              deliveryOtp: dbo.deliveryOtp || '',
-              placedFrom: String(dbo.selectedAccountPhone || dbo.orderAccount || acc.phone || ''),
-              orderTime: dbo.completedAt ? new Date(dbo.completedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''
-            });
-          }
+        if (matchesAccount && dbo.status === 'COMPLETED') {
+          matchedDbOrderIds.add(String(dbo.id || dbo.swiggyOrderId));
+          // Never synthesize a tracking URL — only real Swiggy links are shown
+          const realTrack = getStoredSwiggyTrackingUrl(dbo);
+          orders.unshift({
+            orderId: dbo.swiggyOrderId || '',
+            orderRef: String(dbo.id || ''),
+            restaurantName: dbo.restaurantName || 'Swiggy Food',
+            status: dbo.liveOrderStatus || dbo.status || 'COMPLETED',
+            items: (dbo.items || []).map(i => `${i.name}${i.qty > 1 ? ` (${i.qty})` : ''}`),
+            deliveryAddress: dbo.addressDetails?.address || dbo.address || '',
+            orderTotal: dbo.finalPayable || 0,
+            trackingUrl: realTrack,
+            deliveryOtp: dbo.deliveryOtp || '',
+            placedFrom: String(dbo.selectedAccountPhone || dbo.orderAccount || acc.phone || ''),
+            orderTime: dbo.completedAt ? new Date(dbo.completedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''
+          });
         }
       }
 
@@ -9966,6 +10014,10 @@ async function handleAllOrdersDone(ctx) {
           buttons.push([
             Markup.button.url(`↗ Track #${rowSwiggyId || rowRef || 'order'} (${truncateDisplayField(o.restaurantName || 'Order', 18)})`, validTrackUrl)
           ]);
+        } else if (!validTrackUrl && rowSwiggyId && !/cancel/i.test(statusRaw) && buttons.length < 25) {
+          buttons.push([
+            Markup.button.callback(`🔗 Extract Link #${rowSwiggyId.slice(-6)} (${truncateDisplayField(o.restaurantName || 'Order', 16)})`, `extract_now_${rowSwiggyId}`)
+          ]);
         }
       }
     }
@@ -9991,7 +10043,7 @@ async function handleAllOrdersDone(ctx) {
       text += `📦 <b>Bot-tracked orders (account not logged in)</b>\n\n`;
       for (let i = 0; i < unmatchedBotOrders.length; i++) {
         const dbo = unmatchedBotOrders[i];
-        const validTrackUrl = dbo.trackingLink && isOfficialSwiggyTrackingUrl(dbo.trackingLink, { allowProviderShortLink: true }) ? dbo.trackingLink : '';
+        const validTrackUrl = getStoredSwiggyTrackingUrl(dbo);
         const statusRaw = String(dbo.liveOrderStatus || dbo.status || 'COMPLETED');
         const trackingDisplay = trackingLinkDisplay({ url: validTrackUrl, status: statusRaw });
         const swiggyId = swiggyOrderIdOf(dbo);
@@ -10881,7 +10933,7 @@ if (healthPort > 0) {
     <div class="row"><span class="muted">Order For</span><strong id="cust">-</strong></div>
     <div class="row"><span class="muted">Paid Amount</span><strong id="amt">-</strong></div>
   </div>
-  <a class="btn" id="swLink" href="https://www.swiggy.com/my-account/orders" target="_blank" rel="noopener">↗ Open Swiggy orders</a>
+  <a class="btn" id="swLink" href="#" target="_blank" rel="noopener" style="display:none">↗ Open official Swiggy tracking</a>
 </div>
 <script>
 const OID = ${safeOrderId}, SIG = ${safeSig};
@@ -10902,9 +10954,9 @@ async function refresh() {
     if (d.swiggyWebTrackUrl) {
       swLink.href = d.swiggyWebTrackUrl;
       swLink.textContent = '↗ Open official Swiggy tracking';
+      swLink.style.display = 'flex';
     } else {
-      swLink.href = 'https://www.swiggy.com/my-account/orders';
-      swLink.textContent = '↗ Open Swiggy orders';
+      swLink.style.display = 'none';
     }
     if (d.deliveryBoy && d.deliveryBoy.name) {
       document.getElementById('riderCard').style.display = 'block';
