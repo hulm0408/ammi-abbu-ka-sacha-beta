@@ -71,7 +71,9 @@ import {
   invalidateAccountOrderProfileCache,
   getSwiggySessionAuth,
   swiggyCartFlush,
-  dapiFetch
+  dapiFetch,
+  computeTrackHmac as swiggyComputeTrackHmac,
+  buildSignedOrderTrackUrl
 } from './swiggy-cart.js';
 
 function isValidCartInput(input) {
@@ -239,8 +241,7 @@ export function stopOrderDeliveryInfoPoller(orderId) {
 }
 
 export function computeTrackHmac(orderId) {
-  const secret = process.env.BOT_TOKEN || 'ammi-abbu-ka-sacha-beta-secret';
-  return crypto.createHmac('sha256', secret).update(`track:${orderId}`).digest('hex').slice(0, 24);
+  return swiggyComputeTrackHmac(orderId);
 }
 
 function escapeHtml(str) {
@@ -3010,26 +3011,33 @@ export function registerForwardedOrderHandlers(bot, {
 
       if (!trackingUrl) {
         if (result?.hasOrder) {
-          const liveStatus = String(fresh.liveOrderStatus || result.orderStatus || 'Order Confirmed');
+          const rawLiveStatus = String(fresh.liveOrderStatus || result.orderStatus || 'Order Confirmed');
+          const liveStatus = rawLiveStatus;
           const cancelled = /cancel|refus|return/i.test(liveStatus);
-          const delivered = /deliv/i.test(liveStatus);
+          const delivered = !cancelled && /deliv/i.test(liveStatus);
+          const deliveredUrl = delivered ? buildSignedOrderTrackUrl(fresh) : '';
           await ctx.reply(
-            `✅ <b>Order Swiggy par mil gaya</b>\n` +
+            `✅ <b>${delivered && deliveredUrl ? 'Tracking link ready' : 'Order Swiggy par mil gaya'}</b>\n` +
             `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
             `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
             `▪ <b>Status:</b> <code>${escapeHtml(liveStatus)}</code>` +
+            (deliveredUrl ? `\n▪ <b>Tracking:</b> <a href="${escapeHtml(deliveredUrl)}">Open order tracking</a>` : '') +
             (fresh.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(fresh.deliveryOtp))}</code>` : '') +
             (fresh.deliveryBoyName || fresh.deliveryBoyMobile ? `\n▪ <b>Rider:</b> ${escapeHtml([fresh.deliveryBoyName, fresh.deliveryBoyMobile].filter(Boolean).join(' · '))}` : '') +
             `\n\n` +
             (cancelled
               ? `<i>Order cancel ho chuka hai — iske liye tracking link available nahi hai.</i>`
               : delivered
-                ? `<i>Order delivered hai — Swiggy API ke is response me share URL nahi aaya. Aap neeche se dobara re-check kar sakte hain.</i>`
+                ? `<i>Order delivered hai — live order summary &amp; map link upar taiyaar hai.</i>`
                 : `<i>Swiggy ne share link abhi publish nahi kiya. Bot background me retry karta rahega aur link aate hi bhej dega.</i>`),
             {
               parse_mode: 'HTML',
+              link_preview_options: { is_disabled: true },
               ...(!cancelled
-                ? Markup.inlineKeyboard([[Markup.button.callback('🔄 Re-check Swiggy Link', `fwd_extract_all_${order.id}`)]])
+                ? Markup.inlineKeyboard([
+                    ...(deliveredUrl ? [[Markup.button.url('🔗 Open Order Tracking', deliveredUrl)]] : []),
+                    [Markup.button.callback('🔄 Re-check Swiggy Link', `fwd_extract_all_${order.id}`)]
+                  ])
                 : {})
             }
           );

@@ -4,7 +4,9 @@ import {
   getStoredSwiggyTrackingUrl,
   isOfficialSwiggyTrackingUrl,
   isFabricatedTrackingUrl,
-  normalizeSwiggyLiveOrderStatus
+  normalizeSwiggyLiveOrderStatus,
+  buildSignedOrderTrackUrl,
+  getPublicServiceBaseUrl
 } from './swiggy-cart.js';
 import {
   esc,
@@ -17,7 +19,7 @@ import {
   DIVIDER,
 } from './rich-text.js';
 
-const PUBLIC_SERVICE_URL = (process.env.RENDER_EXTERNAL_URL || 'https://ammi-abbu-ka-sacha-beta.onrender.com').replace(/\/+$/, '');
+const PUBLIC_SERVICE_URL = getPublicServiceBaseUrl();
 
 
 
@@ -110,9 +112,12 @@ function trackingLineOf(order, { short = false } = {}) {
   const status = String(normalized || order?.liveOrderStatus || '').toLowerCase();
   if (/cancelled|canceled|refund|refus/i.test(status)) return `<i>Order ${esc(normalized || order.liveOrderStatus)} — no tracking link</i>`;
   if (/delivered/i.test(status)) {
-    return order?.trackingLastScanAt
-      ? '<i>Order delivered — no share link returned by Swiggy</i>'
-      : '<i>Order delivered — tap Fetch tracking to extract link</i>';
+    const swiggyId = swiggyOrderIdOf(order);
+    const deliveredUrl = buildSignedOrderTrackUrl(swiggyId || order?.id);
+    if (deliveredUrl) {
+      return `<a href="${esc(deliveredUrl)}">${short ? 'Open order tracking' : esc(deliveredUrl)}</a> · <i>order delivered</i>`;
+    }
+    return '<i>No live link — order delivered</i>';
   }
   return '<i>⏳ Waiting for Swiggy share link — auto-fetching</i>';
 }
@@ -253,8 +258,13 @@ export function buildBossDashboard(db, { limit = 8, onlyMissingTracking = false 
     const url = getStoredSwiggyTrackingUrl(order);
     const swiggyId = swiggyOrderIdOf(order);
     const label = swiggyId ? swiggyId.slice(-6) : String(order.id);
+    const normStatus = normalizeSwiggyLiveOrderStatus(order?.liveOrderStatus || '') || String(order?.liveOrderStatus || '');
+    const isDelivRow = !/cancel|refus|return/i.test(normStatus) && /deliv/i.test(normStatus);
+    const delivUrl = !url && isDelivRow ? buildSignedOrderTrackUrl(swiggyId || order.id) : '';
     if (url) {
       rows.push([Markup.button.url(`🔗 Track #${label}`, url)]);
+    } else if (delivUrl) {
+      rows.push([Markup.button.url(`🔗 Track #${label}`, delivUrl)]);
     } else if (['COMPLETED', 'ACCEPTED'].includes(order.status)) {
       rows.push([Markup.button.callback(`🔄 Fetch tracking #${label}`, `boss_track_now_${order.id}`)]);
     }
@@ -270,9 +280,11 @@ export function buildBossDashboard(db, { limit = 8, onlyMissingTracking = false 
 
 /**
  * Honest one-line tracking state for any order row.
- * A finished order is never promised a link Swiggy will not publish.
+ * Prefers official Swiggy share links (`r.swiggy.com`); when an order is already
+ * Delivered and Swiggy closed its live GPS session, provides the HMAC-signed
+ * zero-login order tracking & receipt link whenever an orderId / fallbackTrackUrl exists.
  */
-export function trackingLinkDisplay({ url = '', status = '', orderId = '' } = {}) {
+export function trackingLinkDisplay({ url = '', fallbackTrackUrl = '', status = '', orderId = '' } = {}) {
   const safeUrl = String(url || '').trim();
   if (
     safeUrl &&
@@ -285,7 +297,13 @@ export function trackingLinkDisplay({ url = '', status = '', orderId = '' } = {}
   const raw = String(normalized || status || '');
   if (/cancel/i.test(raw)) return '<i>No link — order cancelled</i>';
   if (/refus|return/i.test(raw)) return '<i>No link — order refused</i>';
-  if (/delivered|completed/i.test(raw)) return '<i>No live link — order delivered</i>';
+  if (/delivered|completed/i.test(raw)) {
+    const resolvedFallback = String(fallbackTrackUrl || (orderId ? buildSignedOrderTrackUrl(orderId) : '')).trim();
+    if (resolvedFallback) {
+      return `<a href="${esc(resolvedFallback)}">Open order tracking</a> · <i>order delivered</i>`;
+    }
+    return '<i>No live link — order delivered</i>';
+  }
   return '<i>⏳ auto-fetching from Swiggy</i>';
 }
 
@@ -330,6 +348,8 @@ export function buildBossOrderCard(order, db = getDb()) {
   const displayLiveStatus = order.liveOrderStatus
     ? (normalizeSwiggyLiveOrderStatus(order.liveOrderStatus) || String(order.liveOrderStatus))
     : '';
+  const isDeliveredCard = !/cancel|refus|return/i.test(displayLiveStatus) && /deliv|complet/i.test(displayLiveStatus);
+  const deliveredTrackUrl = !trackingUrl && isDeliveredCard ? buildSignedOrderTrackUrl(swiggyOrderId || order.id) : '';
   text += section('Order & Tracking', [
     `<b>Order ref:</b> <code>#${esc(String(order.id))}</code>`,
     `<b>Swiggy order id:</b> ${swiggyOrderId ? `<code>${esc(swiggyOrderId)}</code>` : '<i>not created yet</i>'}`,
@@ -341,10 +361,10 @@ export function buildBossOrderCard(order, db = getDb()) {
         ? '<i>Order cancelled — no tracking link</i>'
         : /refus|return/i.test(displayLiveStatus)
           ? '<i>Order refused — no tracking link</i>'
-          : /deliv|complet/i.test(displayLiveStatus)
-            ? (order.trackingLastScanAt
-              ? '<i>Order delivered — no share link returned by Swiggy</i>'
-              : '<i>Order delivered — tap Fetch/Extract below to get link</i>')
+          : isDeliveredCard
+            ? (deliveredTrackUrl
+              ? `<a href="${esc(deliveredTrackUrl)}">Open order tracking</a> · <i>order delivered</i>`
+              : '<i>No live link — order delivered</i>')
             : '<i>auto-fetching from Swiggy — will appear here</i>')}`,
   ].join('\n'));
 
@@ -377,7 +397,9 @@ export function buildBossOrderCard(order, db = getDb()) {
       text += section('Tracking status', cancelled
         ? `<i>Order ${esc(liveStatus || 'cancelled')} — no tracking link available.</i>`
         : delivered
-          ? `<i>Order delivered (${esc(liveStatus)}) — tap Fetch/Extract below to check Swiggy for its tracking link.</i>`
+          ? (deliveredTrackUrl
+            ? `<a href="${esc(deliveredTrackUrl)}">Open delivered order tracking &amp; receipt</a> · <i>(${esc(liveStatus)})</i>`
+            : `<i>Order delivered (${esc(liveStatus)}).</i>`)
           : '<i>Swiggy has not published the share link yet — the bot keeps retrying and will post it here automatically.</i>');
     }
     if (order.deliveryOtp) {
@@ -477,7 +499,12 @@ export function buildBossOrderCard(order, db = getDb()) {
         Markup.button.callback('⌕ Add delivery OTP', `boss_delivery_otp_${order.id}`),
         Markup.button.callback('✓ Mark done', `boss_action_done_${order.id}`)
       ]);
-      if (!trackingUrl) {
+      if (trackingUrl) {
+        rows.push([Markup.button.url('🔗 Open Swiggy Tracking', trackingUrl)]);
+      } else {
+        if (deliveredTrackUrl) {
+          rows.push([Markup.button.url('🔗 Open Order Tracking', deliveredTrackUrl)]);
+        }
         rows.push([Markup.button.callback('🔄 Fetch live tracking now', `boss_track_now_${order.id}`)]);
       }
       rows.push([
