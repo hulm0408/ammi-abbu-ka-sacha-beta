@@ -1,0 +1,22 @@
+{
+  "name": "ammi-abbu-mockup-render",
+  "version": "1.0.0",
+  "description": "Canvas renderer that produces the Telegram-bot UI mockups in ../images (no browser needed)",
+  "main": "index.js",
+  "scripts": {
+    "render": "node run.js",
+    "montage": "node montage.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@canvas-fonts/arial": "^1.0.4",
+    "@canvas-fonts/arial-black": "^1.0.4",
+    "@napi-rs/canvas": "^0.1.65",
+    "@resvg/resvg-js": "^2.6.2",
+    "qrcode": "^1.5.4",
+    "twemoji-svg": "^17.0.2"
+  },
+  "private": true
+}
