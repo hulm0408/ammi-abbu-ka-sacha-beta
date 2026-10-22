@@ -5818,7 +5818,8 @@ bot.action(/^extract_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
       await ctx.reply(
         `❌ <b>Swiggy order <code>${escapeHtml(q)}</code> kisi bhi logged-in ID par nahi mila.</b>\n\n` +
         `▪ Scanned: <b>${Number(result?.scanned) || 0}</b> IDs${result?.status === 'TIMEOUT' ? ' (time out)' : ''}\n` +
-        `<i>Order id check karein (numeric, 12–18 digits). Bot koi false tracking link nahi banata.</i>`,
+        `▪ <b>Order kisi dusre Swiggy account par hoga</b> — jis account se order hua usko is bot me login karo (<b>My Accounts</b>), phir dobara id bhejo.\n` +
+        `<i>Order id bhi verify karo (numeric, 12–18 digits) — Swiggy app: Profile → My Orders. Bot koi false tracking link nahi banata.</i>`,
         { parse_mode: 'HTML' }
       );
       return;
@@ -8365,7 +8366,8 @@ bot.on('text', async (ctx) => {
               `<i>Boss Panel → accounts login karein, phir dobara try karein.</i>`
             : `❌ <b>Swiggy order <code>${escapeHtml(q)}</code> kisi bhi logged-in ID par nahi mila.</b>\n\n` +
               `▪ IDs scanned: <b>${Number(result?.scanned) || 0}</b>${result?.status === 'TIMEOUT' ? ' (time out)' : ''}\n` +
-              `<i>Order id check karein (numeric, 12–18 digits). Bot koi false link nahi banata.</i>`,
+              `▪ <b>Order kisi dusre Swiggy account par hoga</b> — jis account se order hua usko is bot me login karo (<b>My Accounts</b>), phir dobara id bhejo.\n` +
+              `<i>Order id bhi verify karo (numeric, 12–18 digits) — Swiggy app: Profile → My Orders. Bot koi false link nahi banata.</i>`,
           { parse_mode: 'HTML' }
         );
         delete userWaitState[ctx.from.id];
