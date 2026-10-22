@@ -18,6 +18,7 @@ test_*.mjs
 !test_v25_finished_order_otp_status_e2e.mjs
 !test_v26_real_tracking_and_delivered_links_e2e.mjs
 !test_v27_delivered_order_working_links_e2e.mjs
+!test_v28_auth_delete_newaccount_antibot.mjs
 probe_*.mjs
 inspect_*.mjs
 find_*.mjs

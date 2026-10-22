@@ -325,6 +325,83 @@ export function cleanEssentialSwiggyCookies(cookieStr = '', fallback = {}) {
   return Array.from(map.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
 }
 
+export function isAccountLoggedInSession(acc) {
+  return Boolean(acc && acc.isLoggedIn && (acc.cookies || acc.tid || acc.token));
+}
+
+function normalizeTenDigitPhone(raw = '') {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length === 10 && /^[6-9]/.test(digits)) return digits;
+  if (digits.length === 12 && digits.startsWith('91') && /^[6-9]/.test(digits.slice(2))) return digits.slice(2);
+  if (digits.length > 10) {
+    const tail = digits.slice(-10);
+    if (/^[6-9]/.test(tail)) return tail;
+  }
+  return digits.length === 10 ? digits : '';
+}
+
+function isExplicitDifferentPhoneCloneKey(key = '', cleanPhone = '') {
+  const m = String(key || '').match(/^acc_(\d{10})$/);
+  return Boolean(m && cleanPhone && m[1] !== cleanPhone);
+}
+
+export function findAccountKeyByPhone(accounts = {}, phone = '', excludeKey = null) {
+  const cleanPhone = normalizeTenDigitPhone(phone);
+  if (!cleanPhone || !accounts || typeof accounts !== 'object') return null;
+  for (const [k, a] of Object.entries(accounts)) {
+    if (!a || k === excludeKey) continue;
+    if (isExplicitDifferentPhoneCloneKey(k, cleanPhone)) continue;
+    const accPhone = normalizeTenDigitPhone(a.phone || a.mobile || String(k).replace(/^acc_/, ''));
+    if (accPhone === cleanPhone) return k;
+  }
+  return null;
+}
+
+function isAccountTombstoned(deletedAccounts = {}, key = '', cleanPhone = '') {
+  if (!deletedAccounts || typeof deletedAccounts !== 'object') return false;
+  if (key && deletedAccounts[key]) return true;
+  if (cleanPhone && !isExplicitDifferentPhoneCloneKey(key, cleanPhone)) {
+    if (deletedAccounts[`acc_${cleanPhone}`] || deletedAccounts[cleanPhone]) return true;
+  }
+  return false;
+}
+
+function consolidateDuplicatePhoneSlots(db, winningKey, cleanPhone) {
+  if (!cleanPhone || !winningKey || isExplicitDifferentPhoneCloneKey(winningKey, cleanPhone)) return;
+  const accounts = db?.config?.accounts || {};
+  const winner = accounts[winningKey];
+  if (!winner) return;
+
+  for (const [k, other] of Object.entries(accounts)) {
+    if (k === winningKey || !other) continue;
+    if (isExplicitDifferentPhoneCloneKey(k, cleanPhone)) continue;
+    const otherPhone = normalizeTenDigitPhone(other.phone || other.mobile || String(k).replace(/^acc_/, ''));
+    if (otherPhone !== cleanPhone) continue;
+
+    // Preserve useful cached metadata / custom label when merging a duplicate slot into winningKey
+    if ((!winner.name || winner.name === winningKey || /^Swiggy\s+\d|^User\s*\(/i.test(winner.name)) && other.name && !/^Swiggy\s+\d|^User\s*\(/i.test(other.name)) {
+      winner.name = other.name;
+    }
+    if (!winner.offers && other.offers) winner.offers = other.offers;
+    if (!winner.preferredOfferValue && other.preferredOfferValue) winner.preferredOfferValue = other.preferredOfferValue;
+    if (winner.totalOrdersCount === undefined && other.totalOrdersCount !== undefined) {
+      winner.totalOrdersCount = other.totalOrdersCount;
+      winner.isZeroOrderAccount = other.isZeroOrderAccount;
+    }
+    if (!String(winner.cookies || '').includes('_session_tid=') && String(other.cookies || '').includes('_session_tid=')) {
+      winner.cookies = cleanEssentialSwiggyCookies(`${other.cookies}; ${winner.cookies || ''}`, winner);
+    }
+
+    if (db.config.activeOrderAccount === k) {
+      db.config.activeOrderAccount = winningKey;
+    }
+    for (const ord of Object.values(db.orders || {})) {
+      if (ord && ord.selectedAccount === k) ord.selectedAccount = winningKey;
+    }
+    delete accounts[k];
+  }
+}
+
 export function buildCloudVaultSnapshot(data = null) {
   const src = data || getDb();
   const accountsOut = {};
@@ -352,28 +429,54 @@ export async function hydrateAccountsFromCloudVault() {
     if (!remote || typeof remote !== 'object') return { restored: 0, total: 0 };
 
     let restored = 0;
+    let mutated = false;
     const db = getDb();
     if (!db.config.accounts) db.config.accounts = {};
     if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
     if (!db.sessionVault) db.sessionVault = {};
 
     for (const [delKey, delVal] of Object.entries(remote.deletedAccounts || {})) {
-      if (delVal && !db.config.accounts[delKey]?.isLoggedIn) {
-        db.config.deletedAccounts[delKey] = delVal;
+      if (!delVal) continue;
+      if (!db.config.deletedAccounts[delKey]) {
+        db.config.deletedAccounts[delKey] = true;
+        mutated = true;
+      }
+      // If a stale locally-seeded `accounts.json` entry matched a remote deletion tombstone (and wasn't just freshly logged in within 60s), remove it!
+      const staleAcc = db.config.accounts[delKey];
+      if (staleAcc) {
+        const savedMs = staleAcc.savedAt ? Date.parse(staleAcc.savedAt) : 0;
+        const recentlyLoggedIn = Number.isFinite(savedMs) && (Date.now() - savedMs < 60_000) && staleAcc.freshlyAuthenticated === true;
+        if (!recentlyLoggedIn) {
+          delete db.config.accounts[delKey];
+          mutated = true;
+        }
       }
     }
 
     for (const [vKey, vVal] of Object.entries(remote.sessionVault || {})) {
-      if (vVal && !db.sessionVault[vKey]) {
-        db.sessionVault[vKey] = vVal;
-      }
+      if (!vVal || db.sessionVault[vKey]) continue;
+      const vPhone = normalizeTenDigitPhone(vVal.phone || vVal.mobile || vKey);
+      if (isAccountTombstoned(db.config.deletedAccounts, vVal.account || vKey, vPhone)) continue;
+      db.sessionVault[vKey] = vVal;
+      mutated = true;
     }
 
     for (const [k, remAcc] of Object.entries(remote.accounts || {})) {
-      if (!remAcc || db.config.deletedAccounts[k]) continue;
-      if (remAcc.isLoggedIn === false) continue;
+      if (!remAcc || remAcc.isLoggedIn === false) continue;
+      const remPhone = normalizeTenDigitPhone(remAcc.phone || remAcc.mobile || String(k).replace(/^acc_/, ''));
+      if (isAccountTombstoned(db.config.deletedAccounts, k, remPhone)) continue;
+      const existingSamePhoneKey = remPhone ? findAccountKeyByPhone(db.config.accounts, remPhone, k) : null;
+      if (existingSamePhoneKey && isAccountLoggedInSession(db.config.accounts[existingSamePhoneKey])) continue;
+
       const cur = db.config.accounts[k];
-      if (!cur || !cur.isLoggedIn || (!cur.cookies && !cur.tid && !cur.token)) {
+      // Respect explicit local logout if Boss logged out locally more recently than remote `savedAt`
+      if (cur && cur.isLoggedIn === false && cur.loggedOutAt) {
+        const loMs = Date.parse(cur.loggedOutAt);
+        const remMs = remAcc.savedAt ? Date.parse(remAcc.savedAt) : 0;
+        if (Number.isFinite(loMs) && (!Number.isFinite(remMs) || loMs >= remMs)) continue;
+      }
+
+      if (!cur || !isAccountLoggedInSession(cur)) {
         const cleanC = cleanEssentialSwiggyCookies(remAcc.cookies || '', remAcc);
         db.config.accounts[k] = {
           ...remAcc,
@@ -382,17 +485,20 @@ export async function hydrateAccountsFromCloudVault() {
           isLoggedIn: true
         };
         restored++;
+        mutated = true;
       }
     }
 
-    if (restored > 0) {
+    if (mutated) {
       saveDb(db);
       syncAccountsJsonMirror(db, { skipCloudPush: true });
-      console.log(`[CloudVault] Restored ${restored} saved Swiggy JSON account(s) from persistent vault!`);
+      if (restored > 0) {
+        console.log(`[CloudVault] Restored ${restored} saved Swiggy JSON account(s) from persistent vault!`);
+      }
     }
     return {
       restored,
-      total: Object.values(db.config.accounts).filter(a => a?.isLoggedIn).length
+      total: Object.values(db.config.accounts).filter(a => isAccountLoggedInSession(a)).length
     };
   } catch (e) {
     console.warn('[CloudVault] Hydrate note:', e.message);
@@ -454,13 +560,16 @@ function seedAccountsFromJson(data) {
         if (!data.config.accounts) data.config.accounts = {};
         if (!data.config.deletedAccounts) data.config.deletedAccounts = {};
         for (const item of list) {
-          if (item && (item.tid || item.cookies || item.phone)) {
+          if (item && (item.tid || item.token || item.cookies || item.phone)) {
             const phone = item.phone || item.mobile || '';
-            const cleanPhone = phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : '';
-            const key = cleanPhone ? `acc_${cleanPhone}` : (item.account || 'acc_' + Date.now());
-            // Never resurrect explicitly deleted or logged-out accounts!
-            if (data.config.deletedAccounts[key]) continue;
+            const cleanPhone = normalizeTenDigitPhone(phone);
+            const preferredKey = item.account && String(item.account).trim();
+            const key = preferredKey || (cleanPhone ? `acc_${cleanPhone}` : 'acc_' + Date.now());
+            // Never resurrect explicitly deleted, logged-out, or already-present phone accounts!
+            if (isAccountTombstoned(data.config.deletedAccounts, key, cleanPhone)) continue;
             if (data.config.accounts[key] && data.config.accounts[key].isLoggedIn === false) continue;
+            const existingSamePhoneKey = cleanPhone ? findAccountKeyByPhone(data.config.accounts, cleanPhone, key) : null;
+            if (existingSamePhoneKey) continue;
 
             if (!data.config.accounts[key] && item.isLoggedIn !== false) {
               const cookieStr = cleanEssentialSwiggyCookies(
@@ -472,12 +581,16 @@ function seedAccountsFromJson(data) {
                 name: item.name || (cleanPhone ? `User (${cleanPhone})` : 'Swiggy User'),
                 phone: cleanPhone || '',
                 mobile: cleanPhone || '',
+                customerId: item.customerId || '',
+                ...(item._session_tid ? { _session_tid: item._session_tid } : {}),
                 token: item.token || item.tid || '',
                 tid: item.tid || '',
                 sid: item.sid || '',
                 deviceId: item.deviceId || '',
                 cookies: cookieStr,
-                isLoggedIn: Boolean(item.isLoggedIn !== false && cookieStr),
+                ...(item.isZeroOrderAccount !== undefined ? { isZeroOrderAccount: item.isZeroOrderAccount } : {}),
+                ...(item.totalOrdersCount !== undefined ? { totalOrdersCount: item.totalOrdersCount } : {}),
+                isLoggedIn: Boolean(item.isLoggedIn !== false && (cookieStr || item.tid || item.token)),
                 savedAt: item.savedAt || new Date().toISOString()
               };
             }
@@ -514,7 +627,7 @@ export function getDb() {
     }
     seedAccountsFromJson(data);
     delete data.config.depositAmount;
-    // Tag non-enumerable baseline snapshots for orders, accounts & sessionVault so NO concurrent async fiber ever clobbers newly uploaded accounts or sibling orders!
+    // Tag non-enumerable baseline snapshots for orders, accounts, deletedAccounts & sessionVault so NO concurrent async fiber ever clobbers newly uploaded accounts OR resurrects concurrently deleted accounts!
     const baseOrdersJson = {};
     for (const [oid, oVal] of Object.entries(data.orders || {})) {
       baseOrdersJson[oid] = JSON.stringify(oVal);
@@ -523,12 +636,17 @@ export function getDb() {
     for (const [ak, aVal] of Object.entries(data.config.accounts || {})) {
       baseAccountsJson[ak] = JSON.stringify(aVal);
     }
+    const baseDeletedJson = {};
+    for (const [dk, dVal] of Object.entries(data.config.deletedAccounts || {})) {
+      baseDeletedJson[dk] = JSON.stringify(dVal);
+    }
     const baseVaultJson = {};
     for (const [vk, vVal] of Object.entries(data.sessionVault || {})) {
       baseVaultJson[vk] = JSON.stringify(vVal);
     }
     Object.defineProperty(data, '__baseOrdersJson', { value: baseOrdersJson, enumerable: false, configurable: true });
     Object.defineProperty(data, '__baseAccountsJson', { value: baseAccountsJson, enumerable: false, configurable: true });
+    Object.defineProperty(data, '__baseDeletedJson', { value: baseDeletedJson, enumerable: false, configurable: true });
     Object.defineProperty(data, '__baseVaultJson', { value: baseVaultJson, enumerable: false, configurable: true });
     return data;
   } catch (err) {
@@ -594,14 +712,49 @@ export function saveDb(data) {
         Object.defineProperty(data, '__baseOrdersJson', { value: refreshedBase, enumerable: false, configurable: true });
       }
 
+      if (data.__baseDeletedJson && data.config && typeof data.config.deletedAccounts === 'object' && data.config.deletedAccounts !== null) {
+        const diskDeleted = liveDisk?.config?.deletedAccounts || {};
+        const baseDelMap = data.__baseDeletedJson;
+        const baseAccMap = data.__baseAccountsJson || {};
+        for (const [dk, dVal] of Object.entries(diskDeleted)) {
+          if (!dVal) continue;
+          const existedDelAtRead = Object.prototype.hasOwnProperty.call(baseDelMap, dk);
+          const presentDelInCaller = Object.prototype.hasOwnProperty.call(data.config.deletedAccounts, dk);
+          // If caller explicitly deleted tombstone (i.e. `existedDelAtRead && !presentDelInCaller`), respect caller's re-login!
+          // If `!existedDelAtRead && !presentDelInCaller`, another fiber JUST deleted `dk` concurrently — preserve the deletion!
+          if (!existedDelAtRead && !presentDelInCaller) {
+            const callerMutatedAcc = Object.prototype.hasOwnProperty.call(data.config?.accounts || {}, dk) &&
+              (!Object.prototype.hasOwnProperty.call(baseAccMap, dk) || JSON.stringify(data.config.accounts[dk]) !== baseAccMap[dk]);
+            if (!callerMutatedAcc) {
+              data.config.deletedAccounts[dk] = dVal;
+              if (data.config.accounts && Object.prototype.hasOwnProperty.call(data.config.accounts, dk)) {
+                delete data.config.accounts[dk];
+              }
+            }
+          }
+        }
+        const refreshedDelBase = {};
+        for (const [dk, dVal] of Object.entries(data.config.deletedAccounts)) refreshedDelBase[dk] = JSON.stringify(dVal);
+        Object.defineProperty(data, '__baseDeletedJson', { value: refreshedDelBase, enumerable: false, configurable: true });
+      }
+
       if (data.__baseAccountsJson && data.config && typeof data.config.accounts === 'object' && data.config.accounts !== null) {
         const diskAccounts = liveDisk?.config?.accounts || {};
         const baseAccMap = data.__baseAccountsJson;
         const callerDeleted = data.config.deletedAccounts || {};
+        // First: remove any account that existed at read, was NOT mutated by this caller, and was concurrently deleted on disk!
+        for (const ak of Object.keys(data.config.accounts)) {
+          const existedAtRead = Object.prototype.hasOwnProperty.call(baseAccMap, ak);
+          const presentOnDisk = Object.prototype.hasOwnProperty.call(diskAccounts, ak);
+          if (existedAtRead && !presentOnDisk && JSON.stringify(data.config.accounts[ak]) === baseAccMap[ak]) {
+            delete data.config.accounts[ak];
+          }
+        }
         for (const [ak, diskAcc] of Object.entries(diskAccounts)) {
           const existedAtRead = Object.prototype.hasOwnProperty.call(baseAccMap, ak);
           const presentInCaller = Object.prototype.hasOwnProperty.call(data.config.accounts, ak);
-          if (!existedAtRead && !presentInCaller && !callerDeleted[ak]) {
+          const diskPhone = normalizeTenDigitPhone(diskAcc?.phone || diskAcc?.mobile || String(ak).replace(/^acc_/, ''));
+          if (!existedAtRead && !presentInCaller && !isAccountTombstoned(callerDeleted, ak, diskPhone)) {
             // Brand-new `.json` account imported concurrently while this fiber was awaiting Swiggy — NEVER WIPE IT!
             data.config.accounts[ak] = diskAcc;
           } else if (existedAtRead && presentInCaller && JSON.stringify(data.config.accounts[ak]) === baseAccMap[ak]) {
@@ -616,6 +769,13 @@ export function saveDb(data) {
       if (data.__baseVaultJson && typeof data.sessionVault === 'object' && data.sessionVault !== null) {
         const diskVault = liveDisk?.sessionVault || {};
         const baseVaultMap = data.__baseVaultJson;
+        for (const vk of Object.keys(data.sessionVault)) {
+          const existedAtRead = Object.prototype.hasOwnProperty.call(baseVaultMap, vk);
+          const presentOnDisk = Object.prototype.hasOwnProperty.call(diskVault, vk);
+          if (existedAtRead && !presentOnDisk && JSON.stringify(data.sessionVault[vk]) === baseVaultMap[vk]) {
+            delete data.sessionVault[vk];
+          }
+        }
         for (const [vk, diskV] of Object.entries(diskVault)) {
           const existedAtRead = Object.prototype.hasOwnProperty.call(baseVaultMap, vk);
           const presentInCaller = Object.prototype.hasOwnProperty.call(data.sessionVault, vk);
@@ -738,14 +898,34 @@ export function updateAccount(key, updates) {
   if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
   if (!db.sessionVault) db.sessionVault = {};
 
-  delete db.config.deletedAccounts[key];
   const merged = { ...(db.config.accounts[key] || {}), id: key, ...updates };
+  const phone = normalizeTenDigitPhone(merged.phone || merged.mobile || '');
+  if (phone) {
+    merged.phone = phone;
+    merged.mobile = phone;
+  }
+
+  delete db.config.deletedAccounts[key];
+  if (phone && !isExplicitDifferentPhoneCloneKey(key, phone)) {
+    delete db.config.deletedAccounts[`acc_${phone}`];
+    delete db.config.deletedAccounts[phone];
+  }
+
+  if (merged.isLoggedIn) {
+    delete merged.loggedOutAt;
+    merged.freshlyAuthenticated = true;
+  }
+
   db.config.accounts[key] = merged;
 
-  const phone = String(merged.phone || merged.mobile || '').replace(/[^0-9]/g, '').slice(-10);
-  if (merged.isLoggedIn && merged.cookies) {
-    const cleanCookies = cleanEssentialSwiggyCookies(merged.cookies, merged);
-    const vaultKey = phone || key;
+  if (merged.isLoggedIn && phone) {
+    consolidateDuplicatePhoneSlots(db, key, phone);
+  }
+
+  if (merged.isLoggedIn && (merged.cookies || merged.tid || merged.token)) {
+    const cleanCookies = cleanEssentialSwiggyCookies(merged.cookies || '', merged);
+    if (cleanCookies) merged.cookies = cleanCookies;
+    const vaultKey = (!isExplicitDifferentPhoneCloneKey(key, phone) && phone) ? phone : key;
     db.sessionVault[vaultKey] = {
       account: key,
       name: merged.name || key,
@@ -762,6 +942,10 @@ export function updateAccount(key, updates) {
     };
   }
 
+  if (merged.isLoggedIn && (!db.config.activeOrderAccount || !isAccountLoggedInSession(db.config.accounts[db.config.activeOrderAccount]))) {
+    db.config.activeOrderAccount = key;
+  }
+
   saveDb(db);
   syncAccountsJsonMirror(db);
   return db.config.accounts[key];
@@ -772,17 +956,22 @@ export function createAccount(key, name, phone = '', address = '') {
   if (!db.config.accounts) db.config.accounts = {};
   if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
   const cleanKey = key.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const cleanPhone = normalizeTenDigitPhone(phone);
   delete db.config.deletedAccounts[cleanKey];
+  if (cleanPhone && !isExplicitDifferentPhoneCloneKey(cleanKey, cleanPhone)) {
+    delete db.config.deletedAccounts[`acc_${cleanPhone}`];
+    delete db.config.deletedAccounts[cleanPhone];
+  }
   const existing = db.config.accounts[cleanKey] || {};
   db.config.accounts[cleanKey] = {
     ...existing,
     id: cleanKey,
     name: name || existing.name || (cleanKey.charAt(0).toUpperCase() + cleanKey.slice(1)),
-    phone: phone || existing.phone || '',
-    mobile: phone || existing.mobile || existing.phone || '',
+    phone: cleanPhone || phone || existing.phone || '',
+    mobile: cleanPhone || phone || existing.mobile || existing.phone || '',
     token: existing.token || '',
     address: address || existing.address || '',
-    isLoggedIn: Boolean(existing.isLoggedIn && existing.cookies),
+    isLoggedIn: isAccountLoggedInSession(existing),
     createdAt: existing.createdAt || new Date().toISOString()
   };
   saveDb(db);
@@ -802,7 +991,7 @@ export function getNextAutoUserName() {
 
 function pickNextActiveAccountKey(accounts, excludeKey = null) {
   for (const [k, a] of Object.entries(accounts || {})) {
-    if (k !== excludeKey && a && a.isLoggedIn && (a.cookies || a.tid || a.token)) return k;
+    if (k !== excludeKey && isAccountLoggedInSession(a)) return k;
   }
   return null;
 }
@@ -810,28 +999,51 @@ function pickNextActiveAccountKey(accounts, excludeKey = null) {
 export function deleteAccount(key, options = {}) {
   const db = getDb();
   if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
+  if (!db.config.accounts) db.config.accounts = {};
   db.config.deletedAccounts[key] = true;
 
   const acc = db.config?.accounts?.[key];
-  const phone = acc ? String(acc.phone || acc.mobile || '').replace(/[^0-9]/g, '').slice(-10) : key.replace(/^acc_/, '');
+  const rawPhone = acc ? (acc.phone || acc.mobile || '') : String(key).replace(/^acc_/, '');
+  const phone = normalizeTenDigitPhone(rawPhone);
+  const isCloneKey = isExplicitDifferentPhoneCloneKey(key, phone);
 
-  if (options.purgeVault && db.sessionVault) {
-    delete db.sessionVault[phone];
-    delete db.sessionVault[key];
-  }
-
-  const existed = Boolean(db.config?.accounts?.[key]);
+  const removedKeys = new Set([key]);
+  let existed = Boolean(db.config?.accounts?.[key]);
   if (existed) {
     delete db.config.accounts[key];
   }
-  if (db.config.activeOrderAccount === key) {
-    const nextKey = pickNextActiveAccountKey(db.config.accounts, key);
+
+  // If this is a real account slot (not an explicit test clone `acc_<different_digits>`), also tombstone & remove any duplicate custom/auto slot for the same phone!
+  if (phone && !isCloneKey) {
+    db.config.deletedAccounts[`acc_${phone}`] = true;
+    for (const [sibKey, sibAcc] of Object.entries(db.config.accounts)) {
+      if (!sibAcc || isExplicitDifferentPhoneCloneKey(sibKey, phone)) continue;
+      const sibPhone = normalizeTenDigitPhone(sibAcc.phone || sibAcc.mobile || String(sibKey).replace(/^acc_/, ''));
+      if (sibPhone === phone) {
+        db.config.deletedAccounts[sibKey] = true;
+        delete db.config.accounts[sibKey];
+        removedKeys.add(sibKey);
+        existed = true;
+      }
+    }
+  }
+
+  if (options.purgeVault && db.sessionVault) {
+    if (phone && !isCloneKey) delete db.sessionVault[phone];
+    for (const rk of removedKeys) delete db.sessionVault[rk];
+  }
+
+  if (db.config.activeOrderAccount && removedKeys.has(db.config.activeOrderAccount)) {
+    const nextKey = pickNextActiveAccountKey(db.config.accounts, null);
     if (nextKey) db.config.activeOrderAccount = nextKey;
     else delete db.config.activeOrderAccount;
   }
 
   saveDb(db);
   syncAccountsJsonMirror(db);
+  if (!options.skipImmediateCloudPush) {
+    syncCloudVaultNow(db).catch(() => {});
+  }
   return existed;
 }
 
@@ -977,11 +1189,14 @@ export function importSessionJson(rawJson, targetKey = null) {
         } catch {}
       }
 
+      const existingByPhoneKey = (!targetKey || list.length > 1) && cleanPhone
+        ? findAccountKeyByPhone(db.config.accounts, cleanPhone)
+        : null;
       const key = (list.length === 1 && targetKey)
         ? targetKey
-        : (cleanPhone
+        : (existingByPhoneKey || (cleanPhone
           ? `acc_${cleanPhone}`
-          : (data.account || (customerIdPre ? `acc_cid_${customerIdPre}` : `acc_${Date.now()}_${idx}`)));
+          : (data.account || (customerIdPre ? `acc_cid_${customerIdPre}` : `acc_${Date.now()}_${idx}`))));
 
       // Recover full cookies from vault if user pasted an older partial JSON without `_session_tid`
       const vaultBackup = db.sessionVault[cleanPhone] || db.sessionVault[key] || null;
@@ -1004,11 +1219,15 @@ export function importSessionJson(rawJson, targetKey = null) {
       const customerId = customerIdPre;
 
       delete db.config.deletedAccounts[key];
+      if (cleanPhone && !isExplicitDifferentPhoneCloneKey(key, cleanPhone)) {
+        delete db.config.deletedAccounts[`acc_${cleanPhone}`];
+        delete db.config.deletedAccounts[cleanPhone];
+      }
       if (!db.config.accounts[key]) {
         db.config.accounts[key] = { id: key, name: data.name || (cleanPhone ? `Swiggy ${cleanPhone}` : 'Swiggy User') };
       }
 
-      db.config.accounts[key] = {
+      const nextAccountObj = {
         ...db.config.accounts[key],
         id: key,
         mobile: cleanPhone || db.config.accounts[key].mobile || db.config.accounts[key].phone || '',
@@ -1027,11 +1246,17 @@ export function importSessionJson(rawJson, targetKey = null) {
           isZeroOrderAccount: data.totalOrdersCount === 0
         } : {}),
         isLoggedIn: true,
+        freshlyAuthenticated: true,
         savedAt: new Date().toISOString()
       };
+      delete nextAccountObj.loggedOutAt;
+      db.config.accounts[key] = nextAccountObj;
 
-      const finalPhone = db.config.accounts[key].phone;
-      db.sessionVault[finalPhone || key] = {
+      const finalPhone = normalizeTenDigitPhone(db.config.accounts[key].phone) || db.config.accounts[key].phone;
+      consolidateDuplicatePhoneSlots(db, key, finalPhone);
+
+      const vaultKey = (!isExplicitDifferentPhoneCloneKey(key, finalPhone) && finalPhone) ? finalPhone : key;
+      db.sessionVault[vaultKey] = {
         account: key,
         name: db.config.accounts[key].name,
         swiggyName: db.config.accounts[key].swiggyName || '',
@@ -1046,7 +1271,7 @@ export function importSessionJson(rawJson, targetKey = null) {
         savedAt: db.config.accounts[key].savedAt
       };
 
-      if (!db.config.activeOrderAccount || !db.config.accounts[db.config.activeOrderAccount]?.isLoggedIn) {
+      if (!db.config.activeOrderAccount || !isAccountLoggedInSession(db.config.accounts[db.config.activeOrderAccount])) {
         db.config.activeOrderAccount = key;
       }
 
@@ -1081,11 +1306,11 @@ export function importSessionJson(rawJson, targetKey = null) {
 
 export function getActiveOrderAccountKey() {
   const db = getDb();
-  if (db.config?.activeOrderAccount && db.config?.accounts?.[db.config.activeOrderAccount]?.isLoggedIn) {
+  if (db.config?.activeOrderAccount && isAccountLoggedInSession(db.config?.accounts?.[db.config.activeOrderAccount])) {
     return db.config.activeOrderAccount;
   }
   for (const [k, a] of Object.entries(db.config?.accounts || {})) {
-    if (a.isLoggedIn && a.cookies) return k;
+    if (isAccountLoggedInSession(a)) return k;
   }
   const first = Object.keys(db.config?.accounts || {})[0];
   return first || null;
@@ -1106,10 +1331,11 @@ export function permanentLogoutAccount(key) {
   if (!acc) return null;
 
   // Snapshot into vault BEFORE clearing active fields so previously exported code never loses `_session_tid`
-  const phone = String(acc.phone || acc.mobile || '').replace(/[^0-9]/g, '').slice(-10);
-  if (acc.cookies && acc.cookies.includes('_session_tid=')) {
+  const phone = normalizeTenDigitPhone(acc.phone || acc.mobile || '') || String(acc.phone || acc.mobile || '').replace(/[^0-9]/g, '').slice(-10);
+  if (acc.cookies || acc.tid || acc.token) {
     if (!db.sessionVault) db.sessionVault = {};
-    db.sessionVault[phone || key] = {
+    const vaultKey = (!isExplicitDifferentPhoneCloneKey(key, phone) && phone) ? phone : key;
+    db.sessionVault[vaultKey] = {
       account: key,
       name: acc.name || key,
       mobile: phone,
@@ -1119,12 +1345,14 @@ export function permanentLogoutAccount(key) {
       tid: acc.tid || '',
       sid: acc.sid || '',
       deviceId: acc.deviceId || '',
-      cookies: cleanEssentialSwiggyCookies(acc.cookies, acc),
+      cookies: cleanEssentialSwiggyCookies(acc.cookies || '', acc),
       savedAt: acc.savedAt || new Date().toISOString()
     };
   }
 
   acc.isLoggedIn = false;
+  acc.loggedOutAt = new Date().toISOString();
+  delete acc.freshlyAuthenticated;
   acc.cookies = '';
   acc.tid = '';
   acc.sid = '';

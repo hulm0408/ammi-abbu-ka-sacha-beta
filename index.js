@@ -33,6 +33,8 @@ import {
   hydrateAccountsFromCloudVault,
   syncCloudVaultNow,
   generateOrderId,
+  isAccountLoggedInSession,
+  findAccountKeyByPhone,
 } from './store.js';
 import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
 import {
@@ -2201,7 +2203,18 @@ bot.action('send_to_another_number', async (ctx) => {
 // 2.2 Cancel OTP Login Action -> Closes prompt cleanly and restores reply keyboard
 bot.action(['cancel_otp_login', 'close_menu', 'action_close', 'cancel_menu'], async (ctx) => {
   const userId = ctx.from.id;
+  const prevState = userWaitState[userId];
   delete userWaitState[userId];
+  if (prevState?.targetAcc) {
+    deactivateSwiggyAccountViaBridge(userId, prevState.targetAcc, false).catch(() => {});
+    // If Boss created an empty unlogged placeholder slot and cancelled before entering a phone/session, clean it up so the name stays reusable!
+    if (prevState.createdFreshSlot) {
+      const acc = getDb().config?.accounts?.[prevState.targetAcc];
+      if (acc && !isAccountLoggedInSession(acc) && !acc.phone) {
+        deleteAccount(prevState.targetAcc, { purgeVault: false });
+      }
+    }
+  }
   await ctx.answerCbQuery().catch(() => {});
   try {
     await ctx.deleteMessage();
@@ -2407,29 +2420,35 @@ async function handleProcessJsonLogin(ctx, rawJson, userId, targetKeyOverride = 
   } catch (e) {}
 
   if (result.success) {
-    const claimWait = await ctx.reply('◷ <i>Swiggy Breakfast (6am-11am) & Late Night (9pm-11pm) ₹50 OFF offers auto-claim ho rahe hain...</i>', { parse_mode: 'HTML' });
-    const offersResult = await claimSwiggyBreakfastAndLateNightOffers({
-      phone: cleanPhone,
-      token: liveToken || liveTid,
-      tid: liveTid,
-      cookies: cookieStr
-    });
+    const savedKey = result.account || result.key || accKey;
+    const claimWait = await ctx.reply('◷ <i>Swiggy Breakfast &amp; Late Night ₹50 OFF offers lock ho rahe hain...</i>', { parse_mode: 'HTML' });
+    const offersResult = await Promise.race([
+      claimSwiggyBreakfastAndLateNightOffers({
+        id: savedKey,
+        phone: cleanPhone,
+        token: liveToken || liveTid,
+        tid: liveTid,
+        cookies: finalCookieStr
+      }, { quickLockOnly: true }),
+      new Promise(resolve => setTimeout(() => resolve({ success: false, pendingBackgroundLock: true }), 2400))
+    ]);
     try { await bot.telegram.deleteMessage(ctx.chat.id, claimWait.message_id); } catch (e) {}
 
     const db = getDb();
-    if (db.config.accounts?.[accKey]) {
-      db.config.accounts[accKey].offers = offersResult;
+    if (db.config.accounts?.[savedKey]) {
+      db.config.accounts[savedKey].offers = offersResult;
       saveDb(db);
     }
+    syncCloudVaultNow(db).catch(() => {});
 
     await sendAccountLoginAndOffersCard(ctx, {
-      accountKey: accKey,
-      targetAcc: accKey,
-      name: swiggyName,
+      accountKey: savedKey,
+      targetAcc: savedKey,
+      name: db.config.accounts?.[savedKey]?.name || swiggyName,
       swiggyName,
       phone: cleanPhone,
       customerId: liveCustomerId || profile?.id || result.customerId || 'Verified',
-      exportJson: exportSessionJson(accKey),
+      exportJson: exportSessionJson(savedKey),
       offers: offersResult
     }, ctx.from.id, finalOrderId);
   } else {
@@ -3966,13 +3985,20 @@ const exportLogoutOrderCounts = {};
 // 1A. Remove Account Locally from Bot DB (works immediately even if session is logged out or expired!)
 bot.action(/^boss_remove_local_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const userId = ctx.from.id;
   const key = ctx.match[1];
   const db = getDb();
   const acc = db.config?.accounts?.[key];
   const phone = acc?.phone || acc?.mobile || key.replace(/^acc_/, '');
+  const cleanPhone = normalizeIndianMobileNumber(phone) || '';
   const accName = acc?.name || key;
 
-  await deactivateSwiggyAccountViaBridge(ctx.from.id, key, false).catch(() => {});
+  const curWait = userWaitState[userId];
+  if (curWait && (curWait.targetAcc === key || (cleanPhone && curWait.phone === cleanPhone))) {
+    delete userWaitState[userId];
+  }
+
+  await deactivateSwiggyAccountViaBridge(userId, key, false).catch(() => {});
   deleteAccount(key, { purgeVault: false });
 
   await ctx.answerCbQuery('Removed from Bot DB! ×').catch(() => {});
@@ -3985,8 +4011,8 @@ bot.action(/^boss_remove_local_(.+)$/, async (ctx) => {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([
         [
-          ...(/^\d{10}$/.test(phone)
-            ? [Markup.button.callback(`◈ Re-Login ${phone} (OTP)`, `relogin_phone_${phone}`)]
+          ...(/^\d{10}$/.test(cleanPhone || phone)
+            ? [Markup.button.callback(`◈ Re-Login ${cleanPhone || phone} (OTP)`, `relogin_phone_${cleanPhone || phone}`)]
             : [Markup.button.callback('☎ Login with Number', 'boss_login_with_number')]),
           Markup.button.callback('▤ Login with Code', 'boss_login_with_json')
         ],
@@ -4002,14 +4028,21 @@ bot.action(/^boss_remove_local_(.+)$/, async (ctx) => {
 // 1B. Clean All Logged-Out / Dead Accounts from Bot DB in 1 Tap
 bot.action('boss_clean_dead_accounts', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const userId = ctx.from.id;
   const db = getDb();
   const entries = Object.entries(db.config?.accounts || {});
   let removed = 0;
   for (const [k, a] of entries) {
-    if (!a.isLoggedIn || !a.cookies) {
-      deleteAccount(k, { purgeVault: false });
+    if (!isAccountLoggedInSession(a)) {
+      if (userWaitState[userId]?.targetAcc === k) {
+        delete userWaitState[userId];
+      }
+      deleteAccount(k, { purgeVault: false, skipImmediateCloudPush: true });
       removed++;
     }
+  }
+  if (removed > 0) {
+    syncCloudVaultNow(getDb()).catch(() => {});
   }
   await ctx.answerCbQuery(`Removed ${removed} logged-out accounts! ×`).catch(() => {});
   await showFamilyAccounts(ctx);
@@ -4024,7 +4057,7 @@ bot.action('boss_delete_picker', async (ctx) => {
   const entries = Object.entries(accounts);
 
   const buttons = [];
-  const deadCount = entries.filter(([, a]) => !a.isLoggedIn || !a.cookies).length;
+  const deadCount = entries.filter(([, a]) => !isAccountLoggedInSession(a)).length;
   if (deadCount > 0) {
     buttons.push([
       { text: `× Remove All Logged-Out (${deadCount}) from Bot`, callback_data: 'boss_clean_dead_accounts', style: 'danger' }
@@ -4033,7 +4066,7 @@ bot.action('boss_delete_picker', async (ctx) => {
 
   for (const [k, a] of entries) {
     const label = `${a.name || k} (${a.phone || ''})`;
-    if (a.isLoggedIn && a.cookies) {
+    if (isAccountLoggedInSession(a)) {
       buttons.push([
         { text: `! Swiggy Delete: ${label}`, callback_data: `boss_swiggy_delete_start_${k}`, style: 'danger' },
         { text: `× Bot Remove`, callback_data: `boss_remove_local_${k}`, style: 'primary' }
@@ -5894,7 +5927,7 @@ async function showFamilyAccounts(ctx) {
   const accounts = db.config.accounts || {};
   const activeKey = db.config.activeOrderAccount;
   const entries = Object.entries(accounts);
-  const liveCount = entries.filter(([, a]) => a.isLoggedIn && a.cookies).length;
+  const liveCount = entries.filter(([, a]) => isAccountLoggedInSession(a)).length;
   const deadCount = entries.length - liveCount;
 
   let text = `◉ <b>CONNECTED SWIGGY ACCOUNTS (${liveCount} Active / ${entries.length} Total):</b>\n\n`;
@@ -5902,7 +5935,7 @@ async function showFamilyAccounts(ctx) {
     text += `<i>Koi bhi account connected nahi hai.\nNiche diye buttons se JSON ya Number se login karein!</i>\n\n`;
   } else {
     for (const [key, acc] of entries) {
-      const status = (acc.isLoggedIn && acc.cookies) ? `● Logged In` : '○ Logged Out';
+      const status = isAccountLoggedInSession(acc) ? `● Logged In` : '○ Logged Out';
       const isActive = key === activeKey ? ' ★ <b>[ACTIVE]</b>' : '';
       text += `• <b>${escapeHtml(acc.name || key)}</b>${isActive} — <b>${status}</b>\n` +
         `  ☎ <code>${acc.phone || 'Not set'}</code>\n`;
@@ -5915,12 +5948,14 @@ async function showFamilyAccounts(ctx) {
   for (let i = 0; i < entries.length; i += 2) {
     const row = [];
     const [k1, a1] = entries[i];
-    const icon1 = (a1.isLoggedIn && a1.cookies) ? (k1 === activeKey ? '★' : '●') : '○';
-    row.push({ text: `${icon1} ${a1.phone || a1.name || k1}`, callback_data: `acc_view_detail_${k1}`, style: (a1.isLoggedIn && a1.cookies) ? 'success' : 'primary' });
+    const live1 = isAccountLoggedInSession(a1);
+    const icon1 = live1 ? (k1 === activeKey ? '★' : '●') : '○';
+    row.push({ text: `${icon1} ${a1.phone || a1.name || k1}`, callback_data: `acc_view_detail_${k1}`, style: live1 ? 'success' : 'primary' });
     if (entries[i + 1]) {
       const [k2, a2] = entries[i + 1];
-      const icon2 = (a2.isLoggedIn && a2.cookies) ? (k2 === activeKey ? '★' : '●') : '○';
-      row.push({ text: `${icon2} ${a2.phone || a2.name || k2}`, callback_data: `acc_view_detail_${k2}`, style: (a2.isLoggedIn && a2.cookies) ? 'success' : 'primary' });
+      const live2 = isAccountLoggedInSession(a2);
+      const icon2 = live2 ? (k2 === activeKey ? '★' : '●') : '○';
+      row.push({ text: `${icon2} ${a2.phone || a2.name || k2}`, callback_data: `acc_view_detail_${k2}`, style: live2 ? 'success' : 'primary' });
     }
     buttons.push(row);
   }
@@ -7397,6 +7432,17 @@ bot.on('text', async (ctx) => {
 
   // 0: Check if Boss is typing a new account name
   if (state && state.action === 'waiting_new_acc_name') {
+    const curDb = getDb();
+    const accountsObj = curDb.config?.accounts || {};
+    // Prune any abandoned empty unlogged placeholder matching this exact name so Boss is never blocked by a stale cancelled slot!
+    const normWanted = String(rawText || '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-IN');
+    for (const [k, a] of Object.entries(accountsObj)) {
+      const aNorm = String(a?.name || '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-IN');
+      if (aNorm === normWanted && !isAccountLoggedInSession(a) && !a?.phone) {
+        deleteAccount(k, { purgeVault: false, skipImmediateCloudPush: true });
+      }
+    }
+
     const identity = prepareNewSwiggyAccountIdentity(rawText, getDb().config?.accounts || {});
     if (!identity.success) {
       await ctx.reply(
@@ -7417,7 +7463,8 @@ bot.on('text', async (ctx) => {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [Markup.button.callback('Phone Number + OTP', `boss_login_acc_otp_${cleanKey}${orderId ? '_' + orderId : ''}`)],
-          [Markup.button.callback('Paste Session JSON', `boss_login_acc_json_${cleanKey}${orderId ? '_' + orderId : ''}`)]
+          [Markup.button.callback('Paste Session JSON', `boss_login_acc_json_${cleanKey}${orderId ? '_' + orderId : ''}`)],
+          [Markup.button.callback('× Cancel', 'cancel_otp_login')]
         ])
       }
     );
@@ -7658,20 +7705,22 @@ bot.on('text', async (ctx) => {
 
   // Helper for starting phone number login
   async function triggerPhoneNumberLogin(phoneToLogin, existingAccKey, existingAccName) {
-    const accKey = existingAccKey || `acc_${phoneToLogin}`;
+    const pendingOrderId = state?.orderId || null;
+    const matchedKey = existingAccKey || findAccountKeyByPhone(getDb().config?.accounts || {}, phoneToLogin) || `acc_${phoneToLogin}`;
     const cleanName = (existingAccName && existingAccName.trim().length >= 2 && !/^user\s*\d*$/i.test(existingAccName.trim()))
       ? existingAccName.trim()
       : null;
-    const autoName = cleanName || getNextAutoUserName();
+    const autoName = cleanName || getDb().config?.accounts?.[matchedKey]?.name || getNextAutoUserName();
     delete userWaitState[userId];
 
-    const result = await requestSwiggyOtpViaBridge(userId, phoneToLogin, accKey, autoName);
+    const result = await requestSwiggyOtpViaBridge(userId, phoneToLogin, matchedKey, autoName);
 
     if (result.needsName) {
       userWaitState[userId] = {
         action: 'waiting_name_for_new_number_signup',
         phone: phoneToLogin,
-        targetAcc: accKey
+        targetAcc: matchedKey,
+        orderId: pendingOrderId
       };
 
       await ctx.reply('› Enter Name:', {
@@ -7686,9 +7735,10 @@ bot.on('text', async (ctx) => {
     if (result.success) {
       userWaitState[userId] = {
         action: 'waiting_swiggy_otp_bridge',
-        targetAcc: accKey,
+        targetAcc: matchedKey,
         phone: phoneToLogin,
-        name: autoName
+        name: autoName,
+        orderId: pendingOrderId
       };
 
       await ctx.reply(
@@ -7817,11 +7867,12 @@ bot.on('text', async (ctx) => {
   // Step 1: User entered a standalone 10-digit number or 12-digit +91 number for Swiggy login.
   if (state && state.action === 'waiting_phone_for_otp') {
     const targetAcc = state.targetAcc;
+    const pendingOrderId = state.orderId || null;
     const cleanPhone = extractStandaloneMobileNumber(rawText);
 
     if (!cleanPhone) {
-        await ctx.reply('Send only a standalone 10-digit number or a 12-digit number beginning with 91.');
-        await ctx.reply('› Enter Mobile Number:', {
+      await ctx.reply('Send only a standalone 10-digit number or a 12-digit number beginning with 91.');
+      await ctx.reply('› Enter Mobile Number:', {
         reply_markup: {
           force_reply: true,
           input_field_placeholder: '10 digits, or 91 + 10 digits...'
@@ -7830,7 +7881,8 @@ bot.on('text', async (ctx) => {
       return;
     }
 
-    const existingTarget = getDb().config?.accounts?.[targetAcc];
+    const dbSnapshot = getDb();
+    const existingTarget = dbSnapshot.config?.accounts?.[targetAcc];
     const autoName = existingTarget?.name || getNextAutoUserName();
     createAccount(targetAcc, autoName, cleanPhone);
     const result = await requestSwiggyOtpViaBridge(userId, cleanPhone, targetAcc, autoName);
@@ -7840,7 +7892,8 @@ bot.on('text', async (ctx) => {
         action: 'waiting_swiggy_otp_bridge',
         targetAcc,
         phone: cleanPhone,
-        name: autoName
+        name: autoName,
+        orderId: pendingOrderId
       };
 
       await ctx.reply(
@@ -7875,6 +7928,18 @@ bot.on('text', async (ctx) => {
       });
     } else {
       delete userWaitState[userId];
+      // If `targetAcc` was a newly created empty slot that never logged in, don't leave a dead orphan slot with wrong/blocked phone!
+      const curAcc = getDb().config?.accounts?.[targetAcc];
+      if (curAcc && !isAccountLoggedInSession(curAcc) && targetAcc !== `acc_${cleanPhone}`) {
+        curAcc.phone = '';
+        curAcc.mobile = '';
+        const d2 = getDb();
+        if (d2.config?.accounts?.[targetAcc] && !isAccountLoggedInSession(d2.config.accounts[targetAcc])) {
+          d2.config.accounts[targetAcc].phone = '';
+          d2.config.accounts[targetAcc].mobile = '';
+          saveDb(d2);
+        }
+      }
       const errCard = formatOtpSendErrorCard(cleanPhone, result);
       await ctx.reply(errCard.text, {
         parse_mode: 'HTML',
@@ -7886,19 +7951,16 @@ bot.on('text', async (ctx) => {
 
   // Step 2: User enters 6-digit OTP
   if (state && state.action === 'waiting_swiggy_otp_bridge') {
-    const rawCleanDigits = rawText.replace(/[^0-9]/g, '');
-
     // Switch only when the entire message is a standalone valid 10-digit or +91-prefixed phone number.
     const phoneSwitch = extractStandaloneMobileNumber(rawText);
     if (phoneSwitch) {
       delete userWaitState[userId];
       const db = getDb();
-    const existing = Object.entries(db.config?.accounts || {}).find(([k, a]) => normalizeIndianMobileNumber(a.phone || a.mobile || k.replace(/^acc_/, '')) === phoneSwitch);
-    const existingKey = existing ? existing[0] : null;
-    const existingName = existing ? (existing[1]?.name || existing[0]) : null;
+      const existingKey = findAccountKeyByPhone(db.config?.accounts || {}, phoneSwitch);
+      const existingName = existingKey ? (db.config.accounts[existingKey]?.name || existingKey) : null;
 
-    await ctx.reply(`Switching to number ${phoneSwitch}...`);
-    await triggerPhoneNumberLogin(phoneSwitch, existingKey, existingName);
+      await ctx.reply(`Switching to number ${phoneSwitch}...`);
+      await triggerPhoneNumberLogin(phoneSwitch, existingKey, existingName);
       return;
     }
 
@@ -7907,7 +7969,22 @@ bot.on('text', async (ctx) => {
       return promptBossLoginWithNumber(ctx);
     }
 
-    const enteredOtp = rawCleanDigits;
+    // Safely extract 6-digit OTP without ever mistaking URLs (`swiggy.com/menu/123456`) or JSONs for an OTP!
+    let enteredOtp = '';
+    if (!/https?:\/\/|swig\.gy|swiggy\.com|goo\.gl|maps|[{[\]}]/i.test(rawText)) {
+      const directOtp = extractStandaloneOtpDigits(rawText);
+      if (directOtp && directOtp.length === 6) {
+        enteredOtp = directOtp;
+      } else {
+        const spacedDigits = rawText.trim().match(/^(\d{3})[\s-]+(\d{3})$/);
+        if (spacedDigits) {
+          enteredOtp = `${spacedDigits[1]}${spacedDigits[2]}`;
+        } else {
+          const smsCodeMatch = rawText.match(/(?<!\d)(\d{6})(?!\d)/);
+          if (smsCodeMatch) enteredOtp = smsCodeMatch[1];
+        }
+      }
+    }
 
     if (enteredOtp.length !== 6) {
       await ctx.reply(
@@ -7945,13 +8022,22 @@ bot.on('text', async (ctx) => {
 
     const result = await verifySwiggyOtpViaBridge(userId, enteredOtp);
 
-    if (result.isNewUser) {
+    if (result.success) {
+      const orderId = state.orderId;
+      delete userWaitState[userId];
+      syncCloudVaultNow(getDb()).catch(() => {});
+      await sendAccountLoginAndOffersCard(ctx, result, userId, orderId);
+      return;
+    }
+
+    if (result.isNewUser || result.needsSignup) {
       // Auto-assign sequential name without prompting user
       const autoName = state.name || getNextAutoUserName();
       const signupRes = await signupSwiggyViaBridge(userId, autoName);
       if (signupRes.success) {
         const orderId = state.orderId;
         delete userWaitState[userId];
+        syncCloudVaultNow(getDb()).catch(() => {});
         await sendAccountLoginAndOffersCard(ctx, signupRes, userId, orderId);
       } else {
         await ctx.reply(`<blockquote>${escapeHtml(signupRes.message)}</blockquote>`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
@@ -7959,11 +8045,7 @@ bot.on('text', async (ctx) => {
       return;
     }
 
-    if (result.success) {
-      const orderId = state.orderId;
-      delete userWaitState[userId];
-      await sendAccountLoginAndOffersCard(ctx, result, userId, orderId);
-    } else if (['SWIGGY_SECURITY_CHALLENGE', 'SWIGGY_RATE_LIMIT'].includes(result.code)) {
+    if (['SWIGGY_SECURITY_CHALLENGE', 'SWIGGY_RATE_LIMIT'].includes(result.code)) {
       delete userWaitState[userId];
       const challenge = result.code === 'SWIGGY_SECURITY_CHALLENGE';
       const title = challenge ? 'Swiggy Security Check Blocked Login' : 'Swiggy OTP Limit Reached';
@@ -9683,9 +9765,9 @@ bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
 
   const activeKey = getActiveOrderAccountKey();
   const isActive = key === activeKey;
-  const isLogged = Boolean(acc.isLoggedIn && acc.cookies);
+  const isLogged = isAccountLoggedInSession(acc);
 
-  const exported = exportSessionJson(key) || (acc.cookies ? acc : null);
+  const exported = exportSessionJson(key) || ((acc.cookies || acc.tid || acc.token) ? acc : null);
   const sessionJsonStr = exported ? JSON.stringify(exported, null, 2) : '';
   const compactStr = exported ? JSON.stringify(exported) : '';
   const phone = acc.phone || acc.mobile || '';
