@@ -312,6 +312,7 @@ export function buildBossOrderCard(order, db = getDb()) {
     `<b>Order ref:</b> <code>#${esc(String(order.id))}</code>`,
     `<b>Swiggy order id:</b> ${swiggyOrderId ? `<code>${esc(swiggyOrderId)}</code>` : '<i>not created yet</i>'}`,
     `<b>Placed from:</b> ${placedFrom ? `<code>${esc(placedFrom)}</code>` : '<i>account not selected</i>'}`,
+    ...(order.liveOrderStatus ? [`<b>Swiggy status:</b> <code>${esc(String(order.liveOrderStatus))}</code>`] : []),
     `<b>Tracking:</b> ${trackingUrl
       ? `<a href="${esc(trackingUrl)}">Open live Swiggy tracking</a>`
       : (/cancel/i.test(String(order.liveOrderStatus || ''))
@@ -344,9 +345,19 @@ export function buildBossOrderCard(order, db = getDb()) {
   ].join('\n') + offerLine);
   if (order.status === 'COMPLETED') {
     if (!getStoredSwiggyTrackingUrl(order)) {
-      text += section('Tracking status', '<i>Swiggy has not published the share link yet — the bot keeps retrying and will post it here automatically.</i>');
+      const liveStatus = String(order.liveOrderStatus || '');
+      const finished = /cancel|deliv|refus|return/i.test(liveStatus);
+      text += section('Tracking status', finished
+        ? `<i>Finished order (${esc(liveStatus || 'delivered')}) — Swiggy iska share/tracking link publish nahi karta. OTP aur status upar diya hai.</i>`
+        : '<i>Swiggy has not published the share link yet — the bot keeps retrying and will post it here automatically.</i>');
     }
-    if (order.deliveryOtp) text += section('Delivery OTP', `<code>${esc(String(order.deliveryOtp))}</code> · <i>Share with rider</i>`);
+    if (order.deliveryOtp) {
+      const live = String(order.liveOrderStatus || '');
+      const otpNote = /cancel/i.test(live)
+        ? 'order cancelled'
+        : (/deliv|complet|refus|return/i.test(live) ? 'delivery recorded' : 'Share with rider');
+      text += section('Delivery OTP', `<code>${esc(String(order.deliveryOtp))}</code> · <i>${otpNote}</i>`);
+    }
     if (order.deliveryBoyName || order.deliveryBoyMobile) {
       const riderLine = [order.deliveryBoyName?esc(order.deliveryBoyName):'', order.deliveryBoyMobile?`<a href="tel:${esc(order.deliveryBoyMobile)}">${esc(order.deliveryBoyMobile)}</a>`:'' ].filter(Boolean).join(' · ');
       if (riderLine) text += section('Rider', riderLine);

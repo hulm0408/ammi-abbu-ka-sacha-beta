@@ -2600,7 +2600,9 @@ bot.action(/^boss_track_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
   } else if (result?.status === 'NO_SWIGGY_ID') {
     text = `⏳ <b>Swiggy order id abhi create nahi hua.</b>\nPayment confirm hote hi bot khud tracking laayega — kuch karne ki zaroorat nahi.`;
   } else if (result?.status === 'ORDER_FOUND' && isTerminalDeliveryStatus(fresh.liveOrderStatus || result?.orderStatus)) {
-    text = `✅ <b>Order Swiggy par mil gaya</b> (<code>${escapeHtml(swiggyId || '')}</code> on <code>${escapeHtml(phone || '—')}</code>) — status <code>${escapeHtml(String(fresh.liveOrderStatus || result?.orderStatus || ''))}</code>.\n\n<i>Finished order — Swiggy iska share/tracking link publish nahi karta.</i>`;
+    text = `✅ <b>Order Swiggy par mil gaya</b> (<code>${escapeHtml(swiggyId || '')}</code> on <code>${escapeHtml(phone || '—')}</code>) — status <code>${escapeHtml(String(fresh.liveOrderStatus || result?.orderStatus || ''))}</code>.` +
+      (fresh.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(fresh.deliveryOtp))}</code>` : '') +
+      `\n\n<i>Finished order — Swiggy iska share/tracking link publish nahi karta. Status${fresh.deliveryOtp ? ' + OTP' : ''} upar diya hai.</i>`;
   } else if (result?.status === 'ORDER_FOUND') {
     text = `✅ <b>Order Swiggy par mil gaya</b> (<code>${escapeHtml(swiggyId || '')}</code> on <code>${escapeHtml(phone || '—')}</code>) — lekin Swiggy ne share link abhi publish nahi kiya.\n\n<i>Bot har 10s–30s me retry karta rahega aur link aate hi bhej dega.</i>`;
   } else if (result?.status === 'TIMEOUT') {
@@ -5791,12 +5793,15 @@ bot.action(/^extract_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
         }
       );
     } else if (isTerminalDeliveryStatus(String(rec.liveOrderStatus || result?.orderStatus || ''))) {
+      const finishedStatus = String(rec.liveOrderStatus || result?.orderStatus || '');
       await ctx.reply(
         `✅ <b>Order mil gaya</b>\n` +
         `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
         `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
-        `▪ <b>Status:</b> <code>${escapeHtml(String(rec.liveOrderStatus || result?.orderStatus || ''))}</code>\n\n` +
-        `<i>Order khatam ho chuka hai — Swiggy finished orders ka share link publish nahi karta. Tracking ki zaroorat nahi.</i>`,
+        `▪ <b>Status:</b> <code>${escapeHtml(finishedStatus)}</code>` +
+        (rec.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(rec.deliveryOtp))}</code>` : '') +
+        (rec.deliveryBoyName || rec.deliveryBoyMobile ? `\n▪ <b>Rider:</b> ${escapeHtml([rec.deliveryBoyName, rec.deliveryBoyMobile].filter(Boolean).join(' · '))}` : '') +
+        `\n\n<i>Order khatam ho chuka hai — Swiggy finished orders ka share link publish nahi karta. Tracking ki zaroorat nahi. Status${rec.deliveryOtp ? ' + OTP' : ''} upar diya hai.</i>`,
         { parse_mode: 'HTML' }
       );
     } else {
@@ -8317,8 +8322,10 @@ bot.on('text', async (ctx) => {
           `✅ <b>Order Swiggy par mil gaya</b>\n` +
           `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId || '—')}</code>\n` +
           `▪ <b>Placed from:</b> <code>${escapeHtml(phone || '—')}</code>\n` +
-          `▪ <b>Status:</b> <code>${escapeHtml(liveStatus)}</code>\n\n` +
-          `<i>Order khatam ho chuka hai — Swiggy finished orders ke liye share/tracking link publish nahi karta, isliye tracking ki zaroorat nahi.</i>`,
+          `▪ <b>Status:</b> <code>${escapeHtml(liveStatus)}</code>` +
+          (rec.deliveryOtp ? `\n▪ <b>Delivery OTP:</b> <code>${escapeHtml(String(rec.deliveryOtp))}</code>` : '') +
+          (rec.deliveryBoyName || rec.deliveryBoyMobile ? `\n▪ <b>Rider:</b> ${escapeHtml([rec.deliveryBoyName, rec.deliveryBoyMobile].filter(Boolean).join(' · '))}` : '') +
+          `\n\n<i>Order khatam ho chuka hai — Swiggy finished orders ke liye share/tracking link publish nahi karta, isliye tracking ki zaroorat nahi. Status${rec.deliveryOtp ? ' + OTP' : ''} upar diya hai.</i>`,
           { parse_mode: 'HTML' }
         );
       } else {
