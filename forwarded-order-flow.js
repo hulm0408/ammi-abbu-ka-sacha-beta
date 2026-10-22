@@ -861,8 +861,8 @@ export function buildTelegramUserBillConfirmationCard(order) {
     `<b>Order #${escapeHtml(order?.id || '')} — Approval pending</b>\n\n` +
     billLines.join('\n');
   const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('✓ Approve bill', `user_approve_bill_${order.id}`)],
-    [Markup.button.callback('! Something is wrong', `user_bill_issue_${order.id}`)]
+    [{ text: '✓ Approve bill', callback_data: `user_approve_bill_${order.id}`, style: 'success' }],
+    [{ text: '! Something is wrong', callback_data: `user_bill_issue_${order.id}`, style: 'danger' }]
   ]);
   return { text, keyboard };
 }

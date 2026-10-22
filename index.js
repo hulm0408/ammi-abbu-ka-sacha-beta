@@ -253,12 +253,12 @@ async function cleanupUserChat(telegram, chatId, userId, { deleteIncomingId = nu
 // delete it as soon as the link arrives — so the chat still ends with one card.
 const LINK_PROMPTS = {
   cart: {
-    text: '▤ <b>Swiggy cart link paste karein</b>\n<i>Example: <code>https://swig.gy/gc/...</code> ya <code>https://www.swiggy.com/restaurants/...</code></i>',
-    placeholder: 'Paste Swiggy cart link here...'
+    text: '🟠 <b>Cart link</b> bhejein 👇',
+    placeholder: 'Swiggy cart link paste karein...'
   },
   address: {
-    text: '⌖ <b>Delivery address link bhejein</b>\n<i>Swiggy share-address link (<code>https://swiggy.onelink.me/JgkQ/...</code>), Google Maps link, ya Telegram • Location pin.</i>',
-    placeholder: 'Paste Swiggy address link or send Location...'
+    text: '🟠 <b>Address link</b> ya Location bhejein 👇',
+    placeholder: 'Address link paste karein ya Location bhejein...'
   }
 };
 
@@ -477,24 +477,27 @@ function classifyLink(url) {
   return 'UNKNOWN';
 }
 
-// User Bottom Menu - Pure Cart, Address, and Send to Beta options
+// User Bottom Menu - Colorful orange Cart & Address buttons + clean direct actions
 function getUserReplyKeyboard(draft = {}) {
-  const cartLabel = draft?.cart ? '● Cart: Added ✓' : '● Paste Cart Link';
-  const addrLabel = draft?.address ? '● Address: Added ✓' : '● Paste Address Link';
+  const hasCart = Boolean(draft?.cart);
+  const hasAddr = Boolean(draft?.address);
+  const bothReady = hasCart && hasAddr;
+  const cartLabel = hasCart ? '🟢 🛒 Cart ✓' : '🟠 🛒 Cart Link';
+  const addrLabel = hasAddr ? '🟢 📍 Address ✓' : '🟠 📍 Address Link';
   return Markup.keyboard([
     [
-      { text: cartLabel },
-      { text: addrLabel }
+      { text: cartLabel, style: hasCart ? 'success' : 'danger' },
+      { text: addrLabel, style: hasAddr ? 'success' : 'danger' }
     ],
     [
-      { text: '› Send to Beta' }
+      { text: '🚀 Send to Beta', style: bothReady ? 'success' : 'primary' }
     ],
     [
-      { text: '📦 Orders Done' },
-      { text: '● Cancel Draft' }
+      { text: '📦 Orders Done', style: 'primary' },
+      { text: '✖ Cancel Draft', style: 'danger' }
     ],
     [
-      { text: '🔗 Extract Tracking Link' }
+      { text: '🔗 Extract Tracking Link', style: 'primary' }
     ]
   ]).resize();
 }
@@ -682,47 +685,41 @@ export function formatUserOrderCardText(order, isBossView = false) {
 
 // Format User (Customer) Order Screen matching State Machine
 export function formatUserOrderCard(order) {
-  const db = getDb();
-  const slotsLeft = db.config.slotsLeft;
-  const totalSlots = db.config.totalSlots;
-  const header = `● <b>Slots left: ${slotsLeft}/${totalSlots}</b>`;
   const buttons = [];
-  let text = `${header}\n\n`;
+  let text = '';
   const officialTrackingUrl = getStoredSwiggyTrackingUrl(order);
 
   if (order.status === 'ACCEPTED' || order.status === 'COMPLETED') {
     const trackingLine = officialTrackingUrl
       ? `<b>Swiggy tracking:</b> <a href="${escapeHtml(officialTrackingUrl)}">Open tracking link</a>`
-      : '… Swiggy has not shared a tracking link yet. I will send it here when available.';
+      : '… Swiggy tracking link aate hi yahan bhej diya jayega.';
     const otpLine = order.deliveryOtp
       ? `<b>Delivery OTP:</b> <code>${escapeHtml(String(order.deliveryOtp))}</code>`
-      : 'Delivery OTP is not available yet. If Swiggy provides one, I will send it here.';
+      : '';
     text += `${heading(`Order #${order.id} — Confirmed`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
       section('Order Status', [
         `<b>${escapeHtml(order.liveOrderStatus || 'Processing')}</b>`,
         trackingLine,
         otpLine
-      ].join('\n')) +
+      ].filter(Boolean).join('\n')) +
       `\n${field('Support', '@Its_life_001')}`;
-    if (officialTrackingUrl) buttons.push([Markup.button.url('Open Swiggy tracking', officialTrackingUrl)]);
-    if (order.swiggyPaymentUrl) buttons.push([Markup.button.url('Pay via Swiggy (UPI/Card)', order.swiggyPaymentUrl)]);
-    buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
+    if (officialTrackingUrl) buttons.push([{ text: '📍 Open Swiggy Tracking', url: officialTrackingUrl, style: 'success' }]);
+    if (order.swiggyPaymentUrl) buttons.push([{ text: '💳 Pay via Swiggy', url: order.swiggyPaymentUrl, style: 'primary' }]);
     buttons.push([
-      Markup.button.callback('Refresh status', `user_refresh_status_${order.id}`),
-      Markup.button.callback('Cancel order', `action_cancel_order_confirm_${order.id}`)
+      { text: '↻ Refresh Status', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
+      { text: '✖ Cancel Order', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
     ]);
+    buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
 
   if (order.status === 'REJECTED') {
     text += `${heading(`Order #${order.id} — Rejected`)}\n\n` +
-      `${sub('Beta ne filhal yeh order reject kar diya hai.')}\n\n` +
-      field('Support', '@Its_life_001') +
-      '\n\n' +
-      `${sub('Naya order place karne ke liye neeche button dabayein:')}`;
+      `${sub('Yeh order cancel/reject ho gaya hai. Naya order karne ke liye neeche dabayein:')}\n\n` +
+      field('Support', '@Its_life_001');
+    buttons.push([{ text: '🟠 Naya Order Karein', callback_data: 'user_back_to_main', style: 'danger' }]);
     buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
-    buttons.push([Markup.button.callback('New order', 'user_back_to_main')]);
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
 
@@ -731,38 +728,37 @@ export function formatUserOrderCard(order) {
     const amt = order.finalPayable ? `₹${order.finalPayable}` : 'amount shown on Swiggy';
     text += `${heading(`Payment Ready — Order #${order.id}`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
-      section('Payment', `${heading('Pay to confirm')}\n${sub(`Amount <b>${esc(amt)}</b> — UPI QR, Card, or Wallet via Swiggy. After paying, tap Check payment status.`)}`) +
+      section('Payment', `${heading(`Pay ${esc(amt)}`)}\n${sub('Pay karne ke baad Check payment status dabayein.')}`) +
       `\n${field('Support', '@Its_life_001')}`;
 
-    if (order.swiggyPaymentUrl) buttons.push([Markup.button.url('Pay via Swiggy (UPI/Card)', order.swiggyPaymentUrl)]);
-    buttons.push([Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]);
+    if (order.swiggyPaymentUrl) buttons.push([{ text: '💳 Pay via Swiggy (UPI/Card)', url: order.swiggyPaymentUrl, style: 'success' }]);
+    buttons.push([{ text: '✓ Check payment status', callback_data: `user_paid_status_${order.id}`, style: 'success' }]);
     if (order.customQrFileId) {
-      buttons.push([Markup.button.callback('Resend payment QR', `user_resend_qr_${order.id}`)]);
+      buttons.push([{ text: '↻ Resend payment QR', callback_data: `user_resend_qr_${order.id}`, style: 'primary' }]);
     } else if (order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.swiggyPaymentUrl) {
-      buttons.push([Markup.button.callback('Resend Swiggy payment details', `user_resend_approved_qr_${order.id}`)]);
+      buttons.push([{ text: '↻ Resend Swiggy payment details', callback_data: `user_resend_approved_qr_${order.id}`, style: 'primary' }]);
     }
   } else if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
     // The max-discount bill summary was sent; the QR is created only after approval.
     text += `${heading(`Bill summary sent (#${order.id})`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
-      section('Confirm', `${heading('Bill check karke Approve karein')}\n${sub('Approve karte hi official Swiggy payment QR/link aapko bheja jayega. Kuch galat lage to "Something is wrong" dabayein.')}`) +
+      section('Confirm', `${heading('Bill check karke Approve karein')}\n${sub('Approve karte hi Swiggy payment QR aayega.')}`) +
       `\n${field('Support', '@Its_life_001')}`;
-    buttons.push([Markup.button.callback('✓ Approve bill', `user_approve_bill_${order.id}`)]);
-    buttons.push([Markup.button.callback('! Something is wrong', `user_bill_issue_${order.id}`)]);
+    buttons.push([{ text: '✓ Approve bill', callback_data: `user_approve_bill_${order.id}`, style: 'success' }]);
+    buttons.push([{ text: '! Something is wrong', callback_data: `user_bill_issue_${order.id}`, style: 'danger' }]);
   } else if (Number(order.finalPayable || 0) > 0 && (order.selectedAccount || order.autoOptimized)) {
     // Auto max-offer finished: show the customer the verified bill while Boss approves.
     text += `${heading(`✓ Verified bill ready (#${order.id})`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
-      section('Status', `${heading('Waiting for Beta approval')}\n${sub('Best account, max coupon, free cash & free delivery lag chuki hain. Approve hote hi payment QR yahan aayega.')}`) +
+      section('Status', `${heading('Waiting for Beta approval')}\n${sub('Best offers lag chuke hain. Payment QR yahan aayega.')}`) +
       `\n${field('Support', '@Its_life_001')}`;
   } else if (order.cardStage === 'AUTO_SELECTING') {
     text += `${heading(`◷ Best offers check ho rahe hain (#${order.id})`)}\n\n` +
       section('Order details', [
         field('Restaurant', esc(order.restaurantName || 'Swiggy Food Order')),
-        field('Status', '<b>Scanning best Swiggy account</b>')
+        field('Status', '<b>Best offer lagaya ja raha hai</b>')
       ].join('\n')) +
-      `\n${sub('Aapke Swiggy accounts par max coupon, free cash aur free delivery apply ki ja rahi hai.')}\n` +
-      `${sub('Final bill yahan update ho jayega.')}`;
+      `\n${sub('Final bill yahan update ho jayega.')}`;
   } else {
     const rest = order.restaurantName || (order.restaurantId ? `Swiggy Restaurant #${order.restaurantId}` : 'Swiggy Food Order');
     const ad = order.addressDetails || parseAddressDetails(order.address);
@@ -774,17 +770,15 @@ export function formatUserOrderCard(order) {
       section('Order details', [
         field('Restaurant', esc(rest)),
         field('Delivering to', esc(cleanAddr)),
-        field('Status', '<b>Sent for review</b>')
+        field('Status', '<b>Checking best offer</b>')
       ].join('\n')) +
-      '\n' +
-      `${sub('Beta is checking the order and available Swiggy offers.')}\n` +
-      `${sub('The verified bill and payment QR will appear here when ready.')}\n\n` +
+      `\n${sub('Bill aur payment QR yahan aayega.')}\n\n` +
       `${field('Support', '@Its_life_001')}`;
   }
 
   buttons.push([
-    Markup.button.callback('Refresh status', `user_refresh_status_${order.id}`),
-    Markup.button.callback('Cancel order', `action_cancel_order_confirm_${order.id}`)
+    { text: '↻ Refresh status', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
+    { text: '✖ Cancel order', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
   ]);
   buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
 
@@ -959,75 +953,93 @@ function formatOtpSendErrorCard(phone, result = {}) {
 
   return { text, keyboard: Markup.inlineKeyboard(buttons) };
 }
-// User Screen Generator - Clean minimal UI with interactive buttons for Cart, Address & Send to Beta
+// User Screen Generator - Short, direct single-card UI with colorful orange buttons (no slots)
 function getUserScreen(userId, user) {
   const activeOrder = getActiveUserOrder(userId);
   if (activeOrder) {
     return formatUserOrderCard(activeOrder);
   }
 
-  const db = getDb();
   const draft = getDraft(userId);
-  const slotsLeft = db.config.slotsLeft;
-  const totalSlots = db.config.totalSlots;
+  const hasCart = Boolean(draft.cart);
+  const hasAddr = Boolean(draft.address);
+  const bothReady = hasCart && hasAddr;
 
-  const cartBtnText = draft.cart ? '▤ Change Cart Link' : '▤ Cart Link';
-  const addressBtnText = draft.address ? '⌖ Change Address Link' : '⌖ Address Link';
+  const cartBtn = hasCart
+    ? { text: '🟢 🛒 Cart ✓', callback_data: 'action_add_cart', style: 'success' }
+    : { text: '🟠 🛒 Cart Link', callback_data: 'action_add_cart', style: 'danger' };
+  const addressBtn = hasAddr
+    ? { text: '🟢 📍 Address ✓', callback_data: 'action_add_address', style: 'success' }
+    : { text: '🟠 📍 Address Link', callback_data: 'action_add_address', style: 'danger' };
+
   const inlineButtons = [
+    [cartBtn, addressBtn],
+    [{ text: '🚀 Send to Beta', callback_data: 'action_send_to_boss', style: bothReady ? 'success' : 'primary' }],
     [
-      Markup.button.callback(cartBtnText, 'action_add_cart'),
-      Markup.button.callback(addressBtnText, 'action_add_address')
-    ],
-    [Markup.button.callback('› Send to Beta', 'action_send_to_boss')],
-    [
-      Markup.button.callback('× Cancel order', 'action_cancel_order_confirm'),
-      Markup.button.callback('↻ Previous order', 'action_previous_order')
+      { text: '📦 Previous Order', callback_data: 'action_previous_order', style: 'primary' },
+      { text: '✖ Cancel', callback_data: 'action_cancel_order_confirm', style: 'danger' }
     ]
   ];
 
   const cd = draft.cartDetails || {};
   const itemRows = Array.isArray(cd.items) ? cd.items : [];
-  const qtyCount = itemRows.reduce((s, it) => s + Number(it.qty || it.quantity || 1), 0);
-  const subVal = Number(cd.subtotal || itemRows.reduce((s, it) => s + Number(it.lineTotal || (Number(it.price || 0) * Number(it.qty || 1)) || 0), 0));
-  const statusTag = !draft.cart && !draft.address
-    ? 'Cart &amp; address needed'
-    : (draft.cart && !draft.address ? 'Address needed' : (!draft.cart && draft.address ? 'Cart needed' : 'Ready to validate'));
+  const subVal = Number(
+    cd.subtotal ||
+    cd.itemsTotal ||
+    itemRows.reduce((s, it) => s + Number(it.lineTotal || (Number(it.price || 0) * Number(it.qty || it.quantity || 1)) || 0), 0)
+  );
 
-  let promptGuidance = '';
-  if (!draft.cart && !draft.address) {
-    promptGuidance = sub('Use the Cart and Address buttons below, or paste either link in chat — they can arrive in either order.');
-  } else if (draft.cart && !draft.address) {
-    promptGuidance = `${heading('Add a valid address link to continue.')}\n${sub('◈ No account allocated; QR is blocked.')}`;
-  } else if (!draft.cart && draft.address) {
-    promptGuidance = `${heading('Add a valid Swiggy cart link to continue.')}\n${sub('◈ No account allocated; QR is blocked.')}`;
+  const shortUrl = (u) => {
+    const clean = String(u || '').replace(/^https?:\/\/(?:www\.)?/i, '');
+    return clean.length > 44 ? `${clean.slice(0, 44)}…` : clean;
+  };
+
+  let cartLine = '🟠 <b>Cart:</b> Link bhejein';
+  if (hasCart) {
+    const restPart = cd.restaurantName
+      ? `<b>${esc(cd.restaurantName)}</b>${subVal > 0 ? ` (₹${subVal})` : ''} · `
+      : '';
+    cartLine = `✓ <b>Cart:</b> ${restPart}<code>${esc(shortUrl(draft.cart))}</code>`;
+    if (itemRows.length > 0) {
+      const previewItems = itemRows.slice(0, 4).map((it) => {
+        const q = Number(it.qty || it.quantity || 1);
+        return `  • ${esc(it.name || 'Item')} × ${q}`;
+      });
+      if (itemRows.length > 4) previewItems.push(`  • +${itemRows.length - 4} more`);
+      cartLine += `\n${previewItems.join('\n')}`;
+    }
+  }
+
+  let addrLine = '🟠 <b>Address:</b> Link bhejein';
+  if (hasAddr) {
+    const ad = draft.addressDetails || {};
+    const addrUrl = draft.addressLink || (String(draft.address).startsWith('http') ? draft.address : '');
+    const humanAddr = ad.address && !String(ad.address).startsWith('http')
+      ? `${ad.address.slice(0, 45)}${ad.address.length > 45 ? '…' : ''}`
+      : (!String(draft.address).startsWith('http') ? `${String(draft.address).slice(0, 45)}${String(draft.address).length > 45 ? '…' : ''}` : '');
+    const parts = [];
+    if (humanAddr) parts.push(esc(humanAddr));
+    if (addrUrl) parts.push(`<code>${esc(shortUrl(addrUrl))}</code>`);
+    addrLine = `✓ <b>Address:</b> ${parts.join(' · ') || 'Added'}`;
+  }
+
+  let nextLine = '';
+  if (!hasCart && !hasAddr) {
+    nextLine = '👉 Seedha <b>Cart</b> aur <b>Address link</b> bhejein 👇';
+  } else if (hasCart && !hasAddr) {
+    nextLine = '🟠 Ab <b>Address link</b> bhejein 👇';
+  } else if (!hasCart && hasAddr) {
+    nextLine = '🟠 Ab <b>Cart link</b> bhejein 👇';
   } else {
-    promptGuidance = `${heading('Dono links verified hain!')}\n${sub("Niche [ › Send to Beta ] dabayein:")}`;
+    nextLine = '🟢 <b>Dono links verified!</b> Ab <b>Send to Beta</b> dabayein 👇';
   }
 
-  // A saved address link that Swiggy has not resolved yet: the card explains it
-  // instead of a separate tip message.
   if (draft.addressDetails?.unresolvableShortLink) {
-    promptGuidance += `\n${sub('i Address link Swiggy ne abhi resolve nahi kiya — naya address link ya Telegram • Location pin bhej dein.')}`;
+    nextLine += '\n⚠️ Naya <b>Address link</b> ya Location pin bhejein.';
   }
 
-  const summaryBlock =
-    `${heading(`Order #${esc(String(userId).slice(-5).padStart(5, '3'))} — Summary`)} · ${sub(statusTag)}\n` +
-    (draft.cart && cd.restaurantName
-      ? `🛒 <b>${esc(cd.restaurantName)}</b> (${qtyCount || 1} items · ₹${subVal})\n`
-      : '');
-
-  const text = section('📦 Order Slots', `<b>Available: ${slotsLeft}/${totalSlots}</b> · <i>Order for your parents — delivered to their name & phone</i>`) +
-    section('Order Summary', summaryBlock) +
-    section('🛒 Swiggy Order', `${sub('Share cart + delivery address. Either link can come first.')}\n` +
-      field('Cart', draft.cart ? `✓ Added` : '<i>Not added</i>') +
-      '\n' +
-      field('Delivery', draft.address ? `✓ Added` : '<i>Not added</i>') +
-      (draft.cart ? `\n<code>${esc(draft.cart.slice(0,60))}${draft.cart.length>60?'…':''}</code>` : '') +
-      (draft.address ? `\n<code>${esc(draft.address.slice(0,60))}${draft.address.length>60?'…':''}</code>` : '')) +
-    '\n' +
-    section('Recipient Info', sub('Order will be placed on recipient\'s name & phone from the address link — not your own. Delivery partner will call them directly.')) +
-    '\n' +
-    section('Next Step', promptGuidance);
+  const headerTitle = bothReady ? '🍽 <b>Order Ready!</b>' : '🍽 <b>Khana Order Karein</b>';
+  const text = `${headerTitle}\n\n${cartLine}\n${addrLine}\n\n${nextLine}`;
 
   return { text, keyboard: Markup.inlineKeyboard(inlineButtons) };
 }
@@ -1948,10 +1960,7 @@ bot.start(async (ctx) => {
   if (!userId) return;
   delete userWaitState[userId];
 
-  const welcomeText =
-    `→ <b>Welcome to Swiggy Slot Bot!</b>\n\n` +
-    `Swiggy order ke liye apna <b>Cart link</b> aur <b>Delivery Address link</b> share karein:\n\n` +
-    `› Pehle <b>Cart link</b> bhejein ya <b>Address link</b> bhejein, fir <b>[ › Send to Beta ]</b> daba dein!`;
+  const welcomeText = `🙏 <b>Assalamu Alaikum!</b> Seedha <b>Cart</b> aur <b>Address link</b> bhejein 👇`;
 
   // A new user must ALWAYS get a working screen. Any helper failure below is
   // contained here so /start can never surface an UNEXPECTED_ERROR to the user.
@@ -1983,11 +1992,11 @@ bot.start(async (ctx) => {
       rememberUserCard(userId, screenMsg);
     } catch (screenErr) {
       console.error('[START] user screen render failed:', screenErr?.stack || screenErr?.message || screenErr);
-      await ctx.reply('› Cart link ya Address link paste karke order shuru karein.', {
+      await ctx.reply('🟠 <b>Cart</b> ya <b>Address link</b> bhejein 👇', {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([[
-          Markup.button.callback('▤ Cart Link', 'action_add_cart'),
-          Markup.button.callback('⌖ Address Link', 'action_add_address')
+          { text: '🟠 🛒 Cart Link', callback_data: 'action_add_cart', style: 'danger' },
+          { text: '🟠 📍 Address Link', callback_data: 'action_add_address', style: 'danger' }
         ]])
       }).catch(() => {});
     }
@@ -2004,17 +2013,16 @@ bot.start(async (ctx) => {
 bot.command('help', async (ctx) => {
   const isBossUser = isBoss(ctx.from?.id);
   const text =
-    `→ <b>Kaise order karein</b>\n\n` +
-    `1. Swiggy app se apna <b>Cart link</b> bhejein (ya ▤ Cart Link button dabayein).\n` +
-    `2. Apna <b>Delivery Address link</b> bhejein (Swiggy share-address link ya Telegram • Location pin).\n` +
-    `3. Dono ready hone par <b>[ › Send to Beta ]</b> dabayein.\n\n` +
-    `<i>Address sirf aapke Swiggy address link se liya jata hai — chat me likha hua koi bhi text address ya number nahi banega.</i>` +
-    (isBossUser ? `\n\n★ Boss: <code>/boss</code> se panel, <code>/parallel</code> se ready orders ek saath.` : '');
+    `🍽 <b>Order Kaise Karein</b>\n\n` +
+    `1. 🟠 <b>Cart Link</b> bhejein\n` +
+    `2. 🟠 <b>Address Link</b> (ya Location) bhejein\n` +
+    `3. 🚀 <b>Send to Beta</b> dabayein` +
+    (isBossUser ? `\n\n★ Boss: <code>/boss</code> panel · <code>/parallel</code> ready orders.` : '');
   return ctx.reply(text, {
     parse_mode: 'HTML',
     ...Markup.inlineKeyboard([[
-      Markup.button.callback('▤ Cart Link', 'action_add_cart'),
-      Markup.button.callback('⌖ Address Link', 'action_add_address')
+      { text: '🟠 🛒 Cart Link', callback_data: 'action_add_cart', style: 'danger' },
+      { text: '🟠 📍 Address Link', callback_data: 'action_add_address', style: 'danger' }
     ]])
   });
 });
@@ -2028,7 +2036,7 @@ bot.command('cancel', async (ctx) => {
     const home = getBossPanelHome();
     return ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
   }
-  return ctx.reply('● <b>Draft cancel kar diya gaya hai.</b>\n\nNaya order shuru karne ke liye cart aur address link bhejein.', {
+  return ctx.reply('✖ <b>Draft clear ho gaya.</b> Naya link bhejein 👇', {
     parse_mode: 'HTML',
     ...getUserReplyKeyboard()
   });
@@ -5257,10 +5265,6 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
   if (order.status === 'PENDING') {
     order.status = 'ACCEPTED';
     order.acceptedAt = new Date().toISOString();
-    if (!order.slotConsumed) {
-      order.slotConsumed = true;
-      db.config.slotsLeft = Math.max(0, (db.config.slotsLeft || 1) - 1);
-    }
   }
 
   await ctx.answerCbQuery('Generating genuine payment QR... !').catch(() => {});
@@ -5649,11 +5653,6 @@ bot.action(/^(?:boss_confirm_cancel_|boss_cancel_order_)(.+)$/, async (ctx) => {
 
   if (!canTransitionOrder(order.status, 'CANCELLED')) {
     return ctx.answerCbQuery(`Cannot cancel: order is already ${order.status}`, { show_alert: true }).catch(() => {});
-  }
-
-  const prevStatus = order.status;
-  if (prevStatus === 'ACCEPTED') {
-    db.config.slotsLeft = Math.min(db.config.totalSlots, (db.config.slotsLeft || 0) + 1);
   }
 
   order.status = 'CANCELLED';
@@ -6563,28 +6562,6 @@ bot.action(/^boss_action_accept_(.+)$/, async (ctx) => {
     return ctx.answerCbQuery(`Cannot accept: order is currently ${order.status}`, { show_alert: true }).catch(() => {});
   }
 
-  if (db.config.slotsLeft <= 0) {
-    order.status = 'REJECTED';
-    order.rejectedAt = new Date().toISOString();
-    order.rejectReason = 'Sorry, slot has ended.';
-    saveDb(db);
-    await ctx.answerCbQuery('Sorry, slot has ended.', { show_alert: true }).catch(() => {});
-    const updatedCard = formatBossOrderCard(order);
-    try {
-      await ctx.editMessageText(updatedCard.text, { parse_mode: 'HTML', ...updatedCard.keyboard });
-    } catch (e) {}
-    try {
-      await bot.telegram.sendMessage(
-        order.userId,
-        `× <b>Sorry, slot has ended.</b>\n\nAapka order accept nahi ho saka kyunki slots khatam ho chuke hain.`,
-        { parse_mode: 'HTML' }
-      );
-    } catch (err) {}
-    return;
-  }
-
-  db.config.slotsLeft = Math.max(0, db.config.slotsLeft - 1);
-  order.slotConsumed = true;
   order.status = 'ACCEPTED';
   order.acceptedAt = new Date().toISOString();
   saveDb(db);
@@ -6592,7 +6569,7 @@ bot.action(/^boss_action_accept_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery('✓ Order Accepted!').catch(() => {});
   await updateOrderCards(order);
 
-  await ctx.reply(`✓ <b>Request #${orderId} Accepted! (Slots Left: ${db.config.slotsLeft}/${db.config.totalSlots})</b>`, { parse_mode: 'HTML' });
+  await ctx.reply(`✓ <b>Request #${orderId} Accepted!</b>`, { parse_mode: 'HTML' });
 
   try {
     await bot.telegram.sendMessage(
@@ -6906,8 +6883,9 @@ bot.action(/^boss_check_fc_(.+)$/, async (ctx) => {
 
 // ================= USER & BOSS BOTTOM MENU HEARS =================
 
-// USER BUTTONS (Exact FigJam Diagram + Specification)
+// USER BUTTONS (Colorful Orange Cart & Address Buttons + All Aliases)
 bot.hears([
+  '🟠 🛒 Cart Link', '🟢 🛒 Cart ✓', '🟠 Cart Link', '🟢 Cart ✓',
   '● Cart link', '● change cart link', 'Cart link', 'change cart link',
   '● Paste cart link', 'Paste cart link', 'Cart', '● Cart: Added ✓',
   '● Paste Cart Link', 'Paste Cart Link', 'Cart: Added'
@@ -6916,6 +6894,7 @@ bot.hears([
 });
 
 bot.hears([
+  '🟠 📍 Address Link', '🟢 📍 Address ✓', '🟠 Address Link', '🟢 Address ✓',
   '● Address link', '● change address link', 'Address link', 'change address link',
   '● Paste address Link', 'Paste address Link', 'Address', '● Address: Added ✓',
   '● Paste Address Link', 'Paste Address Link', 'Address: Added'
@@ -6924,6 +6903,7 @@ bot.hears([
 });
 
 bot.hears([
+  '🚀 Send to Beta',
   'Order Screen', 'Customer Screen', '▣ Order Screen',
   'Send Order to Beta', 'send order to beta', 'SEND ORDER TO BETA',
   'Send to Beta', 'send to beta',
@@ -6942,13 +6922,12 @@ bot.command(['sendtobeta', 'send_to_beta', 'sendorder', 'send_order', 'order'], 
   await handleSendToBoss(ctx);
 });
 
-bot.hears(['Cancel Draft', 'cancel draft', '● Cancel Draft'], async (ctx) => {
+bot.hears(['✖ Cancel Draft', 'Cancel Draft', 'cancel draft', '● Cancel Draft'], async (ctx) => {
   const userId = ctx.from.id;
   clearDraft(userId);
   delete userWaitState[userId];
-  await ctx.reply('● <b>Draft cancel kar diya gaya hai!</b>', { parse_mode: 'HTML', ...getUserReplyKeyboard() });
-  const screen = getUserScreen(userId, ctx.from);
-  return ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+  await ctx.reply('✖ <b>Draft clear ho gaya!</b>', { parse_mode: 'HTML', ...getUserReplyKeyboard() });
+  return renderUserCard(ctx, userId);
 });
 
 bot.action(['action_clear_draft', 'action_cancel_draft'], async (ctx) => {
@@ -6958,7 +6937,7 @@ bot.action(['action_clear_draft', 'action_cancel_draft'], async (ctx) => {
   delete userWaitState[userId];
   const screen = getUserScreen(userId, ctx.from);
   try {
-    await ctx.editMessageText('● <b>Draft clear ho gaya hai!</b>\n\nNaya cart ya address link bhejein:', {
+    await ctx.editMessageText(screen.text, {
       parse_mode: 'HTML',
       ...screen.keyboard
     });
@@ -6967,11 +6946,11 @@ bot.action(['action_clear_draft', 'action_cancel_draft'], async (ctx) => {
   }
 });
 
-bot.hears(['Cancel Order', 'cancel order', 'Cancel order', '● cancel order', '● Cancel Order'], async (ctx) => {
+bot.hears(['✖ Cancel Order', '✖ Cancel', 'Cancel Order', 'cancel order', 'Cancel order', '● cancel order', '● Cancel Order'], async (ctx) => {
   await handleCancelOrderConfirm(ctx);
 });
 
-bot.hears(['Previous Orders', 'previous orders', 'previous order', 'Previous order', '○ previous order'], async (ctx) => {
+bot.hears(['📦 Previous Order', 'Previous Orders', 'previous orders', 'previous order', 'Previous order', '○ previous order'], async (ctx) => {
   await handlePreviousOrder(ctx);
 });
 
@@ -6997,24 +6976,6 @@ bot.hears(['Slot Status', '● Slot Status', '# Slot Status'], async (ctx) => {
     const home = getBossPanelHome();
     await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
   }
-});
-
-bot.hears(['Total Slots', 'Total slots', '▤ Total slots'], async (ctx) => {
-  if (!isBoss(ctx.from.id)) return;
-  userWaitState[ctx.from.id] = { action: 'waiting_boss_total' };
-  await ctx.reply(`<b>Total Slots</b>\n\nEnter number:`, {
-    parse_mode: 'HTML',
-    reply_markup: { force_reply: true, input_field_placeholder: 'Enter number...' }
-  });
-});
-
-bot.hears(['Total Left', 'Total left', '● Total left'], async (ctx) => {
-  if (!isBoss(ctx.from.id)) return;
-  userWaitState[ctx.from.id] = { action: 'waiting_boss_left' };
-  await ctx.reply(`<b>Total Left</b>\n\nEnter number:`, {
-    parse_mode: 'HTML',
-    reply_markup: { force_reply: true, input_field_placeholder: 'Enter number...' }
-  });
 });
 
 bot.hears(['Set UPI ID', '● Set UPI ID'], async (ctx) => {
@@ -7059,15 +7020,6 @@ bot.hears(['Login with JSON', '◈ Login with JSON'], async (ctx) => {
 bot.hears(['Login with Number', '☎ Login with Number'], async (ctx) => {
   if (!isBoss(ctx.from.id)) return;
   await promptBossLoginWithNumber(ctx);
-});
-
-bot.hears('# Set Total Slots', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return;
-  userWaitState[ctx.from.id] = { action: 'waiting_boss_total' };
-  await ctx.reply(`<b>Enter number for Total Slots:</b>`, {
-    parse_mode: 'HTML',
-    reply_markup: { force_reply: true, input_field_placeholder: 'Enter total number...' }
-  });
 });
 
 // Register complete Forwarded IB + 10x Parallel Zero-Order Auto-Account Order Workflow (`fwd_*` actions)
@@ -7252,14 +7204,15 @@ bot.on('text', async (ctx) => {
   // Intercept any menu button, slash command, or cancel keyword to free user from wait state
   const isMenuOrCancel = rawText.startsWith('/') || [
     'Order Screen', 'Pending Orders', 'Login with JSON', 'Login with Number',
-    'Connected Accounts', 'Slot Status', 'Total slots', 'Total Slots', 'Total left', 'Total Left',
-    'Claim Free Cash', 'Set UPI ID',
+    'Connected Accounts', 'Claim Free Cash', 'Set UPI ID',
+    '🟠 🛒 Cart Link', '🟢 🛒 Cart ✓', '🟠 Cart Link', '🟢 Cart ✓',
+    '🟠 📍 Address Link', '🟢 📍 Address ✓', '🟠 Address Link', '🟢 Address ✓',
+    '🚀 Send to Beta', '✖ Cancel Draft', '✖ Cancel Order', '✖ Cancel', '📦 Previous Order',
     'Cancel', 'cancel', 'Close', 'close', 'back', 'Back',
     'Main Menu', 'Menu',
     // Legacy emoji versions:
     '▣ Order Screen', '● Pending Orders', '◈ Login with JSON', '☎ Login with Number',
-    '● Connected Accounts', '● Slot Status', '▤ Total slots', '● Total left',
-    '▣ Claim Free Cash', '● Set UPI ID', '# Set Total Slots',
+    '● Connected Accounts', '▣ Claim Free Cash', '● Set UPI ID',
     '× Cancel', '⌂ Main Menu', '× Close'
   ].includes(rawText);
 
@@ -7285,34 +7238,30 @@ bot.on('text', async (ctx) => {
       const draft = getDraft(userId);
       if (!draft.addressDetails?.address) {
         delete userWaitState[userId];
-        await ctx.reply('× Delivery address is missing. Send the exact address or map pin first.');
+        await ctx.reply('🟠 Pehle <b>Address link</b> ya Location bhejein 👇', { parse_mode: 'HTML' });
         return;
       }
       const addressDetails = { ...draft.addressDetails, mobile: recipientMobile };
       updateDraft(userId, { addressDetails });
       delete userWaitState[userId];
       const updatedDraft = getDraft(userId);
-      await ctx.reply(
-        `✓ <b>Recipient mobile saved:</b> <code>${recipientMobile}</code>\n` +
-        `<i>This number will be used for delivery; the Swiggy account number will not replace it.</i>` +
-        (updatedDraft.cart && updatedDraft.address
-          ? '\n\n✓ Cart and delivery details are ready. Tap <b>Send to Beta</b> to continue.'
-          : '\n\nNext, add the Swiggy cart link and then tap Send to Beta.'),
-        {
-          parse_mode: 'HTML',
-          ...(updatedDraft.cart && updatedDraft.address ? Markup.inlineKeyboard([[Markup.button.callback('› Send to Beta', 'action_send_to_beta')]]) : {})
-        }
-      );
+      await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Mobile saved' });
+      if (!updatedDraft.cart) {
+        userWaitState[userId] = { action: 'waiting_cart' };
+        await promptForLink(ctx, userId, 'cart');
+      }
       return;
     }
 
     const hasNewAddress = extractAllLinks(rawText).some(link => isValidDeliveryAddressUrl(link)) ||
-      Boolean(parseAddressDetails(rawText)?.address);
+      Boolean(parseAddressDetails(rawText)?.address) ||
+      extractAllLinks(rawText).some(link => isValidSwiggyCartUrl(link)) ||
+      Boolean(parseCartDetails(rawText));
     if (hasNewAddress) {
       delete userWaitState[userId];
       state = undefined;
     } else {
-      await ctx.reply('! Send only the recipient’s 10-digit Indian mobile number (optionally with +91), or send a corrected full address instead.');
+      await ctx.reply('📞 Sirf <b>10-digit mobile number</b> bhejein:', { parse_mode: 'HTML' });
       return;
     }
   }
@@ -8554,39 +8503,6 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Boss: Set Total Slots
-  if (state && state.action === 'waiting_boss_total') {
-    delete userWaitState[userId];
-    const num = parseInt(rawText.trim(), 10);
-    if (!isNaN(num) && num >= 0) {
-      mutateDb((d) => {
-        d.config.totalSlots = num;
-        d.config.slotsLeft = Math.min(d.config.slotsLeft, num);
-      });
-      const db = getDb();
-      await ctx.reply(`✓ <b>Total slots updated to ${num}!</b> (Slots Left: ${db.config.slotsLeft}/${num})`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
-    } else {
-      await ctx.reply('! Please enter a valid non-negative integer for Total slots.');
-    }
-    return;
-  }
-
-  // Boss: Set Total Left (Slots Left)
-  if (state && state.action === 'waiting_boss_left') {
-    delete userWaitState[userId];
-    const num = parseInt(rawText.trim(), 10);
-    if (!isNaN(num) && num >= 0) {
-      mutateDb((d) => {
-        d.config.slotsLeft = Math.min(d.config.totalSlots, Math.max(0, num));
-      });
-      const db = getDb();
-      await ctx.reply(`✓ <b>Total left updated to ${db.config.slotsLeft}!</b> (${db.config.slotsLeft}/${db.config.totalSlots})`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
-    } else {
-      await ctx.reply('! Please enter a valid non-negative integer for Total left.');
-    }
-    return;
-  }
-
   // Unified Direct Boss Card Workflow (Non-Blocking 10x Parallel Dispatch!):
   // Supports sharing 10+ different Cart + Address orders rapidly without waiting or overwriting previous orders!
   if (isBoss(userId) && (looksLikeBossOrderInput(rawText) || (state && ['waiting_cart', 'waiting_address'].includes(state.action)))) {
@@ -8639,168 +8555,60 @@ bot.on('text', async (ctx) => {
     }
   }
 
-  // Handle waiting_cart state
-  if (state && state.action === 'waiting_cart') {
-    const allLinks = extractAllLinks(rawText);
-    const validCart = allLinks.find(l => isValidSwiggyCartUrl(l));
-    const parsedCart = parseCartDetails(rawText);
-
-    if (!validCart && !parsedCart) {
-      await ctx.reply(
-        `× <b>Fake / Invalid Swiggy Cart Link!</b>\n\n` +
-        `Bot sirf genuine Swiggy cart / group cart links accept karta hai.\n` +
-        `<i>Example: <code>https://swig.gy/gc/...</code> ya <code>https://www.swiggy.com/restaurants/...</code></i>\n\n` +
-        `› Niche button dabakar genuine link paste karein:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('● Paste Cart Link', 'action_paste_cart')]
-          ])
-        }
-      );
-      return;
-    }
-
-    delete userWaitState[userId];
-    const cartVal = validCart || 'https://www.swiggy.com/cart';
-    const draftUpdates = { cart: cartVal };
-    if (parsedCart) draftUpdates.cartDetails = parsedCart;
-
-    // Fast-resolve link metadata (live group cart items, restaurant & real prices)
-    try {
-      const linkMeta = await resolveSwiggyLink(cartVal);
-      if (linkMeta?.cartDetails) {
-        draftUpdates.cartDetails = {
-          ...(draftUpdates.cartDetails || {}),
-          ...(linkMeta.cartDetails || {})
-        };
-      }
-      if (linkMeta?.restaurantName && !draftUpdates.cartDetails?.restaurantName) {
-        draftUpdates.cartDetails = draftUpdates.cartDetails || {};
-        draftUpdates.cartDetails.restaurantName = linkMeta.restaurantName;
-      }
-      if (linkMeta?.restaurantId) draftUpdates.restaurantId = linkMeta.restaurantId;
-      if (linkMeta?.groupCartId) draftUpdates.groupCartId = linkMeta.groupCartId;
-      if (linkMeta?.hostName) draftUpdates.hostName = linkMeta.hostName;
-    } catch (e) {}
-
-    // Check if user also sent address details in the same text.
-    // Only the address link matters; marketing text around it is ignored.
-    const parsedAddr = parseAddressDetails(rawText);
-    const addrLinkInCartMsg = extractAddressShareUrl(rawText);
-    const curBefore = getDraft(userId);
-    if ((parsedAddr || addrLinkInCartMsg) && !curBefore.address) {
-      const geoAddr = parsedAddr
-        ? await geocodeAddressDetails(parsedAddr).catch(() => parsedAddr)
-        : null;
-      draftUpdates.address = geoAddr?.address || addrLinkInCartMsg || `${geoAddr?.city || 'Delivery'} Address`;
-      draftUpdates.addressOriginalText = geoAddr?.address || addrLinkInCartMsg || stripSharedLinks(rawText);
-      if (addrLinkInCartMsg) draftUpdates.addressLink = addrLinkInCartMsg;
-      if (geoAddr) draftUpdates.addressDetails = geoAddr;
-    }
-
-    updateDraft(userId, draftUpdates);
-    const curDraft = getDraft(userId);
-
-    const needsAddressNext = !curDraft.address;
-    if (needsAddressNext) userWaitState[userId] = { action: 'waiting_address' };
-    // One card only: the pasted link message is deleted and the card refreshed.
-    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Cart link saved' });
-    if (needsAddressNext) await promptForLink(ctx, userId, 'address');
-    return;
-  }
-
-  // Handle waiting_address state
-  if (state && state.action === 'waiting_address') {
-    const allLinks = extractAllLinks(rawText);
-    const validAddress = allLinks.find(l => isValidDeliveryAddressUrl(l));
-    let parsedAddr = parseAddressDetails(rawText);
-
-    if (!validAddress && !parsedAddr) {
-      await ctx.reply(
-        `× <b>Fake / Invalid Delivery Address Link!</b>\n\n` +
-        `Bot Swiggy Share Address message (<code>Address: ...</code> ke saath), Google Maps link, plain address, ya Telegram • <b>Location Pin</b> accept karta hai.\n` +
-        `<i>Example: <code>https://swiggy.onelink.me/JgkQ/52yat6op</code></i>\n\n` +
-        `› Niche button dabakar genuine address paste karein:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('● Paste Address Link', 'action_paste_address')]
-          ])
-        }
-      );
-      return;
-    }
-
-    delete userWaitState[userId];
-
-    // Resolve full address details immediately (preserves full Swiggy Share text + geocodes coordinates!)
-    let resolvedAddrDetails = parsedAddr;
-    try {
-      const addrMeta = await resolveSwiggyLink(validAddress || rawText);
-      if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
-        resolvedAddrDetails = { ...(resolvedAddrDetails || {}), ...addrMeta.addressDetails };
-      } else if (resolvedAddrDetails) {
-        resolvedAddrDetails = await geocodeAddressDetails(resolvedAddrDetails);
-      }
-    } catch (e) {}
-
-    // When a link is present only the link matters: the marketing block around
-    // it ("It is a one time use link and will be valid for 24 hours") is ignored.
-    const cleanDisplayAddr = resolvedAddrDetails?.address || validAddress || stripSharedLinks(rawText);
-    const draftUpdates = {
-      address: cleanDisplayAddr,
-      addressOriginalText: resolvedAddrDetails?.address || validAddress || stripSharedLinks(rawText),
-      ...(validAddress ? { addressLink: validAddress } : {})
-    };
-    if (resolvedAddrDetails) draftUpdates.addressDetails = resolvedAddrDetails;
-
-    // Check if user also sent cart details in the same text
-    const parsedCart = parseCartDetails(rawText);
-    const curBefore = getDraft(userId);
-    if (parsedCart && !curBefore.cart) {
-      draftUpdates.cart = 'https://www.swiggy.com/cart';
-      draftUpdates.cartDetails = parsedCart;
-    }
-
-    updateDraft(userId, draftUpdates);
-    const curDraft = getDraft(userId);
-
-    const needsCartNext = !curDraft.cart;
-    if (needsCartNext) userWaitState[userId] = { action: 'waiting_cart' };
-    // One card only: link message deleted, unresolved-link tip stays on the card.
-    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Address link saved' });
-    if (needsCartNext) await promptForLink(ctx, userId, 'cart');
-    return;
-  }
-
-  // General Ingestion (Links OR Structured Receipt/Address text pasted directly)
+  // Direct, flexible user input: accept Cart OR Address (or both together!) in ANY order,
+  // even if the user previously tapped the other button! Only show a short 1-line hint if
+  // the message contains neither a valid cart nor a valid delivery address.
   const allLinks = extractAllLinks(rawText);
+  const validCartLink = allLinks.find(l => isValidSwiggyCartUrl(l));
+  const validAddrLink = allLinks.find(l => isValidDeliveryAddressUrl(l));
   const parsedCartDirect = parseCartDetails(rawText);
   const parsedAddrDirect = parseAddressDetails(rawText);
+  const hasAnyValidOrderInput = Boolean(validCartLink || validAddrLink || parsedCartDirect || parsedAddrDirect);
 
-  if (allLinks.length > 0 || parsedCartDirect || parsedAddrDirect) {
+  if (!hasAnyValidOrderInput && state && (state.action === 'waiting_cart' || state.action === 'waiting_address')) {
+    const askingCart = state.action === 'waiting_cart';
+    await ctx.reply(
+      askingCart
+        ? '🟠 Sahi <b>Cart link</b> bhejein 👇'
+        : '🟠 Sahi <b>Address link</b> ya Location bhejein 👇',
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            askingCart
+              ? { text: '🟠 🛒 Cart Link', callback_data: 'action_paste_cart', style: 'danger' }
+              : { text: '🟠 📍 Address Link', callback_data: 'action_paste_address', style: 'danger' }
+          ]
+        ])
+      }
+    );
+    return;
+  }
+
+  // Unified Ingestion (Links OR Structured Receipt/Address text pasted directly, in any order)
+  if (allLinks.length > 0 || hasAnyValidOrderInput) {
     let addedCart = false;
     let addedAddress = false;
     let hadFake = false;
-
-    const validCartLink = allLinks.find(l => isValidSwiggyCartUrl(l));
-    const validAddrLink = allLinks.find(l => isValidDeliveryAddressUrl(l));
 
     if (validCartLink || parsedCartDirect) {
       let cartMeta = null;
       if (validCartLink) {
         try { cartMeta = await resolveSwiggyLink(validCartLink); } catch (e) {}
       }
+      const mergedCartDetails = {
+        ...(parsedCartDirect || {}),
+        ...(cartMeta?.cartDetails || {})
+      };
+      if (cartMeta?.restaurantName && !mergedCartDetails.restaurantName) {
+        mergedCartDetails.restaurantName = cartMeta.restaurantName;
+      }
       updateDraft(userId, {
         cart: validCartLink || 'https://www.swiggy.com/cart',
         ...(cartMeta?.restaurantId ? { restaurantId: cartMeta.restaurantId } : {}),
         ...(cartMeta?.groupCartId ? { groupCartId: cartMeta.groupCartId } : {}),
         ...(cartMeta?.hostName ? { hostName: cartMeta.hostName } : {}),
-        cartDetails: {
-          ...(parsedCartDirect || {}),
-          ...(cartMeta?.cartDetails || {})
-        }
+        cartDetails: mergedCartDetails
       });
       addedCart = true;
     }
@@ -8838,17 +8646,13 @@ bot.on('text', async (ctx) => {
 
     if (hadFake && !addedCart && !addedAddress) {
       await ctx.reply(
-        `× <b>Fake ya invalid Link!</b>\n\n` +
-        `Bot me sirf genuine links accept hote hain:\n` +
-        `● <b>Cart:</b> <code>https://swig.gy/gc/...</code>\n` +
-        `● <b>Address:</b> <code>https://swiggy.onelink.me/JgkQ/52yat6op</code>\n\n` +
-        `› Niche diye gaye buttons se link add karein:`,
+        '🟠 Sahi <b>Cart</b> ya <b>Address link</b> bhejein 👇',
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [
-              Markup.button.callback('● Paste Cart Link', 'action_paste_cart'),
-              Markup.button.callback('● Paste Address Link', 'action_paste_address')
+              { text: '🟠 🛒 Cart Link', callback_data: 'action_paste_cart', style: 'danger' },
+              { text: '🟠 📍 Address Link', callback_data: 'action_paste_address', style: 'danger' }
             ]
           ])
         }
@@ -8866,38 +8670,19 @@ bot.on('text', async (ctx) => {
       userWaitState[userId] = { action: 'waiting_cart' };
       nextPrompt = 'cart';
     }
+    const savedNotice = addedCart && addedAddress
+      ? '✓ Cart & Address saved'
+      : (addedCart ? '✓ Cart link saved' : '✓ Address link saved');
     // One card only: the pasted link message is deleted, card shows items +
     // address and Send to Beta becomes the single next action.
-    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Link saved' });
+    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: savedNotice });
     if (nextPrompt) await promptForLink(ctx, userId, nextPrompt);
     return;
   }
 
-  // Plain text fallback for normal users
+  // Plain text fallback for normal users — single clean card, zero extra lecture bubbles
   if (!isBoss(userId)) {
-    const curDraft = getDraft(userId);
-    await ctx.reply(
-      `→ <b>Swiggy Food Order</b>\n\n` +
-      `Kripya buttons se link paste karein:\n\n` +
-      `● <b>Cart Link:</b> Genuine Swiggy link (<code>https://swig.gy/gc/...</code>)\n` +
-      `● <b>Address Link:</b> Swiggy Address link (<code>https://swiggy.onelink.me/JgkQ/...</code>)\n\n` +
-      `Niche buttons par click karein:`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [
-            Markup.button.callback(curDraft.cart ? '● Cart: Added ✓' : '● Paste Cart Link', 'action_paste_cart'),
-            Markup.button.callback(curDraft.address ? '● Address: Added ✓' : '● Paste Address Link', 'action_paste_address')
-          ],
-          [
-            Markup.button.callback('› Send to Beta', 'action_send_to_beta')
-          ]
-        ]),
-        ...getUserReplyKeyboard(curDraft)
-      }
-    );
-    const screen = getUserScreen(userId, ctx.from);
-    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    await renderUserCard(ctx, userId, { notice: '🟠 Link bhejein' });
     return;
   }
 
@@ -8914,7 +8699,7 @@ async function handleIncomingTelegramLocation(ctx, loc) {
   const lat = String(loc.latitude);
   const lng = String(loc.longitude);
   if (!isValidIndianDeliveryCoordinates(lat, lng)) {
-    await ctx.reply('× Swiggy delivery is India-only. That pin is outside the valid Indian map area; send the correct delivery pin.');
+    await ctx.reply('🟠 Sirf India ki delivery location bhejein.', { parse_mode: 'HTML' });
     return;
   }
 
@@ -8938,39 +8723,19 @@ async function handleIncomingTelegramLocation(ctx, loc) {
     addressDetails: resolvedAddr
   });
 
-  const curDraft = getDraft(userId);
-  if (curDraft.cart) {
-    await ctx.reply(
-      `⌖ <b>Delivery pin saved!</b>\n` +
-      `⌂ <code>${escapeHtml(resolvedAddr.address)}</code>\n\n` +
-      `☎ <i>Now send the recipient’s correct 10-digit Indian mobile number (optionally +91). The Swiggy account number will not be used.</i>`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [
-            Markup.button.callback('● Cart: Added ✓', 'action_paste_cart'),
-            Markup.button.callback('● Address: Added ✓', 'action_paste_address')
-          ]
-        ]),
-        ...getUserReplyKeyboard(curDraft)
+  await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Location saved' });
+  const mobilePrompt = await ctx.reply(
+    '📞 <b>Delivery mobile number</b> bhejein (10 digit):',
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        force_reply: true,
+        selective: true,
+        input_field_placeholder: '10-digit mobile number...'
       }
-    );
-  } else {
-    await ctx.reply(
-      `⌖ <b>Delivery pin saved!</b>\n` +
-      `⌂ <code>${escapeHtml(resolvedAddr.address)}</code>\n\n` +
-      `☎ Pehle recipient ka sahi 10-digit Indian mobile number bhejein; phir Swiggy Cart link add karein.`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('● Paste Cart Link', 'action_paste_cart')]
-        ])
-      }
-    );
-  }
-
-  const screen = getUserScreen(userId, ctx.from);
-  await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    }
+  ).catch(() => null);
+  if (mobilePrompt) rememberUserPrompt(userId, mobilePrompt);
 }
 
 bot.on('location', async (ctx) => {
@@ -9067,14 +8832,13 @@ async function handleCartLinkFlow(ctx) {
   const draft = getDraft(userId);
   if (draft.cart) {
     return ctx.reply(
-      `! <b>Are you sure you want to change your saved Cart Link?</b>\n\n` +
-      `Current: <code>${escapeHtml(draft.cart)}</code>`,
+      `🟠 <b>Cart link badalna hai?</b>`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [
-            Markup.button.callback('✓ Yes, change cart link', 'action_confirm_change_cart'),
-            Markup.button.callback('← Keep Link', 'action_cancel_change_link')
+            { text: '🟠 Haan, Naya Link', callback_data: 'action_confirm_change_cart', style: 'danger' },
+            { text: '🟢 Yahi Rakhein', callback_data: 'action_cancel_change_link', style: 'success' }
           ]
         ])
       }
@@ -9085,20 +8849,19 @@ async function handleCartLinkFlow(ctx) {
   await promptForLink(ctx, userId, 'cart');
 }
 
-// Address Link Flow (asks confirmation before replacing an already-saved Address Link)
+// Address Link Flow (asks short confirmation before replacing an already-saved Address Link)
 async function handleAddressLinkFlow(ctx) {
   const userId = ctx.from.id;
   const draft = getDraft(userId);
   if (draft.address) {
     return ctx.reply(
-      `! <b>Are you sure you want to change your saved Address Link?</b>\n\n` +
-      `Current: <code>${escapeHtml(draft.address)}</code>`,
+      `🟠 <b>Address link badalna hai?</b>`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [
-            Markup.button.callback('✓ Yes, change address link', 'action_confirm_change_address'),
-            Markup.button.callback('← Keep Link', 'action_cancel_change_link')
+            { text: '🟠 Haan, Naya Address', callback_data: 'action_confirm_change_address', style: 'danger' },
+            { text: '🟢 Yahi Rakhein', callback_data: 'action_cancel_change_link', style: 'success' }
           ]
         ])
       }
@@ -9109,7 +8872,7 @@ async function handleAddressLinkFlow(ctx) {
   await promptForLink(ctx, userId, 'address');
 }
 
-// Cancel Order with "Are you sure" Red Confirmation (FigJam Flowchart)
+// Cancel Order with short colorful Confirmation
 async function handleCancelOrderConfirm(ctx, orderId = null) {
   const userId = ctx.from.id;
   const db = getDb();
@@ -9117,21 +8880,18 @@ async function handleCancelOrderConfirm(ctx, orderId = null) {
   const draft = getDraft(userId);
 
   if (!activeOrder && !draft.cart && !draft.address) {
-    return ctx.reply('i <b>Aapka koi active order ya saved draft nahi hai jise cancel kiya jaye.</b>', { parse_mode: 'HTML' });
+    return ctx.reply('i <b>Abhi koi active order ya draft nahi hai.</b>', { parse_mode: 'HTML' });
   }
 
   const targetId = activeOrder ? activeOrder.id : 'draft';
   const text = activeOrder
-    ? `! <b>Kya aap waqai Order #${activeOrder.id} cancel karna chahte hain?</b>\n\n` +
-      `▣ Restaurant: <b>${escapeHtml(activeOrder.restaurantName || 'Swiggy Order')}</b>\n` +
-      `₹ Amount: <b>₹${activeOrder.finalPayable || 0}</b>\n\n` +
-      `<i>Niche confirmation select karein:</i>`
-    : `! <b>Kya aap waqai draft cancel karna chahte hain?</b>\n\nCart aur Address links clear ho jayenge.`;
+    ? `⚠️ <b>Order #${activeOrder.id} cancel karein?</b>\n<b>${escapeHtml(activeOrder.restaurantName || 'Swiggy Order')}</b>${activeOrder.finalPayable ? ` · ₹${activeOrder.finalPayable}` : ''}`
+    : `⚠️ <b>Draft clear karein?</b>`;
 
   const buttons = [
     [
-      Markup.button.callback('Are you sure (Cancel)', `user_confirm_cancel_${targetId}`),
-      Markup.button.callback('Keep Order', `user_keep_order_${targetId}`)
+      { text: '✖ Haan, Cancel', callback_data: `user_confirm_cancel_${targetId}`, style: 'danger' },
+      { text: '🟢 Nahi, Rakhein', callback_data: `user_keep_order_${targetId}`, style: 'success' }
     ]
   ];
 
@@ -9208,7 +8968,7 @@ async function resetCardAndAskForMissing(ctx, userId, missing) {
   if (missing === 'cart') {
     userWaitState[userId] = { action: 'waiting_cart' };
     await ctx.reply(
-      '! <b>Cart link missing hai.</b>\n\nSwiggy app se apna cart / group-cart link bhejein — uske baad address maanga jayega.',
+      '🟠 <b>Cart link missing</b> — bhejein 👇',
       { parse_mode: 'HTML' }
     ).catch(() => {});
     await promptForLink(ctx, userId, 'cart');
@@ -9216,7 +8976,7 @@ async function resetCardAndAskForMissing(ctx, userId, missing) {
   }
   userWaitState[userId] = { action: 'waiting_address' };
   await ctx.reply(
-    '! <b>Delivery address missing hai.</b>\n\nApna Swiggy share-address link, Google Maps link, ya Telegram • Location pin bhejein.',
+    '🟠 <b>Delivery address missing</b> — bhejein 👇',
     { parse_mode: 'HTML' }
   ).catch(() => {});
   await promptForLink(ctx, userId, 'address');
@@ -9229,14 +8989,12 @@ async function handleSendToBoss(ctx) {
   const activeOrder = getActiveUserOrder(userId);
   if (activeOrder) {
     return ctx.reply(
-      `! <b>Aapka ek order pehle se chal raha hai (#${activeOrder.id})!</b>\n\n` +
-      `Jab tak purana order complete (delivered) ya cancel nahi ho jata, tab tak naya order nahi bhej sakte.\n` +
-      `Naya order bhejne ke liye pehle purana order cancel karein:`,
+      `⚠️ <b>Order #${activeOrder.id} pehle se chal raha hai!</b>`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback(`Cancel Current Order #${activeOrder.id}`, `user_confirm_cancel_${activeOrder.id}`)],
-          [Markup.button.callback('Refresh Status', `user_refresh_status_${activeOrder.id}`)]
+          [{ text: '↻ Refresh Status', callback_data: `user_refresh_status_${activeOrder.id}`, style: 'primary' }],
+          [{ text: `✖ Cancel Order #${activeOrder.id}`, callback_data: `user_confirm_cancel_${activeOrder.id}`, style: 'danger' }]
         ])
       }
     );
@@ -9277,10 +9035,10 @@ async function handleSendToBoss(ctx) {
   if (addressLink && deliveryDetails.unresolvableShortLink) {
     userWaitState[userId] = { action: 'waiting_address' };
     return ctx.reply(
-      `! <b>Address link resolve nahi hua.</b>\n\nSwiggy share-address link expire ho gaya ho sakta hai. Naya address link bhejein, ya Telegram • <b>Location</b> pin bhejein.`,
+      `🟠 <b>Address link expire ho gaya</b> — naya link ya Location bhejein 👇`,
       {
         parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([[Markup.button.callback('● Paste Address Link', 'action_paste_address')]])
+        ...Markup.inlineKeyboard([[{ text: '🟠 📍 Address Link', callback_data: 'action_paste_address', style: 'danger' }]])
       }
     );
   }
@@ -9289,8 +9047,15 @@ async function handleSendToBoss(ctx) {
   if (!explicitRecipientMobile) {
     userWaitState[userId] = { action: 'waiting_recipient_mobile' };
     return ctx.reply(
-      `☎ <b>Recipient mobile number required</b>\n\nSend the correct 10-digit Indian number for the person receiving this order (optionally with +91). The Swiggy account number or an old saved contact will not be substituted.`,
-      { parse_mode: 'HTML' }
+      `📞 <b>Delivery mobile number</b> bhejein (10 digit):`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          force_reply: true,
+          selective: true,
+          input_field_placeholder: '10-digit mobile number...'
+        }
+      }
     );
   }
   deliveryDetails.mobile = explicitRecipientMobile;
@@ -9464,26 +9229,6 @@ bot.action('action_cancel_change_link', async (ctx) => {
   await renderUserCard(ctx, userId);
 });
 
-bot.action('boss_prompt_total_slots', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  await ctx.answerCbQuery().catch(() => {});
-  userWaitState[ctx.from.id] = { action: 'waiting_boss_total' };
-  await ctx.reply(`<b>Total Slots</b>\n\nEnter number:`, {
-    parse_mode: 'HTML',
-    reply_markup: { force_reply: true, input_field_placeholder: 'Enter number...' }
-  });
-});
-
-bot.action('boss_prompt_slots_left', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  await ctx.answerCbQuery().catch(() => {});
-  userWaitState[ctx.from.id] = { action: 'waiting_boss_left' };
-  await ctx.reply(`<b>Total Left</b>\n\nEnter number:`, {
-    parse_mode: 'HTML',
-    reply_markup: { force_reply: true, input_field_placeholder: 'Enter number...' }
-  });
-});
-
 bot.action(['action_send_to_admin', 'action_send_to_boss', 'action_send_to_beta', 'action_send_order_to_beta'], async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await handleSendToBoss(ctx);
@@ -9508,11 +9253,12 @@ bot.action(/^user_confirm_cancel_(.+)$/, async (ctx) => {
     clearDraft(userId);
     userChatCards.delete(String(userId));
     const screen = getUserScreen(userId, ctx.from);
-    await ctx.answerCbQuery('Draft Cancelled ●').catch(() => {});
+    await ctx.answerCbQuery('Draft Cleared').catch(() => {});
     try {
-      await ctx.editMessageText('● <b>Draft cancel ho gaya hai!</b>\n\nAap dobara link attach kar sakte hain:', { parse_mode: 'HTML' });
-    } catch (e) {}
-    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+      await ctx.editMessageText(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    } catch (e) {
+      await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+    }
     return;
   }
 
@@ -9530,10 +9276,6 @@ bot.action(/^user_confirm_cancel_(.+)$/, async (ctx) => {
   // State machine transition check
   if (!canTransitionOrder(order.status, 'CANCELLED')) {
     return ctx.answerCbQuery(`Cannot cancel: order is already ${order.status}`, { show_alert: true }).catch(() => {});
-  }
-
-  if (order.status === 'ACCEPTED') {
-    db.config.slotsLeft = Math.min(db.config.totalSlots, db.config.slotsLeft + 1);
   }
 
   order.status = 'CANCELLED';
@@ -10378,34 +10120,10 @@ bot.action(/^cash_loot_acc_(.+)$/, async (ctx) => {
   );
 });
 
-// Boss Slots Commands
-bot.command('slots', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.reply('Unauthorized: Boss only');
-  const parts = ctx.message.text.trim().split(/\s+/);
-  const db = getDb();
-  if (parts.length >= 2) {
-    const total = parseInt(parts[1], 10);
-    if (!isNaN(total) && total >= 0) {
-      db.config.totalSlots = total;
-      if (parts.length >= 3) {
-        const left = parseInt(parts[2], 10);
-        if (!isNaN(left)) db.config.slotsLeft = Math.max(0, Math.min(total, left));
-      } else {
-        db.config.slotsLeft = Math.min(db.config.slotsLeft, total);
-      }
-      saveDb(db);
-      return ctx.reply(`✓ <b>Slots updated!</b>\nSlots Left: <b>${db.config.slotsLeft}/${db.config.totalSlots}</b>`, { parse_mode: 'HTML' });
-    }
-  }
-  return ctx.reply(`▤ <b>Current Slots:</b> ${db.config.slotsLeft}/${db.config.totalSlots}\n\n<i>To update: /slots <total> [left] (e.g. /slots 10 8) or /resetslots</i>`, { parse_mode: 'HTML' });
-});
-
-bot.command('resetslots', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.reply('Unauthorized: Boss only');
-  const db = getDb();
-  db.config.slotsLeft = db.config.totalSlots;
-  saveDb(db);
-  return ctx.reply(`↻ <b>Slots Reset!</b>\nSlots Left: <b>${db.config.slotsLeft}/${db.config.totalSlots}</b>`, { parse_mode: 'HTML' });
+// Slot system removed — orders are unlimited without slot gating.
+bot.command(['slots', 'resetslots'], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return;
+  return ctx.reply('✓ <b>Slot system hata diya gaya hai</b> — ab unlimited orders direct chalte hain.', { parse_mode: 'HTML' });
 });
 
 bot.action('noop', async (ctx) => ctx.answerCbQuery().catch(() => {}));
@@ -10597,29 +10315,6 @@ export async function approveUserOrderBillAction(uidStr, orderId) {
   }
   if (!['APPROVAL_PENDING', 'PAYMENT_PENDING'].includes(order.status)) {
     return { ok: false, error: 'This bill is not awaiting approval.' };
-  }
-
-  // A slot is consumed when the customer actually approves the bill (Boss's
-  // "Accept" does the same for manual approvals, so it is never counted twice).
-  if (!order.slotConsumed) {
-    if (Number(db.config?.slotsLeft || 0) <= 0) {
-      order.status = 'REJECTED';
-      order.rejectedAt = new Date().toISOString();
-      order.rejectReason = 'Sorry, slot has ended.';
-      if (order.selectedAccount) releaseSwiggyAccountReservation(order.selectedAccount, order.id);
-      saveDb(db);
-      await updateOrderCards(order).catch(() => {});
-      try {
-        await bot.telegram.sendMessage(
-          String(uidStr),
-          `× <b>Sorry, slot has ended.</b>\n\nAapka bill approve nahi ho saka kyunki slots khatam ho chuke hain.`,
-          { parse_mode: 'HTML' }
-        );
-      } catch (e) {}
-      return { ok: false, error: 'Sorry, slot has ended.' };
-    }
-    db.config.slotsLeft = Math.max(0, Number(db.config.slotsLeft || 0) - 1);
-    order.slotConsumed = true;
   }
 
   if (!order.billApprovedByUser) {
