@@ -166,9 +166,17 @@ try {
     assert.strictEqual(isTerminalDeliveryStatus('COMPLETED'), false, 'bot COMPLETED means paid, not delivered');
   });
 
-  await check('A finished order never starts an endless auto-fetch retry ladder', async () => {
+  await check('A finished order never starts an endless auto-fetch retry ladder (cancelled skips; delivered does 1 extraction pass then stops)', async () => {
     const db = getDb();
     db.orders = db.orders || {};
+    db.orders.V24_CANCELLED = {
+      id: 'V24_CANCELLED',
+      status: 'COMPLETED',
+      swiggyOrderId: CANCELLED_ID,
+      liveOrderStatus: 'cancelled',
+      selectedAccount: 'acc_v24',
+      createdAt: new Date().toISOString()
+    };
     db.orders.V24_DONE = {
       id: 'V24_DONE',
       status: 'COMPLETED',
@@ -179,10 +187,12 @@ try {
     };
     saveDb(db);
 
-    assert.strictEqual(stopOrderTrackingAuto('V24_DONE'), false, 'no timer should exist yet');
-    const started = startOrderTrackingAuto('V24_DONE', { force: true, budgetMs: 4000 });
-    assert.strictEqual(started, null, 'a delivered order must not be scheduled for retries');
-    assert.strictEqual(stopOrderTrackingAuto('V24_DONE'), false, 'nothing was scheduled');
+    assert.strictEqual(startOrderTrackingAuto('V24_CANCELLED', { force: true, budgetMs: 4000 }), null, 'cancelled order is never scheduled');
+    const started = startOrderTrackingAuto('V24_DONE', { budgetMs: 4000, getAccountsFn });
+    assert.ok(started && started.singlePass === true, 'unscanned delivered order runs a single extraction pass');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.strictEqual(stopOrderTrackingAuto('V24_DONE'), false, 'delivered timer stops itself after 1 pass (no endless retry ladder)');
+    assert.strictEqual(startOrderTrackingAuto('V24_DONE', { budgetMs: 4000 }), null, 'already-scanned delivered order does not re-schedule');
   });
 
   await check('An active order still gets the background retry ladder', () => {

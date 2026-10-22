@@ -2,8 +2,17 @@
 // Uses optional SMS gateway via env vars, falls back to Telegram-only log
 
 import { getDb } from './store.js';
+import { getStoredSwiggyTrackingUrl, isOfficialSwiggyTrackingUrl } from './swiggy-cart.js';
 
 const SMS_ENABLED = process.env.SMS_ENABLED !== 'false'; // default enabled if gateway configured
+
+function resolveVerifiedSmsTrackingUrl(order, candidateUrl = '') {
+  const explicit = String(candidateUrl || '').trim();
+  if (explicit && isOfficialSwiggyTrackingUrl(explicit, { allowProviderShortLink: true })) {
+    return explicit;
+  }
+  return getStoredSwiggyTrackingUrl(order);
+}
 
 function logSms(phone, text) {
   console.log(`[SMS-NOTIFY] To ${phone}: ${text.slice(0, 120)}`);
@@ -11,19 +20,20 @@ function logSms(phone, text) {
 
 export async function sendParentSmsNotification(order, trackingUrl = '') {
   try {
+    const safeTrackingUrl = resolveVerifiedSmsTrackingUrl(order, trackingUrl);
     const recipientMobile = String(order?.addressDetails?.mobile || order?.addressDetails?.phone || '').replace(/\D/g, '').slice(-10);
     if (!recipientMobile || !/^[6-9]\d{9}$/.test(recipientMobile)) {
       console.log(`[SMS-NOTIFY] Skip: invalid recipient mobile for order #${order.id}`);
       return { sent: false, reason: 'invalid_mobile' };
     }
     if (!SMS_ENABLED) {
-      logSms(recipientMobile, `[SMS disabled] Order #${order.id} tracking: ${trackingUrl}`);
+      logSms(recipientMobile, `[SMS disabled] Order #${order.id} tracking: ${safeTrackingUrl}`);
       return { sent: false, reason: 'sms_disabled' };
     }
 
     const bossName = String(order.bossName || order.placedByName || 'Fer aex').trim() || 'Fer aex';
     const displayId = String(order.swiggyOrderId || order.pendingSwiggyOrderId || order.id || '').trim();
-    const trackPart = trackingUrl ? ` Track: ${trackingUrl}` : ' Tracking link jaldi bheja jayega.';
+    const trackPart = safeTrackingUrl ? ` Track: ${safeTrackingUrl}` : ' Tracking link jaldi bheja jayega.';
     const smsText = `${bossName} ne aapke liye Swiggy order place kiya hai. Order ID: ${displayId} for you on Swiggy.${trackPart} - Reply STOP to opt out`;
 
     // Try external SMS gateway if configured
@@ -68,7 +78,7 @@ export async function sendParentSmsNotification(order, trackingUrl = '') {
 // Helper to notify parents on order placement (before tracking) — called when order is created/accepted
 export async function notifyParentsOrderPlaced(order) {
   if (!order || !order.addressDetails?.mobile) return;
-  const trackingUrl = order.trackingLink || '';
+  const trackingUrl = getStoredSwiggyTrackingUrl(order);
   // For initial placement (no tracking yet), send SMS without tracking, will be updated later
   return sendParentSmsNotification(order, trackingUrl);
 }
@@ -88,7 +98,7 @@ export async function sendDirectOrderSms(order) {
     const restaurant = String(order?.restaurantName || 'Swiggy Order').trim();
     const itemsCount = Array.isArray(order?.items) ? order.items.length : 0;
     const amount = Number(order?.finalPayable || order?.subtotal || 0);
-    const trackingUrl = order?.trackingLink || getStoredLink(order) || '';
+    const trackingUrl = getStoredSwiggyTrackingUrl(order);
     const payUrl = order?.swiggyPaymentUrl || order?.pendingSwiggyUpiUri || order?.realUpiIntentUri || '';
 
     const lines = [
@@ -116,13 +126,10 @@ export async function sendPaymentLinkSms(order, paymentUrl='') {
     const amount = Number(order?.finalPayable || order?.subtotal || 0);
     const payLink = paymentUrl || order?.swiggyPaymentUrl || order?.pendingSwiggyUpiUri || order?.realUpiIntentUri || '';
     if (!payLink) return {sent:false, reason:'no_pay_link'};
-    const smsText = `💳 Payment Required — Swiggy Order #${orderId}\nAmount: ₹${amount}\nPay Now: ${payLink}\nTrack: ${order?.trackingLink||'available after payment'}\n- Swiggy Bot`;
+    const validTrack = getStoredSwiggyTrackingUrl(order);
+    const smsText = `💳 Payment Required — Swiggy Order #${orderId}\nAmount: ₹${amount}\nPay Now: ${payLink}\nTrack: ${validTrack || 'available after payment'}\n- Swiggy Bot`;
     return sendSmsViaGateway(targetPhone, smsText, order.id);
   } catch(e){ return {sent:false, reason:e.message}; }
-}
-
-function getStoredLink(order){
-  try{ const v=String(order?.trackingLink||'').trim(); return v.startsWith('http')? v:'';}catch{return '';}
 }
 
 async function sendSmsViaGateway(phone, text, orderId=''){
