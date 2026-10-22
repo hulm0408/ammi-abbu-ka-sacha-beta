@@ -16,6 +16,7 @@ import assert from 'assert';
 import { getDb, saveDb } from './store.js';
 import {
   isOfficialSwiggyTrackingUrl,
+  normalizeSwiggyLiveOrderStatus,
   getStoredSwiggyTrackingUrl,
   extractSwiggyProvidedTrackingUrl,
   extractOrderShareUrlDeep,
@@ -26,7 +27,8 @@ import {
 import {
   ensureOrderTracking,
   startOrderTrackingAuto,
-  stopOrderTrackingAuto
+  stopOrderTrackingAuto,
+  isTerminalDeliveryStatus
 } from './order-tracking.js';
 import { buildBossOrderCard, buildBossDashboard, trackingLinkDisplay } from './boss-panel.js';
 import { sendParentSmsNotification, sendDirectOrderSms } from './sms-notify.js';
@@ -104,6 +106,7 @@ await check('Accepts genuine Swiggy OFO & order tracking URLs', () => {
     'https://www.swiggy.com/ofo/track/n4b5SldB4SJx',
     'https://www.swiggy.com/track-order/shared-token-998877',
     'https://www.swiggy.com/orders/track/250070826195484',
+    'https://www.swiggy.com/orders/track?order_id=250070826195484&tracking=abc',
     'https://www.swiggy.com/orders/250070826195484'
   ];
   for (const good of realUrls) {
@@ -360,6 +363,219 @@ try {
     );
     assert.strictEqual(ensured.trackingUrl, REAL_OLDER_DELIVERED_URL);
     assert.strictEqual(getDb().orders[DELIVERED_OLDER_ID]?.trackingLink, REAL_OLDER_DELIVERED_URL);
+  });
+
+  await check('Post-delivery "Rate your delivery" from trackV4 normalizes to Delivered (never stuck on auto-fetching)', async () => {
+    const RATE_ORDER_ID = '251585352131266';
+    const prevFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (url) => {
+        const target = String(url);
+        if (target.includes('/dapi/order/all')) {
+          return makeResponse({
+            statusCode: 0,
+            tid: FAKE_JWT,
+            sid: 'sid-rate',
+            deviceId: 'dev-rate',
+            data: {
+              orders: [{
+                order_id: RATE_ORDER_ID,
+                order_status: 'Delivered',
+                order_delivery_status: 'delivered',
+                restaurant_name: '24/7 Food Ex',
+                order_total: 36,
+                order_items: [{ name: 'Veg Fried Rice', quantity: 1 }]
+              }]
+            }
+          });
+        }
+        if (target.includes('order/trackV4')) {
+          return makeResponse({
+            statusCode: 0,
+            data: {
+              order_status_details: { status_message: 'Rate your delivery' }
+            }
+          });
+        }
+        return makeResponse({ statusCode: 0, data: {} });
+      };
+
+      const rateAcc = {
+        account: 'acc_rate_bug',
+        phone: '7488934840',
+        name: 'Fer aex',
+        customerId: '285591864',
+        token: 'tok-rate',
+        tid: FAKE_JWT,
+        sid: 'sid-rate',
+        deviceId: 'dev-rate',
+        cookies: `_session_tid=rate_sess; token=tok-rate; _sid=sid-rate; _swuid=dev-rate; tid=${FAKE_JWT}`,
+        isLoggedIn: true
+      };
+
+      const orders = await fetchAccountOrders(rateAcc);
+      assert.strictEqual(orders.length, 1);
+      assert.strictEqual(orders[0].status, 'Delivered', 'Rate your delivery must normalize to Delivered');
+      assert.strictEqual(isTerminalDeliveryStatus('Rate your delivery'), true);
+      const rowLabel = trackingLinkDisplay({ url: orders[0].trackingUrl, status: orders[0].status, orderId: RATE_ORDER_ID });
+      assert.ok(rowLabel.includes('order delivered'), `expected delivered label, got: ${rowLabel}`);
+      assert.ok(!rowLabel.includes('auto-fetching'), 'delivered order must never show auto-fetching');
+      assert.ok(
+        trackingLinkDisplay({ url: '', status: 'Rate your delivery', orderId: RATE_ORDER_ID }).includes('order delivered'),
+        'even pre-cached Rate your delivery status must render as delivered'
+      );
+      assert.strictEqual(normalizeSwiggyLiveOrderStatus('How was your food?', 'Delivered'), 'Delivered');
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
+  await check('Live-captured Swiggy tracking link is preserved in vault and still returned after order becomes Delivered', async () => {
+    const LIVE_TO_DONE_ID = '251614049143835';
+    const LIVE_OFO_LINK = 'http://r.swiggy.com/swiggy/ofo/track/m9Q4vWz7Kp2R';
+    let isNowDelivered = false;
+    const prevFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (url, init = {}) => {
+        const target = String(url);
+        if (target.includes('/dapi/order/all')) {
+          return makeResponse({
+            statusCode: 0,
+            tid: FAKE_JWT,
+            sid: 'sid-vault',
+            deviceId: 'dev-vault',
+            data: {
+              orders: [{
+                order_id: LIVE_TO_DONE_ID,
+                order_status: isNowDelivered ? 'Delivered' : 'Out for delivery',
+                restaurant_name: 'Mouj Mela',
+                order_total: 28
+              }]
+            }
+          });
+        }
+        if (target.includes('order/trackV4')) {
+          if (!isNowDelivered) {
+            return makeResponse({
+              statusCode: 0,
+              data: {
+                order_status_details: { status_message: 'Out for delivery' },
+                share_details: { shareable_url: LIVE_OFO_LINK }
+              }
+            });
+          }
+          // Post-delivery: Swiggy wipes the share widget and shows "Rate your delivery"
+          return makeResponse({
+            statusCode: 0,
+            data: {
+              order_status_details: { status_message: 'Rate your delivery' }
+            }
+          });
+        }
+        return makeResponse({ statusCode: 0, data: {} });
+      };
+
+      const vaultAcc = {
+        account: 'acc_vault_v26',
+        phone: '9241843414',
+        name: 'Panu teo',
+        customerId: '285591864',
+        token: 'tok-vault',
+        tid: FAKE_JWT,
+        sid: 'sid-vault',
+        deviceId: 'dev-vault',
+        cookies: `_session_tid=vault_sess; token=tok-vault; _sid=sid-vault; _swuid=dev-vault; tid=${FAKE_JWT}`,
+        isLoggedIn: true
+      };
+
+      // Phase A: order is live -> link captured
+      const liveOrders = await fetchAccountOrders(vaultAcc);
+      assert.strictEqual(liveOrders[0].trackingUrl, LIVE_OFO_LINK);
+      assert.strictEqual(liveOrders[0].status, 'Out for delivery');
+
+      // Phase B: order is now Delivered and Swiggy trackV4 returns "Rate your delivery" with NO URL
+      isNowDelivered = true;
+      const doneOrders = await fetchAccountOrders(vaultAcc);
+      assert.strictEqual(doneOrders[0].status, 'Delivered');
+      assert.strictEqual(doneOrders[0].trackingUrl, LIVE_OFO_LINK, 'Delivered order retains real Swiggy tracking link from vault');
+
+      const scanDone = await scanOrderAcrossAccounts(LIVE_TO_DONE_ID, {
+        getAccountsFn: () => ({ acc_vault_v26: vaultAcc }),
+        budgetMs: 6000
+      });
+      assert.strictEqual(scanDone.orderStatus, 'Delivered');
+      assert.strictEqual(scanDone.trackingUrl, LIVE_OFO_LINK);
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
+  await check('mWeb UA + Official Swiggy Food MCP fallback extracts genuine tracking URL when Android DAPI omits it', async () => {
+    const MCP_ORDER_ID = '251576536129282';
+    const MCP_OFO_URL = 'https://r.swiggy.com/swiggy/ofo/track/p7X3kLm9Qw2Z';
+    let sawMobileWebUa = false;
+    const prevFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (url, init = {}) => {
+        const target = String(url);
+        const ua = String(init?.headers?.['User-Agent'] || init?.headers?.['user-agent'] || '');
+        if (target.includes('/dapi/order/all')) {
+          return makeResponse({
+            statusCode: 0,
+            tid: FAKE_JWT,
+            sid: 'sid-mcp',
+            deviceId: 'dev-mcp',
+            data: {
+              orders: [{
+                order_id: MCP_ORDER_ID,
+                order_status: 'Delivered',
+                restaurant_name: 'Thinsane Pizza by Oven Story',
+                order_total: 41
+              }]
+            }
+          });
+        }
+        if (target.includes('/dapi/order/track') && ua.includes('Mobile Safari')) {
+          sawMobileWebUa = true;
+          return makeResponse({
+            statusCode: 0,
+            data: {
+              order_id: MCP_ORDER_ID,
+              share_info: {
+                message: `Click this link to track: ${MCP_OFO_URL}`
+              }
+            }
+          });
+        }
+        if (target.includes('order/trackV4')) {
+          return makeResponse({
+            statusCode: 0,
+            data: { order_status_details: { status_message: 'Rate your delivery' } }
+          });
+        }
+        return makeResponse({ statusCode: 0, data: {} });
+      };
+
+      const mcpAcc = {
+        account: 'acc_mweb_v26',
+        phone: '7783067848',
+        name: 'Naina sahu',
+        customerId: '285591864',
+        token: 'tok-mweb',
+        tid: FAKE_JWT,
+        sid: 'sid-mcp',
+        deviceId: 'dev-mcp',
+        cookies: `_session_tid=mweb_sess; token=tok-mweb; _sid=sid-mcp; _swuid=dev-mcp; tid=${FAKE_JWT}`,
+        isLoggedIn: true
+      };
+
+      const res = await fetchAccountOrders(mcpAcc);
+      assert.strictEqual(sawMobileWebUa, true, 'secondary probe must query mWeb with MOBILE_WEB_UA');
+      assert.strictEqual(res[0].status, 'Delivered');
+      assert.strictEqual(res[0].trackingUrl, MCP_OFO_URL);
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
   });
 } finally {
   globalThis.fetch = realFetch;

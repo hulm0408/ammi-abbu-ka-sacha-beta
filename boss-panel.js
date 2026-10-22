@@ -1,6 +1,11 @@
 import { Telegraf, Markup } from 'telegraf';
 import { getDb, saveDb, isBoss, canTransitionOrder } from './store.js';
-import { getStoredSwiggyTrackingUrl, isOfficialSwiggyTrackingUrl } from './swiggy-cart.js';
+import {
+  getStoredSwiggyTrackingUrl,
+  isOfficialSwiggyTrackingUrl,
+  isFabricatedTrackingUrl,
+  normalizeSwiggyLiveOrderStatus
+} from './swiggy-cart.js';
 import {
   esc,
   heading,
@@ -101,8 +106,9 @@ export function placedFromPhoneOf(order, db) {
 function trackingLineOf(order, { short = false } = {}) {
   const url = getStoredSwiggyTrackingUrl(order);
   if (url) return `<a href="${esc(url)}">${short ? 'Open live tracking' : esc(url)}</a>`;
-  const status = String(order?.liveOrderStatus || '').toLowerCase();
-  if (/cancelled|canceled|refund|refus/i.test(status)) return `<i>Order ${esc(order.liveOrderStatus)} — no tracking link</i>`;
+  const normalized = normalizeSwiggyLiveOrderStatus(order?.liveOrderStatus || '');
+  const status = String(normalized || order?.liveOrderStatus || '').toLowerCase();
+  if (/cancelled|canceled|refund|refus/i.test(status)) return `<i>Order ${esc(normalized || order.liveOrderStatus)} — no tracking link</i>`;
   if (/delivered/i.test(status)) {
     return order?.trackingLastScanAt
       ? '<i>Order delivered — no share link returned by Swiggy</i>'
@@ -224,7 +230,8 @@ export function buildBossDashboard(db, { limit = 8, onlyMissingTracking = false 
       const phone = placedFromPhoneOf(order, db);
       const amount = Number(order.finalPayable || order.subtotal || 0);
       const customer = String(order.fwdSenderName || order.userName || 'Customer').slice(0, 28);
-      const status = String(order.liveOrderStatus || order.status || 'PENDING').slice(0, 34);
+      const normalizedLive = order.liveOrderStatus ? normalizeSwiggyLiveOrderStatus(order.liveOrderStatus) : '';
+      const status = String(normalizedLive || order.liveOrderStatus || order.status || 'PENDING').slice(0, 34);
       const lines = [
         `<b>${index + 1}. ${swiggyId ? `Swiggy #${esc(swiggyId)}` : `Ref #${esc(String(order.id))}`}</b>`,
         swiggyId ? `▪ <b>Order ref:</b> <code>#${esc(String(order.id))}</code>` : `▪ <b>Swiggy order:</b> <i>not created yet</i>`,
@@ -265,15 +272,20 @@ export function buildBossDashboard(db, { limit = 8, onlyMissingTracking = false 
  * Honest one-line tracking state for any order row.
  * A finished order is never promised a link Swiggy will not publish.
  */
-export function trackingLinkDisplay({ url = '', status = '' } = {}) {
+export function trackingLinkDisplay({ url = '', status = '', orderId = '' } = {}) {
   const safeUrl = String(url || '').trim();
-  if (safeUrl && isOfficialSwiggyTrackingUrl(safeUrl, { allowProviderShortLink: true })) {
+  if (
+    safeUrl &&
+    isOfficialSwiggyTrackingUrl(safeUrl, { allowProviderShortLink: true }) &&
+    !isFabricatedTrackingUrl(safeUrl, String(orderId || ''))
+  ) {
     return `<a href="${esc(safeUrl)}">Open live tracking</a>`;
   }
-  const raw = String(status || '');
+  const normalized = normalizeSwiggyLiveOrderStatus(status);
+  const raw = String(normalized || status || '');
   if (/cancel/i.test(raw)) return '<i>No link — order cancelled</i>';
-  if (/refus/i.test(raw)) return '<i>No link — order refused</i>';
-  if (/delivered|completed/i.test(raw)) return '<i>Tap Extract — order delivered</i>';
+  if (/refus|return/i.test(raw)) return '<i>No link — order refused</i>';
+  if (/delivered|completed/i.test(raw)) return '<i>No live link — order delivered</i>';
   return '<i>⏳ auto-fetching from Swiggy</i>';
 }
 
@@ -315,18 +327,21 @@ export function buildBossOrderCard(order, db = getDb()) {
   const swiggyOrderId = swiggyOrderIdOf(order);
   const placedFrom = placedFromPhoneOf(order, db);
   const trackingUrl = getStoredSwiggyTrackingUrl(order);
+  const displayLiveStatus = order.liveOrderStatus
+    ? (normalizeSwiggyLiveOrderStatus(order.liveOrderStatus) || String(order.liveOrderStatus))
+    : '';
   text += section('Order & Tracking', [
     `<b>Order ref:</b> <code>#${esc(String(order.id))}</code>`,
     `<b>Swiggy order id:</b> ${swiggyOrderId ? `<code>${esc(swiggyOrderId)}</code>` : '<i>not created yet</i>'}`,
     `<b>Placed from:</b> ${placedFrom ? `<code>${esc(placedFrom)}</code>` : '<i>account not selected</i>'}`,
-    ...(order.liveOrderStatus ? [`<b>Swiggy status:</b> <code>${esc(String(order.liveOrderStatus))}</code>`] : []),
+    ...(displayLiveStatus ? [`<b>Swiggy status:</b> <code>${esc(displayLiveStatus)}</code>`] : []),
     `<b>Tracking:</b> ${trackingUrl
       ? `<a href="${esc(trackingUrl)}">Open live Swiggy tracking</a>`
-      : (/cancel/i.test(String(order.liveOrderStatus || ''))
+      : (/cancel/i.test(displayLiveStatus)
         ? '<i>Order cancelled — no tracking link</i>'
-        : /refus|return/i.test(String(order.liveOrderStatus || ''))
+        : /refus|return/i.test(displayLiveStatus)
           ? '<i>Order refused — no tracking link</i>'
-          : /deliv|complet/i.test(String(order.liveOrderStatus || ''))
+          : /deliv|complet/i.test(displayLiveStatus)
             ? (order.trackingLastScanAt
               ? '<i>Order delivered — no share link returned by Swiggy</i>'
               : '<i>Order delivered — tap Fetch/Extract below to get link</i>')
@@ -356,7 +371,7 @@ export function buildBossOrderCard(order, db = getDb()) {
   ].join('\n') + offerLine);
   if (order.status === 'COMPLETED') {
     if (!getStoredSwiggyTrackingUrl(order)) {
-      const liveStatus = String(order.liveOrderStatus || '');
+      const liveStatus = displayLiveStatus;
       const cancelled = /cancel|refus|return/i.test(liveStatus);
       const delivered = /deliv/i.test(liveStatus);
       text += section('Tracking status', cancelled
@@ -366,7 +381,7 @@ export function buildBossOrderCard(order, db = getDb()) {
           : '<i>Swiggy has not published the share link yet — the bot keeps retrying and will post it here automatically.</i>');
     }
     if (order.deliveryOtp) {
-      const live = String(order.liveOrderStatus || '');
+      const live = displayLiveStatus;
       const otpNote = /cancel/i.test(live)
         ? 'order cancelled'
         : (/deliv|complet|refus|return/i.test(live) ? 'delivery recorded' : 'Share with rider');
