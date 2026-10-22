@@ -6,6 +6,7 @@ import puppeteer from 'puppeteer-core';
 import QRCode from 'qrcode';
 import { getDb, saveDb, updateAccount } from './store.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
+import * as wafPool from './waf-pool.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers } from './swiggy-bridge.js';
 
 const CHROME_PATH = findChromePath();
@@ -46,7 +47,8 @@ async function installAntiFnaStealthOnPage(page) {
 let cachedWafToken = '';
 let cachedWafAt = 0;
 let wafFetchPromise = null;
-const WAF_TTL_MS = 8 * 60 * 1000; // 8 minutes
+let lastWafRefreshKickAt = 0;
+const WAF_TTL_MS = 8 * 60 * 1000; // 8 minutes (shared pool TTL in waf-pool.js is 2h)
 
 const sessionAuthCache = new Map(); // cookieSig -> { auth, ts }
 const csrfTokenCache = new Map();   // cookieSig -> { csrf, ts }
@@ -875,6 +877,14 @@ export async function swiggyCartFlush(accountOrCookies, { lat = '26.8658609', ln
 // ---------------------------------------------------------------------------
 export async function getCachedWafToken(forceRefresh = false) {
   const now = Date.now();
+  // Shared pool first: a vault-hydrated / previously Chromium-acquired token
+  // is valid for ALL accounts — no need to burn Chromium when it is warm.
+  const poolToken = wafPool.getTokenSync();
+  if (!forceRefresh && poolToken) {
+    cachedWafToken = poolToken;
+    cachedWafAt = Date.now();
+    return poolToken;
+  }
   if (!forceRefresh && cachedWafToken && (now - cachedWafAt) < WAF_TTL_MS) {
     return cachedWafToken;
   }
@@ -908,6 +918,7 @@ export async function getCachedWafToken(forceRefresh = false) {
         if (waf && waf.value && waf.value.length > 50) {
           cachedWafToken = waf.value;
           cachedWafAt = Date.now();
+          wafPool.seedToken(waf.value, { source: 'chromium' });
           break;
         }
         await new Promise(r => setTimeout(r, 350));
@@ -928,17 +939,21 @@ export async function getCachedWafToken(forceRefresh = false) {
 
 let wafWarmLoopTimer = null;
 export function startWafKeepWarmLoop() {
-  // All critical order/address/cart/coupon/QR/tracking paths now use 100% Zero-Chromium pure HTTP!
-  // Only pre-warm Chromium in background if explicitly enabled (`PREWARM_CHROME === 'true'`) so 512MB cloud RAM stays crystal lean!
-  if (wafWarmLoopTimer || process.env.PREWARM_CHROME !== 'true') return;
+  if (wafWarmLoopTimer) return;
+  // 2026-10-22: ON by default. Without a warm `aws-waf-token`, every 29-ID
+  // scan burst gets challenged by Swiggy WAF (live incident 22-10-2026).
+  // Chromium launch is SHORT (~2.5s) and only happens when the shared pool
+  // has no valid token — vault hydrate normally covers fresh deploys.
+  // Opt out with WAF_KEEPWARM=false if an instance has no Chromium.
+  if (process.env.WAF_KEEPWARM === 'false') return;
   const initTimer = setTimeout(() => {
-    getCachedWafToken(false).catch(() => {});
-  }, 500);
+    if (!wafPool.getTokenSync()) getCachedWafToken(false).catch(() => {});
+  }, 20000);
   if (typeof initTimer.unref === 'function') initTimer.unref();
 
   wafWarmLoopTimer = setInterval(() => {
-    getCachedWafToken(true).catch(() => {});
-  }, 7 * 60 * 1000);
+    if (!wafPool.getTokenSync()) getCachedWafToken(true).catch(() => {});
+  }, 30 * 60 * 1000);
   if (typeof wafWarmLoopTimer.unref === 'function') wafWarmLoopTimer.unref();
 }
 
@@ -986,6 +1001,10 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
     try {
       const zeroWafCookieParts = [];
       if (cleanCookies) zeroWafCookieParts.push(cleanCookies);
+      // Shared WAF token (vault/Chromium pool): makes the Android-UA fast path
+      // look like normal browser traffic — scans stay fast AND WAF-clean.
+      const poolWafToken = wafPool.getTokenSync();
+      if (poolWafToken) zeroWafCookieParts.push(`aws-waf-token=${poolWafToken}`);
       if (lat && lng) {
         zeroWafCookieParts.push(`userLocation=${encodeURIComponent(JSON.stringify({
           lat: String(lat),
@@ -1052,6 +1071,17 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
         } catch (netErr) {
           if (netTry === 1) throw netErr;
           await new Promise(r => setTimeout(r, 150));
+        }
+      }
+
+      if (fastRes && (fastRes.status === 403 || fastRes.status === 202 || Boolean(fastRes.headers.get('x-amzn-waf-action')))) {
+        // WAF challenged this request → open the circuit (3/5/10 min) and
+        // refresh the shared token in the background (throttled to 1/min).
+        wafPool.markWafHit();
+        const nNow = Date.now();
+        if (nNow - lastWafRefreshKickAt > 60_000) {
+          lastWafRefreshKickAt = nNow;
+          getCachedWafToken(true).catch(() => {});
         }
       }
 
@@ -1128,6 +1158,7 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
     });
 
     if (res.status === 202 || res.headers.get('x-amzn-waf-action')) {
+      wafPool.markWafHit();
       if (attempt === 0) continue;
     }
 
