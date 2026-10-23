@@ -99,7 +99,8 @@ import {
   getPublicServiceBaseUrl,
   buildSignedOrderTrackUrl,
   dapiFetch,
-  getCachedWafToken
+  getCachedWafToken,
+  invalidateAccountOrderProfileCache
 } from './swiggy-cart.js';
 import {
   extractForwardSenderInfo,
@@ -4831,7 +4832,10 @@ bot.action('boss_logout_all_exec', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
   const count = logoutAllAccounts({ purgeVault: true });
-  accountOrderProfileCache.clear();
+  // Clearing the in-memory Swiggy profile cache must go through the exported
+  // helper — `accountOrderProfileCache` lives inside swiggy-cart.js and is not
+  // in scope here (it used to throw a ReferenceError after logout).
+  invalidateAccountOrderProfileCache();
 
   await ctx.reply(
     `<blockquote>↗ <b>ALL ACCOUNTS LOGGED OUT & PURGED</b></blockquote>\n\n` +
