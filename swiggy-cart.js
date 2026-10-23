@@ -2712,6 +2712,11 @@ export function parseCartDetails(text) {
 }
 
 // Helper to follow short-link redirects (up to 4 hops for swig.gy, onelink.me, maps.app.goo.gl)
+// Swiggy OneLink / swig.gy sometimes return 200 HTML with JS/meta refresh instead of
+// a 301/302 Location header (especially when WAF or bot UA is detected). This helper
+// tries manual redirect first (fast), then follows via `redirect: follow`, then parses
+// HTML for meta-refresh / JS `window.location` / `deep_link_value` so AUTO FETCHING
+// of restaurantId/groupCartId/ofoToken never silently dies.
 async function expandShortUrl(rawUrl) {
   let current = rawUrl;
   for (let hop = 0; hop < 4; hop++) {
@@ -2723,12 +2728,51 @@ async function expandShortUrl(rawUrl) {
         signal: AbortSignal.timeout(4000)
       });
       const loc = res.headers.get('location');
-      if (!loc) break;
-      current = loc.startsWith('http') || loc.startsWith('swiggy://') || loc.startsWith('intent://')
-        ? loc
-        : new URL(loc, current).toString();
-      if (current.startsWith('swiggy://') || current.startsWith('intent://')) break;
+      if (loc) {
+        current = loc.startsWith('http') || loc.startsWith('swiggy://') || loc.startsWith('intent://')
+          ? loc
+          : new URL(loc, current).toString();
+        if (current.startsWith('swiggy://') || current.startsWith('intent://')) break;
+        continue;
+      }
+      // No Location header — try following redirects automatically (Swiggy may set
+      // cookies + return 302 chain that manual doesn't surface on some hosts)
+      if (res.status >= 300 && res.status < 400) break;
+      // If we got 200 HTML, look for a redirect URL embedded in the page
+      if (res.status === 200 && res.headers.get('content-type')?.includes('text/html')) {
+        try {
+          const html = await res.text();
+          // 1. <meta http-equiv="refresh" content="0;url=...">
+          const metaMatch = html.match(/<meta[^>]+http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"']+)["']/i);
+          if (metaMatch) {
+            const metaUrl = metaMatch[1].trim().replace(/^['"]|['"]$/g, '');
+            if (metaUrl && /^https?:\/\//i.test(metaUrl)) { current = metaUrl; continue; }
+            if (metaUrl && /swiggy:\/\//i.test(metaUrl)) { current = metaUrl; break; }
+          }
+          // 2. window.location / location.href = "https://..." or deep_link_value=
+          const jsLoc = html.match(/(?:window\.location|location\.href|deep_link_value|af_dp)\s*[=:]\s*["']([^"']+)["']/i);
+          if (jsLoc) {
+            let decoded = '';
+            try { decoded = decodeURIComponent(jsLoc[1]); } catch { decoded = jsLoc[1]; }
+            if (/^https?:\/\//i.test(decoded) || /^swiggy:\/\//i.test(decoded)) { current = decoded; break; }
+            if (/^https?:\/\//i.test(jsLoc[1]) || /^swiggy:\/\//i.test(jsLoc[1])) { current = jsLoc[1]; break; }
+          }
+          // 3. Any swiggy:// or https swiggy link in HTML
+          const anySwiggy = html.match(/https?:\/\/[^"'\s<>]*swiggy[^"'\s<>]*/i) || html.match(/swiggy:\/\/[^"'\s<>]*/i);
+          if (anySwiggy) { current = anySwiggy[0]; break; }
+        } catch {}
+      }
+      break;
     } catch (e) {
+      // Network error — try one automatic follow as fallback before giving up
+      try {
+        const followRes = await fetch(current, {
+          redirect: 'follow',
+          headers: { 'User-Agent': DESKTOP_UA },
+          signal: AbortSignal.timeout(5000)
+        });
+        if (followRes.url && followRes.url !== current) { current = followRes.url; continue; }
+      } catch {}
       break;
     }
   }
