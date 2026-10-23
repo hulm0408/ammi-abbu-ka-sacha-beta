@@ -15,7 +15,7 @@ Your bot is **100% prepared** for Railway Cloud Hosting with Dockerfile, Railway
 4. Select the repository on Railway.
 5. In your Railway service dashboard, click **Variables** and add:
    - `BOT_TOKEN`: Your Telegram Bot Token
-   - `BOSS_SECRET`: `boss123`
+   - `BOSS_SECRET`: a long random string (e.g. `openssl rand -hex 16`; must be ≥6 chars, ≥10 in production)
 6. Railway will automatically build the `Dockerfile` and run the bot 24/7 in the cloud!
 
 ---

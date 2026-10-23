@@ -3,6 +3,13 @@ import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { PNG } from 'pngjs';
 import { Markup } from 'telegraf';
+// Rate limiter for heavy lazy callbacks (confirm/track) — same policy as index.js extract_now
+const _lazyRateMap = new Map();
+function _isLazyRateLimited(userId, maxPerWindow = 5, windowMs = 60_000) {
+  const k = String(userId); const now = Date.now(); let rec = _lazyRateMap.get(k);
+  if (!rec || now - rec.windowStart > windowMs) { rec = { count: 0, windowStart: now }; _lazyRateMap.set(k, rec); }
+  if (rec.count >= maxPerWindow) return true; rec.count += 1; return false;
+}
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
@@ -23,11 +30,18 @@ import {
 } from './lazy-order-pilot.js';
 
 // Robust order lookup — handles stale callback IDs, case mismatch, or swiggyOrderId passed instead of bot orderId
+const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor', '__defineGetter__', '__defineSetter__']);
+export function isSafeOrderKey(key) {
+  const k = String(key || '').trim();
+  return k && !UNSAFE_KEYS.has(k) && !k.startsWith('__');
+}
 export function lookupOrder(db, orderId) {
   if (!db?.orders) return null;
   const raw = String(orderId || '').trim();
   if (!raw) return null;
-  if (db.orders[raw]) return db.orders[raw];
+  if (!isSafeOrderKey(raw)) return null;
+  // Use hasOwnProperty to avoid prototype chain lookup
+  if (Object.prototype.hasOwnProperty.call(db.orders, raw)) return db.orders[raw];
   const q = raw.toLowerCase();
   const qShort = q.slice(-6);
   for (const o of Object.values(db.orders)) {
@@ -2343,6 +2357,11 @@ export async function handleBossForwardedOrderInput(
     customRealQrGenerator = null
   } = {}
 ) {
+  // Input cap to prevent OOM from multi-order bulk pastes
+  if (String(rawText || '').length > 8000) {
+    rawText = String(rawText).slice(0, 8000);
+    console.warn('[handleBossForwardedOrderInput] truncated oversized rawText to 8000');
+  }
   const sender = resolveOrderSenderInfo(ctx.message, ctx.from);
   if (!sender) return false;
 
@@ -3300,6 +3319,7 @@ export function registerForwardedOrderHandlers(bot, {
 
   // 8A. ONE-TAP CONFIRM → official Swiggy QR (this IS the confirmation step)
   bot.action(/^lazy_confirm_([A-Za-z0-9_]+)$/, async (ctx) => {
+    if (_isLazyRateLimited(ctx.from.id, 5, 60_000)) return ctx.answerCbQuery('⏳ Thoda slow — 1 min me max 5 taps!', { show_alert: true }).catch(()=>{});
     const orderId = ctx.match[1];
     const { order } = resolveLazyOrder(ctx, orderId);
     if (!order) return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(getDb(), orderId), { show_alert: true });

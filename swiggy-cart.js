@@ -6908,6 +6908,17 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
 
     let cm = unwrapCartMeta(curCart);
     let itemCount = extractCartCount(curCart, cm);
+    // Financial integrity: if order already has a locked finalPayable, verify it against Swiggy's live total
+    // to prevent DB tampering (e.g., setting payable to ₹1). Allow ₹50 tolerance for delivery fees that may vary.
+    if (Number(order.finalPayable || 0) > 0 && Number(cm.order_total || 0) > 0) {
+      const liveTotal = Number(cm.order_total);
+      const locked = Number(order.finalPayable);
+      if (Math.abs(liveTotal - locked) > 50) {
+        console.warn(`[QR] Payable mismatch for Order #${order.id}: locked ₹${locked} vs live ₹${liveTotal} — re-sync required`);
+        // Do not throw hard here; let the sync path below re-resolve, but flag for audit
+        order.payableMismatchFlag = { locked, liveTotal, at: Date.now() };
+      }
+    }
     const savedRes = await saveAddressToAccount(account, order.addressDetails, prefetchedAddrs || []);
     if (!savedRes?.addressId || !isUsableDeliveryAddress(savedRes.addressDetails) || !normalizeIndianMobile(savedRes.addressDetails.mobile)) {
       const err = new Error(savedRes?.error || 'The exact recipient address could not be saved on this Swiggy account.');
@@ -6946,7 +6957,9 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       : (Number(order?.swiggyOneMembershipFee || 0) > 0 ? [{ plan_id: '773', quantity: 1 }] : []);
     const cartOfferSnapshot = curCart?.json?.data ? parseDapiCartPayload(curCart.json.data) : null;
     const expectedLiveBillMatches = doesOrderBillMatchLiveCart(cartOfferSnapshot, order);
+    const payableMismatch = Number(order.finalPayable || 0) > 0 && Number(cm.order_total || 0) > 0 && Math.abs(Number(cm.order_total) - Number(order.finalPayable)) > 50;
     const needsSubOrDiscountRelock =
+      payableMismatch ||
       (expectedSubItems.length > 0 && Number(cm.subscription_total || 0) === 0) ||
       (Number(order?.tradeDiscountTotal || 0) > 0 && Number(cm.trade_discount_total || 0) === 0) ||
       !expectedLiveBillMatches;
