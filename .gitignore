@@ -31,6 +31,8 @@ test_*.mjs
 !test_v37_order_count_id_assign_choose_diagnostic_e2e.mjs
 !test_v38_accounts_logout_purge_order_count_display_e2e.mjs
 !test_v39_file_sequential_intake_order_count_logout_all_e2e.mjs
+!test_v40_simple_chat_consent_tracking_e2e.mjs
+!test_v41_integrity_hardening_e2e.mjs
 !test_v40_lazy_boss_autopilot_e2e.mjs
 probe_*.mjs
 inspect_*.mjs
@@ -47,10 +49,13 @@ checkout_*.mjs
 *.json
 !package.json
 !package-lock.json
-!data/db.json
+!data/db.example.json
 # `accounts.json` is a LIVE session mirror (cookies/tids) — runtime file only,
 # NEVER committed (was a public leak; vault-at-rest encryption + bot-vault branch
 # is the only persistence).
+# Runtime state (orders, drafts, WAF token) must never be committed — it once
+# leaked a real delivery address and a live Swiggy WAF token.
+data/db.json
 scratch/
 scratch_*
 *.mp4

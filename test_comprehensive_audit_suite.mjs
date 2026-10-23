@@ -945,14 +945,19 @@ try {
   assert(exportData && exportData.tid === 'test_tid_12345', 'Session JSON exported accurately');
 
   permanentLogoutAccount(testAccKey);
-  // Permanent logout now removes the account from the active dictionary and
-  // writes a tombstone (so a cloud-vault hydrate can never revive it). Assert
-  // the real contract instead of the old "entry stays but isLoggedIn=false".
-  const afterLogoutDb = getDb();
+  // Logout purges the account from the ACTIVE pool and leaves a tombstone, so the
+  // old `accounts[key].isLoggedIn === false` probe crashed once accounts were
+  // deleted (v39). Assert the documented post-logout contract instead.
+  const logoutDb = getDb();
   assert(
-    afterLogoutDb.config.accounts[testAccKey]?.isLoggedIn !== true &&
-      afterLogoutDb.config.deletedAccounts?.[testAccKey] === true,
-    'Permanent logout cleans credentials & tombstones the account'
+    !logoutDb.config.accounts[testAccKey] &&
+    logoutDb.config.deletedAccounts?.[testAccKey] === true &&
+    logoutDb.config.deletedAccounts?.['9876543210'] === true,
+    'Permanent logout removes the account from the active pool and leaves a tombstone'
+  );
+  assert(
+    !logoutDb.sessionVault?.[testAccKey] && !logoutDb.sessionVault?.['9876543210'],
+    'Permanent logout purges the session vault'
   );
   deleteAccount(testAccKey);
 
@@ -979,6 +984,7 @@ try {
   assert(draftBefore.cart === 'https://swig.gy/gc/original-cart', 'Initial cart link saved');
   // Attempting to change without confirmation should require user confirmation
   const indexSource = fs.readFileSync('index.js', 'utf8');
+  const indexSourceCache = indexSource;
   const bossPanelSource = fs.readFileSync('boss-panel.js', 'utf8');
   const forwardedSource = fs.readFileSync('forwarded-order-flow.js', 'utf8');
   const renderSource = fs.readFileSync('render.yaml', 'utf8');
@@ -1040,8 +1046,18 @@ try {
   delete db.orders.TELEGRAM_COMPLETED_TEST;
   delete db.orders.TELEGRAM_QR_STARTED_TEST;
   delete db.orders.TELEGRAM_APPROVAL_PENDING_TEST;
-  assert(indexSource.includes('Are you sure you want to change your saved Cart Link?'), 'Cart link change asks for confirmation');
-  assert(indexSource.includes('Are you sure you want to change your saved Address Link?'), 'Address link change asks for confirmation');
+  // The confirmation copy was rewritten ("Cart link badalna hai?" + Haan/Yahi buttons);
+  // what matters is that replacing a saved link always asks first.
+  assert(
+    /Cart link badalna hai\?/.test(indexSource) &&
+    /callback_data: 'action_confirm_change_cart'/.test(indexSource),
+    'Cart link change asks for confirmation'
+  );
+  assert(
+    /Address link badalna hai\?/.test(indexSource) &&
+    /callback_data: 'action_confirm_change_address'/.test(indexSource),
+    'Address link change asks for confirmation'
+  );
   assert(indexSource.includes('action_confirm_change_cart') && indexSource.includes('action_confirm_change_address'), 'Link replacement has explicit confirmation action callbacks');
 
   // -------------------------------------------------------------
@@ -1097,7 +1113,7 @@ try {
   // Test 24: Compact Cancelled Order Card Rendering
   // -------------------------------------------------------------
   console.log('\n--- Scenario 24: Compact Cancelled Order Card Rendering ---');
-  assert(allSource.includes('ORDER CANCELLED (#'), 'Compact order card header exists for cancellation');
+  assert(/order cancelled \(#/i.test(allSource), 'Compact order card header exists for cancellation');
   assert(allSource.includes('action_cancel_order_confirm_'), 'Customer cancel order triggers confirmation prompt');
   assert(allSource.includes('user_confirm_cancel_'), 'Customer cancel order executes after confirmation');
   assert(allSource.includes('boss_confirm_cancel_'), 'Boss cancel order executes after confirmation');
@@ -1106,6 +1122,8 @@ try {
   // Test 25: Button Label Inventory & Preservation Check
   // -------------------------------------------------------------
   console.log('\n--- Scenario 25: Button Label Inventory & Preservation Check ---');
+  // Labels of the CURRENT (redesigned) Boss panel — the old list referenced the
+  // pre-redesign buttons that were intentionally removed.
   const requiredLabels = [
     'Auto Max Coupon',
     'Switch Acc',
@@ -1116,7 +1134,7 @@ try {
     'Copy Address',
     'Send Tracking',
     'Mark Done',
-    'Back to Panel',
+    'Back to Order Screen',
     'Pending Orders',
     'Order History',
     'Cancelled Orders',

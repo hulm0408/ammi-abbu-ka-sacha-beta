@@ -688,10 +688,18 @@ export function getDb() {
     for (const [vk, vVal] of Object.entries(data.sessionVault || {})) {
       baseVaultJson[vk] = JSON.stringify(vVal);
     }
+    // Drafts need the same protection: a handler that awaits a Swiggy call and then
+    // saves its old snapshot must never resurrect links the customer already sent
+    // (or revert a draft that another fiber cleared/claimed).
+    const baseDraftsJson = {};
+    for (const [dk, dVal] of Object.entries(data.drafts || {})) {
+      baseDraftsJson[dk] = JSON.stringify(dVal);
+    }
     Object.defineProperty(data, '__baseOrdersJson', { value: baseOrdersJson, enumerable: false, configurable: true });
     Object.defineProperty(data, '__baseAccountsJson', { value: baseAccountsJson, enumerable: false, configurable: true });
     Object.defineProperty(data, '__baseDeletedJson', { value: baseDeletedJson, enumerable: false, configurable: true });
     Object.defineProperty(data, '__baseVaultJson', { value: baseVaultJson, enumerable: false, configurable: true });
+    Object.defineProperty(data, '__baseDraftsJson', { value: baseDraftsJson, enumerable: false, configurable: true });
     return data;
   } catch (err) {
     console.error('Error reading db:', err);
@@ -735,9 +743,36 @@ export function saveDb(data) {
 
   // Concurrent-Safe Parallel Merge for Orders + Uploaded Accounts + Session Vault!
   // Any account/vault/order written concurrently to disk after `getDb()` was called is 100% preserved unless explicitly mutated/deleted by caller!
-  if (data && (data.__baseOrdersJson || data.__baseAccountsJson)) {
+  if (data && (data.__baseOrdersJson || data.__baseAccountsJson || data.__baseDraftsJson)) {
     try {
       const liveDisk = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+
+      if (data.__baseDraftsJson && typeof data.drafts === 'object' && data.drafts !== null) {
+        const diskDrafts = liveDisk?.drafts || {};
+        const baseDraftMap = data.__baseDraftsJson;
+        // Drop drafts this caller never touched but which were deleted on disk.
+        for (const uid of Object.keys(data.drafts)) {
+          const existedAtRead = Object.prototype.hasOwnProperty.call(baseDraftMap, uid);
+          const presentOnDisk = Object.prototype.hasOwnProperty.call(diskDrafts, uid);
+          if (existedAtRead && !presentOnDisk && JSON.stringify(data.drafts[uid]) === baseDraftMap[uid]) {
+            delete data.drafts[uid];
+          }
+        }
+        for (const [uid, diskDraft] of Object.entries(diskDrafts)) {
+          const existedAtRead = Object.prototype.hasOwnProperty.call(baseDraftMap, uid);
+          const presentInCaller = Object.prototype.hasOwnProperty.call(data.drafts, uid);
+          if (!existedAtRead && !presentInCaller) {
+            // A draft created/updated concurrently (link pasted, order claimed).
+            data.drafts[uid] = diskDraft;
+          } else if (existedAtRead && presentInCaller && JSON.stringify(data.drafts[uid]) === baseDraftMap[uid]) {
+            // Caller did not touch this draft -> keep whatever is on disk now.
+            data.drafts[uid] = diskDraft;
+          }
+        }
+        const refreshedDraftBase = {};
+        for (const [uid, dVal] of Object.entries(data.drafts)) refreshedDraftBase[uid] = JSON.stringify(dVal);
+        Object.defineProperty(data, '__baseDraftsJson', { value: refreshedDraftBase, enumerable: false, configurable: true });
+      }
 
       if (data.__baseOrdersJson && typeof data.orders === 'object' && data.orders !== null) {
         const diskOrders = liveDisk?.orders || {};
@@ -1099,13 +1134,30 @@ export function deleteAccount(key, options = {}) {
   return existed;
 }
 
+// An order is still "active" while money/QR/tracking can still happen. Only the
+// terminal states close it — otherwise a customer could create a second order
+// while the first one sits in APPROVAL_PENDING / PAYMENT_PENDING and pay twice.
+// Anything older than 12h is treated as stale so a stuck order never blocks a
+// customer forever.
+const TERMINAL_ORDER_STATUSES = new Set(['COMPLETED', 'CANCELLED', 'REJECTED']);
+const ACTIVE_ORDER_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
 export function getActiveUserOrder(userId) {
   const db = getDb();
   const idNum = Number(userId);
-  const activeStatuses = ['PENDING', 'ACCEPTED'];
-  const userOrders = Object.values(db.orders).filter(o => Number(o.userId) === idNum);
+  const now = Date.now();
+  const userOrders = Object.values(db.orders || {}).filter(o => o && Number(o.userId) === idNum);
 
-  return userOrders.find(o => activeStatuses.includes(o.status));
+  return userOrders
+    .filter(o => !TERMINAL_ORDER_STATUSES.has(String(o.status || '').toUpperCase()))
+    .filter(o => {
+      // Legacy PENDING/ACCEPTED orders are kept as-is (old behaviour), anything
+      // newer also counts while its createdAt is fresh.
+      if (['PENDING', 'ACCEPTED'].includes(o.status) && !o.createdAt) return true;
+      const created = new Date(o.createdAt || o.updatedAt || 0).getTime();
+      return Number.isFinite(created) && created > 0 ? (now - created) <= ACTIVE_ORDER_MAX_AGE_MS : true;
+    })
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0] || undefined;
 }
 
 export function getDraft(userId) {

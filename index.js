@@ -60,6 +60,15 @@ import {
   resetOrderTopicsToStart
 } from './ammi-abbu-topic-flow.js';
 import {
+  isSimpleChatEnabled,
+  buildSimpleHomeScreen,
+  buildSimpleOrderCard,
+  buildSimpleTrackingMessage,
+  buildConsentPatch,
+  simpleTrackingUrl,
+  SIMPLE_CHAT_CALLBACKS
+} from './simple-chat.js';
+import {
   verifyAndInspectSwiggyLink,
   inspectCartForAccount,
   getGenuinePaymentDetails,
@@ -101,7 +110,8 @@ import {
   buildSignedOrderTrackUrl,
   dapiFetch,
   getCachedWafToken,
-  invalidateAccountOrderProfileCache
+  invalidateAccountOrderProfileCache,
+  getOfoResolutionFailureReason
 } from './swiggy-cart.js';
 import {
   extractForwardSenderInfo,
@@ -168,11 +178,15 @@ import {
 
 dotenv.config();
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
+// Offline e2e suites import this file without secrets; in TEST_MODE we use a
+// throw-away token instead of killing the process.
+const IS_OFFLINE_TEST = String(process.env.TEST_MODE || '') === '1' || String(process.env.BOT_TEST_MODE || '') === '1';
+const BOT_TOKEN = process.env.BOT_TOKEN || (IS_OFFLINE_TEST ? '123456:TEST-TOKEN-FOR-OFFLINE-E2E' : '');
 // SECURITY FIX: BOSS_SECRET must be strong. Default 'boss123' is only allowed
 // in TEST_MODE; in production we require an explicit secret and enforce
 // minimum length + rate limiting on /boss attempts.
-const BOSS_SECRET = process.env.BOSS_SECRET || (process.env.NODE_ENV === 'production' ? null : 'boss123');
+const BOSS_SECRET = process.env.BOSS_SECRET ||
+  ((IS_OFFLINE_TEST || process.env.NODE_ENV !== 'production') ? 'boss123' : null);
 const _bossAttemptMap = new Map(); // userId -> { count, firstTs, blockedUntil }
 
 function _isBossSecretBlocked(userId) {
@@ -535,8 +549,18 @@ function classifyLink(url) {
   return 'UNKNOWN';
 }
 
-// User Bottom Menu - Colorful orange Cart & Address buttons + clean direct actions
+// User Bottom Menu - Simple mode keeps only what a customer needs:
+// a fresh order, past orders, and the tracking-link retriever.
 function getUserReplyKeyboard(draft = {}) {
+  if (isSimpleChatEnabled()) {
+    return Markup.keyboard([
+      [{ text: '🛒 New Order', style: 'success' }],
+      [
+        { text: '📦 Orders Done', style: 'primary' },
+        { text: '🔗 Extract Tracking Link', style: 'primary' }
+      ]
+    ]).resize();
+  }
   const hasCart = Boolean(draft?.cart);
   const hasAddr = Boolean(draft?.address);
   const bothReady = hasCart && hasAddr;
@@ -1032,14 +1056,37 @@ function formatOtpSendErrorCard(phone, result = {}) {
 
   return { text, keyboard: Markup.inlineKeyboard(buttons) };
 }
+// SIMPLE MODE: the card follows the customer's current order (bill -> pay ->
+// tracking) instead of dropping them back to the link screen mid-order.
+function getSimpleFocusOrder(userId) {
+  const idNum = Number(userId);
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  const orders = Object.values(getDb().orders || {})
+    .filter((o) => o && Number(o.userId) === idNum)
+    .filter((o) => !['CANCELLED', 'REJECTED'].includes(String(o.status || '')))
+    // "🏁 Finish" dismisses the finished card so it never reappears on /start.
+    .filter((o) => !o.simpleCardDismissed)
+    .filter((o) => {
+      const created = new Date(o.createdAt || o.paidAt || 0).getTime();
+      return Number.isFinite(created) && created >= since;
+    })
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const live = orders.find((o) => !['COMPLETED'].includes(String(o.status || '')));
+  if (live) return live;
+  const withTracking = orders.find((o) => simpleTrackingUrl(o));
+  return withTracking || null;
+}
+
 // User Screen Generator - Short, direct single-card UI with colorful orange buttons (no slots)
 function getUserScreen(userId, user) {
-  const activeOrder = getActiveUserOrder(userId);
+  const simpleMode = simpleChatForUser(userId);
+  const activeOrder = simpleMode ? (getActiveUserOrder(userId) || getSimpleFocusOrder(userId)) : getActiveUserOrder(userId);
   if (activeOrder) {
-    return formatUserOrderCard(activeOrder);
+    return simpleMode ? buildSimpleOrderCard(activeOrder) : formatUserOrderCard(activeOrder);
   }
 
   const draft = getDraft(userId);
+  if (simpleMode) return buildSimpleHomeScreen(draft);
   const hasCart = Boolean(draft.cart);
   const hasAddr = Boolean(draft.address);
   const bothReady = hasCart && hasAddr;
@@ -1155,6 +1202,26 @@ function makeFullSessionCopyButton(_ctx, label, accKey, fullValue, fallbackCallb
 }
 
 // Single card in-place updater for Boss and User
+// ---------------------------------------------------------------------------
+// Simple chat mode (customer side)
+// ---------------------------------------------------------------------------
+// Ammi/Abbu only need to paste TWO Swiggy links. Everything else is one tap.
+// `SIMPLE_CHAT_MODE=0` restores the older multi-topic customer screens.
+function simpleChatForUser(userId) {
+  return isSimpleChatEnabled() && !isBoss(Number(userId));
+}
+
+function customerOrderCard(order, chatId = null) {
+  if (!order) return null;
+  // Decide by the CHAT being rendered: a boss-forwarded order still shows the
+  // simple card to the customer it is delivered to.
+  const targetId = Number(chatId || order.userChatId || order.userId || 0);
+  if (isSimpleChatEnabled() && (!targetId || !isBoss(targetId))) {
+    return buildSimpleOrderCard(order);
+  }
+  return formatUserOrderCard(order);
+}
+
 async function updateOrderCards(order, { skipUserCard = false, skipBossCard = false } = {}) {
   const db = getDb();
   const result = { bossCardUpdated: false, userCardUpdated: false };
@@ -1182,7 +1249,7 @@ async function updateOrderCards(order, { skipUserCard = false, skipBossCard = fa
 
   // 2. Update User card in-place
   if (!skipUserCard && order.userChatId && order.userMessageId) {
-    const userCard = formatUserOrderCard(order);
+    const userCard = customerOrderCard(order, order.userChatId);
     try {
       await bot.telegram.editMessageText(
         order.userChatId,
@@ -1592,6 +1659,24 @@ async function triggerBackgroundCartFetch(orderId, { skipAccountScan = false } =
 // This helper gives customer orders the exact same treatment, in the background.
 const autoOptimizeInFlight = new Set();
 
+// SIMPLE MODE: the customer already tapped their one "Confirm" button. As soon
+// as the max-offer bill is ready, turn that consent into the payment QR without
+// asking them a second time.
+async function autoApproveConsentedSimpleOrder(order) {
+  try {
+    if (!isSimpleChatEnabled()) return false;
+    if (!order?.customerConsentGiven || order.billApprovedByUser) return false;
+    if (String(order.status || '') !== 'APPROVAL_PENDING') return false;
+    if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(String(order.status || ''))) return false;
+    console.log(`[SimpleChat] Consent on Order #${order.id} -> generating payment QR`);
+    const res = await approveUserOrderBillAction(String(order.userId || order.fwdSenderUserId || ''), order.id);
+    return Boolean(res?.ok);
+  } catch (err) {
+    console.warn(`[SimpleChat] Auto-approve failed for #${order?.id}:`, err?.message || err);
+    return false;
+  }
+}
+
 export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_TO_BETA' } = {}) {
   const key = String(orderId);
   if (autoOptimizeInFlight.has(key)) return { skipped: true, reason: 'in-flight' };
@@ -1648,6 +1733,7 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
       const skipUserOnReuse = Boolean(summarySend?.viaCard || summarySend?.reason === 'already-sent');
       await updateOrderCards(order, { skipUserCard: skipUserOnReuse }).catch(() => {});
       if (summarySent) await ensureBossBillSummary(order).catch(() => {});
+      await autoApproveConsentedSimpleOrder(order);
       return { success: true, reused: true, summarySent, order };
     }
 
@@ -1730,6 +1816,7 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
     order = getDb().orders?.[key] || order;
     await updateOrderCards(order, { skipUserCard: Boolean(summarySend?.viaCard) }).catch(() => {});
     if (summarySent) await ensureBossBillSummary(order).catch(() => {});
+    await autoApproveConsentedSimpleOrder(order);
 
     console.log(
       `[AutoOptimize] Order #${key} ready: account ${order.orderAccount || order.selectedAccount}, ` +
@@ -2064,6 +2151,23 @@ bot.start(async (ctx) => {
       return;
     }
 
+    // SIMPLE CHAT MODE: no reply-keyboard clutter, no second bubble — just the
+    // one card that asks for the two Swiggy links.
+    if (simpleChatForUser(userId)) {
+      const simpleScreen = getUserScreen(userId, ctx.from);
+      const simpleMsg = await ctx.reply(
+        '🙏 <b>Assalamu Alaikum!</b> Sirf <b>Cart link</b> + <b>Address link</b> bhejein — baaki sab bot karega.',
+        { parse_mode: 'HTML' }
+      ).catch(() => null);
+      const cardMsg = await ctx.reply(simpleScreen.text, { parse_mode: 'HTML', ...simpleScreen.keyboard });
+      rememberUserCard(userId, cardMsg);
+      if (simpleMsg?.message_id && simpleMsg.message_id !== cardMsg?.message_id) {
+        // Greeting is kept only as the very first line of the chat; the card is the screen.
+        userCardState(userId).promptIds.push(simpleMsg.message_id);
+      }
+      return;
+    }
+
     const draft = getDraft(userId);
     await ctx.reply(welcomeText, {
       parse_mode: 'HTML',
@@ -2110,6 +2214,17 @@ bot.command('waf', async (ctx) => {
 
 bot.command('help', async (ctx) => {
   const isBossUser = isBoss(ctx.from?.id);
+  if (isSimpleChatEnabled() && !isBossUser) {
+    return ctx.reply(
+      '🍽 <b>Order kaise karein</b>\n\n' +
+      '1️⃣ Swiggy <b>Cart link</b> + <b>Address link</b> ek saath paste karein\n' +
+      '2️⃣ Bot bill dikhayega — <b>✅ Confirm</b> dabayein\n' +
+      '3️⃣ QR aayega, pay karein\n' +
+      '4️⃣ <b>Tracking link</b> yahin chat me aa jayega\n\n' +
+      '<i>Kuch type nahi karna. Koi web app / mini app nahi.</i>',
+      { parse_mode: 'HTML' }
+    );
+  }
   const text =
     `🍽 <b>Order Kaise Karein</b>\n\n` +
     `1. 🟠 <b>Cart Link</b> bhejein\n` +
@@ -3205,7 +3320,7 @@ bot.action(/^boss_send_confirm_(.+)$/, async (ctx) => {
   // If user card message id is not set, deliver card to user
   if (order.userChatId && !order.userMessageId) {
     try {
-      const userCard = formatUserOrderCard(order);
+      const userCard = customerOrderCard(order);
       const sent = await bot.telegram.sendMessage(order.userChatId, userCard.text, {
         parse_mode: 'HTML',
         ...userCard.keyboard
@@ -4842,10 +4957,10 @@ bot.action('boss_logout_all_exec', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
   const count = logoutAllAccounts({ purgeVault: true });
-  // Clearing the in-memory Swiggy profile cache must go through the exported
-  // helper — `accountOrderProfileCache` lives inside swiggy-cart.js and is not
-  // in scope here (it used to throw a ReferenceError after logout).
-  invalidateAccountOrderProfileCache();
+  // The profile cache lives in swiggy-cart.js; clearing it through the exported
+  // helper avoids the old `accountOrderProfileCache is not defined` crash.
+  // No argument = clear the whole cache (an object argument would be used as a key).
+  try { invalidateAccountOrderProfileCache(); } catch (e) { console.warn('[LogoutAll] profile cache clear skipped:', e?.message || e); }
 
   await ctx.reply(
     `<blockquote>↗ <b>ALL ACCOUNTS LOGGED OUT & PURGED</b></blockquote>\n\n` +
@@ -7364,14 +7479,14 @@ bot.hears(['✖ Cancel Order', '✖ Cancel', 'Cancel Order', 'cancel order', 'Ca
   await handleCancelOrderConfirm(ctx);
 });
 
-bot.hears(['📦 Previous Order', 'Previous Orders', 'previous orders', 'previous order', 'Previous order', '○ previous order'], async (ctx) => {
+// NOTE: the bare 'Previous Orders' label belongs to the Boss account-history
+// screen (registered later); the customer menu only uses the 📦 button.
+bot.hears(['📦 Previous Order', 'previous order', 'Previous order', '○ previous order'], async (ctx) => {
   await handlePreviousOrder(ctx);
 });
 
-bot.hears(['Claim Free Cash', '₹ Cash Loot', '₹ Claim Free Cash', 'claim free cash', 'Free Cash', 'free cash', '▣ Claim Free Cash'], async (ctx) => {
-  await showFreeCashMenu(ctx);
-});
-
+// 'Claim Free Cash' is already registered in the FREE CASH section above — a
+// second handler there would shadow it, so main's duplicate copy is dropped.
 // BOSS ONLY BOTTOM BUTTONS
 bot.hears(['Pending Orders', '● Pending Orders', '▣ Pending Orders'], async (ctx) => {
   if (isBoss(ctx.from.id)) await sendPendingOrdersToBoss(ctx.from.id);
@@ -7424,7 +7539,7 @@ bot.hears(['Set UPI ID', '● Set UPI ID'], async (ctx) => {
   }
 });
 
-bot.hears(['Login Swiggy', '○ Login Swiggy', '◈ Login Swiggy Account'], async (ctx) => {
+bot.hears(['Login Swiggy', '○ Login Swiggy'], async (ctx) => {
   if (isBoss(ctx.from.id)) await handlePromptLogin(ctx);
 });
 
@@ -9025,6 +9140,13 @@ bot.on('text', async (ctx, next) => {
   const parsedAddrDirect = parseAddressDetails(rawText);
   const hasAnyValidOrderInput = Boolean(validCartLink || validAddrLink || parsedCartDirect || parsedAddrDirect);
 
+  // SIMPLE MODE: one short line, never a lecture. The card already shows what is
+  // missing; the customer only has to paste the links (no typing at all).
+  if (!hasAnyValidOrderInput && state?.action === 'waiting_both_links' && simpleChatForUser(userId)) {
+    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: 'Cart + Address link chahiye' });
+    return;
+  }
+
   if (!hasAnyValidOrderInput && state && (state.action === 'waiting_cart' || state.action === 'waiting_address')) {
     const askingCart = state.action === 'waiting_cart';
     await ctx.reply(
@@ -9138,10 +9260,24 @@ bot.on('text', async (ctx, next) => {
     const savedNotice = addedCart && addedAddress
       ? '✓ Cart & Address saved'
       : (addedCart ? '✓ Cart link saved' : '✓ Address link saved');
+
+    // SIMPLE MODE: both links present -> go straight to the bill. The customer
+    // confirms once on the bill card; nothing else is typed or opened.
+    if (simpleChatForUser(userId) && curDraft.cart && curDraft.address && !getActiveUserOrder(userId)) {
+      await cleanupUserChat(ctx.telegram, ctx.chat?.id || userId, userId, {
+        deleteIncomingId: ctx.message?.message_id || null
+      }).catch(() => {});
+      const started = await startSimpleOrderFromDraft(ctx, userId);
+      if (!started) {
+        await renderUserCard(ctx, userId, { deleteIncoming: true, notice: savedNotice });
+      }
+      return;
+    }
+
     // One card only: the pasted link message is deleted, card shows items +
     // address and Send to Beta becomes the single next action.
     await renderUserCard(ctx, userId, { deleteIncoming: true, notice: savedNotice });
-    if (nextPrompt) await promptForLink(ctx, userId, nextPrompt);
+    if (nextPrompt && !simpleChatForUser(userId)) await promptForLink(ctx, userId, nextPrompt);
     return;
   }
 
@@ -9498,32 +9634,65 @@ async function handleSendToBoss(ctx) {
   }
 
   if (addressLink && deliveryDetails.unresolvableShortLink) {
-    userWaitState[userId] = { action: 'waiting_address' };
+    // The share link is stored and still valid on our side — only ask for a NEW
+    // link when Swiggy actually told us the token is dead. A timeout / missing
+    // session must not make the customer paste the same link twice.
+    const reason = getOfoResolutionFailureReason(addressLink);
+    if (reason === 'EXPIRED') {
+      userWaitState[userId] = { action: 'waiting_address' };
+      return ctx.reply(
+        `🟠 <b>Address link expire ho gaya</b> — naya link ya Location bhejein 👇`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([[{ text: '🟠 📍 Address Link', callback_data: 'action_paste_address', style: 'danger' }]])
+        }
+      );
+    }
     return ctx.reply(
-      `🟠 <b>Address link expire ho gaya</b> — naya link ya Location bhejein 👇`,
+      `⏳ <b>Swiggy se address nahi mil paya abhi</b>\n\n` +
+      `<i>Aapka address link saved hai — dobara paste karne ki zaroorat nahi. Bas thodi der baad try karein.</i>`,
       {
         parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([[{ text: '🟠 📍 Address Link', callback_data: 'action_paste_address', style: 'danger' }]])
+        ...Markup.inlineKeyboard([[
+          { text: reason === 'NO_ACCOUNT' ? '↻ Retry' : '↻ Dobara koshish', callback_data: 'simple_retry_address', style: 'primary' },
+          { text: '🟠 📍 Naya Address Link', callback_data: 'action_paste_address', style: 'danger' }
+        ]])
       }
     );
   }
 
   const explicitRecipientMobile = normalizeDeliveryContact(deliveryDetails.mobile);
   if (!explicitRecipientMobile) {
-    userWaitState[userId] = { action: 'waiting_recipient_mobile' };
-    return ctx.reply(
-      `📞 <b>Delivery mobile number</b> bhejein (10 digit):`,
-      {
-        parse_mode: 'HTML',
-        reply_markup: {
-          force_reply: true,
-          selective: true,
-          input_field_placeholder: '10-digit mobile number...'
+    // SIMPLE MODE = ZERO TYPING. The Swiggy address share already carries the
+    // receiver's number; if Swiggy omitted it we continue without a prompt and
+    // fall back to the saved contact of the Swiggy account placing the order.
+    if (simpleChatForUser(userId)) {
+      const savedMobile = normalizeDeliveryContact(
+        deliveryDetails.mobile ||
+        deliveryDetails.phone ||
+        getDb().config?.accounts?.[getActiveOrderAccountKey()]?.phone ||
+        ''
+      );
+      deliveryDetails.mobile = savedMobile || '';
+      deliveryDetails.mobileSource = savedMobile ? 'ACCOUNT_FALLBACK' : 'MISSING';
+      updateDraft(userId, { addressDetails: deliveryDetails });
+      draft = getDraft(userId);
+    } else {
+      userWaitState[userId] = { action: 'waiting_recipient_mobile' };
+      return ctx.reply(
+        `📞 <b>Delivery mobile number</b> bhejein (10 digit):`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            force_reply: true,
+            selective: true,
+            input_field_placeholder: '10-digit mobile number...'
+          }
         }
-      }
-    );
+      );
+    }
   }
-  deliveryDetails.mobile = explicitRecipientMobile;
+  if (explicitRecipientMobile) deliveryDetails.mobile = explicitRecipientMobile;
   updateDraft(userId, { addressDetails: deliveryDetails });
   draft = getDraft(userId);
 
@@ -9553,6 +9722,17 @@ async function handleSendToBoss(ctx) {
     userMessageId: ctx.callbackQuery?.message?.message_id || null,
     bossMessageIds: {}
   };
+
+  // SIMPLE MODE: the customer's one and only "Confirm" tap is the consent.
+  // It travels with the order so no second approval is ever asked for.
+  if (simpleChatForUser(userId)) {
+    newOrder.simpleChat = true;
+    if (draft.customerConsentGiven) {
+      Object.assign(newOrder, buildConsentPatch({ finalPayable: draft.customerConsentAmount }, userId, {
+        via: draft.customerConsentVia || 'TELEGRAM_BUTTON'
+      }));
+    }
+  }
 
   if (draft.addressDetails) newOrder.addressDetails = draft.addressDetails;
   if (draft.cartDetails) {
@@ -9628,7 +9808,7 @@ async function handleSendToBoss(ctx) {
   }
 
   // Edit User's single card in-place if initiated via inline button, else send and sync `userChatCards`!
-  const userCard = formatUserOrderCard(newOrder);
+  const userCard = customerOrderCard(newOrder);
   if (ctx.callbackQuery?.message?.message_id) {
     try {
       await ctx.editMessageText(userCard.text, { parse_mode: 'HTML', ...userCard.keyboard });
@@ -9661,7 +9841,23 @@ async function handleSendToBoss(ctx) {
       console.error(`× Failed to send Order #${orderId} to Boss ${bossId}:`, e.message);
     }
   }
-  saveDb(db);
+  // Re-read before persisting: `db` is a snapshot taken BEFORE clearDraft(), so
+  // writing it back would resurrect the links the customer just sent.
+  try {
+    const freshDb = getDb();
+    const stored = freshDb.orders?.[orderId];
+    if (stored) {
+      stored.bossMessageIds = { ...(stored.bossMessageIds || {}), ...(newOrder.bossMessageIds || {}) };
+      if (newOrder.userMessageId) stored.userMessageId = newOrder.userMessageId;
+      freshDb.orders[orderId] = stored;
+      saveDb(freshDb);
+    } else {
+      freshDb.orders[orderId] = newOrder;
+      saveDb(freshDb);
+    }
+  } catch (e) {
+    console.warn('[SendToBoss] post-card save failed:', e?.message || e);
+  }
 
   // Background pipeline for customer submissions — same treatment as a forwarded order:
   // 1) resolve the live cart + address (without duplicate vault scan), 2) auto-pick the best account, 3) lock the max offer & send bill confirmation.
@@ -9702,6 +9898,182 @@ bot.action('action_cancel_change_link', async (ctx) => {
   const userId = ctx.from.id;
   // Keep editing the existing card instead of posting another copy of the screen.
   await renderUserCard(ctx, userId);
+});
+
+// ---------------------------------------------------------------------------
+// SIMPLE CHAT MODE (customers only) — two links in, one tap consent, tracking out
+// ---------------------------------------------------------------------------
+// Nothing here talks to a web app: the whole journey is inline Telegram buttons.
+
+// Both links already in the draft -> create the order and let the existing
+// max-offer engine compute the bill (no money moves until the customer confirms).
+const simpleAutoStartInFlight = new Set();
+
+async function startSimpleOrderFromDraft(ctx, userId) {
+  const key = String(userId || '');
+  if (!key || simpleAutoStartInFlight.has(key)) return false;
+  const draft = getDraft(userId);
+  if (!draft?.cart || !draft?.address) return false;
+  if (getActiveUserOrder(userId)) return false;
+  simpleAutoStartInFlight.add(key);
+  const chatId = ctx.chat?.id || userId;
+  const priorCardId = userCardState(userId).messageId;
+  try {
+    await handleSendToBoss(ctx);
+    // A text paste has no callbackQuery, so the order card is posted fresh.
+    // Remove the previous (link) card so the chat keeps ONE live card.
+    const created = Object.values(getDb().orders || {})
+      .filter((o) => o && Number(o.userId) === Number(userId))
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0];
+    const newCardId = created?.userMessageId;
+    if (newCardId && priorCardId && Number(newCardId) !== Number(priorCardId)) {
+      try { await ctx.telegram.deleteMessage(chatId, priorCardId); } catch {}
+      rememberUserCard(userId, { message_id: newCardId, chat: { id: chatId } });
+    }
+    return true;
+  } catch (err) {
+    console.error('[SimpleChat] auto start failed:', err?.stack || err?.message || err);
+    return false;
+  } finally {
+    simpleAutoStartInFlight.delete(key);
+  }
+}
+
+async function promptSimpleBothLinks(ctx) {
+  const userId = ctx.from.id;
+  userWaitState[userId] = { action: 'waiting_both_links' };
+  const chatId = ctx.chat?.id || userId;
+  const state = userCardState(userId);
+  for (const id of state.promptIds) {
+    try { await ctx.telegram.deleteMessage(chatId, id); } catch {}
+  }
+  state.promptIds = [];
+  try {
+    const prompt = await ctx.reply(
+      '🛒 <b>Cart link</b> + 📍 <b>Address link</b> — dono ek saath paste karein 👇',
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          force_reply: true,
+          selective: true,
+          input_field_placeholder: 'Swiggy cart link + address link…'
+        }
+      }
+    );
+    rememberUserPrompt(userId, prompt);
+    return prompt;
+  } catch (err) {
+    console.warn('[SimpleChat] prompt failed:', err?.message || err);
+    return null;
+  }
+}
+
+bot.action(SIMPLE_CHAT_CALLBACKS.pasteLinks, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  await promptSimpleBothLinks(ctx);
+});
+
+bot.action(SIMPLE_CHAT_CALLBACKS.continueDraft, async (ctx) => {
+  await ctx.answerCbQuery('Bill check kar raha hoon…').catch(() => {});
+  const started = await startSimpleOrderFromDraft(ctx, ctx.from.id);
+  if (!started) await renderUserCard(ctx, ctx.from.id, { notice: 'Dono links chahiye' }).catch(() => {});
+});
+
+bot.action(SIMPLE_CHAT_CALLBACKS.clearDraft, async (ctx) => {
+  const userId = ctx.from.id;
+  delete userWaitState[userId];
+  clearDraft(userId);
+  await ctx.answerCbQuery('Cleared ✓').catch(() => {});
+  await renderUserCard(ctx, userId);
+});
+
+bot.action(SIMPLE_CHAT_CALLBACKS.newOrder, async (ctx) => {
+  const userId = ctx.from.id;
+  delete userWaitState[userId];
+  // Dismiss the finished/failed card so the fresh screen really is empty.
+  const focus = getSimpleFocusOrder(userId);
+  if (focus?.id) {
+    mutateDb((d) => {
+      const stored = d.orders?.[focus.id];
+      if (stored) stored.simpleCardDismissed = true;
+    });
+  }
+  clearDraft(userId);
+  await ctx.answerCbQuery('Naya order ✓').catch(() => {});
+  // Delete the finished order card first, then post a single fresh one.
+  await cleanupUserChat(ctx.telegram, ctx.chat?.id || userId, userId, { deleteCard: true }).catch(() => {});
+  userChatCards.delete(String(userId));
+  const screen = getUserScreen(userId, ctx.from);
+  const sent = await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
+  rememberUserCard(userId, sent);
+});
+
+// The address share link is still saved — retry the same links, no re-paste.
+bot.action('simple_retry_address', async (ctx) => {
+  await ctx.answerCbQuery('Dobara try kar raha hoon…').catch(() => {});
+  const started = await startSimpleOrderFromDraft(ctx, ctx.from.id);
+  if (!started) await renderUserCard(ctx, ctx.from.id, { notice: 'Abhi bhi nahi mila — thodi der baad try karein' }).catch(() => {});
+});
+
+bot.action(SIMPLE_CHAT_CALLBACKS.myOrder, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  await handlePreviousOrder(ctx);
+});
+
+// CONSENT: this single tap is the customer's approval. It is stored on the order
+// (who / when / amount / channel) before any payment QR is created.
+bot.action(/^simple_confirm_order_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const orderId = ctx.match[1];
+  const userId = ctx.from.id;
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  if (!order) return ctx.answerCbQuery('Order not found.', { show_alert: true }).catch(() => {});
+  if (!isOrderCustomer(order, userId) && !isBoss(userId)) {
+    return ctx.answerCbQuery('Unauthorized: this is not your order.', { show_alert: true }).catch(() => {});
+  }
+  if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status)) {
+    return ctx.answerCbQuery('This order is already closed.', { show_alert: true }).catch(() => {});
+  }
+
+  if (!order.customerConsentGiven) {
+    Object.assign(order, buildConsentPatch(order, userId));
+    order.simpleChat = true;
+    db.orders[orderId] = order;
+    saveDb(db);
+  }
+
+  await ctx.answerCbQuery('✅ Order confirmed').catch(() => {});
+
+  // Bill already computed and awaiting approval -> straight to the Swiggy payment QR.
+  if (order.status === 'APPROVAL_PENDING' || order.status === 'PAYMENT_PENDING') {
+    const res = await approveUserOrderBillAction(String(userId), orderId);
+    if (!res?.ok) {
+      await ctx.reply(`! ${escapeHtml(res?.error || 'Payment QR abhi nahi ban paya.')}`).catch(() => {});
+    }
+    await updateOrderCards(getDb().orders?.[orderId] || order).catch(() => {});
+    return;
+  }
+
+  // Still scanning -> mark consent, the auto-approve hook sends the QR the moment
+  // the max-offer bill is ready. No second confirmation is asked.
+  await ctx.editMessageText(
+    '✅ <b>Confirm ho gaya</b>\n\n<i>Best price lag raha hai — QR yahin aa jayega.</i>',
+    { parse_mode: 'HTML' }
+  ).catch(() => {});
+  autoOptimizeUserOrder(orderId, { reason: 'CUSTOMER_CONFIRM' }).catch((err) =>
+    console.error(`[SimpleChat] optimize after confirm failed for #${orderId}:`, err?.message || err)
+  );
+});
+
+bot.action(SIMPLE_CHAT_CALLBACKS.confirmDraft, async (ctx) => {
+  const userId = ctx.from.id;
+  const draft = getDraft(userId);
+  if (!draft?.cart || !draft?.address) {
+    return ctx.answerCbQuery('Cart + address link chahiye.', { show_alert: true }).catch(() => {});
+  }
+  updateDraft(userId, buildConsentPatch({}, userId));
+  await ctx.answerCbQuery('✅ Order confirmed').catch(() => {});
+  await startSimpleOrderFromDraft(ctx, userId);
 });
 
 bot.action(['action_send_to_admin', 'action_send_to_boss', 'action_send_to_beta', 'action_send_order_to_beta'], async (ctx) => {
@@ -9864,7 +10236,7 @@ bot.action(/^user_refresh_status_(.+)$/, async (ctx) => {
 
   if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
   await ctx.answerCbQuery('Status Refreshed ↻').catch(() => {});
-  const card = formatUserOrderCard(order);
+  const card = customerOrderCard(order);
   try {
     await ctx.editMessageText(card.text, { parse_mode: 'HTML', ...card.keyboard });
   } catch (e) {}
@@ -9956,7 +10328,6 @@ async function handleSavedAddresses(ctx, targetKey = null) {
   await sendSafeHtml(ctx, text.trim(), Markup.inlineKeyboard(buttons));
 }
 
-bot.hears('⌖ Saved Addresses', async (ctx) => handleSavedAddresses(ctx));
 bot.command('addresses', async (ctx) => handleSavedAddresses(ctx));
 bot.action('action_refresh_addresses', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -10013,7 +10384,6 @@ async function handleMyAccounts(ctx) {
   await ctx.reply(text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
 }
 
-bot.hears('◉ My Swiggy Accounts', async (ctx) => handleMyAccounts(ctx));
 bot.command('accounts', async (ctx) => handleMyAccounts(ctx));
 bot.action('acc_refresh_list', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
@@ -10246,7 +10616,7 @@ async function handlePreviousOrders(ctx, targetKey = null) {
   await sendSafeHtml(ctx, text.trim(), Markup.inlineKeyboard(buttons));
 }
 
-bot.hears(['▣ Previous Orders', '▣ My Orders', 'Previous Orders'], async (ctx) => handlePreviousOrders(ctx));
+bot.hears(['▣ Previous Orders', '▣ My Orders', 'Previous Orders', 'previous orders'], async (ctx) => handlePreviousOrders(ctx));
 bot.command(['orders', 'previous_orders'], async (ctx) => handlePreviousOrders(ctx));
 bot.action(/^acc_view_orders_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
@@ -10745,10 +11115,19 @@ export async function sendApprovedOrderPaymentToUser(uidStr, order, { force = fa
     usingFallbackUpi = true;
   }
 
+  // Simple chat mode keeps the payment bubble to the bare minimum: pay + "I have paid".
+  const simplePayment = isSimpleChatEnabled() && !isBoss(Number(targetUserId));
   const rows = [];
-  if (paymentUrl) rows.push([Markup.button.url('Pay via Swiggy (UPI/Card)', paymentUrl)]);
-  rows.push([Markup.button.callback('Check payment status', `user_paid_status_${order.id}`)]);
-  if (upiUri || paymentUrl) rows.push([Markup.button.callback('Resend payment QR', `user_resend_approved_qr_${order.id}`)]);
+  if (paymentUrl) {
+    rows.push([Markup.button.url(simplePayment ? '💳 Pay on Swiggy' : 'Pay via Swiggy (UPI/Card)', paymentUrl)]);
+  }
+  rows.push([Markup.button.callback(
+    simplePayment ? '✓ I have paid — get tracking' : 'Check payment status',
+    `user_paid_status_${order.id}`
+  )]);
+  if (!simplePayment && (upiUri || paymentUrl)) {
+    rows.push([Markup.button.callback('Resend payment QR', `user_resend_approved_qr_${order.id}`)]);
+  }
   const keyboard = Markup.inlineKeyboard(rows);
 
   if (upiUri) {
@@ -10774,7 +11153,12 @@ export async function sendApprovedOrderPaymentToUser(uidStr, order, { force = fa
         errorCorrectionLevel: 'M'
       });
     }
+    const simpleCaption = simplePayment
+      ? `💳 <b>Pay ₹${amount}</b> · ${restaurant}\n` +
+        `<i>QR scan karein (ya Pay button). Payment ke baad oopar wala "I have paid" dabayein — tracking link yahin aayega.</i>`
+      : '';
     const caption = safeTelegramCaption(
+      simpleCaption ||
       `₹ <b>Payment QR · Order #${escapeHtml(order.id)}</b>\n` +
       `◉ <b>For:</b> ${escapeHtml(order.fwdSenderName || order.userName || 'Customer')}\n` +
       `▤ <b>Restaurant:</b> ${restaurant}\n` +
@@ -10802,7 +11186,9 @@ export async function sendApprovedOrderPaymentToUser(uidStr, order, { force = fa
   if (paymentUrl) {
     const sent = await bot.telegram.sendMessage(
       targetUserId,
-      `↗ <b>Official Swiggy payment link · Order #${escapeHtml(order.id)}</b>\n\n` +
+      (simplePayment
+        ? `💳 <b>Pay ₹${amount}</b> · ${restaurant}\n\n`
+        : `↗ <b>Official Swiggy payment link · Order #${escapeHtml(order.id)}</b>\n\n`) +
       `▤ <b>Restaurant:</b> ${restaurant}\n` +
       `₹ <b>Exact amount:</b> ₹${amount}\n\n` +
       `<a href=\"${escapeHtml(paymentUrl)}\">Open Swiggy payment</a>\n` +
@@ -10831,7 +11217,27 @@ export async function sendApprovedOrderPaymentToUser(uidStr, order, { force = fa
   return false;
 }
 
+// A double-tap (or a consent-triggered auto-approve racing the manual tap) must
+// never create a SECOND Swiggy payment order for the same order id.
+const billApprovalInFlight = new Set();
+
 export async function approveUserOrderBillAction(uidStr, orderId) {
+  const key = String(orderId || '');
+  if (key && billApprovalInFlight.has(key)) {
+    const pending = getDb().orders?.[key];
+    return { ok: true, orderId, duplicateTap: true, message: pending?.customerPaymentMessageId
+      ? 'Payment QR already sent — check the chat.'
+      : 'Payment details are being prepared…' };
+  }
+  if (key) billApprovalInFlight.add(key);
+  try {
+    return await approveUserOrderBillActionInner(uidStr, orderId);
+  } finally {
+    if (key) billApprovalInFlight.delete(key);
+  }
+}
+
+async function approveUserOrderBillActionInner(uidStr, orderId) {
   const db = getDb();
   const order = db.orders?.[orderId];
   if (!order) return { ok: false, error: 'Order not found.' };
@@ -10932,6 +11338,54 @@ async function rejectUserOrderBillAction(uidStr, orderId) {
 
 
 // Helper: auto-edit the customer payment message in-place to inject tracking link/OTP after Swiggy payment (user request: payment message edit hokar usme link ajaye)
+// SIMPLE MODE TRACKING: the customer always gets ONE chat bubble with the real
+// Swiggy tracking link, even if the payment-QR message was deleted. Sent once per
+// Swiggy link (guarded by `simpleTrackingSentFor`), never fabricated.
+const simpleTrackingInFlight = new Set();
+
+async function sendSimpleTrackingOnce(order) {
+  const guardKey = String(order?.id || '');
+  if (!guardKey) return false;
+  // Two sources can discover the link at the same moment (payment poll + tracking
+  // auto-scan). Serialise them so the customer never gets the bubble twice.
+  if (simpleTrackingInFlight.has(guardKey)) return false;
+  simpleTrackingInFlight.add(guardKey);
+  try {
+    if (!isSimpleChatEnabled() || !order?.id) return false;
+    if (['CANCELLED', 'REJECTED'].includes(String(order.status || ''))) return false;
+    const url = simpleTrackingUrl(order);
+    if (!url) return false;
+    const chatId = String(
+      order.userChatId ||
+      (isBoss(Number(order.userId || 0)) ? order.fwdSenderUserId : order.userId) ||
+      order.fwdSenderUserId ||
+      ''
+    ).trim();
+    if (!chatId || isBoss(Number(chatId))) return false;
+    const db = getDb();
+    const fresh = db.orders?.[order.id] || order;
+    if (fresh.simpleTrackingSentFor === url) return false;
+    const msg = buildSimpleTrackingMessage(fresh);
+    await bot.telegram.sendMessage(chatId, msg.text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...msg.keyboard
+    });
+    const after = getDb();
+    if (after.orders?.[order.id]) {
+      after.orders[order.id].simpleTrackingSentFor = url;
+      after.orders[order.id].simpleTrackingSentAt = new Date().toISOString();
+      saveDb(after);
+    }
+    return true;
+  } catch (err) {
+    console.warn('[SimpleChat] Tracking send failed:', err?.message || err);
+    return false;
+  } finally {
+    simpleTrackingInFlight.delete(guardKey);
+  }
+}
+
 async function tryEditCustomerPaymentMessageWithTracking(order) {
   if (!order || !bot?.telegram) return false;
   const msgId = order.customerPaymentMessageId || order.activeQrMessageId || null;
@@ -11116,6 +11570,8 @@ async function checkOrderPaidStatusOnly(orderId) {
 
   // Auto-edit the customer's payment QR message in-place to inject tracking link/OTP (Swiggy payment hote hi edit)
   try { await tryEditCustomerPaymentMessageWithTracking(order); } catch {}
+  // Simple chat: also drop ONE clean tracking bubble with a tap-to-track button.
+  try { await sendSimpleTrackingOnce(order); } catch {}
 
   const firstBossChatId = db.config?.bossIds?.[0] || Number(process.env.BOSS_ID || 0);
   await sendOrderDeliveryInfoNotice(bot.telegram, firstBossChatId, order);
@@ -11195,6 +11651,9 @@ bot.action(/^user_resend_approved_qr_([A-Za-z0-9_-]+)$/, async (ctx) => {
 
 // Lightweight health check server + Swiggy tracking endpoints + 24x7 Keep-Alive (works on Render, Railway, etc.)
 const healthPort = Number(process.env.PORT || (process.env.RENDER ? 10000 : 0));
+// Health JSON must tell the truth: the old payload always said "online", so a
+// container whose bot never started still looked healthy to the host.
+const botRuntimeState = { launched: false, launchedAt: null, bootError: null };
 if (healthPort > 0) {
   const server = http.createServer(async (req, res) => {
     try {
@@ -11438,9 +11897,12 @@ pollTimer = setInterval(refresh, 8000);
     const liveAccounts = Object.values(getDb().config?.accounts || {}).filter(a => a?.isLoggedIn);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      status: 'ok',
-      bot: 'online',
+      status: botRuntimeState.launched ? 'ok' : 'starting',
+      bot: botRuntimeState.launched ? 'online' : 'not-running',
       build: 'telegram-button-order-flow',
+      launched: botRuntimeState.launched,
+      launchTime: botRuntimeState.launchedAt,
+      bootError: botRuntimeState.bootError,
       ipv4Shield: true,
       zeroSmsShield: true,
       zeroChromiumOrderFlow: true,
@@ -11554,7 +12016,16 @@ async function setupBotMenu() {
 
 // Launch bot with retry resilience for cloud container handover
 console.log('› Connecting to Telegram Bot API...');
+// A bad/revoked token will never fix itself — retrying makes no sense.
+export function isFatalTelegramAuthError(err) {
+  const text = `${err?.message || ''} ${err?.description || ''} ${err?.code || ''} ${err?.response?.error_code || ''}`;
+  return /\b(401|404)\b/.test(text) || /Unauthorized|Not Found|invalid token/i.test(text);
+}
+
+const BOOT_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 10000];
+
 async function startBotWithRetry() {
+  let launched = false;
   try {
     // Restore ALL saved `.json` accounts from Persistent Cloud Vault BEFORE serving orders!
     await hydrateAccountsFromCloudVault().catch(e => console.warn('CloudVault boot warning:', e.message));
@@ -11562,7 +12033,25 @@ async function startBotWithRetry() {
     // may have written a newer token into db.waf).
     wafPool.loadFromDb();
 
-    const me = await bot.telegram.getMe();
+    // If getMe() throws once (Telegram hiccup, DNS blip) the old code logged it and
+    // returned — the process then exited 0 and the platform marked the deploy
+    // healthy while the bot was dead. Retry, then fail loudly.
+    let me = null;
+    for (let attempt = 0; attempt <= BOOT_RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        me = await bot.telegram.getMe();
+        break;
+      } catch (err) {
+        if (isFatalTelegramAuthError(err)) {
+          console.error('× Telegram rejected BOT_TOKEN — check the token in the environment:', err.message);
+          process.exit(1);
+        }
+        if (attempt === BOOT_RETRY_DELAYS_MS.length) throw err;
+        const wait = BOOT_RETRY_DELAYS_MS[attempt];
+        console.warn(`◷ Telegram getMe failed (${err.message}) — retry ${attempt + 1}/${BOOT_RETRY_DELAYS_MS.length} in ${wait / 1000}s`);
+        await new Promise(r => setTimeout(r, wait));
+      }
+    }
     console.log(`⚙ Logged in as @${me.username} (${me.first_name}) [ID: ${me.id}]`);
 
     for (let attempt = 1; attempt <= 10; attempt++) {
@@ -11575,6 +12064,9 @@ async function startBotWithRetry() {
           prewarmBrowser().catch(e => console.log('Prewarm init note:', e.message));
         }
         await bot.launch({ dropPendingUpdates: true });
+        launched = true;
+        botRuntimeState.launched = true;
+        botRuntimeState.launchedAt = new Date().toISOString();
         try { await setupBotMenu(); } catch (e) { console.error('Menu setup error:', e.message); }
         resumeAutoTrackingForRecentOrders();
         break;
@@ -11589,7 +12081,15 @@ async function startBotWithRetry() {
       }
     }
   } catch (err) {
+    botRuntimeState.bootError = err?.message || String(err);
     console.error('× Failed to connect to Telegram:', err);
+  }
+
+  // Never exit 0 with a dead bot: a clean exit looks like a healthy deploy to the
+  // host and nothing ever restarts it. A non-zero exit triggers a container restart.
+  if (!launched) {
+    console.error('× Bot never started polling — exiting with code 1 so the host restarts the container.');
+    process.exit(1);
   }
 }
 
@@ -11603,6 +12103,14 @@ async function pushTrackingReadyNotice(order, { scan } = {}) {
   const url = getStoredSwiggyTrackingUrl(order);
   if (!url) return;
   const db = getDb();
+
+  // SIMPLE MODE: the customer gets ONE short bubble with a tap-to-track button
+  // instead of the long boss-style report. The boss report below is unchanged.
+  const simpleCustomerOrder = isSimpleChatEnabled() && !isBoss(Number(order.userId || 0)) &&
+    (order.simpleChat || order.isCustomerSubmitted);
+  if (simpleCustomerOrder) {
+    try { await sendSimpleTrackingOnce(order); } catch {}
+  }
   const swiggyId = swiggyOrderIdOf(order);
   const phone = placedFromPhoneOf(order, db) || orderPlacedFromPhone(order, db);
   const restaurant = String(order.restaurantName || 'Swiggy Order').slice(0, 40);
@@ -11638,8 +12146,18 @@ async function pushTrackingReadyNotice(order, { scan } = {}) {
   const fallbackBoss = Number(process.env.BOSS_ID || 0);
   if (fallbackBoss) targets.add(String(fallbackBoss));
 
+  const customerChatIds = new Set(
+    [order.userChatId, order.userId, order.fwdSenderUserId]
+      .filter(Boolean)
+      .map(String)
+  );
   for (const chatId of targets) {
     if (!chatId || notified[chatId] === url) continue;
+    // Simple-mode customers already got their own short tracking bubble.
+    if (simpleCustomerOrder && customerChatIds.has(String(chatId))) {
+      notified[chatId] = url;
+      continue;
+    }
     try {
       await bot.telegram.sendMessage(chatId, text, {
         parse_mode: 'HTML',
@@ -11758,12 +12276,19 @@ export {
   promptForLink,
   resetCardAndAskForMissing,
   handleSendToBoss,
-  ensureBossBillSummary
+  ensureBossBillSummary,
+  sendSimpleTrackingOnce,
+  autoApproveConsentedSimpleOrder,
+  startSimpleOrderFromDraft,
+  getSimpleFocusOrder,
+  customerOrderCard
 };
 
 if (!process.env.TEST_MODE && !process.env.BOT_TEST_MODE) {
   startBotWithRetry();
 }
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+// `bot.stop()` throws when polling never started (bad token, boot failure) —
+// swallow it so shutdown stays clean instead of surfacing as an uncaught throw.
+process.once('SIGINT', () => { try { bot.stop('SIGINT'); } catch {} });
+process.once('SIGTERM', () => { try { bot.stop('SIGTERM'); } catch {} });

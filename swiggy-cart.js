@@ -1865,10 +1865,30 @@ export async function geocodeAddressDetails(addrObj, accountOrCookies = null) {
 }
 
 // Resolve genuine Swiggy OFO shared address UUID via mobile endpoint (/mapi/social/getAddress/<uuid>)
+// WHY a shared-address link failed matters to the customer:
+//   EXPIRED   -> the link really is dead, ask for a fresh one
+//   NO_ACCOUNT/NETWORK -> our side hiccuped, the link is probably still fine
+// Telling someone their link expired when Swiggy merely timed out makes them
+// paste the same link again for nothing.
+const ofoResolutionFailures = new Map();
+export function getOfoResolutionFailureReason(ofoTokenOrUrl) {
+  const raw = String(ofoTokenOrUrl || '').trim();
+  if (!raw) return '';
+  if (ofoResolutionFailures.has(raw)) return ofoResolutionFailures.get(raw);
+  // Callers often hold the full share URL — try the token inside it.
+  const onelink = raw.match(/onelink\.me\/[a-zA-Z0-9]+\/([a-zA-Z0-9_\-]+)/i);
+  const ofo = raw.match(/\/ofo\/address\/([^\/\?\s]+)\/([^\/\?\s&]+)/i);
+  for (const candidate of [ofo?.[2], onelink?.[1]]) {
+    if (candidate && ofoResolutionFailures.has(candidate)) return ofoResolutionFailures.get(candidate);
+  }
+  return '';
+}
+
 export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountOrCookies = null) {
   if (!ofoToken) return null;
   const tok = String(ofoToken).trim();
   if (tok.length < 6) return null;
+  ofoResolutionFailures.delete(tok);
 
   try {
     // A shared-address link belongs to ONE friend's account. Trying every saved
@@ -1881,9 +1901,12 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
         .filter(({ acc }) => acc && (acc.isLoggedIn || acc.cookies || acc.tid || acc.token))
         .slice(0, 3)
         .map(x => x.acc);
+    const hadRealSession = allCandidates.some((c) => c && (c.isLoggedIn || c.cookies || c.tid || c.token));
     if (allCandidates.length === 0) {
       allCandidates.push({});
     }
+    let sawUsableResponse = false;
+    let sawAnyHttpStatus = false;
     const deadline = Date.now() + 8000;
 
     for (const cand of allCandidates) {
@@ -1891,6 +1914,7 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
       if (Date.now() >= deadline) break;
       const perCallTimeout = Math.max(1500, Math.min(4500, deadline - Date.now()));
       const dapiRes = await dapiFetch(cand, `social/getAddress/${encodeURIComponent(tok)}`, { timeoutMs: perCallTimeout }).catch(() => null);
+      if (dapiRes && Number(dapiRes.status) > 0) sawAnyHttpStatus = true;
       const rJson = dapiRes?.json;
       const addrWrap = rJson?.data?.address || rJson?.data;
       const act = addrWrap?.actual_address || addrWrap;
@@ -1902,6 +1926,7 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
         `${act?.address_line && act.address_line !== 'None' ? act.address_line + ', ' : ''}${act?.address || act?.address_line1 || ''}`.trim();
 
       if (rJson?.statusCode === 0 && (resolvedLat || resolvedDisplay)) {
+        sawUsableResponse = true;
         return {
           id: addrWrap?.id || act?.id || '',
           name: act?.contact_name || act?.name || ofoUser || 'Customer',
@@ -1917,7 +1942,13 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
         };
       }
     }
-  } catch (e) {}
+    // We reached Swiggy and it answered, but never with an address for this token
+    // -> the share link itself is dead. If we never got an answer at all, it is
+    // our network / session, not the customer's link.
+    ofoResolutionFailures.set(tok, hadRealSession && sawAnyHttpStatus && !sawUsableResponse ? 'EXPIRED' : (hadRealSession ? 'NETWORK' : 'NO_ACCOUNT'));
+  } catch (e) {
+    ofoResolutionFailures.set(tok, 'NETWORK');
+  }
   return null;
 }
 
@@ -6505,17 +6536,41 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     return Number(candidate.probeOrder?.discountAmount || 0) > Number(incumbent.probeOrder?.discountAmount || 0);
   };
 
-  // Probe in bounded waves: the candidate list is already sorted by highest offer score,
-  // but a later (lower offer-tier) account can still show a smaller live bill, so keep
-  // walking the eligible pool instead of stopping at the first coupon we happen to see.
-  // A fully free bill is unbeatable, so that (and an exhausted pool) are the only stops.
-  const maxSearchWaves = Math.max(1, Math.ceil(validPool.length / probeLimit) + 1);
-  for (let wave = 0; wave < maxSearchWaves; wave++) {
-    if (bestOverallProbe && bestOverallProbe.res?.success) {
-      if (Number(bestOverallProbe.probeOrder?.finalPayable) === 0) {
-        break;
-      }
+  // Every eligible account must get a fair chance: a cheaper live bill can sit in a
+  // later batch, so we keep probing until the whole free pool was seen (or the time
+  // budget runs out). Early exit is only allowed once no untried account could win.
+  const waveTimeBudgetMs = Math.max(5_000, Number(options.maxScanBudgetMs) || 45_000);
+  const scanStartedAt = Date.now();
+  const maxSearchWaves = Math.max(
+    1,
+    Math.min(
+      Math.ceil(validPool.length / probeLimit) + 1,
+      Math.max(1, Math.floor(Number(options.maxSearchWaves) || 8))
+    )
+  );
+  const untriedZeroOrderCandidates = () =>
+    validPool.filter(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders && !triedKeys.has(x.key));
+
+  const shouldStopProbing = () => {
+    if (!bestOverallProbe || !bestOverallProbe.res?.success) return false;
+    const untriedZero = untriedZeroOrderCandidates().length;
+    if (preferZeroOrderAccounts && bestOverallProbe.profile?.isZeroOrderAccount) {
+      // A 0-Order winner is only final when no untried 0-Order account is left.
+      return untriedZero === 0;
     }
+    const hasSaving = Boolean(
+      bestOverallProbe.probeOrder?.couponCode ||
+      Number(bestOverallProbe.probeOrder?.totalSavings || 0) > 0
+    );
+    // A paying winner is final only after every cheaper 0-Order account was tried too.
+    return hasSaving && untriedZero === 0;
+  };
+
+  for (let wave = 0; wave < maxSearchWaves; wave++) {
+    if (shouldStopProbing()) break;
+    if (Date.now() - scanStartedAt > waveTimeBudgetMs) break;
+    // Anchor for main's convergence check: a wave that does not improve the bill
+    // means the pool has settled.
     const payableAtWaveStart = Number(bestOverallProbe?.probeOrder?.finalPayable);
     let freshDb = getDb();
     let busyMap = getBusySwiggyAccountsMap(freshDb, orderId);
@@ -6552,7 +6607,10 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     const zeroActiveFree = freeCandidates.filter(x => x.profile.hasZeroActiveOrders);
 
     let activeTierPool;
-    if (strictZeroOrdersOnly) {
+    if (preferZeroOrderAccounts && bestOverallProbe?.profile?.isZeroOrderAccount && zeroOrderFree.length === 0) {
+      // Valid 0-order winner already exists and no untried 0-order account is left.
+      break;
+    } else if (strictZeroOrdersOnly) {
       activeTierPool = zeroOrderFree;
     } else if (preferZeroOrderAccounts && zeroOrderFree.length > 0) {
       activeTierPool = zeroOrderFree;

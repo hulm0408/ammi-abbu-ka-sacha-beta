@@ -137,7 +137,7 @@ console.log('\n--- Scenario 1: personalised payment QR is delivered ---');
 // ---------------------------------------------------------------------------
 console.log('\n--- Scenario 2: no leaked HTML tags ---');
 {
-  const files = ['index.js', 'forwarded-order-flow.js', 'boss-panel.js', 'swiggy-cart.js'];
+  const files = ['index.js', 'simple-chat.js', 'forwarded-order-flow.js', 'boss-panel.js', 'swiggy-cart.js', 'ammi-abbu-topic-flow.js', 'order-tracking.js', 'rich-text.js'];
   const offenders = [];
   const callRe = /(ctx\.reply|ctx\.telegram\.sendMessage|bot\.telegram\.sendMessage|telegram\.sendMessage|editMessageText|ctx\.editMessageText)\s*\(/g;
   for (const file of files) {

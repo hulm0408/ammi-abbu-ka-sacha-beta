@@ -12,6 +12,9 @@
 //   3. Finishing all topics cleanly returns user to Start (Topic 1).
 // ============================================================================
 
+process.env.TEST_MODE = process.env.TEST_MODE || '1';
+process.env.BOT_TOKEN = process.env.BOT_TOKEN || '123456:TEST-TOKEN-FOR-OFFLINE-E2E';
+
 import {
   getDb,
   clearDraft,
@@ -27,12 +30,14 @@ import {
   resetOrderTopicsToStart
 } from './ammi-abbu-topic-flow.js';
 
-import {
+// `index.js` is imported dynamically so the offline TEST_MODE/BOT_TOKEN env is
+// in place before it boots (static imports would hoist above the assignments).
+const {
   bot,
   getUserScreen,
   formatUserOrderCard,
   approveUserOrderBillAction
-} from './index.js';
+} = await import('./index.js');
 
 const AMMI_ID = 7859821553;
 let passCount = 0;

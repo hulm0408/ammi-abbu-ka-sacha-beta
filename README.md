@@ -10,6 +10,24 @@ Telegram bot built for seamless Swiggy food ordering with real-time **Saved Addr
 2. Enter your **`BOT_TOKEN`** (from `@BotFather`) — set a strong **`BOSS_SECRET`** (e.g. `openssl rand -hex 16`) and `HEADLESS` (`true`) are already pre-configured.
 3. Click **Apply / Deploy Web Service** — health check listens automatically on `0.0.0.0:$PORT` (`GET /` -> `200 OK`).
 
+## 💬 Simple chat mode (default) — two links, one tap, tracking link
+
+Customers no longer see topics, "Send to Beta", mobile-number prompts or any multi-step quiz.
+The whole journey lives in the Telegram chat (no web app / mini app):
+
+1. paste the Swiggy **Cart link + Address link** (one message or two),
+2. the bot auto-picks the best account + max offer and shows **one bill card**,
+3. tapping **✅ Confirm ₹amount** is the customer's consent — it is stored on the order
+   (`customerConsentGiven`, `customerConsentAt`, `customerConsentBy`, `customerConsentVia`,
+   `customerConsentAmount`) before any payment QR exists,
+4. the payment QR arrives, the customer taps **✓ I have paid**,
+5. the **real Swiggy tracking link** arrives once as its own bubble with a `🛵 Track on Swiggy`
+   button (plus delivery OTP when Swiggy provides it).
+
+Controls: `SIMPLE_CHAT_MODE=0` restores the older screens. Full details in
+[`SIMPLE_CHAT_FLOW.md`](./SIMPLE_CHAT_FLOW.md); guarded offline by
+`test_v40_simple_chat_consent_tracking_e2e.mjs`.
+
 ## 📍 Address intake rule (URL-first)
 
 A Swiggy "Share address" message is the **only** source of delivery data:

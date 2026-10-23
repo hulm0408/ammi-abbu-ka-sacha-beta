@@ -6,3 +6,6 @@ node_modules
 *.bak
 *.audit_bak
 scratch
+data
+*.mjs
+test_*.js
