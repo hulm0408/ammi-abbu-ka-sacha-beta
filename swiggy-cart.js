@@ -6505,32 +6505,18 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     return Number(candidate.probeOrder?.discountAmount || 0) > Number(incumbent.probeOrder?.discountAmount || 0);
   };
 
-  // Probe in bounded waves: the candidate list is already sorted by highest offer score!
-  // MUST probe ALL eligible zero-order accounts to find the true lowest payable — an early
-  // break after the first successful 0-order probe would miss a later-batched MAXCOUPON
-  // (e.g. 4 accounts, probeLimit 3: first wave probes 3, best is middle-tier, but 4th
-  // has the real max discount). Only break when no untried candidates remain in the
-  // preferred tier.
-  const maxSearchWaves = Math.max(1, Math.ceil(validPool.length / Math.max(1, probeLimit)) + 2);
+  // Probe in bounded waves: the candidate list is already sorted by highest offer score,
+  // but a later (lower offer-tier) account can still show a smaller live bill, so keep
+  // walking the eligible pool instead of stopping at the first coupon we happen to see.
+  // A fully free bill is unbeatable, so that (and an exhausted pool) are the only stops.
+  const maxSearchWaves = Math.max(1, Math.ceil(validPool.length / probeLimit) + 1);
   for (let wave = 0; wave < maxSearchWaves; wave++) {
-    // Re-evaluate remaining free candidates before deciding to stop — never leave a
-    // zero-order account untried when preferZeroOrderAccounts is set, even if a
-    // winner already exists.
     if (bestOverallProbe && bestOverallProbe.res?.success) {
-      let _freshCheckDb = getDb();
-      let _freshCheckBusy = getBusySwiggyAccountsMap(_freshCheckDb, orderId);
-      const _remainingFree = validPool.filter(x => !_freshCheckBusy.has(x.key) && !triedKeys.has(x.key) && !x.acc?.sessionExpired).length;
-      if (_remainingFree === 0) break;
-      if (preferZeroOrderAccounts && bestOverallProbe.profile?.isZeroOrderAccount) {
-        const _remainingZero = validPool.filter(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders && !_freshCheckBusy.has(x.key) && !triedKeys.has(x.key)).length;
-        if (_remainingZero === 0) break;
-      } else if (bestOverallProbe.probeOrder?.couponCode || Number(bestOverallProbe.probeOrder?.totalSavings || 0) > 0) {
-        // Have a coupon winner but still have untried zero-order accounts? Keep probing
-        // zero-order tier first — a later zero-order may have a better coupon.
-        const _hasUntriedZero = validPool.some(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders && !_freshCheckBusy.has(x.key) && !triedKeys.has(x.key));
-        if (!_hasUntriedZero) break;
+      if (Number(bestOverallProbe.probeOrder?.finalPayable) === 0) {
+        break;
       }
     }
+    const payableAtWaveStart = Number(bestOverallProbe?.probeOrder?.finalPayable);
     let freshDb = getDb();
     let busyMap = getBusySwiggyAccountsMap(freshDb, orderId);
 
@@ -6566,13 +6552,7 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     const zeroActiveFree = freeCandidates.filter(x => x.profile.hasZeroActiveOrders);
 
     let activeTierPool;
-    if (preferZeroOrderAccounts && bestOverallProbe?.profile?.isZeroOrderAccount) {
-      // Only stop if no more zero-order free candidates remain — otherwise keep probing
-      // the zero-order tier to find the true MAX coupon.
-      const _stillHasZeroFree = freeCandidates.some(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders);
-      if (!_stillHasZeroFree) break;
-      activeTierPool = zeroOrderFree;
-    } else if (strictZeroOrdersOnly) {
+    if (strictZeroOrdersOnly) {
       activeTierPool = zeroOrderFree;
     } else if (preferZeroOrderAccounts && zeroOrderFree.length > 0) {
       activeTierPool = zeroOrderFree;
@@ -6693,6 +6673,12 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
           restoreOrFlushAccount(probe.acc, probe.preCart, probe.probeOrder?.restaurantId || order.restaurantId)
         )
       ));
+    }
+
+    // Converged: the last batch of accounts could not beat the bill we already hold.
+    const payableNow = Number(bestOverallProbe?.probeOrder?.finalPayable);
+    if (wave > 0 && Number.isFinite(payableNow) && Number.isFinite(payableAtWaveStart) && payableNow >= payableAtWaveStart) {
+      break;
     }
   }
 

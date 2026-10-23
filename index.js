@@ -38,6 +38,7 @@ import {
   findAccountKeyByPhone,
 } from './store.js';
 import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
+import { isMenuText, isCommandText, looksLikePlainOrderId } from './menu-labels.js';
 import {
   extractStandaloneMobileNumber,
   extractStandaloneOtpDigits,
@@ -320,9 +321,13 @@ async function renderUserCard(ctx, userId, { deleteIncoming = false, notice = ''
     return null;
   }
 
+  // Notices are folded into the card itself: the whole point of this renderer is
+  // ONE bubble per chat, so a text-triggered notice must never post a second one.
+  const cardText = notice ? `${screen.text}\n\n<i>${notice}</i>` : screen.text;
+
   if (state.messageId) {
     try {
-      await telegram.editMessageText(chatId, state.messageId, null, screen.text, {
+      await telegram.editMessageText(chatId, state.messageId, null, cardText, {
         parse_mode: 'HTML',
         ...screen.keyboard
       });
@@ -334,7 +339,7 @@ async function renderUserCard(ctx, userId, { deleteIncoming = false, notice = ''
     }
   }
 
-  const sent = await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard }).catch(() => null);
+  const sent = await ctx.reply(cardText, { parse_mode: 'HTML', ...screen.keyboard }).catch(() => null);
   if (sent?.message_id) {
     state.messageId = sent.message_id;
     if (notice && ctx.callbackQuery && ctx.answerCbQuery) await ctx.answerCbQuery(notice).catch(() => {});
@@ -1094,55 +1099,6 @@ function getBossPanelKeyboard() {
 }
 
 // ===== RARE TELEGRAM BUTTONS — jo bahut kam log jaante hain (ekdam alag type) =====
-export function buildRareInlineButtons(order){
-  const orderId = String(order?.swiggyOrderId || order?.id || '').trim();
-  const trackUrl = getStoredSwiggyTrackingUrl(order);
-  const payUrl = String(order?.swiggyPaymentUrl || order?.pendingSwiggyUpiUri || order?.realUpiIntentUri || 'https://www.swiggy.com/payments').trim();
-  const phone = String(order?.addressDetails?.mobile || order?.addressDetails?.phone || '').replace(/\D/g,'').slice(-10);
-  const otp = String(order?.deliveryOtp || '').trim();
-  const shortId = orderId ? orderId.slice(-6) : 'ID';
-  // Rare buttons: copy_text (Bot API 7.4), switch_inline_query, switch_inline_query_chosen_chat
-  const rows = [];
-  rows.push([
-    { text: `📋 Copy ID ${shortId}`, copy_text: { text: orderId || 'no-id' } },
-    trackUrl
-      ? { text: '🔗 Open Tracking', url: trackUrl }
-      : { text: '🔗 Extract Tracking', callback_data: `extract_now_${order?.swiggyOrderId || order?.id || '0'}` }
-  ]);
-  rows.push([
-    { text: '↗️ Share to Chat', switch_inline_query: `Swiggy ${orderId} ${order?.restaurantName||''}`.trim() },
-    { text: '👥 Share to Group', switch_inline_query_chosen_chat: { query: `order ${orderId}`, allow_user_chats: true, allow_group_chats: true, allow_channel_chats: true } }
-  ]);
-  const payRow = [];
-  if (otp) payRow.push({ text: `🔢 Copy OTP ${otp}`, copy_text: { text: otp } });
-  payRow.push({ text: '💳 Pay Instantly', url: payUrl });
-  rows.push(payRow);
-  if (phone) rows.push([{ text: `📞 Copy Phone ${phone.slice(-4)}`, copy_text: { text: phone } }, Markup.button.url('☎️ Support', 'https://t.me/Its_life_001')]);
-  else rows.push([Markup.button.url('☎️ Support', 'https://t.me/Its_life_001')]);
-  rows.push([Markup.button.callback('🔄 Refresh Status', `user_refresh_status_${order.id}`), Markup.button.callback('❌ Cancel', `action_cancel_order_confirm_${order.id}`)]);
-  return Markup.inlineKeyboard(rows);
-}
-
-export function getRareReplyKeyboard(){
-  // Rare KeyboardButtons: request_contact, request_location, request_poll, request_users, request_chat
-  return Markup.keyboard([
-    [Markup.button.contactRequest('📱 Send My Contact ✅'), Markup.button.locationRequest('📍 Share Live Location 📡')],
-    [Markup.button.pollRequest('📊 Create Delivery Poll', 'regular'), Markup.button.text('🛒 New Order')],
-    [{ text: '👤 Share User', request_users: { request_id: 1, user_is_bot: false } }, { text: '🏢 Share Group', request_chat: { request_id: 2, chat_is_channel: false, chat_is_forum: false } }],
-    ['📦 My Orders', '◉ Family Accounts']
-  ]).resize().persistent();
-}
-
-function getRareBotMainButtons(){
-  return [
-    [{ text: '✨ Ultra Card Pay', callback_data: 'rare_ultra_card' }, { text: '🔗 Extract Tracking', callback_data: 'boss_extract_tracking_prompt' }],
-    [{ text: '📋 Copy Bot Link', copy_text: { text: PUBLIC_SERVICE_URL } }, { text: '↗️ Share Bot', switch_inline_query: 'Try this Swiggy Bot' }],
-    [{ text: '📱 Verify Phone (Rare)', request_contact: true }, { text: '📍 Share Location (Rare)', request_location: true }]
-  ];
-}
-
-const PUBLIC_SERVICE_URL = getPublicServiceBaseUrl();
-
 function makeCopyButton(label, value, fallbackCallback, style = 'primary') {
   if (value && value.length > 0 && value.length <= 256) {
     return { text: label, copy_text: { text: value }, style };
@@ -4647,7 +4603,10 @@ bot.action('boss_exp_confirm', async (ctx) => {
   const selectedKeys = Object.keys(accounts).filter(k => currentSelection[k]);
 
   if (selectedKeys.length === 0) {
-    return ctx.answerCbQuery('! Kripya kam se kam ek account select karein!', { show_alert: true }).catch(() => {});
+    // A stale card (or a fresh process) has no selection in memory: reopen the
+    // checklist instead of dead-ending on an error popup.
+    await ctx.answerCbQuery('Checklist dobara khol raha hoon — account select karein').catch(() => {});
+    return ctx.reply('↑ <b>Export checklist</b> — export karne ke liye pehle accounts select karein:', { parse_mode: 'HTML' });
   }
 
   await ctx.answerCbQuery(`Exporting ${selectedKeys.length} accounts... ▣`).catch(() => {});
@@ -5169,72 +5128,9 @@ bot.action('boss_exlo_confirm', async (ctx) => {
   delete exportLogoutOrderCounts[userId];
 });
 
-// ===== RARE ULTRA CARD PREVIEW — alag hi type ka card (jo kam log jaante hain) =====
-bot.action('rare_ultra_card', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(()=>{});
-  await ctx.answerCbQuery('Ultra Premium Holographic Card bana raha hoon... ✨').catch(()=>{});
-  try {
-    const db = getDb();
-    const sampleOrder = {
-      id: `DEMO-${Date.now().toString().slice(-6)}`,
-      swiggyOrderId: `2515765${Math.floor(10000+Math.random()*90000)}`,
-      restaurantName: 'Thinsane Pizza by Oven Story • Sec 4 Bhilai',
-      finalPayable: 341,
-      totalSavings: 128,
-      addressDetails: { name: 'Panu', mobile: '9157600711', address: 'Sector 4, Bhilai, Chhattisgarh 490001' },
-      swiggyPaymentUrl: 'https://www.swiggy.com/payments',
-      trackingLink: '',
-      deliveryOtp: `${Math.floor(1000+Math.random()*9000)}`,
-      registeredMobile: '9157600711'
-    };
-    const upiUri = `upi://pay?pa=${db.config?.bossUpiId||'6296591407@ybl'}&pn=Swiggy&am=${sampleOrder.finalPayable}&cu=INR&tn=Ultra_${sampleOrder.id}`;
-    const buf = await generateUltraPremiumCard({
-      customerName: sampleOrder.addressDetails.name,
-      restaurantName: sampleOrder.restaurantName,
-      amount: sampleOrder.finalPayable,
-      savings: sampleOrder.totalSavings,
-      upiUrl: upiUri,
-      orderId: sampleOrder.swiggyOrderId,
-      address: sampleOrder.addressDetails.address,
-      deliveryOtp: sampleOrder.deliveryOtp
-    });
-    // Direct SMS demo to registered mobile with payment link
-    sendDirectOrderSms(sampleOrder).catch(()=>{});
-    sendPaymentLinkSms(sampleOrder, sampleOrder.swiggyPaymentUrl).catch(()=>{});
-    await ctx.replyWithPhoto({ source: buf }, {
-      caption: `<b>✨ ULTRA PREMIUM HOLOGRAPHIC CARD</b>\n\n` +
-        `🆔 <b>Order:</b> <code>${sampleOrder.swiggyOrderId}</code>\n` +
-        `🏪 <b>Restaurant:</b> ${sampleOrder.restaurantName}\n` +
-        `💰 <b>Pay:</b> <b>₹${sampleOrder.finalPayable}</b> • <b>Saved ₹${sampleOrder.totalSavings}</b>\n` +
-        `📍 <b>Deliver to:</b> ${sampleOrder.addressDetails.address}\n` +
-        `📱 <b>Registered Mobile:</b> <code>${sampleOrder.registeredMobile}</code> — <i>Direct SMS sent! ✅</i>\n\n` +
-        `<i>🔔 Order karte hi direct SMS registered number par jaata hai — neeche rare buttons try karo (copy_text, switch_inline_query jo bahut kam log jaante hain)</i>`,
-      parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: `📋 Copy Order ${sampleOrder.swiggyOrderId.slice(-6)}`, copy_text: { text: sampleOrder.swiggyOrderId } }, { text: '🔗 Open Tracking', url: sampleOrder.trackingLink }],
-          [{ text: '↗️ Share Order', switch_inline_query: `Order ${sampleOrder.swiggyOrderId} — ${sampleOrder.restaurantName}` }, { text: '👥 Share to Group', switch_inline_query_chosen_chat: { query: `order ${sampleOrder.swiggyOrderId}`, allow_user_chats: true, allow_group_chats: true, allow_channel_chats: true } }],
-          [{ text: `🔢 Copy OTP ${sampleOrder.deliveryOtp}`, copy_text: { text: sampleOrder.deliveryOtp } }, { text: '💳 Pay Instantly', url: sampleOrder.swiggyPaymentUrl }],
-          [{ text: `📞 Copy Phone ${sampleOrder.registeredMobile.slice(-4)}`, copy_text: { text: sampleOrder.registeredMobile } }, { text: '☎️ Support', url: 'https://t.me/Its_life_001' }],
-          [{ text: '🔄 Refresh Rare', callback_data: 'rare_ultra_card' }, { text: '◉ Family Accounts', callback_data: 'boss_view_accounts' }]
-        ]
-      }
-    });
-    await ctx.reply(`<i>Rare Reply Keyboard neeche activate — <b>📱 Send My Contact</b> aur <b>📍 Share Live Location</b> jaise rare buttons try karo!</i>`, { parse_mode: 'HTML', ...getRareReplyKeyboard() });
-  } catch(e){ await ctx.reply(`❌ Ultra card error: ${e.message}`); }
-});
-
-// Rare: handle contact/location shared via reply keyboard
-bot.on('contact', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return;
-  const phone = ctx.message?.contact?.phone_number || '';
-  await ctx.reply(`✅ <b>Rare Button Success!</b>\n\n📱 <b>Contact received:</b> <code>${phone}</code>\n<i>Yeh request_contact rare keyboard se aaya — bahut kam bots iska use karte hain!</i>`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
-});
-bot.on('location', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return;
-  const loc = ctx.message?.location;
-  await ctx.reply(`✅ <b>Location received!</b>\n📍 <b>Lat:</b> <code>${loc.latitude}</code> <b>Lng:</b> <code>${loc.longitude}</code>\n<i>Rare request_location button se — alag type ka bot!</i>`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
-});
+// Contact shares are only meaningful for the recipient-mobile step; every other
+// case is answered by the real handlers further down (the old demo echo here
+// also shadowed the real location intake, so a shared pin never became an address).
 
 // 4. Refresh All Accounts (Audit Session WITHOUT stale AWS WAF false-403 bug!)
 bot.action('boss_refresh_all_accounts', async (ctx) => {
@@ -5988,7 +5884,8 @@ bot.action(/^(?:boss_confirm_cancel_|boss_cancel_order_)(.+)$/, async (ctx) => {
 
   // 3. Confirm to Boss with direct View Cancelled Orders button
   await ctx.reply(
-    `× <b>Order #${orderId} cancel kar diya gaya aur card delete ho gaya!</b>\n\n` +
+    `× <b>ORDER CANCELLED (#${orderId})</b>\n\n` +
+    `Order #${orderId} cancel kar diya gaya aur card delete ho gaya.\n\n` +
     `Sabhi cancelled orders dekhne ke liye neeche button dabayein:`,
     {
       parse_mode: 'HTML',
@@ -6264,7 +6161,14 @@ bot.action('boss_view_accounts', async (ctx) => {
 });
 
 bot.hears('◉ Family Accounts', async (ctx) => {
-  if (!isBoss(ctx.from.id)) return;
+  if (!isBoss(ctx.from.id)) {
+    // Customers have no access to the vault; give them their own order status
+    // instead of a silent tap.
+    const userId = ctx.from.id;
+    const draft = getDraft(userId);
+    const screen = getUserScreen(userId, ctx.from);
+    return renderUserCard(ctx, userId, { notice: draft.cart || draft.address ? '🟠 Aapka draft ready hai' : '🟠 Family accounts Boss ke paas hain' });
+  }
   await showFamilyAccounts(ctx);
 });
 
@@ -6527,7 +6431,24 @@ bot.action(/^boss_set_active_(.+)$/, async (ctx) => {
   const key = ctx.match[1];
   const db = getDb();
   const acc = db.config?.accounts?.[key];
-  if (!acc) return ctx.answerCbQuery('Account not found').catch(() => {});
+  if (!acc) {
+    // The card is stale (account removed / re-imported). Show the live picker, not a dead header.
+    await ctx.answerCbQuery('Yeh account ab vault me nahi hai — updated list khol raha hoon', { show_alert: true }).catch(() => {});
+    const pickerButtons = [];
+    for (const [k, a] of Object.entries(db.config?.accounts || {})) {
+      const isAct = db.config.activeOrderAccount === k ? '★ ' : '';
+      pickerButtons.push([Markup.button.callback(`${isAct}${a.name || k} (${a.phone || ''})`, `boss_set_active_${k}`)]);
+    }
+    if (pickerButtons.length === 0) {
+      return ctx.reply('↻ <b>SELECT ACTIVE ACCOUNT FOR ORDERS:</b>\n\n<i>Vault me abhi koi account nahi hai.</i>', { parse_mode: 'HTML' })
+        .catch(() => {});
+    }
+    pickerButtons.push([Markup.button.callback('← Back', 'boss_view_accounts')]);
+    return ctx.reply(
+      '↻ <b>SELECT ACTIVE ACCOUNT FOR ORDERS:</b>\n\n<i>Yeh card purana tha, abhi ka account list niche hai.</i>',
+      { parse_mode: 'HTML', ...Markup.inlineKeyboard(pickerButtons) }
+    ).catch(() => {});
+  }
 
   setActiveOrderAccountKey(key);
   await ctx.answerCbQuery(`Active account set to ${acc.name || key} ★`).catch(() => {});
@@ -7202,7 +7123,7 @@ bot.command(['freecash', 'claim', 'claim_freecash'], async (ctx) => {
   await showFreeCashMenu(ctx);
 });
 
-bot.hears(['▣ Claim Free Cash', 'Claim Free Cash', 'claim free cash', 'Free Cash', 'free cash'], async (ctx) => {
+bot.hears(['▣ Claim Free Cash', '₹ Cash Loot', '₹ Claim Free Cash', 'Claim Free Cash', 'claim free cash', 'Free Cash', 'free cash'], async (ctx) => {
   await showFreeCashMenu(ctx);
 });
 
@@ -7296,6 +7217,7 @@ bot.action(/^boss_check_fc_(.+)$/, async (ctx) => {
 // USER BUTTONS (Colorful Orange Cart & Address Buttons + All Aliases)
 bot.hears([
   '🟠 🛒 Cart Link', '🟢 🛒 Cart ✓', '🟠 Cart Link', '🟢 Cart ✓',
+  '🛒 Cart Link', 'Cart Link', '🛒 Cart ✓',
   '● Cart link', '● change cart link', 'Cart link', 'change cart link',
   '● Paste cart link', 'Paste cart link', 'Cart', '● Cart: Added ✓',
   '● Paste Cart Link', 'Paste Cart Link', 'Cart: Added'
@@ -7305,6 +7227,7 @@ bot.hears([
 
 bot.hears([
   '🟠 📍 Address Link', '🟢 📍 Address ✓', '🟠 Address Link', '🟢 Address ✓',
+  '📍 Address Link', 'Address Link', '📍 Address ✓',
   '● Address link', '● change address link', 'Address link', 'change address link',
   '● Paste address Link', 'Paste address Link', 'Address', '● Address: Added ✓',
   '● Paste Address Link', 'Paste Address Link', 'Address: Added'
@@ -7364,7 +7287,7 @@ bot.hears(['📦 Previous Order', 'Previous Orders', 'previous orders', 'previou
   await handlePreviousOrder(ctx);
 });
 
-bot.hears(['Claim Free Cash', 'claim free cash', 'Free Cash', 'free cash', '▣ Claim Free Cash'], async (ctx) => {
+bot.hears(['Claim Free Cash', '₹ Cash Loot', '₹ Claim Free Cash', 'claim free cash', 'Free Cash', 'free cash', '▣ Claim Free Cash'], async (ctx) => {
   await showFreeCashMenu(ctx);
 });
 
@@ -7381,11 +7304,21 @@ bot.hears(['Saved Addresses', '● Saved Addresses', '⌖ Saved Addresses'], asy
   if (isBoss(ctx.from.id)) await handleSavedAddresses(ctx);
 });
 
+// Slot gating was removed: orders are unlimited, so this button now answers the
+// real state instead of silently re-rendering the generic panel.
 bot.hears(['Slot Status', '● Slot Status', '# Slot Status'], async (ctx) => {
-  if (isBoss(ctx.from.id)) {
-    const home = getBossPanelHome();
-    await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
-  }
+  if (!isBoss(ctx.from.id)) return;
+  await ctx.reply(
+    '✓ <b>Slot system band hai</b> — ab unlimited orders direct chalte hain. Koi slot book karne ki zarurat nahi.',
+    { parse_mode: 'HTML', ...getBossPanelKeyboard() }
+  );
+});
+
+// Reply-keyboard "Order History" had no handler at all and was being read as an
+// order id ("Order Order not found"). Point it at the real archive.
+bot.hears(['▤ Order History', 'Order History', 'order history'], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.reply('Unauthorized: Boss only');
+  await showSuccessOrdersArchive(ctx);
 });
 
 bot.hears(['Set UPI ID', '● Set UPI ID'], async (ctx) => {
@@ -7517,10 +7450,21 @@ function looksLikeSwiggySessionJson(rawText) {
 }
 
 // Text message handler
-bot.on('text', async (ctx) => {
+bot.on('text', async (ctx, next) => {
   const userId = ctx.from.id;
   let state = userWaitState[userId];
   const rawText = ctx.message.text.trim();
+
+  // Menu labels and slash commands belong to their dedicated handlers. This
+  // catch-all runs first, so swallowing them here made later `bot.hears` /
+  // `bot.command` registrations unreachable ("📦 Orders Done", "₹ Cash Loot",
+  // "▤ View Cart", …). Hand them over instead.
+  if (isCommandText(rawText) || (isMenuText(rawText) && !/^waiting_boss_order_/.test(String(state?.action || '')))) {
+    if (state && !/^waiting_(?:cart|address|recipient_mobile)$/.test(String(state.action || ''))) {
+      delete userWaitState[userId];
+    }
+    return next();
+  }
 
   // ================= PRIORITY #1: ZERO-OTP CART / ADDRESS / JSON GUARD (BOTH BOSS & CUSTOMERS!) =================
   // NEVER let a stale OTP wait state OR digits inside a Swiggy URL / Address hijack ANY Cart, Address, or Session JSON!
@@ -8942,7 +8886,7 @@ bot.on('text', async (ctx) => {
   {
     const t = String(rawText || '').trim();
     const compact = t.replace(/\s+/g,'');
-    const isPlainOrderId = /^\d{9,20}$/.test(compact) || /^(FWD|ORD|FWD_|ORD_|ORD-)[A-Za-z0-9_-]{3,}$/i.test(compact);
+    const isPlainOrderId = looksLikePlainOrderId(compact);
     // Only trigger if not already handling cart/address/boss input and text is exactly the ID (not a cart/address URL)
     if (isPlainOrderId && !extractAllLinks(t).length && !isBoss(userId) || isPlainOrderId && isBoss(userId) && !looksLikeBossOrderInput(rawText)) {
       // Avoid double-fire when user is in waiting_boss_extract_tracking (already handled above)
@@ -8968,7 +8912,7 @@ bot.on('text', async (ctx) => {
             const activeLink = existingTrack || foundDeliveredUrl;
             await ctx.reply(`🔗 <b>Order #${escapeHtml(String(displayId))} — Tracking available</b>\n<a href="${escapeHtml(activeLink)}">${escapeHtml(activeLink)}</a>` + (found?.deliveryOtp ? `\n🔢 OTP: <code>${escapeHtml(String(found.deliveryOtp))}</code>` : ''), { parse_mode:'HTML', link_preview_options:{is_disabled:true}, ...Markup.inlineKeyboard([[Markup.button.url('🔗 Open Order Tracking', activeLink)] , [Markup.button.callback('🔄 Refresh Tracking', `extract_now_${labelId}`)]]) }).catch(()=>{});
           } else {
-            await ctx.reply(`📦 <b>Order #${escapeHtml(String(displayId))} detected</b>\nTap below to extract its live Swiggy tracking link (scans all logged-in Swiggy IDs):`, { parse_mode:'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('🔗 Extract Tracking Link', `extract_now_${labelId}`)], [Markup.button.callback('📋 Copy Order ID', `copy_text_${labelId}`)]]) }).catch(()=>{});
+            await ctx.reply(`📦 <b>Order #${escapeHtml(String(displayId))} detected</b>\nTap below to extract its live Swiggy tracking link (scans all logged-in Swiggy IDs):`, { parse_mode:'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('🔗 Extract Tracking Link', `extract_now_${labelId}`)], [{ text: '📋 Copy Order ID', copy_text: { text: String(labelId) } }]]) }).catch(()=>{});
           }
           // Don't return — let normal flow continue if this was actually a cart? But plain ID is not cart, so stop here
           if (isPlainOrderId) return;
@@ -9259,7 +9203,7 @@ async function handleCartLinkFlow(ctx) {
   const draft = getDraft(userId);
   if (draft.cart) {
     return ctx.reply(
-      `🟠 <b>Cart link badalna hai?</b>`,
+      `🟠 <b>Cart link badalna hai?</b>\n<i>Are you sure you want to change your saved Cart Link?</i>`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
@@ -9282,7 +9226,7 @@ async function handleAddressLinkFlow(ctx) {
   const draft = getDraft(userId);
   if (draft.address) {
     return ctx.reply(
-      `🟠 <b>Address link badalna hai?</b>`,
+      `🟠 <b>Address link badalna hai?</b>\n<i>Are you sure you want to change your saved Address Link?</i>`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
@@ -9867,9 +9811,28 @@ async function handleSavedAddresses(ctx, targetKey = null) {
   const acc = db.config?.accounts?.[activeKey];
 
   if (!acc || (!acc.cookies && !acc.tid)) {
+    const anyLoggedIn = Object.entries(db.config?.accounts || {})
+      .filter(([, a]) => a && a.isLoggedIn && (a.cookies || a.tid));
+    if (anyLoggedIn.length === 0) {
+      return ctx.reply(
+        '! <b>Koi Swiggy account logged in nahi hai</b> — saved addresses dikhane ke liye pehle account login karein.',
+        { parse_mode: 'HTML', ...Markup.inlineKeyboard([[
+          Markup.button.callback('☎ Login with Number', 'boss_login_with_number'),
+          Markup.button.callback('◉ Connected Accounts', 'boss_view_accounts')
+        ]]) }
+      );
+    }
     return ctx.reply(
-      `! <b>${acc?.name || activeKey} is not logged in!</b>\n\nPehle [ ◉ My Swiggy Accounts ] me jakar account login karein.`,
-      { parse_mode: 'HTML' }
+      `! <b>${escapeHtml(acc?.name || activeKey || 'Active account')} is not logged in!</b>\n\n` +
+      `<i>${anyLoggedIn.length} aur account logged in hain — unme se koi chunein.</i>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard(
+          anyLoggedIn.slice(0, 6).map(([key, a]) => ([
+            Markup.button.callback(`⌖ ${a.name || a.phone || key}`, `acc_view_addrs_${key}`)
+          ]))
+        )
+      }
     );
   }
 
@@ -10551,7 +10514,16 @@ async function handleViewCart(ctx, targetKey = null) {
   });
 }
 
-bot.hears('▤ View Cart', async (ctx) => handleViewCart(ctx));
+bot.hears('▤ View Cart', async (ctx) => {
+  if (!isBoss(ctx.from.id)) {
+    const draft = getDraft(ctx.from.id);
+    const count = Array.isArray(draft?.cartDetails?.items) ? draft.cartDetails.items.length : 0;
+    return renderUserCard(ctx, ctx.from.id, {
+      notice: count > 0 ? `▤ Cart me ${count} item${count === 1 ? '' : 's'} hain` : '▤ Cart abhi khali hai'
+    });
+  }
+  return handleViewCart(ctx);
+});
 bot.command('cart', async (ctx) => handleViewCart(ctx));
 bot.action(/^acc_view_cart_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
@@ -10581,53 +10553,11 @@ bot.action('action_link_guide', async (ctx) => {
   handleLinkGuide(ctx);
 });
 
-// 6. Cash Loot
-function handleCashLoot(ctx) {
-  if (!isBoss(ctx.from.id)) return ctx.reply('Unauthorized: Boss only');
-  const db = getDb();
-  const accounts = db.config?.accounts || {};
-  const buttons = [];
-
-  for (const [key, acc] of Object.entries(accounts)) {
-    buttons.push([
-      Markup.button.callback(`▣ ${acc.name || key} (${acc.phone || 'Ready'})`, `cash_loot_acc_${key}`)
-    ]);
-  }
-
-  return ctx.reply(
-    `<b>SWIGGY CASH LOOT</b>\n` +
-    `Campaign: ydiHi75 · ₹10 per friend · cap ₹100/account\n\n` +
-    `Pehle account chuno — kaunse account pe loot karna hai?`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard(buttons)
-    }
-  );
-}
-
-bot.hears('₹ Cash Loot', handleCashLoot);
-bot.command('cash_loot', handleCashLoot);
-bot.action(/^cash_loot_acc_(.+)$/, async (ctx) => {
-  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
-  const key = ctx.match[1];
-  const db = getDb();
-  const acc = db.config?.accounts?.[key];
-  await ctx.answerCbQuery().catch(() => {});
-  await ctx.reply(
-    `▣ <b>CASH LOOT READY FOR ${acc?.name || key}:</b>\n\n` +
-    `Campaign Link: https://www.swiggy.com/referrals/ydiHi75\n` +
-    `Earn ₹10 per friend · Cap ₹100/account!`,
-    { parse_mode: 'HTML' }
-  );
-});
-
 // Slot system removed — orders are unlimited without slot gating.
 bot.command(['slots', 'resetslots'], async (ctx) => {
   if (!isBoss(ctx.from.id)) return;
   return ctx.reply('✓ <b>Slot system hata diya gaya hai</b> — ab unlimited orders direct chalte hain.', { parse_mode: 'HTML' });
 });
-
-bot.action('noop', async (ctx) => ctx.answerCbQuery().catch(() => {}));
 
 bot.catch(async (err, ctx) => {
   const description = String(err?.description || '');
@@ -10943,7 +10873,7 @@ async function tryEditCustomerPaymentMessageWithTracking(order) {
 
   const rows = [];
   if (trackingUrl) rows.push([Markup.button.url('\uD83D\uDD17 Track Order Live', trackingUrl)]);
-  if (otp) rows.push([Markup.button.callback(`\uD83D\uDCCB Copy OTP ${otp}`, `copy_otp_${order.id}`)]);
+  if (otp) rows.push([{ text: `\uD83D\uDCCB Copy OTP ${otp}`, copy_text: { text: String(otp) } }]);
   // Per user request: after auto-edit, "I have paid" button disappears (gayab) — only tracking/OTP remain
   // No Check payment status button is kept after edit; user can still use 🔗 Extract Tracking Link reply button for refresh
   const kb = rows.length ? Markup.inlineKeyboard(rows) : { reply_markup: { inline_keyboard: [] } };
@@ -11432,7 +11362,7 @@ pollTimer = setInterval(refresh, 8000);
   });
 
   // Self keep-alive ping every 8 minutes via public Render edge URL so container never idles out
-  const keepAliveUrl = PUBLIC_SERVICE_URL + '/';
+  const keepAliveUrl = getPublicServiceBaseUrl() + '/';
   setInterval(() => {
     fetch(keepAliveUrl, { signal: AbortSignal.timeout(10000) })
       .then(r => console.log(`♥ Keep-alive ping -> ${keepAliveUrl} [${r.status}]`))
@@ -11692,6 +11622,37 @@ function resumeAutoTrackingForRecentOrders() {
   }
 }
 
+// ================= LAST-RESORT HANDLERS =================
+// Registered last, so they only run when nothing above handled the update.
+// Before this, an unknown/stale tap left the Telegram spinner running forever
+// and a keyboard button with no handler did nothing at all.
+
+bot.on('callback_query', async (ctx) => {
+  const userId = ctx.from?.id;
+  await ctx.answerCbQuery('Yeh button purana hai — screen refresh kar raha hoon.').catch(() => {});
+  try {
+    if (isBoss(userId)) {
+      const home = getBossPanelHome();
+      await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
+      return;
+    }
+    if (userId) await renderUserCard(ctx, userId, { notice: '🟠 Yeh option ab available nahi' });
+  } catch { /* a stale card must never crash the bot */ }
+});
+
+bot.on('text', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  try {
+    if (isBoss(userId)) {
+      const home = getBossPanelHome();
+      await ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
+      return;
+    }
+    await renderUserCard(ctx, userId, { notice: '🟠 Cart link ya Delivery address link bhejein' });
+  } catch { /* ignore */ }
+});
+
 // Exposed for the offline e2e suites (single-card chat behaviour).
 export {
   bot,
@@ -11712,28 +11673,3 @@ if (!process.env.TEST_MODE && !process.env.BOT_TEST_MODE) {
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-/*
-Are you sure you want to change your saved Cart Link?
-Are you sure you want to change your saved Address Link?
-ORDER CANCELLED (#
-Account Manager
-Close Panel
-Auto Max Coupon
-Switch Acc
-Accept Order
-Reject Order
-Message User
-Copy Cart
-Copy Address
-Send Tracking
-Mark Done
-Back to Panel
-Pending Orders
-Order History
-Cancelled Orders
-Cancel Order
-async function handleConfirmOrderPaid(ctx, orderId, _confirmedBy) {
-  const result = await checkOrderPaidStatusOnly(orderId);
-}
-*/

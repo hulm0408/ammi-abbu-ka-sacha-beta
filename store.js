@@ -1412,25 +1412,15 @@ export function permanentLogoutAccount(key, { purgeVault = true } = {}) {
   acc._session_tid = '';
   acc.deviceId = '';
 
-  // Keep tombstoned entry in accounts map with logged-out flag so callers can
-  // inspect isLoggedIn === false (test suite) while still being excluded from
-  // active scans. Active-order selection filters via isLoggedIn/isLoggedOut.
-  // Also tombstone sibling clones sharing same phone.
+  // Delete from active accounts dictionary
+  delete db.config.accounts[key];
   if (phone && !isCloneKey) {
     for (const [sibKey, sibAcc] of Object.entries(db.config.accounts || {})) {
-      if (sibKey === key) continue;
       if (!sibAcc || isExplicitDifferentPhoneCloneKey(sibKey, phone)) continue;
       const sibPhone = normalizeTenDigitPhone(sibAcc.phone || sibAcc.mobile || String(sibKey).replace(/^acc_/, ''));
       if (sibPhone === phone) {
         db.config.deletedAccounts[sibKey] = true;
-        sibAcc.isLoggedIn = false;
-        sibAcc.isLoggedOut = true;
-        sibAcc.loggedOutAt = new Date().toISOString();
-        sibAcc.cookies = '';
-        sibAcc.tid = '';
-        sibAcc.sid = '';
-        sibAcc.token = '';
-        sibAcc.jwtTid = '';
+        delete db.config.accounts[sibKey];
       }
     }
   }
