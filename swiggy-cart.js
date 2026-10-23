@@ -2712,6 +2712,11 @@ export function parseCartDetails(text) {
 }
 
 // Helper to follow short-link redirects (up to 4 hops for swig.gy, onelink.me, maps.app.goo.gl)
+// Swiggy OneLink / swig.gy sometimes return 200 HTML with JS/meta refresh instead of
+// a 301/302 Location header (especially when WAF or bot UA is detected). This helper
+// tries manual redirect first (fast), then follows via `redirect: follow`, then parses
+// HTML for meta-refresh / JS `window.location` / `deep_link_value` so AUTO FETCHING
+// of restaurantId/groupCartId/ofoToken never silently dies.
 async function expandShortUrl(rawUrl) {
   let current = rawUrl;
   for (let hop = 0; hop < 4; hop++) {
@@ -2723,12 +2728,51 @@ async function expandShortUrl(rawUrl) {
         signal: AbortSignal.timeout(4000)
       });
       const loc = res.headers.get('location');
-      if (!loc) break;
-      current = loc.startsWith('http') || loc.startsWith('swiggy://') || loc.startsWith('intent://')
-        ? loc
-        : new URL(loc, current).toString();
-      if (current.startsWith('swiggy://') || current.startsWith('intent://')) break;
+      if (loc) {
+        current = loc.startsWith('http') || loc.startsWith('swiggy://') || loc.startsWith('intent://')
+          ? loc
+          : new URL(loc, current).toString();
+        if (current.startsWith('swiggy://') || current.startsWith('intent://')) break;
+        continue;
+      }
+      // No Location header — try following redirects automatically (Swiggy may set
+      // cookies + return 302 chain that manual doesn't surface on some hosts)
+      if (res.status >= 300 && res.status < 400) break;
+      // If we got 200 HTML, look for a redirect URL embedded in the page
+      if (res.status === 200 && res.headers.get('content-type')?.includes('text/html')) {
+        try {
+          const html = await res.text();
+          // 1. <meta http-equiv="refresh" content="0;url=...">
+          const metaMatch = html.match(/<meta[^>]+http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"']+)["']/i);
+          if (metaMatch) {
+            const metaUrl = metaMatch[1].trim().replace(/^['"]|['"]$/g, '');
+            if (metaUrl && /^https?:\/\//i.test(metaUrl)) { current = metaUrl; continue; }
+            if (metaUrl && /swiggy:\/\//i.test(metaUrl)) { current = metaUrl; break; }
+          }
+          // 2. window.location / location.href = "https://..." or deep_link_value=
+          const jsLoc = html.match(/(?:window\.location|location\.href|deep_link_value|af_dp)\s*[=:]\s*["']([^"']+)["']/i);
+          if (jsLoc) {
+            let decoded = '';
+            try { decoded = decodeURIComponent(jsLoc[1]); } catch { decoded = jsLoc[1]; }
+            if (/^https?:\/\//i.test(decoded) || /^swiggy:\/\//i.test(decoded)) { current = decoded; break; }
+            if (/^https?:\/\//i.test(jsLoc[1]) || /^swiggy:\/\//i.test(jsLoc[1])) { current = jsLoc[1]; break; }
+          }
+          // 3. Any swiggy:// or https swiggy link in HTML
+          const anySwiggy = html.match(/https?:\/\/[^"'\s<>]*swiggy[^"'\s<>]*/i) || html.match(/swiggy:\/\/[^"'\s<>]*/i);
+          if (anySwiggy) { current = anySwiggy[0]; break; }
+        } catch {}
+      }
+      break;
     } catch (e) {
+      // Network error — try one automatic follow as fallback before giving up
+      try {
+        const followRes = await fetch(current, {
+          redirect: 'follow',
+          headers: { 'User-Agent': DESKTOP_UA },
+          signal: AbortSignal.timeout(5000)
+        });
+        if (followRes.url && followRes.url !== current) { current = followRes.url; continue; }
+      } catch {}
       break;
     }
   }
@@ -6462,16 +6506,29 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   };
 
   // Probe in bounded waves: the candidate list is already sorted by highest offer score!
-  // Once a winning 0-Order or max-coupon account is confirmed, stop immediately so parents
-  // never wait 30 minutes!
-  const maxSearchWaves = Math.min(2, validPool.length + 1);
+  // MUST probe ALL eligible zero-order accounts to find the true lowest payable — an early
+  // break after the first successful 0-order probe would miss a later-batched MAXCOUPON
+  // (e.g. 4 accounts, probeLimit 3: first wave probes 3, best is middle-tier, but 4th
+  // has the real max discount). Only break when no untried candidates remain in the
+  // preferred tier.
+  const maxSearchWaves = Math.max(1, Math.ceil(validPool.length / Math.max(1, probeLimit)) + 2);
   for (let wave = 0; wave < maxSearchWaves; wave++) {
+    // Re-evaluate remaining free candidates before deciding to stop — never leave a
+    // zero-order account untried when preferZeroOrderAccounts is set, even if a
+    // winner already exists.
     if (bestOverallProbe && bestOverallProbe.res?.success) {
+      let _freshCheckDb = getDb();
+      let _freshCheckBusy = getBusySwiggyAccountsMap(_freshCheckDb, orderId);
+      const _remainingFree = validPool.filter(x => !_freshCheckBusy.has(x.key) && !triedKeys.has(x.key) && !x.acc?.sessionExpired).length;
+      if (_remainingFree === 0) break;
       if (preferZeroOrderAccounts && bestOverallProbe.profile?.isZeroOrderAccount) {
-        break;
-      }
-      if (bestOverallProbe.probeOrder?.couponCode || Number(bestOverallProbe.probeOrder?.totalSavings || 0) > 0) {
-        break;
+        const _remainingZero = validPool.filter(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders && !_freshCheckBusy.has(x.key) && !triedKeys.has(x.key)).length;
+        if (_remainingZero === 0) break;
+      } else if (bestOverallProbe.probeOrder?.couponCode || Number(bestOverallProbe.probeOrder?.totalSavings || 0) > 0) {
+        // Have a coupon winner but still have untried zero-order accounts? Keep probing
+        // zero-order tier first — a later zero-order may have a better coupon.
+        const _hasUntriedZero = validPool.some(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders && !_freshCheckBusy.has(x.key) && !triedKeys.has(x.key));
+        if (!_hasUntriedZero) break;
       }
     }
     let freshDb = getDb();
@@ -6510,8 +6567,11 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
 
     let activeTierPool;
     if (preferZeroOrderAccounts && bestOverallProbe?.profile?.isZeroOrderAccount) {
-      // Valid 0-order winner already exists — stop immediately, don't probe more accounts!
-      break;
+      // Only stop if no more zero-order free candidates remain — otherwise keep probing
+      // the zero-order tier to find the true MAX coupon.
+      const _stillHasZeroFree = freeCandidates.some(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders);
+      if (!_stillHasZeroFree) break;
+      activeTierPool = zeroOrderFree;
     } else if (strictZeroOrdersOnly) {
       activeTierPool = zeroOrderFree;
     } else if (preferZeroOrderAccounts && zeroOrderFree.length > 0) {
