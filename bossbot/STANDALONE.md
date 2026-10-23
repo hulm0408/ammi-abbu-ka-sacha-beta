@@ -5,41 +5,42 @@ from the parent repository — all Swiggy code it needs is in `vendor/`.
 
 ## Create the GitHub repo (one time)
 
-The sandbox token cannot create repositories, so this step is manual:
+The Arena sandbox token only has write access to the parent repository, so the
+push has to come from your own machine (or from a GitHub connection that has the
+new repo selected). The repository `hulm0408/bossbot` already exists and is
+empty.
 
-1. Open <https://github.com/new>
-2. Repository name: **bossbot** · **Private** · do **not** add README/.gitignore/license
-3. Create repository
+### 3 commands (verified end-to-end)
 
-Then either push from this folder:
+Run these in the terminal **from any empty folder**:
 
 ```bash
-git clone https://github.com/hulm0408/ammi-abbu-ka-sacha-beta.git parent
-cd parent/bossbot
-git init -b main
-git add -A
-git commit -m "bossbot: two links in, one tap, tracking out"
-git remote add origin https://github.com/hulm0408/bossbot.git
-git push -u origin main
+git clone -b arena/7406ca34-ammi-abbu-ka-sacha-beta https://github.com/hulm0408/ammi-abbu-ka-sacha-beta.git parent
+cd parent && git subtree split -P bossbot -b bossbot-only && cd ..
+git clone -b bossbot-only parent bossbot && cd bossbot && git branch -M main && git remote set-url origin https://github.com/hulm0408/bossbot.git && git push -u origin main
 ```
 
-…or copy this folder anywhere and do the same three steps.
+Result: `https://github.com/hulm0408/bossbot` contains the whole project —
+20 files, 4 commits, and `npm test` passes 49/49 from the fresh clone.
+
+> If the branch above is ever deleted, run `git subtree split` from `main`
+> after this PR is merged — the folder lives there too.
 
 ## Deploy to Render
 
-Use `render.yaml` in this folder (root directory = repo root, since this *is* the
-repo root in the new repository). Set:
+**Easiest — no file edits:** Render → **New → Web Service** → pick
+`hulm0408/bossbot` (root directory empty), then:
 
-- `BOT_TOKEN` — from @BotFather
-- `BOSS_IDS` — numeric Telegram IDs, comma separated
-- mount a disk at `vendor/data` so sessions and orders survive redeploys
+| Field | Value |
+|---|---|
+| Build command | `npm install --omit=dev --ignore-scripts` |
+| Start command | `npm start` |
+| Health check path | `/` |
+| Env | `BOT_TOKEN`, `BOSS_IDS` (numeric IDs, comma separated) |
+| Disk | mount at `/opt/render/project/src/vendor/data` |
 
-## Verify
-
-```bash
-npm install --omit=dev --ignore-scripts
-npm test        # 49 checks, no network needed
-```
+**Blueprint instead:** delete the `rootDir: bossbot` line from `render.yaml`
+first (this *is* the repo root now), then New → Blueprint.
 
 ## What is intentionally NOT here
 
