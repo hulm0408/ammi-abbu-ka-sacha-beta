@@ -1017,9 +1017,18 @@ try {
   const approvalWaitCallbacks = approvalWaitCard.keyboard.reply_markup.inline_keyboard.flat().map(button => button.callback_data).filter(Boolean);
   assert(!approvalWaitCallbacks.some(callback => /fwd_(?:gen_qr|send_summary|input_|rechoose_acc|rescan_max)_/.test(callback)), 'Approval-pending Boss card removes stale QR, edit, account, and duplicate-summary buttons');
   assert(getBillReadyOrdersWaitingForQr({ orders: { [approvalWaitOrder.id]: approvalWaitOrder } }).length === 0, 'Parallel QR queue excludes orders waiting for customer approval');
+  // The confirmation tap must delegate to a read-only Swiggy status check; it
+  // must never write `COMPLETED` itself (payment is only ever marked by the
+  // verified Swiggy response).
+  const confirmPaidBody = (() => {
+    const start = indexSource.indexOf('async function handleConfirmOrderPaid(');
+    if (start === -1) return '';
+    const end = indexSource.indexOf('\nasync function ', start + 10);
+    return indexSource.slice(start, end === -1 ? start + 4000 : end);
+  })();
   assert(
-    /async function handleConfirmOrderPaid\(ctx, orderId, _confirmedBy\) \{[\s\S]{0,600}?const result = await checkOrderPaidStatusOnly\(orderId\);/.test(indexSource) &&
-    /async function checkOrderPaidStatusOnly\(orderId\)/.test(indexSourceCache),
+    confirmPaidBody.includes('checkOrderPaidStatusOnly(') &&
+      !/order\.status\s*=\s*'COMPLETED'/.test(confirmPaidBody),
     'Payment-confirmation tap only checks Swiggy status and cannot mark an order paid itself'
   );
   const completedGuard = await applyBossOrderUpdate({ orderId: 'MISSING_TEST_TERMINAL', cart: 'https://swig.gy/gc/example' });
@@ -1130,6 +1139,8 @@ try {
     'Order History',
     'Cancelled Orders',
     'Connected Accounts',
+    'Export & Logout',
+    'Refresh Panel',
     'Close',
     'Cancel Order'
   ];

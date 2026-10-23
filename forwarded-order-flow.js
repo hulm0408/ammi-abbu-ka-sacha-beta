@@ -3,18 +3,45 @@ import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { PNG } from 'pngjs';
 import { Markup } from 'telegraf';
+// Rate limiter for heavy lazy callbacks (confirm/track) — same policy as index.js extract_now
+const _lazyRateMap = new Map();
+function _isLazyRateLimited(userId, maxPerWindow = 5, windowMs = 60_000) {
+  const k = String(userId); const now = Date.now(); let rec = _lazyRateMap.get(k);
+  if (!rec || now - rec.windowStart > windowMs) { rec = { count: 0, windowStart: now }; _lazyRateMap.set(k, rec); }
+  if (rec.count >= maxPerWindow) return true; rec.count += 1; return false;
+}
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
 import { startOrderTrackingAuto, ensureOrderTracking, isTerminalDeliveryStatus } from './order-tracking.js';
+import {
+  detectRecipientRole,
+  recipientLabelOf,
+  planAccountFallbacks,
+  retryFetch,
+  isRetryableFetchError,
+  storeIntakeSnapshot,
+  buildLazyConfirmRow,
+  buildLazyRescueCard,
+  resolveTrackingDelivery,
+  trackingRetryPromiseText,
+  lazyActionId
+} from './lazy-order-pilot.js';
 
 // Robust order lookup — handles stale callback IDs, case mismatch, or swiggyOrderId passed instead of bot orderId
+const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor', '__defineGetter__', '__defineSetter__']);
+export function isSafeOrderKey(key) {
+  const k = String(key || '').trim();
+  return k && !UNSAFE_KEYS.has(k) && !k.startsWith('__');
+}
 export function lookupOrder(db, orderId) {
   if (!db?.orders) return null;
   const raw = String(orderId || '').trim();
   if (!raw) return null;
-  if (db.orders[raw]) return db.orders[raw];
+  if (!isSafeOrderKey(raw)) return null;
+  // Use hasOwnProperty to avoid prototype chain lookup
+  if (Object.prototype.hasOwnProperty.call(db.orders, raw)) return db.orders[raw];
   const q = raw.toLowerCase();
   const qShort = q.slice(-6);
   for (const o of Object.values(db.orders)) {
@@ -700,6 +727,12 @@ export function findIncompleteForwardedOrder(db, senderInfo, incomingHint = null
     if (['AUTO_SELECTING', 'NEED_ACCOUNT', 'BILL_READY', 'QR_GENERATED', 'PAID_CONFIRMED'].includes(o.cardStage)) {
       return false;
     }
+    // A rescue card older than 30 minutes no longer pairs with new forwards —
+    // its links have almost certainly expired, so start a clean order instead.
+    if (o.cardStage === 'FETCH_FAILED') {
+      const failedAt = new Date(o.fetchFailedAt || o.createdAt || 0).getTime();
+      if (Number.isFinite(failedAt) && Date.now() - failedAt > 30 * 60 * 1000) return false;
+    }
     // CRITICAL 10x MULTI-ORDER FIX: Once an order has BOTH Cart & Address (or pending slots), its intake is 100% COMPLETE —
     // NEVER overwrite it when Boss shares the 2nd, 3rd, ..., 10th order!
     const hasCartNow = Boolean(o.cart || o._pendingCartSlot);
@@ -1113,6 +1146,15 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
   const directSwiggyUrl = getStoredSwiggyTrackingUrl(order);
   const cancelBtn = Markup.button.callback('✕ Cancel Order', `fwd_cancel_${order.id}`);
 
+  // Stage 0 (Lazy Boss rescue): the forward could not be read. One card, one
+  // retry tap — the original forwarded text is already stored on the order.
+  if (order.cardStage === 'FETCH_FAILED' && !order.pendingSwiggyOrderId && order.status !== 'COMPLETED') {
+    const rescue = buildLazyRescueCard(order, { reason: order.fetchError || '', escapeHtml });
+    if (rescue.missing.length > 0 || order.fetchError) {
+      return { text: rescue.text, keyboard: { reply_markup: { inline_keyboard: rescue.buttons } } };
+    }
+  }
+
   // Stage 4A: show only links returned by Swiggy (or explicitly supplied by the boss).
   if (order.status === 'COMPLETED' && directSwiggyUrl) {
     const bodyHtml = formatOrderBodyFn(order, true);
@@ -1216,22 +1258,31 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     const qrStatusNote = order.cardStage === 'QR_GENERATED'
       ? `\n\n● <b>Official Swiggy Dynamic QR Active</b> (Swiggy Order <code>${escapeHtml(String(order.pendingSwiggyOrderId || ''))}</code> • Auto-detecting payment every 5s or tap <b>Paid</b>)`
       : '';
+    // Lazy Boss mode: ONE obvious tap on top of the card. It is the explicit
+    // confirmation step — nothing is charged before Boss (or the customer on
+    // their own order) taps it.
+    const isBossIntake = Boolean(order.isForwardedOrder || order.isDirectBossOrder);
+    const lazyHint = isBossIntake && order.cardStage !== 'QR_GENERATED'
+      ? `\n\n⚡ <i>Ek tap: ✅ Confirm → official Swiggy QR → payment ke baad tracking link khud aa jayega.</i>`
+      : '';
     const text =
       `▤ <b>ORDER BILL READY (#${escapeHtml(order.id)})</b>\n` +
       `${senderLine}\n\n` +
-      `${bodyHtml}${offerStrip}${qrStatusNote}`;
+      `${bodyHtml}${offerStrip}${qrStatusNote}${lazyHint}`;
 
     const readyForQrCount = getBillReadyOrdersWaitingForQr(db).length;
     const activeQrCount = getActiveQrOrdersWaitingForPayment(db).length;
-    const rows = [
-      [
-        Markup.button.callback(
-          order.cardStage === 'QR_GENERATED' ? '↻ Regenerate Swiggy QR' : '□ Generate QR',
-          `fwd_gen_qr_${order.id}`
-        ),
-        Markup.button.callback('✓ Paid', `fwd_check_paid_${order.id}`)
-      ]
-    ];
+    const rows = [];
+    if (isBossIntake && order.cardStage !== 'QR_GENERATED') {
+      rows.push(buildLazyConfirmRow(order));
+    }
+    rows.push([
+      Markup.button.callback(
+        order.cardStage === 'QR_GENERATED' ? '↻ Regenerate Swiggy QR' : '□ Generate QR',
+        `fwd_gen_qr_${order.id}`
+      ),
+      Markup.button.callback('✓ Paid', `fwd_check_paid_${order.id}`)
+    ]);
     if (readyForQrCount >= 2 && order.cardStage === 'BILL_READY') {
       rows.push([
         Markup.button.callback(
@@ -1264,6 +1315,31 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     }
     rows.push([cancelBtn]);
     return { text, keyboard: Markup.inlineKeyboard(rows) };
+  }
+
+  // Stage 2-: auto-selection exhausted. Boss gets ONE retry button that walks
+  // the fallback ladder across every logged-in ID — never a manual picker.
+  if (hasAddress && hasDeliveryContact && hasCart && order.cardStage === 'NEED_ACCOUNT') {
+    const errText = escapeHtml(order.accountSyncError || order.lastAccountError || 'Swiggy ID se live bill nahi bana.');
+    const vaultCount = planAccountFallbacks(db?.config?.accounts || {}).length;
+    const text =
+      `⚠️ <b>BEST SWIGGY ID NAHI MILA (#${escapeHtml(order.id)})</b>\n` +
+      `${senderLine}\n\n` +
+      `⌖ <b>Address:</b> ${summarizeAddressPreview(order)}\n` +
+      `▤ <b>Cart:</b> ${summarizeCartPreview(order)}\n\n` +
+      `<b>Reason:</b> <i>${errText}</i>\n` +
+      (vaultCount > 0
+        ? `<i>Vault me ${vaultCount} logged-in ID available hain — ek tap me sab par try hoga.</i>\n`
+        : `<i>Vault me koi logged-in ID nahi hai. Session JSON drop karein.</i>\n`) +
+      `\n<i>Cart/address safe hain — dobara forward karne ki zarurat nahi.</i>`;
+    return {
+      text,
+      keyboard: Markup.inlineKeyboard([
+        [Markup.button.callback('🔄 Best ID dobara try karo', lazyActionId('best_id', order.id))],
+        [Markup.button.callback('▣ Re-Scan Max Offer', `fwd_rescan_max_${order.id}`)],
+        [cancelBtn]
+      ])
+    };
   }
 
   // Stage 2A & 2B: Automatic Account Selection by default (No manual picker needed!)
@@ -1472,6 +1548,12 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
         throw err;
       }
       order.cart = url;
+      // Lazy Boss mode: remember whether Swiggy actually answered for this link.
+      // An unresolved link must never masquerade as a live cart on the bill card.
+      const cartResolved = Boolean(resolved && (
+        resolved.groupCartId || resolved.restaurantId || resolved.restaurantName || resolved.cartDetails
+      ));
+      order.cartUnverified = !cartResolved;
       if (resolved?.groupCartId) order.groupCartId = resolved.groupCartId;
       if (resolved?.hostName) order.hostName = resolved.hostName;
       if (resolved?.restaurantId) order.restaurantId = resolved.restaurantId;
@@ -1505,6 +1587,9 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       // Only store the actual cart URL, not the whole message text — prevents address text leaking into cart
       const urlsForCart = extractSharedUrls(trimmed).filter(u => isValidCartInput(u));
       order.cart = urlsForCart[0] || primaryCartFallback(trimmed);
+      // Text/receipt fallback — Swiggy never confirmed this cart, so the intake
+      // handler shows the rescue card (with one-tap retry) instead of pretending.
+      order.cartUnverified = true;
       updatedCart = true;
     } else if (!addressShareUrl && isValidAddressInput(trimmed)) {
       // Plain-text address (no address link in the message) — the text IS the source.
@@ -1956,6 +2041,80 @@ export async function executeOrderBillSyncOnAccount({
   return order;
 }
 
+/**
+ * Lazy Boss mode — never leave an order stuck on "no account".
+ *
+ * 1. Try the automatic multi-probe pick (`BEST`) twice (transient WAF/network
+ *    failures are retried; expired-cart style errors fail fast).
+ * 2. If that still fails, walk a deterministic fallback ladder across every
+ *    logged-in Swiggy ID (0-order → 0-active → rest) and stop at the first
+ *    one that can build a live bill.
+ * 3. Only when the whole vault is unusable does the order go back to Boss.
+ */
+export async function autoAssignBestAccountWithFallback({
+  telegram,
+  chatId,
+  orderId,
+  formatOrderBodyFn,
+  excludeAccountKeys = []
+}) {
+  const startDb = getDb();
+  const order = lookupOrder(startDb, orderId);
+  if (!order) throw new Error(`Order #${orderId} not found. ` + orderNotFoundDiag(startDb, orderId));
+
+  const excluded = [...new Set((excludeAccountKeys || []).filter(Boolean).map(String))];
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await executeOrderBillSyncOnAccount({
+        telegram,
+        chatId,
+        orderId,
+        accKey: 'BEST',
+        formatOrderBodyFn,
+        excludeAccountKeys: excluded
+      });
+    } catch (err) {
+      lastError = err;
+      if (attempt === 2 || !isRetryableFetchError(err)) break;
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+  }
+
+  const ladder = planAccountFallbacks(getDb()?.config?.accounts, order, { exclude: excluded });
+  const tried = [];
+  for (const candidate of ladder.slice(0, 3)) {
+    try {
+      const result = await executeOrderBillSyncOnAccount({
+        telegram,
+        chatId,
+        orderId,
+        accKey: candidate.key,
+        formatOrderBodyFn
+      });
+      const doneDb = getDb();
+      const doneOrder = doneDb.orders?.[orderId];
+      if (doneOrder) {
+        doneOrder.accountFallbackReason = candidate.reason;
+        doneOrder.accountFallbackTier = candidate.tier;
+        doneOrder.accountSyncError = '';
+        doneOrder.lastAccountError = '';
+        upsertOrder(orderId, doneOrder);
+      }
+      return result;
+    } catch (err) {
+      lastError = err;
+      tried.push(candidate.phone || candidate.key);
+    }
+  }
+
+  if (lastError && tried.length) {
+    lastError.message = `${lastError.message} (aage try kiye: ${tried.join(', ')})`;
+  }
+  throw lastError || new Error('No usable Swiggy ID could build a live bill.');
+}
+
 // Shared helper to generate REAL Swiggy Dynamic QR for a single order (safe for `Promise.all` across 10+ distinct IDs!)
 export async function executeRealQrGenerationForOrder({
   telegram,
@@ -2198,6 +2357,11 @@ export async function handleBossForwardedOrderInput(
     customRealQrGenerator = null
   } = {}
 ) {
+  // Input cap to prevent OOM from multi-order bulk pastes
+  if (String(rawText || '').length > 8000) {
+    rawText = String(rawText).slice(0, 8000);
+    console.warn('[handleBossForwardedOrderInput] truncated oversized rawText to 8000');
+  }
   const sender = resolveOrderSenderInfo(ctx.message, ctx.from);
   if (!sender) return false;
 
@@ -2311,6 +2475,20 @@ export async function handleBossForwardedOrderInput(
     if (incomingHint.hasCart) order._pendingCartSlot = incomingHint.primaryCartUrl || 'PENDING_CART';
     if (incomingHint.hasAddress) order._pendingAddrSlot = 'PENDING_ADDR';
 
+    // Lazy Boss mode: remember who the order is for (Ammi/Abbu tag first),
+    // and bookmark the forwarded text so a failed fetch can be retried without
+    // asking Boss to forward the message again.
+    const roleInfo = detectRecipientRole({
+      senderName: sender.senderName,
+      senderUserId: sender.senderUserId,
+      rawText,
+      familyMembers: db.config?.familyMembers || null
+    });
+    order.recipientRole = roleInfo.role;
+    order.recipientLabel = roleInfo.label;
+    order.recipientRoleSource = roleInfo.source;
+    storeIntakeSnapshot(order, { rawText, location });
+
     const willHaveBoth = Boolean(order.cart || order._pendingCartSlot) && Boolean(order.address || order._pendingAddrSlot);
     if (willHaveBoth && shouldAutoSelect) {
       order.cardStage = 'AUTO_SELECTING';
@@ -2331,26 +2509,49 @@ export async function handleBossForwardedOrderInput(
     if (!order) return;
 
     try {
-      const { updatedCart, updatedAddress } = await ingestForwardedContentIntoOrder(order, { rawText, location });
+      // One flaky Swiggy hop must never strand the order: retry the whole
+      // resolution once with a short delay (expired carts fail fast — they
+      // carry a non-retryable diagnostic code).
+      const { updatedCart, updatedAddress } = await retryFetch(
+        () => ingestForwardedContentIntoOrder(order, { rawText, location }),
+        {
+          attempts: 2,
+          delays: [900],
+          onRetry: (retryErr, attempt) => {
+            console.warn(`[LazyFetch] retry ${attempt} for #${order.id}: ${retryErr?.message || retryErr}`);
+          }
+        }
+      );
+      delete order.fetchError;
       if (updatedCart) delete order._pendingCartSlot;
       if (updatedAddress) delete order._pendingAddrSlot;
 
-      if (!updatedCart && !updatedAddress) {
+      // A cart link that Swiggy never answered for is NOT a fetched cart: show
+      // the rescue card instead of letting the bill sync fail later and report
+      // a misleading "no account" error.
+      const cartUnreadable = Boolean(order.cart && order.cartUnverified);
+      if ((!updatedCart && !updatedAddress) || cartUnreadable) {
         delete order._pendingCartSlot;
         delete order._pendingAddrSlot;
-        if (!order.cart && !order.address) {
-          upsertOrder(order.id, null);
+        if (cartUnreadable || (!order.cart && !order.address)) {
+          // Keep the order (and its intake snapshot) so the rescue card's
+          // "Retry fetch" works without a re-forward.
+          order.cardStage = 'FETCH_FAILED';
+          order.fetchError = cartUnreadable
+            ? 'Cart link mila, par Swiggy se read nahi hua — retry karein.'
+            : 'Forward se cart/address link detect nahi hua.';
+          order.fetchFailedAt = new Date().toISOString();
+          upsertOrder(order.id, order);
+          await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
         } else {
           if (order.cardStage === 'AUTO_SELECTING') order.cardStage = 'COLLECTING';
           upsertOrder(order.id, order);
+          await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
         }
-        await ctx.reply(
-          `! <b>Could not detect a valid Swiggy Cart link or Delivery Address</b> in <b>${escapeHtml(sender.senderName)}</b>'s message.\n` +
-          `<i>Send a Swiggy Cart link, Address share text/link, Google Maps link, street address, or GPS location pin.</i>`,
-          { parse_mode: 'HTML' }
-        );
         return;
       }
+      order.fetchFailedAt = '';
+      order.fetchAttempts = (Number(order.fetchAttempts) || 0) + 1;
 
       const completeNow = Boolean(order.cart) && hasVerifiedDeliveryLocation(order) && hasVerifiedDeliveryContact(order);
       if (completeNow && shouldAutoSelect) {
@@ -2363,16 +2564,21 @@ export async function handleBossForwardedOrderInput(
         const targetOrderId = order.id;
         const targetChatId = ctx.chat.id;
         try {
-          await executeOrderBillSyncOnAccount({
+          // Auto-pick + automatic fallback ladder across the whole vault.
+          await autoAssignBestAccountWithFallback({
             telegram: ctx.telegram,
             chatId: targetChatId,
             orderId: targetOrderId,
-            accKey: 'BEST',
             formatOrderBodyFn
           });
-          // Never create the payment QR before the customer confirms the bill.
-          const awaitingCustomerApproval = getDb().orders?.[targetOrderId]?.status === 'APPROVAL_PENDING';
-          if (shouldAutoQr && !awaitingCustomerApproval) {
+          // Never create the payment QR before the customer confirms the bill —
+          // and, in Lazy Boss mode, never before Boss taps the single
+          // [ ✅ Confirm ] button either (unless auto-confirm is explicitly on).
+          const syncedDb = getDb();
+          const awaitingCustomerApproval = syncedDb.orders?.[targetOrderId]?.status === 'APPROVAL_PENDING';
+          const bossAlreadyConfirmed = Boolean(syncedDb.orders?.[targetOrderId]?.bossConfirmedAt);
+          const autoConfirmEnabled = syncedDb.config?.autoConfirmOrders === true;
+          if (shouldAutoQr && !awaitingCustomerApproval && (bossAlreadyConfirmed || autoConfirmEnabled)) {
             const tgAdapter = typeof ctx.telegram?.sendPhoto === 'function'
               ? ctx.telegram
               : {
@@ -2417,7 +2623,11 @@ export async function handleBossForwardedOrderInput(
       delete order._pendingCartSlot;
       delete order._pendingAddrSlot;
       if (!order.cart && !order.address) {
-        upsertOrder(order.id, null);
+        order.cardStage = 'FETCH_FAILED';
+        order.fetchError = String(err?.message || err || 'Fetch failed').slice(0, 300);
+        order.fetchFailedAt = new Date().toISOString();
+        upsertOrder(order.id, order);
+        await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
       } else {
         if (order.cardStage === 'AUTO_SELECTING') order.cardStage = 'COLLECTING';
         upsertOrder(order.id, order);
@@ -3088,6 +3298,221 @@ export function registerForwardedOrderHandlers(bot, {
     } catch (e) {
       if (scanMsg) { try { await ctx.telegram.deleteMessage(ctx.chat.id, scanMsg.message_id); } catch {} }
       await ctx.reply(`❌ Extract failed: ${escapeHtml(String(e?.message || e))}`, { parse_mode: 'HTML' });
+    }
+  });
+
+  // =========================================================================
+  // 8. LAZY BOSS AUTOPILOT — one forward, one tap, zero babysitting
+  // =========================================================================
+  // Boss forwards Ammi/Abbu's chat into the bot. From here he should only ever
+  // need ONE tap: [ ✅ Confirm · for Ammi · ₹248 ]. Everything else
+  // (fetch retry, best-ID fallback, tracking) self-heals in the background.
+  const resolveLazyOrder = (ctx, orderId) => {
+    const db = getDb();
+    const order = lookupOrder(db, orderId);
+    return { db, order };
+  };
+  const canOperateLazyOrder = (ctx, order) =>
+    isBoss(ctx.from.id) ||
+    String(order?.userId) === String(ctx.from.id) ||
+    String(order?.fwdSenderUserId) === String(ctx.from.id);
+
+  // 8A. ONE-TAP CONFIRM → official Swiggy QR (this IS the confirmation step)
+  bot.action(/^lazy_confirm_([A-Za-z0-9_]+)$/, async (ctx) => {
+    if (_isLazyRateLimited(ctx.from.id, 5, 60_000)) return ctx.answerCbQuery('⏳ Thoda slow — 1 min me max 5 taps!', { show_alert: true }).catch(()=>{});
+    const orderId = ctx.match[1];
+    const { order } = resolveLazyOrder(ctx, orderId);
+    if (!order) return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(getDb(), orderId), { show_alert: true });
+    if (!canOperateLazyOrder(ctx, order)) return ctx.answerCbQuery('Unauthorized', { show_alert: true });
+    if (order.status === 'COMPLETED') return ctx.answerCbQuery('✓ This order is already paid and confirmed.', { show_alert: true });
+    if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
+      return ctx.answerCbQuery('Customer ka bill approval pending hai — uske approve karne ke baad QR jayega.', { show_alert: true });
+    }
+    if (order.cardStage === 'QR_GENERATED' && order.activeQrMessageId) {
+      return ctx.answerCbQuery('✓ Payment QR already bheja gaya hai — QR scan karke pay karein.', { show_alert: true });
+    }
+    if (!['BILL_READY', 'NEED_ACCOUNT', 'QR_GENERATED'].includes(order.cardStage)) {
+      return ctx.answerCbQuery('! Pehle cart + address complete hone dein — bot abhi fetch kar raha hai.', { show_alert: true });
+    }
+
+    const who = recipientLabelOf(order);
+    await ctx.answerCbQuery(`✅ Confirmed for ${who} — QR ban raha hai...`).catch(() => {});
+
+    order.bossConfirmedAt = order.bossConfirmedAt || new Date().toISOString();
+    order.bossConfirmedBy = String(ctx.from.id);
+    order.bossConfirmedName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ').trim() || 'Boss';
+    order.confirmedRecipient = who;
+    upsertOrder(order.id, order);
+
+    const tgAdapter = typeof ctx.telegram?.sendPhoto === 'function'
+      ? ctx.telegram
+      : { ...ctx.telegram, sendPhoto: (_cid, photo, extra) => ctx.replyWithPhoto(photo, extra) };
+
+    try {
+      await executeRealQrGenerationForOrder({
+        telegram: tgAdapter,
+        chatId: ctx.chat.id,
+        orderId,
+        formatOrderBodyFn,
+        customRealQrGenerator
+      });
+    } catch (err) {
+      // Self-heal: transient account/WAF problems get one automatic re-pick +
+      // one automatic QR retry before Boss hears about it.
+      if (isRetryableFetchError(err)) {
+        try {
+          await autoAssignBestAccountWithFallback({ telegram: ctx.telegram, chatId: ctx.chat.id, orderId, formatOrderBodyFn });
+          await executeRealQrGenerationForOrder({
+            telegram: tgAdapter,
+            chatId: ctx.chat.id,
+            orderId,
+            formatOrderBodyFn,
+            customRealQrGenerator
+          });
+          return;
+        } catch (retryErr) {
+          err = retryErr;
+        }
+      }
+      const freshDb = getDb();
+      const freshOrder = freshDb.orders?.[orderId] || order;
+      freshOrder.cardStage = 'NEED_ACCOUNT';
+      freshOrder.accountSyncError = String(err?.message || err || 'QR generation failed').slice(0, 300);
+      upsertOrder(freshOrder.id, freshOrder);
+      await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, freshOrder, getDb(), formatOrderBodyFn).catch(() => {});
+      await sendBossDiagnosticError(ctx, ctx.chat.id, err, {
+        stage: 'LAZY_CONFIRM_GENERATE_QR',
+        orderId,
+        accountKey: freshOrder.selectedAccount,
+        senderName: freshOrder.fwdSenderName || freshOrder.userName,
+        isForwarded: !freshOrder.isDirectBossOrder,
+        cartLink: freshOrder.cart,
+        addressSummary: freshOrder.address
+      });
+    }
+  });
+
+  // 8B. RETRY FETCH — replays the stored forward; Boss never re-sends anything
+  bot.action(/^lazy_fetch_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const orderId = ctx.match[1];
+    const { order } = resolveLazyOrder(ctx, orderId);
+    if (!order) return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(getDb(), orderId), { show_alert: true });
+    if (!canOperateLazyOrder(ctx, order)) return ctx.answerCbQuery('Unauthorized', { show_alert: true });
+    const rawText = String(order.lastIntakeRawText || '');
+    const location = order.lastIntakeLocation || null;
+    if (!rawText && !location) {
+      return ctx.answerCbQuery('Original message stored nahi hai — cart link ya address dobara bhej dein.', { show_alert: true });
+    }
+    await ctx.answerCbQuery('↻ Retrying the same forward...').catch(() => {});
+
+    try {
+      const { updatedCart, updatedAddress } = await retryFetch(
+        () => ingestForwardedContentIntoOrder(order, { rawText, location }),
+        { attempts: 3, delays: [500, 1500] }
+      );
+      delete order._pendingCartSlot;
+      delete order._pendingAddrSlot;
+      const cartUnreadable = Boolean(order.cart && order.cartUnverified);
+      const complete = Boolean(order.cart) && !cartUnreadable &&
+        hasVerifiedDeliveryLocation(order) && hasVerifiedDeliveryContact(order);
+      const progress = !cartUnreadable && Boolean(updatedCart || updatedAddress || order.cart || order.address);
+      if (!progress) {
+        order.cardStage = 'FETCH_FAILED';
+        order.fetchError = 'Retry bhi fail hua — link expire ho sakta hai ya galat forward hai.';
+        upsertOrder(order.id, order);
+        await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
+        return;
+      }
+      delete order.fetchError;
+      order.fetchFailedAt = '';
+      if (complete) {
+        order.cardStage = 'AUTO_SELECTING';
+        upsertOrder(order.id, order);
+        await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
+        await autoAssignBestAccountWithFallback({ telegram: ctx.telegram, chatId: ctx.chat.id, orderId, formatOrderBodyFn });
+      } else {
+        order.cardStage = 'COLLECTING';
+        upsertOrder(order.id, order);
+        await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
+      }
+    } catch (err) {
+      order.cardStage = 'FETCH_FAILED';
+      order.fetchError = String(err?.message || err).slice(0, 300);
+      upsertOrder(order.id, order);
+      await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
+    }
+  });
+
+  // 8C. BEST ID DOBARA — walks the fallback ladder across every logged-in ID
+  bot.action(/^lazy_best_id_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const orderId = ctx.match[1];
+    const { order } = resolveLazyOrder(ctx, orderId);
+    if (!order) return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(getDb(), orderId), { show_alert: true });
+    if (!canOperateLazyOrder(ctx, order)) return ctx.answerCbQuery('Unauthorized', { show_alert: true });
+    if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
+      return ctx.answerCbQuery('Customer approval ke baad ID change lock hai.', { show_alert: true });
+    }
+    const previous = order.selectedAccount;
+    if (previous) releaseSwiggyAccountReservation(previous, orderId);
+    order.selectedAccount = null;
+    order.cardStage = 'AUTO_SELECTING';
+    order.accountSyncError = '';
+    order.lastAccountError = '';
+    upsertOrder(order.id, order);
+    await ctx.answerCbQuery('🔄 Best ID dobara dhoond raha hoon...').catch(() => {});
+    await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn, { includeQrDelete: true }).catch(() => {});
+    try {
+      await autoAssignBestAccountWithFallback({
+        telegram: ctx.telegram,
+        chatId: ctx.chat.id,
+        orderId,
+        formatOrderBodyFn,
+        excludeAccountKeys: previous ? [previous] : []
+      });
+    } catch (err) {
+      order.cardStage = 'NEED_ACCOUNT';
+      order.accountSyncError = String(err?.message || err).slice(0, 300);
+      upsertOrder(order.id, order);
+      await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
+      await sendBossDiagnosticError(ctx, ctx.chat.id, err, { stage: 'LAZY_BEST_ID_RETRY', orderId });
+    }
+  });
+
+  // 8D. TRACKING ABHI — force scan + always return something clickable
+  bot.action(/^lazy_track_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const orderId = ctx.match[1];
+    const { order } = resolveLazyOrder(ctx, orderId);
+    if (!order) return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(getDb(), orderId), { show_alert: true });
+    if (!canOperateLazyOrder(ctx, order)) return ctx.answerCbQuery('Unauthorized', { show_alert: true });
+    await ctx.answerCbQuery('🔗 Swiggy tracking dhoond raha hoon...').catch(() => {});
+
+    let scan = null;
+    try { scan = await ensureOrderTracking(orderId, { force: true, budgetMs: 20000, deep: true }); } catch {}
+    const fresh = getDb().orders?.[orderId] || order;
+    const delivery = resolveTrackingDelivery(fresh, { storedUrl: getStoredSwiggyTrackingUrl(fresh) });
+    const swiggyId = String(fresh.swiggyOrderId || fresh.pendingSwiggyOrderId || '—');
+    const otpLine = fresh.deliveryOtp ? `\n⌕ <b>Delivery OTP:</b> <code>${escapeHtml(String(fresh.deliveryOtp))}</code>` : '';
+    const header = delivery.isOfficial
+      ? `✅ <b>Tracking link ready (#${escapeHtml(fresh.id)})</b>`
+      : `◷ <b>Tracking abhi publish nahi hua (#${escapeHtml(fresh.id)})</b>`;
+
+    await ctx.reply(
+      `${header}\n` +
+      `▪ <b>Swiggy order:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
+      `▪ <b>${delivery.isOfficial ? 'Tracking' : 'Swiggy orders page'}:</b> <a href="${escapeHtml(delivery.url)}">Open</a>` +
+      `${otpLine}\n\n` +
+      `<i>${delivery.isOfficial ? 'Yeh Swiggy ka apna link hai.' : trackingRetryPromiseText(Number(fresh.trackingRetryCount) || 0)}</i>`,
+      {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        ...Markup.inlineKeyboard([
+          [Markup.button.url(delivery.isOfficial ? '↗ Open Swiggy tracking' : '↗ Swiggy My Orders', delivery.url)],
+          [Markup.button.callback('↻ Tracking dobara check', lazyActionId('track', fresh.id))]
+        ])
+      }
+    ).catch(() => {});
+    if (!delivery.isOfficial) {
+      try { startOrderTrackingAuto(fresh.id, { force: true, budgetMs: 12000 }); } catch {}
     }
   });
 }

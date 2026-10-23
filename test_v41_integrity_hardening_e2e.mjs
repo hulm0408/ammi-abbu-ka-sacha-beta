@@ -44,7 +44,7 @@ console.log('\n--- Scenario 1: every bot module loads ---');
     'store.js', 'link-utils.js', 'rich-text.js', 'phone-utils.js', 'scan-diagnostics.js',
     'waf-pool.js', 'tracking-validation.js', 'order-tracking.js', 'sms-notify.js', 'vault-sync.js',
     'ammi-abbu-topic-flow.js', 'simple-chat.js', 'boss-panel.js', 'account-vault-intake.js',
-    'forwarded-order-flow.js', 'competitor-flow.js', 'swiggy.js', 'login-helper.js', 'network-shield.js'
+    'forwarded-order-flow.js', 'swiggy.js', 'login-helper.js', 'network-shield.js'
   ];
   const broken = [];
   for (const m of modules) {

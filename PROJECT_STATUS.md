@@ -58,6 +58,19 @@ An automated Telegram ordering, billing, and tracking bot designed for family me
    - Calculates `possibleDiscountsCount` and stores on the account profile.
 4. Account is saved into `db.config.accounts` and synced to Cloud Vault.
 
+### Flow B2: Lazy Boss Autopilot (forward → confirm → paid → tracked)
+1. Boss forwards Ammi/Abbu's personal message into the bot. `extractForwardSenderInfo` identifies the sender;
+   `detectRecipientRole` resolves Ammi/Abbu from `config.familyMembers`, then the forwarded name, then nicknames.
+2. `handleBossForwardedOrderInput` bookmarks the raw text (`lastIntakeRawText`) and resolves cart + address.
+   A transient failure is retried once; a hard failure renders the **rescue card** (`FETCH_FAILED`) with
+   `↻ Retry fetch (same message)` — no re-forward needed.
+3. `autoAssignBestAccountWithFallback` picks the best ID (`BEST` twice, then the deterministic
+   `planAccountFallbacks` ladder) and locks the max-discount bill.
+4. The bill card leads with one coloured button: `✅ Confirm · for Ammi · ₹248` (`lazy_confirm_<id>`).
+   Only this tap (or `config.autoConfirmOrders === true`) can generate the official Swiggy payment QR.
+5. After payment the tracking poller pushes Swiggy's genuine link; `lazy_track_<id>` gives an on-demand
+   force-scan that always returns the real link or `swiggy.com/orders` + a retry promise.
+
 ### Flow C: Permanent Account Logout
 1. Operator or lifecycle routine triggers logout for `acc_<phone>`.
 2. Account is marked `isLoggedIn: false`, `isLoggedOut: true`, session tokens cleared.
@@ -92,6 +105,11 @@ An automated Telegram ordering, billing, and tracking bot designed for family me
 | **FR-18** | Explicit diagnostic error messaging on account issues (session expired, WAF challenge, auth failure) | **VERIFIED** |
 | **FR-19** | Order count display (`0 Orders` or `X Orders`) in Connected Accounts list and Account Detail cards | **VERIFIED** |
 | **FR-20** | Clean account logout, vault purge, and tombstone protection preventing resurrection of old accounts | **VERIFIED** |
+| **FR-21** | Lazy Boss intake: forwarded family message is stored (`lastIntakeRawText`) and retried once automatically before any manual step | **VERIFIED** (test_v40) |
+| **FR-22** | One-tap explicit confirmation (`lazy_confirm_<id>`) required before any payment QR is generated (`autoConfirmOrders` opt-out only) | **VERIFIED** (test_v40) |
+| **FR-23** | Best-ID fallback ladder across every logged-in account (0-order → 0-active → rest) with automatic retry of transient failures | **VERIFIED** (test_v40) |
+| **FR-24** | Tracking never dead-ends: genuine Swiggy link or the real `swiggy.com/orders` page + explicit retry promise (`lazy_track_<id>`) | **VERIFIED** (test_v40) |
+| **FR-25** | Recipient role resolution (family tag → forwarded name → nickname) drives the confirm label and confirmation audit trail | **VERIFIED** (test_v40) |
 
 ---
 

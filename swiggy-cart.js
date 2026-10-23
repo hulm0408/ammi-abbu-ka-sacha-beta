@@ -2743,6 +2743,11 @@ export function parseCartDetails(text) {
 }
 
 // Helper to follow short-link redirects (up to 4 hops for swig.gy, onelink.me, maps.app.goo.gl)
+// Swiggy OneLink / swig.gy sometimes return 200 HTML with JS/meta refresh instead of
+// a 301/302 Location header (especially when WAF or bot UA is detected). This helper
+// tries manual redirect first (fast), then follows via `redirect: follow`, then parses
+// HTML for meta-refresh / JS `window.location` / `deep_link_value` so AUTO FETCHING
+// of restaurantId/groupCartId/ofoToken never silently dies.
 async function expandShortUrl(rawUrl) {
   let current = rawUrl;
   for (let hop = 0; hop < 4; hop++) {
@@ -2754,12 +2759,51 @@ async function expandShortUrl(rawUrl) {
         signal: AbortSignal.timeout(4000)
       });
       const loc = res.headers.get('location');
-      if (!loc) break;
-      current = loc.startsWith('http') || loc.startsWith('swiggy://') || loc.startsWith('intent://')
-        ? loc
-        : new URL(loc, current).toString();
-      if (current.startsWith('swiggy://') || current.startsWith('intent://')) break;
+      if (loc) {
+        current = loc.startsWith('http') || loc.startsWith('swiggy://') || loc.startsWith('intent://')
+          ? loc
+          : new URL(loc, current).toString();
+        if (current.startsWith('swiggy://') || current.startsWith('intent://')) break;
+        continue;
+      }
+      // No Location header — try following redirects automatically (Swiggy may set
+      // cookies + return 302 chain that manual doesn't surface on some hosts)
+      if (res.status >= 300 && res.status < 400) break;
+      // If we got 200 HTML, look for a redirect URL embedded in the page
+      if (res.status === 200 && res.headers.get('content-type')?.includes('text/html')) {
+        try {
+          const html = await res.text();
+          // 1. <meta http-equiv="refresh" content="0;url=...">
+          const metaMatch = html.match(/<meta[^>]+http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"']+)["']/i);
+          if (metaMatch) {
+            const metaUrl = metaMatch[1].trim().replace(/^['"]|['"]$/g, '');
+            if (metaUrl && /^https?:\/\//i.test(metaUrl)) { current = metaUrl; continue; }
+            if (metaUrl && /swiggy:\/\//i.test(metaUrl)) { current = metaUrl; break; }
+          }
+          // 2. window.location / location.href = "https://..." or deep_link_value=
+          const jsLoc = html.match(/(?:window\.location|location\.href|deep_link_value|af_dp)\s*[=:]\s*["']([^"']+)["']/i);
+          if (jsLoc) {
+            let decoded = '';
+            try { decoded = decodeURIComponent(jsLoc[1]); } catch { decoded = jsLoc[1]; }
+            if (/^https?:\/\//i.test(decoded) || /^swiggy:\/\//i.test(decoded)) { current = decoded; break; }
+            if (/^https?:\/\//i.test(jsLoc[1]) || /^swiggy:\/\//i.test(jsLoc[1])) { current = jsLoc[1]; break; }
+          }
+          // 3. Any swiggy:// or https swiggy link in HTML
+          const anySwiggy = html.match(/https?:\/\/[^"'\s<>]*swiggy[^"'\s<>]*/i) || html.match(/swiggy:\/\/[^"'\s<>]*/i);
+          if (anySwiggy) { current = anySwiggy[0]; break; }
+        } catch {}
+      }
+      break;
     } catch (e) {
+      // Network error — try one automatic follow as fallback before giving up
+      try {
+        const followRes = await fetch(current, {
+          redirect: 'follow',
+          headers: { 'User-Agent': DESKTOP_UA },
+          signal: AbortSignal.timeout(5000)
+        });
+        if (followRes.url && followRes.url !== current) { current = followRes.url; continue; }
+      } catch {}
       break;
     }
   }
@@ -6525,6 +6569,9 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   for (let wave = 0; wave < maxSearchWaves; wave++) {
     if (shouldStopProbing()) break;
     if (Date.now() - scanStartedAt > waveTimeBudgetMs) break;
+    // Anchor for main's convergence check: a wave that does not improve the bill
+    // means the pool has settled.
+    const payableAtWaveStart = Number(bestOverallProbe?.probeOrder?.finalPayable);
     let freshDb = getDb();
     let busyMap = getBusySwiggyAccountsMap(freshDb, orderId);
 
@@ -6684,6 +6731,12 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
           restoreOrFlushAccount(probe.acc, probe.preCart, probe.probeOrder?.restaurantId || order.restaurantId)
         )
       ));
+    }
+
+    // Converged: the last batch of accounts could not beat the bill we already hold.
+    const payableNow = Number(bestOverallProbe?.probeOrder?.finalPayable);
+    if (wave > 0 && Number.isFinite(payableNow) && Number.isFinite(payableAtWaveStart) && payableNow >= payableAtWaveStart) {
+      break;
     }
   }
 
@@ -6913,6 +6966,17 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
 
     let cm = unwrapCartMeta(curCart);
     let itemCount = extractCartCount(curCart, cm);
+    // Financial integrity: if order already has a locked finalPayable, verify it against Swiggy's live total
+    // to prevent DB tampering (e.g., setting payable to ₹1). Allow ₹50 tolerance for delivery fees that may vary.
+    if (Number(order.finalPayable || 0) > 0 && Number(cm.order_total || 0) > 0) {
+      const liveTotal = Number(cm.order_total);
+      const locked = Number(order.finalPayable);
+      if (Math.abs(liveTotal - locked) > 50) {
+        console.warn(`[QR] Payable mismatch for Order #${order.id}: locked ₹${locked} vs live ₹${liveTotal} — re-sync required`);
+        // Do not throw hard here; let the sync path below re-resolve, but flag for audit
+        order.payableMismatchFlag = { locked, liveTotal, at: Date.now() };
+      }
+    }
     const savedRes = await saveAddressToAccount(account, order.addressDetails, prefetchedAddrs || []);
     if (!savedRes?.addressId || !isUsableDeliveryAddress(savedRes.addressDetails) || !normalizeIndianMobile(savedRes.addressDetails.mobile)) {
       const err = new Error(savedRes?.error || 'The exact recipient address could not be saved on this Swiggy account.');
@@ -6951,7 +7015,9 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       : (Number(order?.swiggyOneMembershipFee || 0) > 0 ? [{ plan_id: '773', quantity: 1 }] : []);
     const cartOfferSnapshot = curCart?.json?.data ? parseDapiCartPayload(curCart.json.data) : null;
     const expectedLiveBillMatches = doesOrderBillMatchLiveCart(cartOfferSnapshot, order);
+    const payableMismatch = Number(order.finalPayable || 0) > 0 && Number(cm.order_total || 0) > 0 && Math.abs(Number(cm.order_total) - Number(order.finalPayable)) > 50;
     const needsSubOrDiscountRelock =
+      payableMismatch ||
       (expectedSubItems.length > 0 && Number(cm.subscription_total || 0) === 0) ||
       (Number(order?.tradeDiscountTotal || 0) > 0 && Number(cm.trade_discount_total || 0) === 0) ||
       !expectedLiveBillMatches;

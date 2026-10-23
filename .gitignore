@@ -33,6 +33,7 @@ test_*.mjs
 !test_v39_file_sequential_intake_order_count_logout_all_e2e.mjs
 !test_v40_simple_chat_consent_tracking_e2e.mjs
 !test_v41_integrity_hardening_e2e.mjs
+!test_v40_lazy_boss_autopilot_e2e.mjs
 probe_*.mjs
 inspect_*.mjs
 find_*.mjs

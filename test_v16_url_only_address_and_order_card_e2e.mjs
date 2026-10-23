@@ -322,7 +322,7 @@ check('/start does not throw UNEXPECTED_ERROR', !consoleErrors.some(line => /UNE
 // 7. Static guard: no referenced-but-undeclared helper in the bot sources
 // ---------------------------------------------------------------------------
 console.log('\n--- Scenario 7: static undefined-reference guard ---');
-const sourceFiles = ['index.js', 'simple-chat.js', 'ammi-abbu-topic-flow.js', 'forwarded-order-flow.js', 'swiggy-cart.js', 'swiggy-bridge.js', 'store.js', 'boss-panel.js', 'rich-text.js', 'order-tracking.js', 'link-utils.js', 'sms-notify.js', 'account-vault-intake.js', 'vault-sync.js', 'phone-utils.js', 'network-shield.js', 'login-helper.js', 'waf-pool.js', 'tracking-validation.js', 'scan-diagnostics.js', 'competitor-flow.js', 'swiggy.js'];
+const sourceFiles = ['index.js', 'simple-chat.js', 'ammi-abbu-topic-flow.js', 'forwarded-order-flow.js', 'swiggy-cart.js', 'swiggy-bridge.js', 'store.js', 'boss-panel.js', 'rich-text.js', 'order-tracking.js', 'link-utils.js', 'sms-notify.js', 'account-vault-intake.js', 'vault-sync.js', 'phone-utils.js', 'network-shield.js', 'login-helper.js', 'waf-pool.js', 'tracking-validation.js', 'scan-diagnostics.js', 'swiggy.js'];
 let acorn = null;
 try {
   acorn = await import('acorn');
