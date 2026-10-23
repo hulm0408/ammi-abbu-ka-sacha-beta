@@ -3894,7 +3894,7 @@ function isPrivateOrLocalHost(hostname) {
 }
 
 export function computeTrackHmac(orderId) {
-  const secret = process.env.BOT_TOKEN || 'ammi-abbu-ka-sacha-beta-secret';
+  const secret = process.env.BOT_TOKEN || 'bossbot-track-secret';
   return crypto.createHmac('sha256', secret).update(`track:${String(orderId || '').trim()}`).digest('hex').slice(0, 24);
 }
 
@@ -3931,8 +3931,7 @@ export function getPublicServiceBaseUrl() {
     process.env.RAILWAY_STATIC_URL ? (String(process.env.RAILWAY_STATIC_URL).startsWith('http') ? process.env.RAILWAY_STATIC_URL : `https://${process.env.RAILWAY_STATIC_URL}`) : '',
     process.env.KOYEB_PUBLIC_DOMAIN ? `https://${String(process.env.KOYEB_PUBLIC_DOMAIN).replace(/^https?:\/\//i, '')}` : '',
     process.env.FLY_APP_NAME ? `https://${String(process.env.FLY_APP_NAME).trim()}.fly.dev` : '',
-    detectedPublicServiceOrigin,
-    'https://ammi-abbu-ka-sacha-beta.onrender.com'
+    detectedPublicServiceOrigin
   ];
   for (const cand of candidates) {
     const clean = String(cand || '').trim().replace(/\/+$/, '');
@@ -3942,7 +3941,7 @@ export function getPublicServiceBaseUrl() {
       if (/^https?:$/i.test(parsed.protocol)) return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, '');
     } catch {}
   }
-  return 'https://ammi-abbu-ka-sacha-beta.onrender.com';
+  return '';
 }
 
 export function buildSignedOrderTrackUrl(orderOrId) {

@@ -1,8 +1,10 @@
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 
-const VAULT_OWNER = process.env.GITHUB_VAULT_OWNER || 'hulm0408';
-const VAULT_REPO = process.env.GITHUB_VAULT_REPO || 'ammi-abbu-ka-sacha-beta';
+// No hardcoded default: a cloud vault must always be an explicit choice, otherwise
+// a new deployment would silently write sessions into another project's repo.
+const VAULT_OWNER = process.env.GITHUB_VAULT_OWNER || '';
+const VAULT_REPO = process.env.GITHUB_VAULT_REPO || '';
 const VAULT_BRANCH = process.env.GITHUB_VAULT_BRANCH || 'bot-vault';
 const VAULT_PATH = 'vault/accounts-vault.json';
 
@@ -13,6 +15,7 @@ const VAULT_PATH = 'vault/accounts-vault.json';
 let _noTokenWarned = false;
 export function resolveVaultToken() {
   const fromEnv = (process.env.GITHUB_VAULT_TOKEN || process.env.GH_VAULT_TOKEN || '').trim();
+  if (!VAULT_OWNER || !VAULT_REPO) return '';
   if (fromEnv) return fromEnv;
   if (process.env.DISABLE_CLOUD_VAULT === '1') return '';
   if (!_noTokenWarned) {
