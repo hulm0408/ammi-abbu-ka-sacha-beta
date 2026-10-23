@@ -191,6 +191,19 @@ function _recordBossAttempt(userId, success) {
   _bossAttemptMap.set(key, rec);
 }
 
+// Rate limiter for expensive callback scans (extract_now, lazy_confirm etc.)
+// Prevents a single user spamming Swiggy API and triggering WAF/IP block.
+const _scanRateMap = new Map(); // userId -> { count, windowStart }
+function _isScanRateLimited(userId, maxPerWindow = 3, windowMs = 60_000) {
+  const key = String(userId);
+  const now = Date.now();
+  let rec = _scanRateMap.get(key);
+  if (!rec || now - rec.windowStart > windowMs) { rec = { count: 0, windowStart: now }; _scanRateMap.set(key, rec); }
+  if (rec.count >= maxPerWindow) return true;
+  rec.count += 1;
+  return false;
+}
+
 if (!BOT_TOKEN) {
   console.error('× Error: BOT_TOKEN is missing in .env file!');
   process.exit(1);
@@ -6128,6 +6141,9 @@ bot.action(/^boss_confirm_paid_(.+)$/, async (ctx) => {
 
 // Universal Extract Now — any user pastes Order ID and taps this button → scan All IDs
 bot.action(/^extract_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  if (_isScanRateLimited(ctx.from.id, 3, 60_000)) {
+    return ctx.answerCbQuery('⏳ Thoda slow — 1 minute me max 3 scans! Thodi der baad try karein.', { show_alert: true }).catch(()=>{});
+  }
   const q = String(ctx.match[1] || '').trim();
   await ctx.answerCbQuery('Extracting — scanning Swiggy IDs…').catch(() => {});
 
@@ -7585,7 +7601,13 @@ function looksLikeSwiggySessionJson(rawText) {
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   let state = userWaitState[userId];
-  const rawText = ctx.message.text.trim();
+  let rawText = ctx.message.text || '';
+  // Prevent OOM from huge pasted blocks (e.g., 1MB bill + links)
+  if (rawText.length > 8000) {
+    rawText = rawText.slice(0, 8000);
+    console.warn(`[text] truncated huge message from ${userId}: ${ctx.message.text.length} -> 8000`);
+  }
+  rawText = rawText.trim();
 
   // ================= PRIORITY #1: ZERO-OTP CART / ADDRESS / JSON GUARD (BOTH BOSS & CUSTOMERS!) =================
   // NEVER let a stale OTP wait state OR digits inside a Swiggy URL / Address hijack ANY Cart, Address, or Session JSON!

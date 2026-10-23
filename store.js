@@ -848,12 +848,18 @@ export function saveDb(data) {
   }
 }
 
+const UNSAFE_ORDER_KEYS = new Set(['__proto__', 'prototype', 'constructor', '__defineGetter__', '__defineSetter__']);
+function isSafeOrderKeyStore(k) { const s = String(k||'').trim(); return s && !UNSAFE_ORDER_KEYS.has(s) && !s.startsWith('__'); }
+
 export function upsertOrder(orderId, orderOrPatchFn) {
+  if (!isSafeOrderKeyStore(orderId)) { console.warn('[upsertOrder] blocked unsafe key:', orderId); return null; }
   ensureDb();
   const db = getDb();
   if (!db.orders) db.orders = {};
+  // Guard prototype pollution via hasOwnProperty
+  const existing = Object.prototype.hasOwnProperty.call(db.orders, orderId) ? db.orders[orderId] : null;
   if (typeof orderOrPatchFn === 'function') {
-    const updated = orderOrPatchFn(db.orders[orderId] || null, db);
+    const updated = orderOrPatchFn(existing, db);
     if (updated === null) {
       delete db.orders[orderId];
     } else if (updated) {
@@ -862,10 +868,10 @@ export function upsertOrder(orderId, orderOrPatchFn) {
   } else if (orderOrPatchFn === null) {
     delete db.orders[orderId];
   } else if (orderOrPatchFn && typeof orderOrPatchFn === 'object') {
-    db.orders[orderId] = { ...(db.orders[orderId] || {}), ...orderOrPatchFn };
+    db.orders[orderId] = { ...(existing || {}), ...orderOrPatchFn };
   }
   saveDb(db);
-  return db.orders[orderId] || null;
+  return Object.prototype.hasOwnProperty.call(db.orders, orderId) ? db.orders[orderId] : null;
 }
 
 export function mutateDb(updater) {
