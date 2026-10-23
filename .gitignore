@@ -31,6 +31,7 @@ test_*.mjs
 !test_v37_order_count_id_assign_choose_diagnostic_e2e.mjs
 !test_v38_accounts_logout_purge_order_count_display_e2e.mjs
 !test_v39_file_sequential_intake_order_count_logout_all_e2e.mjs
+!test_v40_simple_chat_consent_tracking_e2e.mjs
 probe_*.mjs
 inspect_*.mjs
 find_*.mjs

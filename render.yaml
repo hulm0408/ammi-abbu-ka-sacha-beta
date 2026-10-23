@@ -16,6 +16,10 @@ services:
         sync: false
       - key: BOSS_ID
         value: "6484999726"
+      # Customer chat flow: only Cart + Address links in, one Confirm tap, then
+      # the Swiggy payment QR and tracking link — all inside Telegram.
+      - key: SIMPLE_CHAT_MODE
+        value: "1"
       - key: GITHUB_REPO_SLUG
         value: "hulm0408/ammi-abbu-ka-sacha-beta"
       - key: GITHUB_VAULT_TOKEN

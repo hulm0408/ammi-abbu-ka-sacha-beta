@@ -1,3 +1,6 @@
+process.env.TEST_MODE = process.env.TEST_MODE || '1';
+process.env.BOT_TOKEN = process.env.BOT_TOKEN || '123456:TEST-TOKEN-FOR-OFFLINE-E2E';
+
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
