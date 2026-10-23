@@ -97,6 +97,7 @@ mutateDb((d) => {
 clearDraft(USER);
 
 const say = async (text, mid) => {
+  const countBefore = apiLog.filter(c => c.method === 'sendMessage').length;
   await bot.handleUpdate({
     update_id: 6100 + mid,
     message: {
@@ -106,7 +107,10 @@ const say = async (text, mid) => {
       text
     }
   });
-  await sleep(700);
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline && apiLog.filter(c => c.method === 'sendMessage').length === countBefore) {
+    await sleep(50);
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -133,11 +137,17 @@ console.log('\n--- Scenario 2: the customer is offered a way forward ---');
   net.mode = 'unknowable';
   apiLog.length = 0;
   await say(`https://swig.gy/gc/RealCart123\n${SHORT_LINK}`, 1);
-  const text = String(lastMessage().text || '');
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline && !sentMessages().some(m => /khul nahi paya|nahi mil paya/i.test(m.text))) {
+    await sleep(50);
+  }
+  const textMsg = sentMessages().find(m => /khul nahi paya|nahi mil paya/i.test(m.text)) || lastMessage();
+  const text = String(textMsg.text || '');
+  const buttons = (textMsg.reply_markup?.inline_keyboard || []).flat().map((b) => b.callback_data).filter(Boolean);
   check('the bot does not say "expire" for an unopened link', !/expire/i.test(text));
   check('the bot says the Swiggy link could not be opened', /khul nahi paya|nahi mil paya/i.test(text));
-  check('a Retry action is offered', lastButtons().includes('simple_retry_address'));
-  check('a "type the address" action is offered', lastButtons().includes('simple_type_address'));
+  check('a Retry action is offered', buttons.includes('simple_retry_address'));
+  check('a "type the address" action is offered', buttons.includes('simple_type_address'));
 }
 
 console.log('\n--- Scenario 3: a typed address replaces the stale broken link ---');
@@ -190,10 +200,15 @@ console.log('\n--- Scenario 5: a genuinely dead Swiggy token still says "expired
       text: `https://swig.gy/gc/RealCart999\n${DIRECT}`
     }
   });
-  await sleep(1200);
-  const text = String(lastMessage().text || '');
+  const deadline = Date.now() + 16000;
+  while (Date.now() < deadline && !sentMessages().some(m => /expire ho gaya/i.test(m.text))) {
+    await sleep(50);
+  }
+  const expMsg = sentMessages().find(m => /expire ho gaya/i.test(m.text)) || lastMessage();
+  const text = String(expMsg.text || '');
+  const user2Buttons = (expMsg.reply_markup?.inline_keyboard || []).flat().map((b) => b.callback_data).filter(Boolean);
   check('a truly dead link is reported as expired', /expire ho gaya/i.test(text));
-  check('even then the customer can type the address', lastButtons().includes('simple_type_address'));
+  check('even then the customer can type the address', user2Buttons.includes('simple_type_address'));
 }
 
 console.log('\n--- Scenario 5b: the "type address" tap clears the unusable link ---');

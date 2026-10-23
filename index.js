@@ -9631,7 +9631,7 @@ async function handleSendToBoss(ctx) {
       if (resolvedAd && !resolvedAd.unresolvableShortLink) {
         deliveryDetails = { ...resolvedAd };
       } else {
-        deliveryDetails = { ...deliveryDetails, unresolvableShortLink: true };
+        deliveryDetails = { ...deliveryDetails, ...(resolvedAd || {}), unresolvableShortLink: true };
       }
     } catch (e) {}
   } else {
