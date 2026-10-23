@@ -1011,7 +1011,20 @@ try {
   const approvalWaitCallbacks = approvalWaitCard.keyboard.reply_markup.inline_keyboard.flat().map(button => button.callback_data).filter(Boolean);
   assert(!approvalWaitCallbacks.some(callback => /fwd_(?:gen_qr|send_summary|input_|rechoose_acc|rescan_max)_/.test(callback)), 'Approval-pending Boss card removes stale QR, edit, account, and duplicate-summary buttons');
   assert(getBillReadyOrdersWaitingForQr({ orders: { [approvalWaitOrder.id]: approvalWaitOrder } }).length === 0, 'Parallel QR queue excludes orders waiting for customer approval');
-  assert(indexSource.includes('async function handleConfirmOrderPaid(ctx, orderId, _confirmedBy) {\n  const result = await checkOrderPaidStatusOnly(orderId);'), 'Payment-confirmation tap only checks Swiggy status and cannot mark an order paid itself');
+  // The confirmation tap must delegate to a read-only Swiggy status check; it
+  // must never write `COMPLETED` itself (payment is only ever marked by the
+  // verified Swiggy response).
+  const confirmPaidBody = (() => {
+    const start = indexSource.indexOf('async function handleConfirmOrderPaid(');
+    if (start === -1) return '';
+    const end = indexSource.indexOf('\nasync function ', start + 10);
+    return indexSource.slice(start, end === -1 ? start + 4000 : end);
+  })();
+  assert(
+    confirmPaidBody.includes('checkOrderPaidStatusOnly(') &&
+      !/order\.status\s*=\s*'COMPLETED'/.test(confirmPaidBody),
+    'Payment-confirmation tap only checks Swiggy status and cannot mark an order paid itself'
+  );
   const completedGuard = await applyBossOrderUpdate({ orderId: 'MISSING_TEST_TERMINAL', cart: 'https://swig.gy/gc/example' });
   assert(!completedGuard.ok && /not found/.test(completedGuard.error), 'Boss order input fails closed for missing order IDs');
   db.orders.TELEGRAM_COMPLETED_TEST = { id: 'TELEGRAM_COMPLETED_TEST', status: 'COMPLETED' };
@@ -1107,8 +1120,10 @@ try {
     'Pending Orders',
     'Order History',
     'Cancelled Orders',
-    'Account Manager',
-    'Close Panel',
+    'Connected Accounts',
+    'Export & Logout',
+    'Refresh Panel',
+    'Close',
     'Cancel Order'
   ];
   let allLabelsPresent = true;

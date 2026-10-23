@@ -6461,19 +6461,18 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     return Number(candidate.probeOrder?.discountAmount || 0) > Number(incumbent.probeOrder?.discountAmount || 0);
   };
 
-  // Probe in bounded waves: the candidate list is already sorted by highest offer score!
-  // Once a winning 0-Order or max-coupon account is confirmed, stop immediately so parents
-  // never wait 30 minutes!
-  const maxSearchWaves = Math.min(2, validPool.length + 1);
+  // Probe in bounded waves: the candidate list is already sorted by highest offer score,
+  // but a later (lower offer-tier) account can still show a smaller live bill, so keep
+  // walking the eligible pool instead of stopping at the first coupon we happen to see.
+  // A fully free bill is unbeatable, so that (and an exhausted pool) are the only stops.
+  const maxSearchWaves = Math.max(1, Math.ceil(validPool.length / probeLimit) + 1);
   for (let wave = 0; wave < maxSearchWaves; wave++) {
     if (bestOverallProbe && bestOverallProbe.res?.success) {
-      if (preferZeroOrderAccounts && bestOverallProbe.profile?.isZeroOrderAccount) {
-        break;
-      }
-      if (bestOverallProbe.probeOrder?.couponCode || Number(bestOverallProbe.probeOrder?.totalSavings || 0) > 0) {
+      if (Number(bestOverallProbe.probeOrder?.finalPayable) === 0) {
         break;
       }
     }
+    const payableAtWaveStart = Number(bestOverallProbe?.probeOrder?.finalPayable);
     let freshDb = getDb();
     let busyMap = getBusySwiggyAccountsMap(freshDb, orderId);
 
@@ -6509,10 +6508,7 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     const zeroActiveFree = freeCandidates.filter(x => x.profile.hasZeroActiveOrders);
 
     let activeTierPool;
-    if (preferZeroOrderAccounts && bestOverallProbe?.profile?.isZeroOrderAccount) {
-      // Valid 0-order winner already exists — stop immediately, don't probe more accounts!
-      break;
-    } else if (strictZeroOrdersOnly) {
+    if (strictZeroOrdersOnly) {
       activeTierPool = zeroOrderFree;
     } else if (preferZeroOrderAccounts && zeroOrderFree.length > 0) {
       activeTierPool = zeroOrderFree;
@@ -6633,6 +6629,12 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
           restoreOrFlushAccount(probe.acc, probe.preCart, probe.probeOrder?.restaurantId || order.restaurantId)
         )
       ));
+    }
+
+    // Converged: the last batch of accounts could not beat the bill we already hold.
+    const payableNow = Number(bestOverallProbe?.probeOrder?.finalPayable);
+    if (wave > 0 && Number.isFinite(payableNow) && Number.isFinite(payableAtWaveStart) && payableNow >= payableAtWaveStart) {
+      break;
     }
   }
 
