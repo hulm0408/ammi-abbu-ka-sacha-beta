@@ -6461,19 +6461,39 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     return Number(candidate.probeOrder?.discountAmount || 0) > Number(incumbent.probeOrder?.discountAmount || 0);
   };
 
-  // Probe in bounded waves: the candidate list is already sorted by highest offer score!
-  // Once a winning 0-Order or max-coupon account is confirmed, stop immediately so parents
-  // never wait 30 minutes!
-  const maxSearchWaves = Math.min(2, validPool.length + 1);
-  for (let wave = 0; wave < maxSearchWaves; wave++) {
-    if (bestOverallProbe && bestOverallProbe.res?.success) {
-      if (preferZeroOrderAccounts && bestOverallProbe.profile?.isZeroOrderAccount) {
-        break;
-      }
-      if (bestOverallProbe.probeOrder?.couponCode || Number(bestOverallProbe.probeOrder?.totalSavings || 0) > 0) {
-        break;
-      }
+  // Every eligible account must get a fair chance: a cheaper live bill can sit in a
+  // later batch, so we keep probing until the whole free pool was seen (or the time
+  // budget runs out). Early exit is only allowed once no untried account could win.
+  const waveTimeBudgetMs = Math.max(5_000, Number(options.maxScanBudgetMs) || 45_000);
+  const scanStartedAt = Date.now();
+  const maxSearchWaves = Math.max(
+    1,
+    Math.min(
+      Math.ceil(validPool.length / probeLimit) + 1,
+      Math.max(1, Math.floor(Number(options.maxSearchWaves) || 8))
+    )
+  );
+  const untriedZeroOrderCandidates = () =>
+    validPool.filter(x => x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders && !triedKeys.has(x.key));
+
+  const shouldStopProbing = () => {
+    if (!bestOverallProbe || !bestOverallProbe.res?.success) return false;
+    const untriedZero = untriedZeroOrderCandidates().length;
+    if (preferZeroOrderAccounts && bestOverallProbe.profile?.isZeroOrderAccount) {
+      // A 0-Order winner is only final when no untried 0-Order account is left.
+      return untriedZero === 0;
     }
+    const hasSaving = Boolean(
+      bestOverallProbe.probeOrder?.couponCode ||
+      Number(bestOverallProbe.probeOrder?.totalSavings || 0) > 0
+    );
+    // A paying winner is final only after every cheaper 0-Order account was tried too.
+    return hasSaving && untriedZero === 0;
+  };
+
+  for (let wave = 0; wave < maxSearchWaves; wave++) {
+    if (shouldStopProbing()) break;
+    if (Date.now() - scanStartedAt > waveTimeBudgetMs) break;
     let freshDb = getDb();
     let busyMap = getBusySwiggyAccountsMap(freshDb, orderId);
 
@@ -6509,8 +6529,8 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     const zeroActiveFree = freeCandidates.filter(x => x.profile.hasZeroActiveOrders);
 
     let activeTierPool;
-    if (preferZeroOrderAccounts && bestOverallProbe?.profile?.isZeroOrderAccount) {
-      // Valid 0-order winner already exists — stop immediately, don't probe more accounts!
+    if (preferZeroOrderAccounts && bestOverallProbe?.profile?.isZeroOrderAccount && zeroOrderFree.length === 0) {
+      // Valid 0-order winner already exists and no untried 0-order account is left.
       break;
     } else if (strictZeroOrdersOnly) {
       activeTierPool = zeroOrderFree;

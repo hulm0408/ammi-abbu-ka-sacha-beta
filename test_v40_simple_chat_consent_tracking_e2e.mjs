@@ -399,6 +399,53 @@ console.log('\n--- Scenario 8: consent + ready bill -> QR without a second tap -
   check('replay never sends a second payment QR', calls('sendPhoto').length === 0);
 }
 
+// ---------------------------------------------------------------------------
+console.log('\n--- Scenario 9: "Finish" really clears the finished card ---');
+{
+  const { getSimpleFocusOrder } = await import('./index.js');
+  const { mutateDb: mutate, getDb: readDb } = await import('./store.js');
+  const FINISH_ID = 'SIMPLE9003';
+  const FINISH_USER = 4040499;
+  mutate((d) => {
+    d.orders[FINISH_ID] = {
+      id: FINISH_ID,
+      userId: FINISH_USER,
+      userName: 'Ammi',
+      simpleChat: true,
+      status: 'COMPLETED',
+      paymentStatus: 'PAID',
+      createdAt: new Date().toISOString(),
+      restaurantName: 'Pizza Hut',
+      swiggyOrderId: '251000111222333',
+      trackingLink: TRACK_URL,
+      trackingLinkSource: 'SWIGGY_API',
+      userChatId: FINISH_USER,
+      userMessageId: 779,
+      bossMessageIds: {}
+    };
+  });
+  check('the finished order is shown while it is fresh', getSimpleFocusOrder(FINISH_USER)?.id === FINISH_ID);
+
+  resetLog();
+  await bot.handleUpdate({
+    update_id: 4010,
+    callback_query: {
+      id: 'cb-simple-finish',
+      from: { id: FINISH_USER, is_bot: false, first_name: 'Ammi' },
+      chat_instance: 'ci',
+      data: 'simple_new_order',
+      message: { message_id: 779, date: Math.floor(Date.now() / 1000), chat: { id: FINISH_USER, type: 'private' }, text: 'tracking' }
+    }
+  });
+  await sleep(400);
+
+  check('the finished order is dismissed after Finish', readDb().orders[FINISH_ID]?.simpleCardDismissed === true);
+  check('the customer lands on the empty link screen again', !getSimpleFocusOrder(FINISH_USER));
+  const card = calls('sendMessage').map((c) => c.payload).find((m) =>
+    Number(m.chat_id) === FINISH_USER && /Cart link/i.test(String(m.text || '')));
+  check('a fresh order card is posted after Finish', Boolean(card));
+}
+
 console.log('\n================================================================');
 const passed = results.filter((r) => r.ok).length;
 console.log(`📊 RESULT: ${passed}/${results.length} checks passed`);

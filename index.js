@@ -1018,6 +1018,8 @@ function getSimpleFocusOrder(userId) {
   const orders = Object.values(getDb().orders || {})
     .filter((o) => o && Number(o.userId) === idNum)
     .filter((o) => !['CANCELLED', 'REJECTED'].includes(String(o.status || '')))
+    // "🏁 Finish" dismisses the finished card so it never reappears on /start.
+    .filter((o) => !o.simpleCardDismissed)
     .filter((o) => {
       const created = new Date(o.createdAt || o.paidAt || 0).getTime();
       return Number.isFinite(created) && created >= since;
@@ -1212,9 +1214,12 @@ function simpleChatForUser(userId) {
   return isSimpleChatEnabled() && !isBoss(Number(userId));
 }
 
-function customerOrderCard(order) {
+function customerOrderCard(order, chatId = null) {
   if (!order) return null;
-  if (isSimpleChatEnabled() && !isBoss(Number(order.userId || 0))) {
+  // Decide by the CHAT being rendered: a boss-forwarded order still shows the
+  // simple card to the customer it is delivered to.
+  const targetId = Number(chatId || order.userChatId || order.userId || 0);
+  if (isSimpleChatEnabled() && (!targetId || !isBoss(targetId))) {
     return buildSimpleOrderCard(order);
   }
   return formatUserOrderCard(order);
@@ -1247,7 +1252,7 @@ async function updateOrderCards(order, { skipUserCard = false, skipBossCard = fa
 
   // 2. Update User card in-place
   if (!skipUserCard && order.userChatId && order.userMessageId) {
-    const userCard = customerOrderCard(order);
+    const userCard = customerOrderCard(order, order.userChatId);
     try {
       await bot.telegram.editMessageText(
         order.userChatId,
@@ -7467,12 +7472,10 @@ bot.hears(['✖ Cancel Order', '✖ Cancel', 'Cancel Order', 'cancel order', 'Ca
   await handleCancelOrderConfirm(ctx);
 });
 
-bot.hears(['📦 Previous Order', 'Previous Orders', 'previous orders', 'previous order', 'Previous order', '○ previous order'], async (ctx) => {
+// NOTE: the bare 'Previous Orders' label belongs to the Boss account-history
+// screen (registered later); the customer menu only uses the 📦 button.
+bot.hears(['📦 Previous Order', 'previous order', 'Previous order', '○ previous order'], async (ctx) => {
   await handlePreviousOrder(ctx);
-});
-
-bot.hears(['Claim Free Cash', 'claim free cash', 'Free Cash', 'free cash', '▣ Claim Free Cash'], async (ctx) => {
-  await showFreeCashMenu(ctx);
 });
 
 // BOSS ONLY BOTTOM BUTTONS
@@ -7517,7 +7520,7 @@ bot.hears(['Set UPI ID', '● Set UPI ID'], async (ctx) => {
   }
 });
 
-bot.hears(['Login Swiggy', '○ Login Swiggy', '◈ Login Swiggy Account'], async (ctx) => {
+bot.hears(['Login Swiggy', '○ Login Swiggy'], async (ctx) => {
   if (isBoss(ctx.from.id)) await handlePromptLogin(ctx);
 });
 
@@ -9853,8 +9856,20 @@ async function startSimpleOrderFromDraft(ctx, userId) {
   if (!draft?.cart || !draft?.address) return false;
   if (getActiveUserOrder(userId)) return false;
   simpleAutoStartInFlight.add(key);
+  const chatId = ctx.chat?.id || userId;
+  const priorCardId = userCardState(userId).messageId;
   try {
     await handleSendToBoss(ctx);
+    // A text paste has no callbackQuery, so the order card is posted fresh.
+    // Remove the previous (link) card so the chat keeps ONE live card.
+    const created = Object.values(getDb().orders || {})
+      .filter((o) => o && Number(o.userId) === Number(userId))
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0];
+    const newCardId = created?.userMessageId;
+    if (newCardId && priorCardId && Number(newCardId) !== Number(priorCardId)) {
+      try { await ctx.telegram.deleteMessage(chatId, priorCardId); } catch {}
+      rememberUserCard(userId, { message_id: newCardId, chat: { id: chatId } });
+    }
     return true;
   } catch (err) {
     console.error('[SimpleChat] auto start failed:', err?.stack || err?.message || err);
@@ -9915,6 +9930,14 @@ bot.action(SIMPLE_CHAT_CALLBACKS.clearDraft, async (ctx) => {
 bot.action(SIMPLE_CHAT_CALLBACKS.newOrder, async (ctx) => {
   const userId = ctx.from.id;
   delete userWaitState[userId];
+  // Dismiss the finished/failed card so the fresh screen really is empty.
+  const focus = getSimpleFocusOrder(userId);
+  if (focus?.id) {
+    mutateDb((d) => {
+      const stored = d.orders?.[focus.id];
+      if (stored) stored.simpleCardDismissed = true;
+    });
+  }
   clearDraft(userId);
   await ctx.answerCbQuery('Naya order ✓').catch(() => {});
   // Delete the finished order card first, then post a single fresh one.
@@ -10219,7 +10242,6 @@ async function handleSavedAddresses(ctx, targetKey = null) {
   await sendSafeHtml(ctx, text.trim(), Markup.inlineKeyboard(buttons));
 }
 
-bot.hears('⌖ Saved Addresses', async (ctx) => handleSavedAddresses(ctx));
 bot.command('addresses', async (ctx) => handleSavedAddresses(ctx));
 bot.action('action_refresh_addresses', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -10276,7 +10298,6 @@ async function handleMyAccounts(ctx) {
   await ctx.reply(text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
 }
 
-bot.hears('◉ My Swiggy Accounts', async (ctx) => handleMyAccounts(ctx));
 bot.command('accounts', async (ctx) => handleMyAccounts(ctx));
 bot.action('acc_refresh_list', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
@@ -10509,7 +10530,7 @@ async function handlePreviousOrders(ctx, targetKey = null) {
   await sendSafeHtml(ctx, text.trim(), Markup.inlineKeyboard(buttons));
 }
 
-bot.hears(['▣ Previous Orders', '▣ My Orders', 'Previous Orders'], async (ctx) => handlePreviousOrders(ctx));
+bot.hears(['▣ Previous Orders', '▣ My Orders', 'Previous Orders', 'previous orders'], async (ctx) => handlePreviousOrders(ctx));
 bot.command(['orders', 'previous_orders'], async (ctx) => handlePreviousOrders(ctx));
 bot.action(/^acc_view_orders_(.+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
@@ -11143,7 +11164,27 @@ export async function sendApprovedOrderPaymentToUser(uidStr, order, { force = fa
   return false;
 }
 
+// A double-tap (or a consent-triggered auto-approve racing the manual tap) must
+// never create a SECOND Swiggy payment order for the same order id.
+const billApprovalInFlight = new Set();
+
 export async function approveUserOrderBillAction(uidStr, orderId) {
+  const key = String(orderId || '');
+  if (key && billApprovalInFlight.has(key)) {
+    const pending = getDb().orders?.[key];
+    return { ok: true, orderId, duplicateTap: true, message: pending?.customerPaymentMessageId
+      ? 'Payment QR already sent — check the chat.'
+      : 'Payment details are being prepared…' };
+  }
+  if (key) billApprovalInFlight.add(key);
+  try {
+    return await approveUserOrderBillActionInner(uidStr, orderId);
+  } finally {
+    if (key) billApprovalInFlight.delete(key);
+  }
+}
+
+async function approveUserOrderBillActionInner(uidStr, orderId) {
   const db = getDb();
   const order = db.orders?.[orderId];
   if (!order) return { ok: false, error: 'Order not found.' };
@@ -11247,15 +11288,27 @@ async function rejectUserOrderBillAction(uidStr, orderId) {
 // SIMPLE MODE TRACKING: the customer always gets ONE chat bubble with the real
 // Swiggy tracking link, even if the payment-QR message was deleted. Sent once per
 // Swiggy link (guarded by `simpleTrackingSentFor`), never fabricated.
+const simpleTrackingInFlight = new Set();
+
 async function sendSimpleTrackingOnce(order) {
+  const guardKey = String(order?.id || '');
+  if (!guardKey) return false;
+  // Two sources can discover the link at the same moment (payment poll + tracking
+  // auto-scan). Serialise them so the customer never gets the bubble twice.
+  if (simpleTrackingInFlight.has(guardKey)) return false;
+  simpleTrackingInFlight.add(guardKey);
   try {
     if (!isSimpleChatEnabled() || !order?.id) return false;
-    if (!order.simpleChat && !order.isCustomerSubmitted) return false;
     if (['CANCELLED', 'REJECTED'].includes(String(order.status || ''))) return false;
     const url = simpleTrackingUrl(order);
     if (!url) return false;
-    const chatId = String(order.userChatId || order.userId || order.fwdSenderUserId || '').trim();
-    if (!chatId) return false;
+    const chatId = String(
+      order.userChatId ||
+      (isBoss(Number(order.userId || 0)) ? order.fwdSenderUserId : order.userId) ||
+      order.fwdSenderUserId ||
+      ''
+    ).trim();
+    if (!chatId || isBoss(Number(chatId))) return false;
     const db = getDb();
     const fresh = db.orders?.[order.id] || order;
     if (fresh.simpleTrackingSentFor === url) return false;
@@ -11275,6 +11328,8 @@ async function sendSimpleTrackingOnce(order) {
   } catch (err) {
     console.warn('[SimpleChat] Tracking send failed:', err?.message || err);
     return false;
+  } finally {
+    simpleTrackingInFlight.delete(guardKey);
   }
 }
 

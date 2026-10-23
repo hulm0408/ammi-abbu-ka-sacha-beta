@@ -5,7 +5,7 @@ import {
   fetchFastRestaurantInfo,
   generatePersonalizedQrCard,
   parseAddressDetails,
-  parseBillDetails
+  parseCartDetails
 } from './swiggy-cart.js';
 
 export function escapeHtml(str) {
@@ -297,7 +297,9 @@ export async function handleInstantGroupCartFlow(bot, ctx, cartUrl, rawText = ''
       createdAt: new Date().toISOString()
     };
 
-    const parsedBill = parseBillDetails(rawText);
+    // `parseBillDetails` was removed from swiggy-cart.js; the cart/bill receipt
+    // parser is `parseCartDetails` (same fields, newer implementation).
+    const parsedBill = parseCartDetails(rawText);
     if (parsedBill) {
       if (parsedBill.itemTotal !== undefined) order.itemTotal = parsedBill.itemTotal;
       if (parsedBill.couponCode) order.couponCode = parsedBill.couponCode;
