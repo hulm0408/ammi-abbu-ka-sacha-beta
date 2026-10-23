@@ -168,11 +168,37 @@ import {
 dotenv.config();
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const BOSS_SECRET = process.env.BOSS_SECRET || 'boss123';
+// SECURITY FIX: BOSS_SECRET must be strong. Default 'boss123' is only allowed
+// in TEST_MODE; in production we require an explicit secret and enforce
+// minimum length + rate limiting on /boss attempts.
+const BOSS_SECRET = process.env.BOSS_SECRET || (process.env.NODE_ENV === 'production' ? null : 'boss123');
+const _bossAttemptMap = new Map(); // userId -> { count, firstTs, blockedUntil }
+
+function _isBossSecretBlocked(userId) {
+  const rec = _bossAttemptMap.get(String(userId));
+  if (!rec) return false;
+  if (rec.blockedUntil && Date.now() < rec.blockedUntil) return true;
+  if (Date.now() - rec.firstTs > 15*60*1000) { _bossAttemptMap.delete(String(userId)); return false; }
+  return false;
+}
+function _recordBossAttempt(userId, success) {
+  const key = String(userId);
+  if (success) { _bossAttemptMap.delete(key); return; }
+  let rec = _bossAttemptMap.get(key);
+  if (!rec || Date.now() - rec.firstTs > 15*60*1000) rec = { count: 0, firstTs: Date.now(), blockedUntil: 0 };
+  rec.count += 1;
+  if (rec.count >= 5) rec.blockedUntil = Date.now() + 30*60*1000; // 5 fails = 30min block
+  _bossAttemptMap.set(key, rec);
+}
 
 if (!BOT_TOKEN) {
   console.error('× Error: BOT_TOKEN is missing in .env file!');
   process.exit(1);
+}
+if (!BOSS_SECRET || BOSS_SECRET.length < 6) {
+  console.error('× Error: BOSS_SECRET must be set to a strong value (>=6 chars). Set it in .env or Railway Variables.');
+  if (process.env.NODE_ENV === 'production') process.exit(1);
+  else console.warn('⚠ Using default BOSS_SECRET=boss123 only because NODE_ENV!=production. Set a strong secret for production!');
 }
 
 const bot = installBulletproofTelegramTransport(
@@ -2146,9 +2172,15 @@ bot.command('cancel', async (ctx) => {
 });
 
 bot.command(['boss', 'admin'], async (ctx) => {
+  try {
   const userId = ctx.from.id;
   const args = ctx.message.text.trim().split(' ');
   const password = args[1];
+
+  // Rate limit + audit: prevent brute force on BOSS_SECRET
+  if (_isBossSecretBlocked(userId)) {
+    return ctx.reply('⛔ Too many failed attempts. Try again after 30 minutes.').catch(()=>{});
+  }
 
   // Return Telegram buttons immediately; collect order inputs in chat.
 
@@ -2164,7 +2196,11 @@ bot.command(['boss', 'admin'], async (ctx) => {
     return;
   }
 
+  if (!BOSS_SECRET) {
+    return ctx.reply('⛔ Boss authentication is disabled — BOSS_SECRET not configured on server.').catch(()=>{});
+  }
   if (password === BOSS_SECRET) {
+    _recordBossAttempt(userId, true);
     addBoss(userId);
     await ctx.reply(`✓ <b>Authorization successful!</b>`, {
       parse_mode: 'HTML',
@@ -2176,7 +2212,9 @@ bot.command(['boss', 'admin'], async (ctx) => {
     return;
   }
 
+  _recordBossAttempt(userId, false);
   await ctx.reply(`× <b>Access Denied:</b> Reserved for Boss only.`, { parse_mode: 'HTML' });
+  } catch (e) { console.error('[boss] handler error:', e?.message||e); }
 });
 
 // ================= UPI ID CONFIGURATION =================
@@ -6776,11 +6814,25 @@ const bulkAccountDocCollector = createBulkDocumentBatchCollector({
 });
 
 // ================= DOCUMENT HANDLER =================
+// Security: enforce file size limits (Telegram reports file_size), timeouts,
+// and text truncation to prevent OOM / DoS via huge uploads.
+const MAX_JSON_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
+const MAX_ZIP_FILE_BYTES  = 20 * 1024 * 1024; // 20 MB
+const FETCH_FILE_TIMEOUT_MS = 15000;
+
 bot.on('document', async (ctx) => {
   const userId = ctx.from.id;
   const state = userWaitState[userId];
   const doc = ctx.message.document;
   if (!doc) return;
+  try {
+  // DoS guard: reject absurdly large files before fetching
+  if (typeof doc.file_size === 'number') {
+    const limit = /\.zip$/i.test(doc.file_name || '') ? MAX_ZIP_FILE_BYTES : MAX_JSON_FILE_BYTES;
+    if (doc.file_size > limit) {
+      return ctx.reply(`⛔ File bahut badi hai (${(doc.file_size/1024/1024).toFixed(1)} MB). Max ${limit/1024/1024} MB allowed.`).catch(()=>{});
+    }
+  }
 
   // Handle ANY burst of `.json`, `.txt`, `.cookies`, or `.zip` account files sent anytime by Boss!
   if (doc.file_name && /\.(json|txt|cookies?|zip)$/i.test(doc.file_name) && isBoss(userId)) {
@@ -6788,8 +6840,10 @@ bot.on('document', async (ctx) => {
       if (state && state.action === 'waiting_fc_json' && !/\.zip$/i.test(doc.file_name)) {
         delete userWaitState[userId];
         const fileLink = await ctx.telegram.getFileLink(doc.file_id);
-        const res = await fetch(fileLink.href);
-        const fileText = await res.text();
+        const res = await fetch(fileLink.href, { signal: AbortSignal.timeout(FETCH_FILE_TIMEOUT_MS) });
+        if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
+        let fileText = await res.text();
+        if (fileText.length > MAX_JSON_FILE_BYTES) fileText = fileText.slice(0, MAX_JSON_FILE_BYTES);
         const norm = normalizeSwiggySessionPayload(fileText);
         if (!norm) {
           return ctx.reply('! File me valid Swiggy session nahi mila.');
@@ -6815,11 +6869,13 @@ bot.on('document', async (ctx) => {
       });
       return;
     } catch (e) {
-      return ctx.reply('! Session file process karne me error aaya: ' + e.message);
+      console.error('[document] boss file error:', e?.message||e);
+      return ctx.reply('! Session file process karne me error aaya: ' + (e?.message||'unknown')).catch(()=>{});
     }
   }
 
   if (state && (state.action === 'waiting_qr' || state.action === 'waiting_custom_qr_photo')) {
+    try {
     const orderId = state.orderId;
     delete userWaitState[userId];
 
@@ -6827,12 +6883,15 @@ bot.on('document', async (ctx) => {
     const order = db.orders[orderId];
     if (!order) return ctx.reply('× Order could not be found.');
 
+    // Validate payable is real (prevent ₹0 QR exploit)
+    const payable = Number(order.finalPayable || 0);
+    if (!payable || payable <= 0) return ctx.reply('⛔ QR nahi bhej sakte — bill amount ₹0 hai. Pehle valid bill generate karein.').catch(()=>{});
+
     order.customQrFileId = doc.file_id;
     order.qrSent = true;
     saveDb(db);
     await updateOrderCards(order);
 
-    const payable = order.finalPayable || 350;
     const userButtons = [
       [Markup.button.url('◎ Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
       [Markup.button.callback('Check payment status', `user_paid_status_${orderId}`)]
@@ -6853,9 +6912,15 @@ bot.on('document', async (ctx) => {
       });
       await ctx.reply(`✓ <b>Custom Swiggy QR document successfully delivered to ${escapeHtml(order.userName)}!</b>`, { parse_mode: 'HTML' });
     } catch (err) {
-      await ctx.reply(`× Failed to send document to user: ${err.message}`);
+      console.error('[document QR] send failed:', err?.message||err);
+      await ctx.reply(`× Failed to send document to user: ${escapeHtml(err.message)}`).catch(()=>{});
     }
+    } catch (e) { console.error('[document QR] error:', e?.message||e); }
     return;
+  }
+  } catch (e) {
+    console.error('[document] unhandled error:', e?.stack||e?.message||e);
+    try { await ctx.reply('⚠️ Document process me error aaya, dubara try karein.').catch(()=>{}); } catch {}
   }
 });
 
@@ -7574,20 +7639,27 @@ bot.on('text', async (ctx) => {
           }
         }
 
-        const update = await applyBossOrderUpdate({
-          telegram: ctx.telegram,
-          bossChatId: ctx.chat.id,
-          orderId: state.orderId,
-          cart: state.action === 'waiting_boss_order_cart' ? rawText : '',
-          address: ['waiting_boss_order_address', 'waiting_boss_order_mobile'].includes(state.action) ? rawText : '',
-          formatOrderBodyFn: formatUserOrderCardText
-        });
+        let update;
+        try {
+          update = await applyBossOrderUpdate({
+            telegram: ctx.telegram,
+            bossChatId: ctx.chat.id,
+            orderId: state.orderId,
+            cart: state.action === 'waiting_boss_order_cart' ? rawText : '',
+            address: ['waiting_boss_order_address', 'waiting_boss_order_mobile'].includes(state.action) ? rawText : '',
+            formatOrderBodyFn: formatUserOrderCardText
+          });
+        } catch (e) {
+          console.error('[boss_order_edit] apply failed:', e?.message||e);
+          await ctx.reply(`⛔ Update failed: ${escapeHtml(e?.message||'unknown error')}`).catch(()=>{});
+          return;
+        }
         if (!update.ok) {
-          await ctx.reply(`! ${escapeHtml(update.error || 'Could not update the order.')}`);
+          await ctx.reply(`! ${escapeHtml(update.error || 'Could not update the order.')}`).catch(()=>{});
           return;
         }
         delete userWaitState[userId];
-        await ctx.reply(`✓ ${escapeHtml(update.message || 'Order details updated.')}`, { parse_mode: 'HTML' });
+        await ctx.reply(`✓ ${escapeHtml(update.message || 'Order details updated.')}`, { parse_mode: 'HTML' }).catch(()=>{});
         return;
       }
     }

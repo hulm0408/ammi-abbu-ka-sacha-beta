@@ -7,7 +7,7 @@ Telegram bot built for seamless Swiggy food ordering with real-time **Saved Addr
 ## 🚀 1-Click Render Deployment
 
 1. Click **[Deploy to Render](https://render.com/deploy?repo=https://github.com/hulm0408/ammi-abbu-ka-sacha-beta)** above *(or open **[Render Dashboard](https://dashboard.render.com/)** -> **New +** -> **Web Service** -> select **`hulm0408/ammi-abbu-ka-sacha-beta`**)*.
-2. Enter your **`BOT_TOKEN`** (from `@BotFather`) — `BOSS_SECRET` (`boss123`) and `HEADLESS` (`true`) are already pre-configured.
+2. Enter your **`BOT_TOKEN`** (from `@BotFather`) — set a strong **`BOSS_SECRET`** (e.g. `openssl rand -hex 16`) and `HEADLESS` (`true`) are already pre-configured.
 3. Click **Apply / Deploy Web Service** — health check listens automatically on `0.0.0.0:$PORT` (`GET /` -> `200 OK`).
 
 ## 📍 Address intake rule (URL-first)
