@@ -48,8 +48,16 @@ if (port > 0) {
 
 const ticker = bossBot.startTicker();
 
-await bot.launch({ dropPendingUpdates: true });
-console.log(`⚙ bossbot live — boss ${bossIds.join(', ')}`);
+// A bad token / network blip must not surface as a raw stack trace: log one
+// clear line and exit non-zero so the host restarts the container.
+try {
+  await bot.launch({ dropPendingUpdates: true });
+  console.log(`⚙ bossbot live — boss ${bossIds.join(', ')}`);
+} catch (err) {
+  console.error('× Telegram launch failed:', err?.description || err?.message || err);
+  clearInterval(ticker);
+  process.exit(1);
+}
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.once(sig, () => {
