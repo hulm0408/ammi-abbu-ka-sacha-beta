@@ -1871,6 +1871,11 @@ export async function geocodeAddressDetails(addrObj, accountOrCookies = null) {
 // Telling someone their link expired when Swiggy merely timed out makes them
 // paste the same link again for nothing.
 const ofoResolutionFailures = new Map();
+function noteOfoFailure(key, reason) {
+  const k = String(key || '').trim();
+  if (!k) return;
+  ofoResolutionFailures.set(k, reason);
+}
 export function getOfoResolutionFailureReason(ofoTokenOrUrl) {
   const raw = String(ofoTokenOrUrl || '').trim();
   if (!raw) return '';
@@ -2748,14 +2753,32 @@ export function parseCartDetails(text) {
 // tries manual redirect first (fast), then follows via `redirect: follow`, then parses
 // HTML for meta-refresh / JS `window.location` / `deep_link_value` so AUTO FETCHING
 // of restaurantId/groupCartId/ofoToken never silently dies.
+const MOBILE_UA = 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
+
+// AppsFlyer (swiggy.onelink.me) serves a *different* page to desktop UAs and
+// sometimes refuses the request outright (403). Expanding with a phone UA is what
+// actually returns the `ofo/address/<user>/<token>` deep link in production.
 async function expandShortUrl(rawUrl) {
-  let current = rawUrl;
+  const first = await followShortChain(rawUrl, DESKTOP_UA);
+  if (first && /\/(?:ofo|gc|restaurants|menu)\b/i.test(first)) return first;
+  const mobile = await followShortChain(first || rawUrl, MOBILE_UA);
+  if (mobile && /\/(?:ofo|gc|restaurants|menu)\b/i.test(mobile)) return mobile;
+  return mobile || first || rawUrl;
+}
+
+async function followShortChain(startUrl, userAgent) {
+  let current = startUrl;
   for (let hop = 0; hop < 4; hop++) {
     if (!/^https?:\/\//i.test(current)) break;
     try {
       const res = await fetch(current, {
         redirect: 'manual',
-        headers: { 'User-Agent': DESKTOP_UA },
+        headers: {
+          'User-Agent': userAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-IN,en;q=0.9',
+          'Cache-Control': 'no-cache'
+        },
         signal: AbortSignal.timeout(4000)
       });
       const loc = res.headers.get('location');
@@ -2947,6 +2970,7 @@ export async function resolveSwiggyLink(input) {
     token: ofoToken || '',
     link: addressShareUrl || primaryUrl,
     unresolvableShortLink: true,
+    unresolvedReason: getOfoResolutionFailureReason(primaryUrl) || getOfoResolutionFailureReason(addressShareUrl) || getOfoResolutionFailureReason(ofoToken) || '',
     city: '',
     mobile: '',
     address: '',
@@ -2959,7 +2983,19 @@ export async function resolveSwiggyLink(input) {
   if (addressFromUrl) {
     addressSource = 'URL';
     if (ofoToken) {
+      // An unexpanded `onelink.me/<channel>/<id>` id is NOT a Swiggy OFO token.
+      // Sending it to social/getAddress always failed, and the "invalid token"
+      // answer was then shown to the customer as "your link expired" — even
+      // though the link had never been opened. Classify it honestly instead.
+      const tokenIsUnexpandedShortId = Boolean(isOneLinkShort && !ofoDirect);
+      // Still worth one attempt (some shares do carry a usable id), but a failure
+      // here can never be reported as "expired": we never saw the real token.
       const socialAddr = await resolveSharedOfoAddress(ofoToken, ofoUser);
+      if (tokenIsUnexpandedShortId) {
+        noteOfoFailure(ofoToken, 'UNEXPANDED');
+        noteOfoFailure(primaryUrl, 'UNEXPANDED');
+        noteOfoFailure(addressShareUrl, 'UNEXPANDED');
+      }
       if (socialAddr) {
         addressDetails = socialAddr;
       } else if (mapCoords) {

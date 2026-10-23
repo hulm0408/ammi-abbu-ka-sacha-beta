@@ -9211,12 +9211,17 @@ bot.on('text', async (ctx, next) => {
         geoAddr.mobile = phoneMatch[1].replace(/\D/g, '');
       }
 
+      // A typed/GPS address replaces any previously stored share link — otherwise
+      // the stale (broken) link keeps being used and fails forever.
+      const typedOverridesLink = Boolean(parsedAddrDirect) && !validAddrLink;
       // NEVER overwrite clean street address with bare JgkQ URL!
       updateDraft(userId, {
         address: geoAddr?.address || validAddrLink || `${geoAddr?.city || 'Delivery'} Address`,
         // Link-shared messages: store the resolved address, never the pasted chat text.
         addressOriginalText: geoAddr?.address || validAddrLink || stripSharedLinks(rawText),
-        ...(validAddrLink ? { addressLink: validAddrLink } : {}),
+        ...(validAddrLink
+          ? { addressLink: validAddrLink, addressTyped: false }
+          : (typedOverridesLink ? { addressLink: null, addressTyped: true } : {})),
         ...(geoAddr ? { addressDetails: geoAddr } : {})
       });
       addedAddress = true;
@@ -9608,8 +9613,14 @@ async function handleSendToBoss(ctx) {
   if (!draft.address) return resetCardAndAskForMissing(ctx, userId, 'address');
 
   let deliveryDetails = { ...(draft.addressDetails || {}) };
-  const addressSource = draft.addressOriginalText || draft.address;
-  const addressLink = draft.addressLink || extractAddressShareUrl(addressSource) || (isAddressShareUrl(addressSource) ? addressSource : '');
+  // A customer-typed address must win over an older share link. Keeping the stale
+  // link is what made every retry re-run the same broken URL and report "expired"
+  // again, even after a perfectly good address had been typed.
+  const typedAddress = draft.addressTyped ? String(draft.address || '').trim() : '';
+  const addressSource = typedAddress || draft.addressOriginalText || draft.address;
+  const addressLink = typedAddress
+    ? ''
+    : (draft.addressLink || extractAddressShareUrl(addressSource) || (isAddressShareUrl(addressSource) ? addressSource : ''));
 
   if (addressLink) {
     // URL-FIRST: the shared Swiggy address link is the only source of delivery
@@ -9634,29 +9645,42 @@ async function handleSendToBoss(ctx) {
   }
 
   if (addressLink && deliveryDetails.unresolvableShortLink) {
-    // The share link is stored and still valid on our side — only ask for a NEW
-    // link when Swiggy actually told us the token is dead. A timeout / missing
-    // session must not make the customer paste the same link twice.
-    const reason = getOfoResolutionFailureReason(addressLink);
+    // Only claim "expired" when Swiggy itself rejected the token. An un-expanded
+    // AppsFlyer short link, a timeout or a missing session are OUR side, and the
+    // customer must always keep a way forward (retry / type the address).
+    const reason = deliveryDetails.unresolvedReason ||
+      getOfoResolutionFailureReason(addressLink) ||
+      getOfoResolutionFailureReason(addressSource);
+    console.warn(`[AddressResolve] order=${userId} reason=${reason || 'UNKNOWN'} link=${String(addressLink).slice(0, 120)}`);
+
     if (reason === 'EXPIRED') {
       userWaitState[userId] = { action: 'waiting_address' };
       return ctx.reply(
-        `🟠 <b>Address link expire ho gaya</b> — naya link ya Location bhejein 👇`,
+        `🟠 <b>Address link expire ho gaya</b> — naya link bhejein, ya seedha address type kar dein 👇`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([[{ text: '🟠 📍 Address Link', callback_data: 'action_paste_address', style: 'danger' }]])
+          ...Markup.inlineKeyboard([[
+            { text: '🟠 📍 Naya Address Link', callback_data: 'action_paste_address', style: 'danger' },
+            { text: '✍️ Address type karein', callback_data: 'simple_type_address', style: 'primary' }
+          ]])
         }
       );
     }
+
+    const headline = reason === 'UNEXPANDED'
+      ? '<b>Swiggy ka link khul nahi paya</b>'
+      : (reason === 'NO_ACCOUNT'
+        ? '<b>Koi Swiggy account login nahi hai</b>'
+        : '<b>Swiggy se address nahi mil paya abhi</b>');
     return ctx.reply(
-      `⏳ <b>Swiggy se address nahi mil paya abhi</b>\n\n` +
-      `<i>Aapka address link saved hai — dobara paste karne ki zaroorat nahi. Bas thodi der baad try karein.</i>`,
+      `⏳ ${headline}\n\n` +
+      `<i>Link saved hai — dobara paste karne ki zaroorat nahi. Neeche se retry karein, ya seedha apna address type kar dein.</i>`,
       {
         parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([[
-          { text: reason === 'NO_ACCOUNT' ? '↻ Retry' : '↻ Dobara koshish', callback_data: 'simple_retry_address', style: 'primary' },
-          { text: '🟠 📍 Naya Address Link', callback_data: 'action_paste_address', style: 'danger' }
-        ]])
+        ...Markup.inlineKeyboard([
+          [{ text: '↻ Retry', callback_data: 'simple_retry_address', style: 'primary' }],
+          [{ text: '✍️ Address type karein', callback_data: 'simple_type_address', style: 'primary' }]
+        ])
       }
     );
   }
@@ -10006,6 +10030,29 @@ bot.action(SIMPLE_CHAT_CALLBACKS.newOrder, async (ctx) => {
   const screen = getUserScreen(userId, ctx.from);
   const sent = await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
   rememberUserCard(userId, sent);
+});
+
+// Escape hatch: the customer types (or pins) the address when the Swiggy share
+// link cannot be opened. Low input first, but never a dead end.
+bot.action('simple_type_address', async (ctx) => {
+  const userId = ctx.from.id;
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[userId] = { action: 'waiting_address' };
+  // Clear the whole unusable address (link + the text that carried it), otherwise
+  // Continue would re-extract the same broken link from `addressOriginalText`.
+  updateDraft(userId, {
+    address: null,
+    addressOriginalText: '',
+    addressLink: null,
+    addressDetails: {},
+    addressTyped: false
+  });
+  const prompt = await ctx.reply(
+    '✍️ <b>Address type karein</b>\n\n' +
+    '<i>Flat / house, area, landmark aur city likh dein. Ya 📎 → Location bhej dein.</i>',
+    { parse_mode: 'HTML', reply_markup: { force_reply: true, selective: true, input_field_placeholder: 'Flat 4, Gomti Nagar, Lucknow 226010' } }
+  ).catch(() => null);
+  if (prompt) rememberUserPrompt(userId, prompt);
 });
 
 // The address share link is still saved — retry the same links, no re-paste.
