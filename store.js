@@ -1287,10 +1287,15 @@ export function importSessionJson(rawJson, targetKey = null) {
         sid: sid || db.config.accounts[key].sid || '',
         deviceId: deviceId || db.config.accounts[key].deviceId || '',
         cookies: cookieStr,
-        ...(typeof data.totalOrdersCount === 'number' ? {
+        ...(typeof data.totalOrdersCount === 'number' && data.totalOrdersCount !== 999999 ? {
           totalOrdersCount: data.totalOrdersCount,
+          cachedTotalOrdersCount: data.totalOrdersCount,
           isZeroOrderAccount: data.totalOrdersCount === 0
-        } : {}),
+        } : (typeof data.cachedTotalOrdersCount === 'number' && data.cachedTotalOrdersCount !== 999999 ? {
+          totalOrdersCount: data.cachedTotalOrdersCount,
+          cachedTotalOrdersCount: data.cachedTotalOrdersCount,
+          isZeroOrderAccount: data.cachedTotalOrdersCount === 0
+        } : {})),
         isLoggedIn: true,
         freshlyAuthenticated: true,
         savedAt: new Date().toISOString()
@@ -1438,6 +1443,56 @@ export function permanentLogoutAccount(key, { purgeVault = true } = {}) {
   appendAuditEvent('logout', { accountKey: key, phone: phone || '' });
   return acc;
 }
+
+// Completely logs out and purges ALL accounts across DB, Session Vault, accounts.json, and Cloud Vault
+export function logoutAllAccounts({ purgeVault = true } = {}) {
+  const db = getDb();
+  if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
+  if (!db.config.accounts) db.config.accounts = {};
+  if (!db.sessionVault) db.sessionVault = {};
+
+  const allKeys = new Set([
+    ...Object.keys(db.config.accounts || {}),
+    ...Object.keys(db.sessionVault || {})
+  ]);
+
+  let count = 0;
+  for (const k of allKeys) {
+    const acc = db.config.accounts[k] || db.sessionVault[k];
+    const rawPhone = acc?.phone || acc?.mobile || String(k).replace(/^acc_/, '');
+    const phone = normalizeTenDigitPhone(rawPhone);
+
+    db.config.deletedAccounts[k] = true;
+    if (phone) {
+      db.config.deletedAccounts[`acc_${phone}`] = true;
+      db.config.deletedAccounts[phone] = true;
+    }
+    delete db.config.accounts[k];
+    if (purgeVault) {
+      delete db.sessionVault[k];
+      if (phone) delete db.sessionVault[phone];
+    }
+    count++;
+  }
+
+  db.config.accounts = {};
+  if (purgeVault) {
+    db.sessionVault = {};
+  }
+  delete db.config.activeOrderAccount;
+
+  // Clear accounts.json mirror
+  try {
+    fs.writeFileSync(ACCOUNTS_JSON_FILE, '[]', 'utf-8');
+  } catch {}
+
+  saveDb(db);
+  syncAccountsJsonMirror(db);
+  syncCloudVaultNow(db).catch(() => {});
+  appendAuditEvent('logout_all', { count });
+  return count;
+}
+
 
 // =========================================================================
 // V16 SECURITY, MASKING, OTP 3-STRIKE LOCK & STRUCTURED AUDIT LOG HELPERS

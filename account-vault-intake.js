@@ -227,13 +227,13 @@ export async function ingestAndPersistRawAccountTexts(
     // Quick order-history check so Vault immediately knows `0-Order` (`isZeroOrderAccount`) vs `Used`!
     try {
       const targetKey = mergedPayload.phone ? `acc_${mergedPayload.phone}` : (mergedPayload.account || 'acc_temp');
-      const prof = await orderProfileFn(targetKey, mergedPayload, { force: true, timeoutMs: 3200 });
+      const prof = await orderProfileFn(targetKey, mergedPayload, { force: true, timeoutMs: 8000 });
       if (prof?.valid === false) {
         mergedPayload.accountError = prof.error || prof.reason || 'Verification issue';
       }
-      const orderCount = typeof prof?.totalOrdersCount === 'number'
+      const orderCount = (typeof prof?.totalOrdersCount === 'number' && prof.totalOrdersCount !== 999999)
         ? prof.totalOrdersCount
-        : (typeof prof?.orderCount === 'number' ? prof.orderCount : null);
+        : (typeof prof?.orderCount === 'number' && prof.orderCount !== 999999 ? prof.orderCount : null);
       if (typeof orderCount === 'number' && Number.isFinite(orderCount) && prof?.valid !== false) {
         mergedPayload.totalOrdersCount = orderCount;
         mergedPayload.cachedTotalOrdersCount = orderCount;
@@ -435,7 +435,7 @@ export function createBulkDocumentBatchCollector({
     const html = formatBulkVaultImportSummaryHtml(result, Math.max(files.length, rawEntries.length));
 
     if (onBatchComplete) {
-      await onBatchComplete({ chatKey, lastCtx, statusMsg, result, html, filesCount: files.length });
+      await onBatchComplete({ chatKey, lastCtx, statusMsg, result, html, filesCount: files.length, rawEntries, dlErrors });
     }
     return result;
   }

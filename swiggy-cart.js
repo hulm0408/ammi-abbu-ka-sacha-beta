@@ -6189,7 +6189,7 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
 
   // Fast-path: If the account already has a known cachedTotalOrdersCount / totalOrdersCount,
   // build the profile in 0ms without firing network calls to Swiggy on every cart scan!
-  if (!force && !acc.sessionExpired && !acc.isLoggedOut && (acc.cachedTotalOrdersCount !== undefined && acc.cachedTotalOrdersCount !== null || typeof acc.totalOrdersCount === 'number')) {
+  if (!force && !acc.sessionExpired && !acc.isLoggedOut && ((acc.cachedTotalOrdersCount !== undefined && acc.cachedTotalOrdersCount !== null && acc.cachedTotalOrdersCount !== 999999) || (typeof acc.totalOrdersCount === 'number' && acc.totalOrdersCount !== 999999))) {
     const totalOrdersCount = Math.max(0, Number(acc.cachedTotalOrdersCount ?? acc.totalOrdersCount ?? 0));
     const profile = {
       key: accKey,
@@ -6225,7 +6225,7 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
       valid: false,
       reason,
       error: diagError,
-      totalOrdersCount: typeof acc?.totalOrdersCount === 'number' ? acc.totalOrdersCount : (acc?.isZeroOrderAccount ? 0 : 999999),
+      totalOrdersCount: typeof acc?.totalOrdersCount === 'number' && acc.totalOrdersCount !== 999999 ? acc.totalOrdersCount : (acc?.isZeroOrderAccount ? 0 : 999999),
       isZeroOrderAccount: acc?.totalOrdersCount === 0 || Boolean(acc?.isZeroOrderAccount),
       liveActiveOrdersCount: 0,
       hasZeroActiveOrders: true,
@@ -6241,7 +6241,14 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     return invalidProfile;
   }
 
-  const rawOrders = Array.isArray(auth.orders) ? auth.orders : [];
+  let rawOrders = Array.isArray(auth.orders) ? auth.orders : [];
+  if (rawOrders.length === 0) {
+    const listRes = await dapiFetch(acc, 'order/all', { timeoutMs: 8000 }).catch(() => null);
+    if (Array.isArray(listRes?.json?.data?.orders)) {
+      rawOrders = listRes.json.data.orders;
+    }
+  }
+
   const realPastOrdersCount = rawOrders.filter(o => {
     const st = String(o?.order_status || o?.post_status || '').toLowerCase();
     const paySt = String(o?.payment_txn_status || '').toLowerCase();
@@ -6253,7 +6260,7 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
   // Keep the maximum so a stale `0` (or an empty recent-history page) cannot make an
   // already-used account look new and win the automatic fresh-account tier again.
   const knownOrderCounts = [acc.totalOrdersCount, acc.cachedTotalOrdersCount, realPastOrdersCount]
-    .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)))
+    .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) && Number(value) !== 999999)
     .map(value => Math.max(0, Number(value)));
   const totalOrdersCount = knownOrderCounts.length ? Math.max(...knownOrderCounts) : realPastOrdersCount;
 

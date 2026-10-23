@@ -26,6 +26,7 @@ import {
   getActiveOrderAccountKey,
   setActiveOrderAccountKey,
   permanentLogoutAccount,
+  logoutAllAccounts,
   mutateDb,
   canTransitionOrder,
   getNextAutoUserName,
@@ -2431,8 +2432,135 @@ bot.action(/^prompt_reenter_otp_(\d{10})$/, async (ctx) => {
   );
 });
 
-// Process JSON / Cookie login (single account, Cookie-Editor array, OR multi-account `accounts.json` batch!),
-// verifying live against BOTH Swiggy Web DAPI (`_session_tid`) AND Swiggy Native Android (`chkout` + `profile` token sessions)!
+// Sequentially verifies and logs in a single Swiggy account from file or pasted JSON,
+// checking live session, fetching profile, counting exact past orders, claiming ₹50 offers,
+// and posting the rich Telegram card (behaving 100% identically to login by phone number)!
+async function processAccountEntrySequentially(ctx, entry, { index = 1, total = 1, fileName = '', targetKeyOverride = null, orderIdOverride = null } = {}) {
+  const norm = normalizeSwiggySessionPayload(entry);
+  const filePhoneHint = (fileName && typeof fileName === 'string' ? (fileName.match(/(?:^|\D)([6-9]\d{9})(?:\D|$)/) || [])[1] : '') || '';
+  const hintPhone = norm?.phone || norm?.mobile || filePhoneHint || '';
+
+  if (!norm || (!norm.cookies && !norm.tid && !norm.token)) {
+    await ctx.reply(`! <b>[${index}/${total}] ${escapeHtml(fileName || 'Session')}</b>: Valid Swiggy cookies, tid ya token nahi mila.`, { parse_mode: 'HTML' });
+    return { success: false, reason: 'INVALID_CREDENTIALS' };
+  }
+
+  const label = hintPhone ? `<code>${hintPhone}</code>` : escapeHtml(norm.name || fileName || `Account #${index}`);
+  const statusMsg = await ctx.reply(`◷ <i>[${index}/${total}] ${label} live verify ho raha hai...</i>`, { parse_mode: 'HTML' }).catch(() => null);
+
+  const dbCheck = getDb();
+  const vaultFallback = (hintPhone && dbCheck.sessionVault?.[hintPhone]) || (targetKeyOverride && dbCheck.sessionVault?.[targetKeyOverride]) || null;
+  let rawCookieStr = norm.cookies || '';
+  if ((!rawCookieStr || !rawCookieStr.includes('_session_tid=')) && vaultFallback?.cookies?.includes('_session_tid=')) {
+    rawCookieStr = `${vaultFallback.cookies}; ${rawCookieStr}`;
+  }
+  const cookieStr = cleanEssentialSwiggyCookies(rawCookieStr, norm);
+
+  const liveCheck = await verifySwiggySessionLive({
+    ...norm,
+    cookies: cookieStr,
+    phone: hintPhone || norm.phone
+  }).catch(err => ({ valid: false, error: err.message }));
+
+  if (!liveCheck?.valid) {
+    if (statusMsg) {
+      try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+    }
+    await ctx.reply(
+      `<blockquote>× <b>SWIGGY SESSION EXPIRED</b></blockquote>\n\n` +
+      `☎ <b>Account:</b> ${label}\n` +
+      `◈ <b>Status:</b> ${escapeHtml(liveCheck?.androidMessage || liveCheck?.webMessage || liveCheck?.error || 'Session expired on Swiggy')}\n\n` +
+      `› <i>Kripya Mobile Number + OTP se fresh login karein ya active Swiggy JSON bhejein.</i>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            ...(hintPhone.length === 10
+              ? [Markup.button.callback(`◈ Login ${hintPhone} via OTP`, `relogin_phone_${hintPhone}`)]
+              : [Markup.button.callback('☎ Login with Number', 'boss_login_with_number')]),
+            Markup.button.callback('▤ Login with JSON', 'boss_login_with_json')
+          ],
+          [Markup.button.callback('⌂ Main Menu', 'boss_panel_home')]
+        ])
+      }
+    );
+    return { success: false, expired: true, phone: hintPhone };
+  }
+
+  const liveTid = liveCheck.liveTid || norm.tid || '';
+  const liveToken = liveCheck.token || norm.token || '';
+  const liveCustomerId = liveCheck.customerId || norm.customerId || '';
+  const finalCookieStr = liveCheck.cookies || cookieStr;
+
+  const profile = (liveCheck.name && liveCheck.phone)
+    ? { id: liveCustomerId, name: liveCheck.name, phone: liveCheck.phone }
+    : await fetchSwiggyProfileFromCookies({ ...norm, tid: liveTid, token: liveToken, customerId: liveCustomerId, cookies: finalCookieStr }).catch(() => ({ name: null, phone: null }));
+
+  const cleanPhone = (profile?.phone || hintPhone ? String(profile?.phone || hintPhone).replace(/[^0-9]/g, '').slice(-10) : '');
+  const swiggyName = profile?.name || norm?.swiggyName || norm?.name || (cleanPhone ? `User ${cleanPhone}` : 'Swiggy User');
+  const accKey = targetKeyOverride || (cleanPhone ? `acc_${cleanPhone}` : (norm?.account || 'acc_' + Date.now()));
+
+  const result = importSessionJson({
+    ...norm,
+    tid: liveTid,
+    token: liveToken,
+    customerId: liveCustomerId || profile?.id || norm?.customerId || '',
+    name: swiggyName,
+    swiggyName,
+    phone: cleanPhone,
+    cookies: finalCookieStr
+  }, accKey);
+
+  if (statusMsg) {
+    try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+  }
+
+  if (!result.success) {
+    await ctx.reply(`× <b>Import Failed for ${label}:</b> ${escapeHtml(result.message || '')}`, { parse_mode: 'HTML' });
+    return { success: false, reason: result.message };
+  }
+
+  const savedKey = result.account || result.key || accKey;
+
+  // Pre-claim Breakfast & Late Night ₹50 offers
+  let offersResult = null;
+  try {
+    offersResult = await Promise.race([
+      claimSwiggyBreakfastAndLateNightOffers({
+        id: savedKey,
+        phone: cleanPhone,
+        token: liveToken || liveTid,
+        tid: liveTid,
+        cookies: finalCookieStr
+      }, { quickLockOnly: true }),
+      new Promise(resolve => setTimeout(() => resolve(null), 2500))
+    ]);
+  } catch {}
+
+  const db = getDb();
+  if (db.config.accounts?.[savedKey]) {
+    if (offersResult) db.config.accounts[savedKey].offers = offersResult;
+    saveDb(db);
+  }
+  syncCloudVaultNow(db).catch(() => {});
+
+  // Send the rich account card with live order history & order count!
+  await sendAccountLoginAndOffersCard(ctx, {
+    accountKey: savedKey,
+    targetAcc: savedKey,
+    name: db.config.accounts?.[savedKey]?.name || swiggyName,
+    swiggyName,
+    phone: cleanPhone,
+    customerId: liveCustomerId || profile?.id || result.customerId || 'Verified',
+    exportJson: exportSessionJson(savedKey),
+    offers: offersResult
+  }, ctx.from.id, orderIdOverride);
+
+  return { success: true, key: savedKey, phone: cleanPhone, name: swiggyName };
+}
+
+// Process JSON / Cookie login (single account, Cookie-Editor array, OR multi-account batch!),
+// verifying live against BOTH Swiggy Web DAPI and Swiggy Native Android engine one by one!
 async function handleProcessJsonLogin(ctx, rawJson, userId, targetKeyOverride = null, orderIdOverride = null) {
   const prevState = userWaitState[userId] || {};
   const finalTargetKey = targetKeyOverride || prevState.targetAcc || null;
@@ -2444,124 +2572,40 @@ async function handleProcessJsonLogin(ctx, rawJson, userId, targetKeyOverride = 
     return ctx.reply('! Invalid JSON format. Kripya valid Swiggy Session JSON, Cookie string, ya .json/.txt file bhejein.');
   }
 
-  // Multi-account JSON array (`accounts.json` / `[ {...}, {...} ]`) — verify & permanently save ALL active accounts to Vault!
+  let successCount = 0;
+  let expiredCount = 0;
+
+  for (let i = 0; i < extractedList.length; i++) {
+    const entry = extractedList[i];
+    const res = await processAccountEntrySequentially(ctx, entry, {
+      index: i + 1,
+      total: extractedList.length,
+      fileName: `account_${i + 1}.json`,
+      targetKeyOverride: extractedList.length === 1 ? finalTargetKey : null,
+      orderIdOverride: extractedList.length === 1 ? finalOrderId : null
+    });
+    if (res.success) successCount++;
+    else if (res.expired) expiredCount++;
+    if (i < extractedList.length - 1) {
+      await new Promise(r => setTimeout(r, 400));
+    }
+  }
+
   if (extractedList.length > 1) {
-    const statusMsg = await ctx.reply(
-      `◷ <i>${extractedList.length} Swiggy accounts verify hokar Permanent Vault me save ho rahe hain...</i>`,
-      { parse_mode: 'HTML' }
-    );
-    const bulkRes = await ingestAndPersistRawAccountTexts([
-      { fileName: 'multi_accounts.json', text: typeof rawJson === 'string' ? rawJson : JSON.stringify(rawJson) }
-    ]);
-    try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
-    return sendSafeHtml(ctx, formatBulkVaultImportSummaryHtml(bulkRes, extractedList.length), getBossPanelKeyboard());
-  }
-
-  // Single account session JSON (supports Web `_session_tid`, hex-`tid`, Python/Android `{ tid, token, sid, deviceId }`, Cookie-Editor, etc.)
-  const parsed = extractedList[0];
-  const dbCheck = getDb();
-  const hintPhone = parsed.phone || '';
-  const vaultFallback = (hintPhone && dbCheck.sessionVault?.[hintPhone]) || (finalTargetKey && dbCheck.sessionVault?.[finalTargetKey]) || null;
-
-  let rawCookieStr = parsed.cookies || '';
-  if ((!rawCookieStr || !rawCookieStr.includes('_session_tid=')) && vaultFallback?.cookies?.includes('_session_tid=')) {
-    rawCookieStr = `${vaultFallback.cookies}; ${rawCookieStr}`;
-  }
-  const cookieStr = cleanEssentialSwiggyCookies(rawCookieStr, parsed);
-  if (!cookieStr && !parsed.tid && !parsed.token) {
-    return ctx.reply('! Invalid session: Isme Swiggy cookies, tid ya token nahi mila.');
-  }
-
-  const statusMsg = await ctx.reply('◷ <i>Swiggy session live verify ho raha hai (Web + Native App engine)...</i>', { parse_mode: 'HTML' });
-
-  const liveCheck = await verifySwiggySessionLive({
-    ...parsed,
-    cookies: cookieStr
-  });
-
-  if (!liveCheck?.valid) {
-    try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
-    return ctx.reply(
-      `× <b>Swiggy Session Genuinely Expired!</b>\n\n` +
-      `Swiggy Web + Native Android dono servers par live check kiya gaya — Swiggy ne bataya: <code>${escapeHtml(liveCheck?.androidMessage || liveCheck?.webMessage || 'Session expired')}</code>.\n\n` +
-      `› <b>Kripya Mobile Number + OTP se fresh login karein ya active Swiggy JSON bhejein!</b>`,
+    await ctx.reply(
+      `<blockquote>✓ <b>ALL ACCOUNTS PROCESSED ONE BY ONE</b></blockquote>\n\n` +
+      `Total Accounts: <b>${extractedList.length}</b>\n` +
+      `● Logged In & Ready: <b>${successCount}</b>\n` +
+      (expiredCount > 0 ? `× Expired: <b>${expiredCount}</b>\n\n` : '\n') +
+      `Sabhi accounts ke order counts & ₹50 offers live lock ho chuke hain.`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
-          [
-            ...(hintPhone.length === 10
-              ? [Markup.button.callback(`◈ Login ${hintPhone} via OTP`, `relogin_phone_${hintPhone}`)]
-              : [Markup.button.callback('☎ Login with Number', 'boss_login_with_number')])
-          ],
+          [Markup.button.callback('◉ View Connected Accounts', 'boss_view_accounts')],
           [Markup.button.callback('⌂ Main Menu', 'boss_panel_home')]
         ])
       }
     );
-  }
-
-  const liveTid = liveCheck.liveTid || parsed.tid || '';
-  const liveToken = liveCheck.token || parsed.token || '';
-  const liveCustomerId = liveCheck.customerId || parsed.customerId || '';
-  const finalCookieStr = liveCheck.cookies || cookieStr;
-
-  // 1. Fetch real profile from Swiggy if not already resolved by native profile endpoint
-  const profile = (liveCheck.name && liveCheck.phone)
-    ? { id: liveCustomerId, name: liveCheck.name, phone: liveCheck.phone }
-    : await fetchSwiggyProfileFromCookies({ ...parsed, tid: liveTid, token: liveToken, customerId: liveCustomerId, cookies: finalCookieStr }).catch(() => ({ name: null, phone: null }));
-  const cleanPhone = (profile?.phone || hintPhone ? String(profile?.phone || hintPhone).replace(/[^0-9]/g, '').slice(-10) : '');
-  const swiggyName = profile?.name || parsed?.swiggyName || parsed?.name || (cleanPhone ? `User ${cleanPhone}` : 'Swiggy User');
-  const accKey = finalTargetKey || (cleanPhone ? `acc_${cleanPhone}` : (parsed?.account || 'acc_' + Date.now()));
-
-  // 2. Import complete session into database + vault (preserving freshly minted/existing `_session_tid`!)
-  const result = importSessionJson({
-    ...parsed,
-    tid: liveTid,
-    token: liveToken,
-    customerId: liveCustomerId || profile?.id || parsed?.customerId || '',
-    name: swiggyName,
-    swiggyName,
-    phone: cleanPhone,
-    cookies: finalCookieStr
-  }, accKey);
-
-  try {
-    await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id);
-  } catch (e) {}
-
-  if (result.success) {
-    const savedKey = result.account || result.key || accKey;
-    const claimWait = await ctx.reply('◷ <i>Swiggy Breakfast &amp; Late Night ₹50 OFF offers lock ho rahe hain...</i>', { parse_mode: 'HTML' });
-    const offersResult = await Promise.race([
-      claimSwiggyBreakfastAndLateNightOffers({
-        id: savedKey,
-        phone: cleanPhone,
-        token: liveToken || liveTid,
-        tid: liveTid,
-        cookies: finalCookieStr
-      }, { quickLockOnly: true }),
-      new Promise(resolve => setTimeout(() => resolve({ success: false, pendingBackgroundLock: true }), 2400))
-    ]);
-    try { await bot.telegram.deleteMessage(ctx.chat.id, claimWait.message_id); } catch (e) {}
-
-    const db = getDb();
-    if (db.config.accounts?.[savedKey]) {
-      db.config.accounts[savedKey].offers = offersResult;
-      saveDb(db);
-    }
-    syncCloudVaultNow(db).catch(() => {});
-
-    await sendAccountLoginAndOffersCard(ctx, {
-      accountKey: savedKey,
-      targetAcc: savedKey,
-      name: db.config.accounts?.[savedKey]?.name || swiggyName,
-      swiggyName,
-      phone: cleanPhone,
-      customerId: liveCustomerId || profile?.id || result.customerId || 'Verified',
-      exportJson: exportSessionJson(savedKey),
-      offers: offersResult
-    }, ctx.from.id, finalOrderId);
-  } else {
-    await ctx.reply(`× <b>Import Failed:</b> ${escapeHtml(result.message || '')}`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
   }
 }
 
@@ -4786,23 +4830,24 @@ bot.action('boss_logout_all_confirm', async (ctx) => {
 bot.action('boss_logout_all_exec', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
-  const db = getDb();
-  const accounts = db.config.accounts || {};
-
-  let count = 0;
-  for (const [k, a] of Object.entries(accounts)) {
-    permanentLogoutAccount(k, { purgeVault: true });
-    deleteAccount(k, { purgeVault: true });
-    count++;
-  }
+  const count = logoutAllAccounts({ purgeVault: true });
+  accountOrderProfileCache.clear();
 
   await ctx.reply(
-    `<blockquote>↗ <b>ALL ACCOUNTS LOGGED OUT</b></blockquote>\n\n` +
+    `<blockquote>↗ <b>ALL ACCOUNTS LOGGED OUT & PURGED</b></blockquote>\n\n` +
     `Total <b>${count} accounts</b> successfully logout kar diye gaye hain.\n` +
-    `Ab aap kisi bhi account ko <b>OTP</b> ya <b>Copied Session Code</b> se turant re-login kar sakte hain.`,
+    `Bot DB & Session Vault puri tarah se clear ho chuka hai.\n\n` +
+    `Ab aap naye accounts <b>File (.json)</b> ya <b>Phone Number (OTP)</b> se login kar sakte hain:`,
     {
       parse_mode: 'HTML',
-      ...getBossPanelKeyboard()
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('☎ Login with Number', 'boss_login_with_number'),
+          Markup.button.callback('▤ Login with JSON', 'boss_login_with_json')
+        ],
+        [Markup.button.callback('◉ View Accounts', 'boss_view_accounts')],
+        [Markup.button.callback('⌂ Main Menu', 'boss_panel_home')]
+      ])
     }
   );
 });
@@ -6285,7 +6330,10 @@ export async function showFamilyAccounts(ctx) {
     { text: '⇧ Export & Logout (1+ Orders)', callback_data: 'boss_export_logout_picker', style: 'success' }
   ]);
   buttons.push([
-    { text: 'Logout Accounts', callback_data: 'boss_logout_picker', style: 'danger' },
+    { text: '! Logout All Accounts', callback_data: 'boss_logout_all_confirm', style: 'danger' },
+    { text: '↗ Logout Single Account', callback_data: 'boss_logout_picker', style: 'danger' }
+  ]);
+  buttons.push([
     { text: 'Delete Account', callback_data: 'boss_delete_picker', style: 'danger' }
   ]);
   if (deadCount > 0) {
@@ -6666,13 +6714,60 @@ const bulkAccountDocCollector = createBulkDocumentBatchCollector({
     const ab = await res.arrayBuffer();
     return Buffer.from(ab);
   },
-  onBatchComplete: async ({ lastCtx, statusMsg, html }) => {
+  onBatchComplete: async ({ lastCtx, statusMsg, rawEntries = [] }) => {
     if (statusMsg?.message_id) {
       try { await bot.telegram.deleteMessage(lastCtx.chat.id, statusMsg.message_id); } catch (e) {}
     }
-    await sendSafeHtml(lastCtx, html, getBossReplyKeyboard()).catch(err => {
-      console.error('[VaultBulkSummary] Reply error:', err.message);
-    });
+
+    const accountsToProcess = [];
+    for (const item of (rawEntries || [])) {
+      const fileName = item.fileName || 'session.json';
+      const text = item.text || '';
+      const list = extractSwiggyAccountsListFromInput(text);
+      for (const acc of list) {
+        accountsToProcess.push({ entry: acc, fileName });
+      }
+    }
+
+    if (accountsToProcess.length === 0) {
+      await lastCtx.reply('! File(s) me koi valid Swiggy session nahi mila. Kripya valid .json / .txt / .zip file bhejein.');
+      return;
+    }
+
+    let successCount = 0;
+    let expiredCount = 0;
+
+    for (let i = 0; i < accountsToProcess.length; i++) {
+      const item = accountsToProcess[i];
+      const res = await processAccountEntrySequentially(lastCtx, item.entry, {
+        index: i + 1,
+        total: accountsToProcess.length,
+        fileName: item.fileName
+      });
+      if (res.success) successCount++;
+      else if (res.expired) expiredCount++;
+      if (i < accountsToProcess.length - 1) {
+        await new Promise(r => setTimeout(r, 400));
+      }
+    }
+
+    if (accountsToProcess.length > 1) {
+      await lastCtx.reply(
+        `<blockquote>✓ <b>ALL FILE ACCOUNTS PROCESSED ONE BY ONE</b></blockquote>\n\n` +
+        `Total Files/Accounts: <b>${accountsToProcess.length}</b>\n` +
+        `● Logged In & Ready: <b>${successCount}</b>\n` +
+        (expiredCount > 0 ? `× Expired: <b>${expiredCount}</b>\n\n` : '\n') +
+        `Sabhi accounts ke order counts & ₹50 offers live lock ho chuke hain.\n` +
+        `Ab bot har new order par automatic <b>Best 0-Order ID</b> select karega!`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('◉ View Connected Accounts', 'boss_view_accounts')],
+            [Markup.button.callback('⌂ Main Menu', 'boss_panel_home')]
+          ])
+        }
+      );
+    }
   }
 });
 
