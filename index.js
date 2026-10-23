@@ -11708,3 +11708,28 @@ if (!process.env.TEST_MODE && !process.env.BOT_TEST_MODE) {
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+/*
+Are you sure you want to change your saved Cart Link?
+Are you sure you want to change your saved Address Link?
+ORDER CANCELLED (#
+Account Manager
+Close Panel
+Auto Max Coupon
+Switch Acc
+Accept Order
+Reject Order
+Message User
+Copy Cart
+Copy Address
+Send Tracking
+Mark Done
+Back to Panel
+Pending Orders
+Order History
+Cancelled Orders
+Cancel Order
+async function handleConfirmOrderPaid(ctx, orderId, _confirmedBy) {
+  const result = await checkOrderPaidStatusOnly(orderId);
+}
+*/
