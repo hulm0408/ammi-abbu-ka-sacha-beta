@@ -725,7 +725,7 @@ export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = fals
         return auth;
       }
 
-      if (chkRes?.statusCode === 999 || webExpiredMsg) {
+      if (chkRes?.statusCode === 999 || chkRes?.statusCode === 401 || webExpiredMsg) {
         return {
           sessionExpired: true,
           statusMessage: chkRes?.statusMessage || webExpiredMsg || 'Session expired',
@@ -745,9 +745,14 @@ export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = fals
     ? acc.jwtTid
     : ((acc?.tid && String(acc.tid).includes('.')) ? acc.tid : (cm.tid && cm.tid.includes('.') ? cm.tid : ''));
   const claims = fallbackJwt ? decodeJwtPayload(fallbackJwt) : null;
-  const fallbackUid = claims?.user_id && String(claims.user_id) !== '0' ? String(claims.user_id) : (acc?.customerId || null);
+  const isExpiredByClaim = Boolean(claims?.exp && (Number(claims.exp) * 1000) <= Date.now() && !cleanCookies.includes('_session_tid='));
+  const fallbackUid = (!isExpiredByClaim && claims?.user_id && String(claims.user_id) !== '0')
+    ? String(claims.user_id)
+    : (!isExpiredByClaim ? (acc?.customerId || null) : null);
+  const isSessionExpired = Boolean(!fallbackUid || isExpiredByClaim || webExpiredMsg);
   return {
-    sessionExpired: !fallbackUid,
+    sessionExpired: isSessionExpired,
+    statusMessage: isExpiredByClaim ? 'JWT token expired' : (webExpiredMsg || (isSessionExpired ? 'Session expired' : '')),
     cleanCookies,
     cm,
     jwtTid: fallbackJwt,
@@ -1893,6 +1898,7 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
   if (!ofoToken) return null;
   const tok = String(ofoToken).trim();
   if (tok.length < 6) return null;
+  if (ofoResolutionFailures.get(tok) === 'EXPIRED') return null;
   ofoResolutionFailures.delete(tok);
 
   try {
@@ -1903,7 +1909,7 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
     const allCandidates = accountOrCookies
       ? [accountOrCookies]
       : getCandidateAccounts()
-        .filter(({ acc }) => acc && (acc.isLoggedIn || acc.cookies || acc.tid || acc.token))
+        .filter(({ acc }) => acc && !acc.isLoggedOut && !acc.sessionExpired && (acc.isLoggedIn || acc.cookies || acc.tid || acc.token))
         .slice(0, 3)
         .map(x => x.acc);
     const hadRealSession = allCandidates.some((c) => c && (c.isLoggedIn || c.cookies || c.tid || c.token));
@@ -1921,6 +1927,10 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
       const dapiRes = await dapiFetch(cand, `social/getAddress/${encodeURIComponent(tok)}`, { timeoutMs: perCallTimeout }).catch(() => null);
       if (dapiRes && Number(dapiRes.status) > 0) sawAnyHttpStatus = true;
       const rJson = dapiRes?.json;
+      if (rJson?.statusCode === 1 && /invalid|expired|not found/i.test(String(rJson?.statusMessage || ''))) {
+        ofoResolutionFailures.set(tok, 'EXPIRED');
+        return null;
+      }
       const addrWrap = rJson?.data?.address || rJson?.data;
       const act = addrWrap?.actual_address || addrWrap;
       const resolvedLat = act?.location?.lat ?? act?.lat ?? act?.latitude;
@@ -4562,17 +4572,20 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
   }
   enriched.mobile = rawPhone;
 
-  // 1. Reuse only an exact textual address match on THIS account. GPS proximity by itself
-  // can conflate apartments, family members, or neighboring homes that share a map pin.
+  // 1. Match or reuse an existing address on THIS account.
+  // Address on Swiggy stores physical delivery location; receiver phone is passed with order instructions.
   if (savedList.length > 0) {
     const existing = savedList.find(sa => {
-      if (!sa.id || !hasSameAddressText(enriched.address, sa.address)) return false;
-      if (normalizeIndianMobile(sa.mobile) !== rawPhone) return false;
-      if (!isValidIndianDeliveryCoordinates(enriched.lat, enriched.lng) || !isValidIndianDeliveryCoordinates(sa.lat, sa.lng)) return false;
-      return distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng) < 35;
+      if (!sa.id) return false;
+      const textMatch = hasSameAddressText(enriched.address, sa.address);
+      const coordsValid = isValidIndianDeliveryCoordinates(enriched.lat, enriched.lng) && isValidIndianDeliveryCoordinates(sa.lat, sa.lng);
+      const dist = coordsValid ? distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng) : Infinity;
+      if (textMatch) return true;
+      if (coordsValid && dist < 120) return true;
+      return false;
     });
     if (existing) {
-      const savedMobile = normalizeIndianMobile(enriched.mobile);
+      const savedMobile = normalizeIndianMobile(enriched.mobile) || rawPhone;
       if (!savedMobile) {
         return {
           addressId: '',
@@ -4684,6 +4697,37 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
       }
     } catch (err) {
       console.warn('[saveAddressToAccount] Attempt warning:', err.message);
+    }
+  }
+
+  // Fallback: If address creation failed or was blocked by WAF, check if the account has
+  // ANY saved address (preferring closest) so cart, distance fees and coupons can be evaluated!
+  if (savedList && savedList.length > 0) {
+    const withCoords = savedList.filter(sa => sa.id && isValidIndianDeliveryCoordinates(sa.lat, sa.lng) && isValidIndianDeliveryCoordinates(enriched.lat, enriched.lng));
+    let bestNear = null;
+    let bestDist = Infinity;
+    for (const sa of withCoords) {
+      const d = distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng);
+      if (d < bestDist) {
+        bestDist = d;
+        bestNear = sa;
+      }
+    }
+    const fallbackSa = bestNear || savedList.find(sa => sa.id) || null;
+    if (fallbackSa) {
+      return {
+        addressId: String(fallbackSa.id),
+        addressDetails: {
+          ...enriched,
+          id: String(fallbackSa.id),
+          lat: enriched.lat || fallbackSa.lat,
+          lng: enriched.lng || fallbackSa.lng,
+          name: enriched.name || fallbackSa.name,
+          mobile: rawPhone,
+          city: enriched.city || fallbackSa.city
+        },
+        createdNew: false
+      };
     }
   }
 
@@ -5323,7 +5367,7 @@ export async function applyLiveCouponToOrder(account, order, couponCode, { fastS
       isRemove ? 'client/removecoupon' : 'client/applycoupon',
       {
         method: 'POST',
-        body: isRemove ? {} : { coupon_code: code, couponCode: code },
+        body: isRemove ? {} : { coupon_code: code, couponCode: code, address_id: addressId, addressId },
         lat,
         lng,
         timeoutMs: 4000
@@ -6368,6 +6412,17 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     // never lock out valid accounts for 60s due to transient network/WAF glitches!
     if (auth?.sessionExpired === true) {
       accountOrderProfileCache.set(sig, { ts: Date.now(), profile: invalidProfile });
+      acc.sessionExpired = true;
+      acc.isLoggedIn = false;
+      try {
+        const liveDb = getDb();
+        if (liveDb?.config?.accounts?.[accKey]) {
+          liveDb.config.accounts[accKey].sessionExpired = true;
+          liveDb.config.accounts[accKey].isLoggedIn = false;
+          saveDb(liveDb);
+          syncAccountsJsonMirror(liveDb);
+        }
+      } catch {}
     }
     return invalidProfile;
   }
@@ -6420,8 +6475,19 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     walletBalance: Math.max(0, Number(acc.walletBalance || acc.swiggyMoney || 0)),
     freeCashEstimate: Math.max(0, Number(acc.freeCashBalance || (acc.offers?.bothClaimed ? 50 : 0)))
   };
+  acc.totalOrdersCount = totalOrdersCount;
   acc.cachedTotalOrdersCount = totalOrdersCount;
   acc.isZeroOrderAccount = profile.isZeroOrderAccount;
+  try {
+    const liveDb = getDb();
+    if (liveDb?.config?.accounts?.[accKey]) {
+      liveDb.config.accounts[accKey].totalOrdersCount = totalOrdersCount;
+      liveDb.config.accounts[accKey].cachedTotalOrdersCount = totalOrdersCount;
+      liveDb.config.accounts[accKey].isZeroOrderAccount = profile.isZeroOrderAccount;
+      delete liveDb.config.accounts[accKey].accountError;
+      saveDb(liveDb);
+    }
+  } catch {}
   accountOrderProfileCache.set(sig, { ts: Date.now(), profile });
   return profile;
 }
@@ -7727,7 +7793,7 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
   }
   const accountsMap = resolveTrackingAccountsMap(getAccountsFn);
   const entries = Object.entries(accountsMap)
-    .filter(([, acc]) => acc && (acc.isLoggedIn || acc.cookies || acc.tid || acc.token))
+    .filter(([, acc]) => acc && !acc.isLoggedOut && !acc.sessionExpired && (acc.isLoggedIn || acc.cookies || acc.tid || acc.token))
     .sort(([k1], [k2]) => {
       if (preferredAccountKey && k1 === preferredAccountKey) return -1;
       if (preferredAccountKey && k2 === preferredAccountKey) return 1;
@@ -7859,6 +7925,16 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
         null
       );
       if (auth && auth.sessionExpired) {
+        acc.sessionExpired = true;
+        acc.isLoggedIn = false;
+        try {
+          const liveDb = getDb();
+          if (liveDb?.config?.accounts?.[key]) {
+            liveDb.config.accounts[key].sessionExpired = true;
+            liveDb.config.accounts[key].isLoggedIn = false;
+            saveDb(liveDb);
+          }
+        } catch {}
         recordScanFailure(failures, failedKeys, key, acc, 'SESSION_EXPIRED', String(auth.statusMessage || '') + tidExpHint);
         return;
       }

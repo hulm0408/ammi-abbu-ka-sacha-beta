@@ -326,7 +326,21 @@ export function cleanEssentialSwiggyCookies(cookieStr = '', fallback = {}) {
 }
 
 export function isAccountLoggedInSession(acc) {
-  return Boolean(acc && acc.isLoggedIn && !acc.isLoggedOut && !acc.sessionExpired && (acc.cookies || acc.tid || acc.token));
+  if (!acc || !acc.isLoggedIn || acc.isLoggedOut || acc.sessionExpired) return false;
+  // If tid is a JWT with an expired exp and no _session_tid cookie, it is expired!
+  if (acc.tid && typeof acc.tid === 'string' && acc.tid.includes('.')) {
+    try {
+      const parts = acc.tid.split('.');
+      if (parts.length >= 2) {
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
+        if (payload?.exp && (Number(payload.exp) * 1000) <= Date.now()) {
+          const hasSessTid = Boolean(acc._session_tid || (typeof acc.cookies === 'string' && acc.cookies.includes('_session_tid=')));
+          if (!hasSessTid) return false;
+        }
+      }
+    } catch {}
+  }
+  return Boolean(acc.cookies || acc.tid || acc.token);
 }
 
 function normalizeTenDigitPhone(raw = '') {
@@ -611,6 +625,7 @@ function seedAccountsFromJson(data) {
             const key = preferredKey || (cleanPhone ? `acc_${cleanPhone}` : 'acc_' + Date.now());
             // Never resurrect explicitly deleted, logged-out, or already-present phone accounts!
             if (isAccountTombstoned(data.config.deletedAccounts, key, cleanPhone)) continue;
+            if (item.isLoggedOut || item.sessionExpired || item.isLoggedIn === false) continue;
             if (data.config.accounts[key] && (data.config.accounts[key].isLoggedIn === false || data.config.accounts[key].isLoggedOut || data.config.accounts[key].sessionExpired)) continue;
             const existingSamePhoneKey = cleanPhone ? findAccountKeyByPhone(data.config.accounts, cleanPhone, key) : null;
             if (existingSamePhoneKey) continue;
@@ -743,7 +758,7 @@ export function saveDb(data) {
 
   // Concurrent-Safe Parallel Merge for Orders + Uploaded Accounts + Session Vault!
   // Any account/vault/order written concurrently to disk after `getDb()` was called is 100% preserved unless explicitly mutated/deleted by caller!
-  if (data && (data.__baseOrdersJson || data.__baseAccountsJson || data.__baseDraftsJson)) {
+  if (data && fs.existsSync(DB_FILE)) {
     try {
       const liveDisk = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
 
@@ -791,41 +806,38 @@ export function saveDb(data) {
         Object.defineProperty(data, '__baseOrdersJson', { value: refreshedBase, enumerable: false, configurable: true });
       }
 
-      if (data.__baseDeletedJson && data.config && typeof data.config.deletedAccounts === 'object' && data.config.deletedAccounts !== null) {
+      if (data.config && typeof data.config.deletedAccounts === 'object') {
         const diskDeleted = liveDisk?.config?.deletedAccounts || {};
-        const baseDelMap = data.__baseDeletedJson;
-        const baseAccMap = data.__baseAccountsJson || {};
+        const baseDelMap = data.__baseDeletedJson || {};
         for (const [dk, dVal] of Object.entries(diskDeleted)) {
           if (!dVal) continue;
           const existedDelAtRead = Object.prototype.hasOwnProperty.call(baseDelMap, dk);
           const presentDelInCaller = Object.prototype.hasOwnProperty.call(data.config.deletedAccounts, dk);
           // If caller explicitly deleted tombstone (i.e. `existedDelAtRead && !presentDelInCaller`), respect caller's re-login!
-          // If `!existedDelAtRead && !presentDelInCaller`, another fiber JUST deleted `dk` concurrently — preserve the deletion!
-          if (!existedDelAtRead && !presentDelInCaller) {
-            const callerMutatedAcc = Object.prototype.hasOwnProperty.call(data.config?.accounts || {}, dk) &&
-              (!Object.prototype.hasOwnProperty.call(baseAccMap, dk) || JSON.stringify(data.config.accounts[dk]) !== baseAccMap[dk]);
-            if (!callerMutatedAcc) {
-              data.config.deletedAccounts[dk] = dVal;
-              if (data.config.accounts && Object.prototype.hasOwnProperty.call(data.config.accounts, dk)) {
-                delete data.config.accounts[dk];
-              }
+          // If `!existedDelAtRead` or already present, another fiber deleted `dk` — preserve the deletion UNCONDITIONALLY!
+          if (!existedDelAtRead || presentDelInCaller) {
+            data.config.deletedAccounts[dk] = dVal;
+            if (data.config.accounts && Object.prototype.hasOwnProperty.call(data.config.accounts, dk)) {
+              delete data.config.accounts[dk];
             }
           }
         }
-        const refreshedDelBase = {};
-        for (const [dk, dVal] of Object.entries(data.config.deletedAccounts)) refreshedDelBase[dk] = JSON.stringify(dVal);
-        Object.defineProperty(data, '__baseDeletedJson', { value: refreshedDelBase, enumerable: false, configurable: true });
+        if (data.__baseDeletedJson) {
+          const refreshedDelBase = {};
+          for (const [dk, dVal] of Object.entries(data.config.deletedAccounts)) refreshedDelBase[dk] = JSON.stringify(dVal);
+          Object.defineProperty(data, '__baseDeletedJson', { value: refreshedDelBase, enumerable: false, configurable: true });
+        }
       }
 
       if (data.__baseAccountsJson && data.config && typeof data.config.accounts === 'object' && data.config.accounts !== null) {
         const diskAccounts = liveDisk?.config?.accounts || {};
         const baseAccMap = data.__baseAccountsJson;
         const callerDeleted = data.config.deletedAccounts || {};
-        // First: remove any account that existed at read, was NOT mutated by this caller, and was concurrently deleted on disk!
+        // First: remove any account that existed at read and was concurrently deleted on disk!
         for (const ak of Object.keys(data.config.accounts)) {
           const existedAtRead = Object.prototype.hasOwnProperty.call(baseAccMap, ak);
           const presentOnDisk = Object.prototype.hasOwnProperty.call(diskAccounts, ak);
-          if (existedAtRead && !presentOnDisk && JSON.stringify(data.config.accounts[ak]) === baseAccMap[ak]) {
+          if (existedAtRead && !presentOnDisk) {
             delete data.config.accounts[ak];
           }
         }
@@ -843,6 +855,16 @@ export function saveDb(data) {
         const refreshedAccBase = {};
         for (const [ak, aVal] of Object.entries(data.config.accounts)) refreshedAccBase[ak] = JSON.stringify(aVal);
         Object.defineProperty(data, '__baseAccountsJson', { value: refreshedAccBase, enumerable: false, configurable: true });
+      }
+
+      // FINAL UNCONDITIONAL SAFETY: Purge any account from caller accounts that is tombstoned!
+      if (data.config?.accounts && typeof data.config.accounts === 'object' && data.config?.deletedAccounts) {
+        for (const [ak, aVal] of Object.entries(data.config.accounts)) {
+          const phone = normalizeTenDigitPhone(aVal?.phone || aVal?.mobile || String(ak).replace(/^acc_/, ''));
+          if (isAccountTombstoned(data.config.deletedAccounts, ak, phone)) {
+            delete data.config.accounts[ak];
+          }
+        }
       }
 
       if (data.__baseVaultJson && typeof data.sessionVault === 'object' && data.sessionVault !== null) {

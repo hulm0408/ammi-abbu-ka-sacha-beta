@@ -5343,6 +5343,7 @@ bot.action('boss_refresh_all_accounts', async (ctx) => {
         const orders = json.data?.orders || [];
         if (orders.length > 0) {
           acc.totalOrdersCount = orders.length;
+          acc.cachedTotalOrdersCount = orders.length;
           acc.isZeroOrderAccount = false;
           const latest = orders[0];
           const orderTotal = latest.order_total || latest.net_total || 'N/A';
@@ -5352,6 +5353,7 @@ bot.action('boss_refresh_all_accounts', async (ctx) => {
           );
         } else {
           acc.totalOrdersCount = 0;
+          acc.cachedTotalOrdersCount = 0;
           acc.isZeroOrderAccount = true;
           reportItems.push(
             `<b>${i + 1}. ◉ ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
@@ -5360,6 +5362,7 @@ bot.action('boss_refresh_all_accounts', async (ctx) => {
         }
       } else if (statusCode === 1) {
         acc.isLoggedIn = false;
+        acc.sessionExpired = true;
         reportItems.push(
           `<b>${i + 1}. ◉ ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
           `• ◈ <b>Session:</b> × <b>Expired / Logged Out</b>\n`
@@ -5381,6 +5384,7 @@ bot.action('boss_refresh_all_accounts', async (ctx) => {
           );
         } else {
           acc.isLoggedIn = false;
+          acc.sessionExpired = true;
           reportItems.push(
             `<b>${i + 1}. ◉ ${escapeHtml(accName)}</b> (<code>${phone}</code>)\n` +
             `• ◈ <b>Session:</b> × <b>Expired / Logged Out</b>\n`
@@ -7132,6 +7136,14 @@ bot.action(/^boss_action_done_(.+)$/, async (ctx) => {
 
   order.status = 'COMPLETED';
   order.completedAt = new Date().toISOString();
+  if (order.selectedAccount && db.config?.accounts?.[order.selectedAccount] && !order.accountOrderCountIncremented) {
+    const usedAccObj = db.config.accounts[order.selectedAccount];
+    const currentCount = Math.max(0, Number(usedAccObj.totalOrdersCount ?? usedAccObj.cachedTotalOrdersCount ?? 0));
+    usedAccObj.totalOrdersCount = currentCount + 1;
+    usedAccObj.cachedTotalOrdersCount = currentCount + 1;
+    usedAccObj.isZeroOrderAccount = false;
+    order.accountOrderCountIncremented = true;
+  }
   saveDb(db);
 
   await ctx.answerCbQuery('✓ Marked as Completed!').catch(() => {});

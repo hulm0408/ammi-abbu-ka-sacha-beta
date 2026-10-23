@@ -155,17 +155,27 @@ export function validateTrackingUrlForOrder(url, order, source = '') {
     return false;
   }
   // Must pass official Swiggy tracking validation
-  const allowProviderShort = source === 'SWIGGY_API';
+  const allowProviderShort = source === 'SWIGGY_API' || !source || source === 'BOSS_PROVIDED';
   if (!isOfficialSwiggyTrackingUrl(trimmed, { allowProviderShortLink: allowProviderShort })) {
     return false;
   }
   // Must not be fabricated by appending order ID
   const orderId = String(order?.swiggyOrderId || order?.pendingSwiggyOrderId || order?.id || '').trim();
-  if (isFabricatedTrackingUrl(trimmed, orderId)) {
+  if (source !== 'SWIGGY_API' && isFabricatedTrackingUrl(trimmed, orderId)) {
     return false;
   }
+  // For SWIGGY_API, ensure it's not a generic placeholder or invalid r.swiggy/${orderId}
+  if (source === 'SWIGGY_API') {
+    try {
+      const p = new URL(trimmed);
+      const h = p.hostname.toLowerCase();
+      if ((h === 'r.swiggy.com' || h.endsWith('.r.swiggy.com')) && orderId && (p.pathname === `/${orderId}` || p.pathname === `/${orderId}/`)) {
+        return false;
+      }
+    } catch {}
+  }
   // Must not be generic placeholder
-  if (trimmed === 'https://www.swiggy.com/orders' || trimmed === 'https://www.swiggy.com/track') {
+  if (trimmed === 'https://www.swiggy.com/orders' || trimmed === 'https://www.swiggy.com/track' || trimmed === 'https://www.swiggy.com/' || trimmed === 'https://www.swiggy.com') {
     return false;
   }
   // Cross-order contamination check: if URL contains an order_id query param, it must match this order
