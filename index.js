@@ -109,7 +109,8 @@ import {
   buildSignedOrderTrackUrl,
   dapiFetch,
   getCachedWafToken,
-  invalidateAccountOrderProfileCache
+  invalidateAccountOrderProfileCache,
+  getOfoResolutionFailureReason
 } from './swiggy-cart.js';
 import {
   extractForwardSenderInfo,
@@ -9591,12 +9592,29 @@ async function handleSendToBoss(ctx) {
   }
 
   if (addressLink && deliveryDetails.unresolvableShortLink) {
-    userWaitState[userId] = { action: 'waiting_address' };
+    // The share link is stored and still valid on our side — only ask for a NEW
+    // link when Swiggy actually told us the token is dead. A timeout / missing
+    // session must not make the customer paste the same link twice.
+    const reason = getOfoResolutionFailureReason(addressLink);
+    if (reason === 'EXPIRED') {
+      userWaitState[userId] = { action: 'waiting_address' };
+      return ctx.reply(
+        `🟠 <b>Address link expire ho gaya</b> — naya link ya Location bhejein 👇`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([[{ text: '🟠 📍 Address Link', callback_data: 'action_paste_address', style: 'danger' }]])
+        }
+      );
+    }
     return ctx.reply(
-      `🟠 <b>Address link expire ho gaya</b> — naya link ya Location bhejein 👇`,
+      `⏳ <b>Swiggy se address nahi mil paya abhi</b>\n\n` +
+      `<i>Aapka address link saved hai — dobara paste karne ki zaroorat nahi. Bas thodi der baad try karein.</i>`,
       {
         parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([[{ text: '🟠 📍 Address Link', callback_data: 'action_paste_address', style: 'danger' }]])
+        ...Markup.inlineKeyboard([[
+          { text: reason === 'NO_ACCOUNT' ? '↻ Retry' : '↻ Dobara koshish', callback_data: 'simple_retry_address', style: 'primary' },
+          { text: '🟠 📍 Naya Address Link', callback_data: 'action_paste_address', style: 'danger' }
+        ]])
       }
     );
   }
@@ -9946,6 +9964,13 @@ bot.action(SIMPLE_CHAT_CALLBACKS.newOrder, async (ctx) => {
   const screen = getUserScreen(userId, ctx.from);
   const sent = await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
   rememberUserCard(userId, sent);
+});
+
+// The address share link is still saved — retry the same links, no re-paste.
+bot.action('simple_retry_address', async (ctx) => {
+  await ctx.answerCbQuery('Dobara try kar raha hoon…').catch(() => {});
+  const started = await startSimpleOrderFromDraft(ctx, ctx.from.id);
+  if (!started) await renderUserCard(ctx, ctx.from.id, { notice: 'Abhi bhi nahi mila — thodi der baad try karein' }).catch(() => {});
 });
 
 bot.action(SIMPLE_CHAT_CALLBACKS.myOrder, async (ctx) => {
@@ -11598,6 +11623,9 @@ bot.action(/^user_resend_approved_qr_([A-Za-z0-9_-]+)$/, async (ctx) => {
 
 // Lightweight health check server + Swiggy tracking endpoints + 24x7 Keep-Alive (works on Render, Railway, etc.)
 const healthPort = Number(process.env.PORT || (process.env.RENDER ? 10000 : 0));
+// Health JSON must tell the truth: the old payload always said "online", so a
+// container whose bot never started still looked healthy to the host.
+const botRuntimeState = { launched: false, launchedAt: null, bootError: null };
 if (healthPort > 0) {
   const server = http.createServer(async (req, res) => {
     try {
@@ -11841,9 +11869,12 @@ pollTimer = setInterval(refresh, 8000);
     const liveAccounts = Object.values(getDb().config?.accounts || {}).filter(a => a?.isLoggedIn);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      status: 'ok',
-      bot: 'online',
+      status: botRuntimeState.launched ? 'ok' : 'starting',
+      bot: botRuntimeState.launched ? 'online' : 'not-running',
       build: 'telegram-button-order-flow',
+      launched: botRuntimeState.launched,
+      launchTime: botRuntimeState.launchedAt,
+      bootError: botRuntimeState.bootError,
       ipv4Shield: true,
       zeroSmsShield: true,
       zeroChromiumOrderFlow: true,
@@ -11957,7 +11988,16 @@ async function setupBotMenu() {
 
 // Launch bot with retry resilience for cloud container handover
 console.log('› Connecting to Telegram Bot API...');
+// A bad/revoked token will never fix itself — retrying makes no sense.
+export function isFatalTelegramAuthError(err) {
+  const text = `${err?.message || ''} ${err?.description || ''} ${err?.code || ''} ${err?.response?.error_code || ''}`;
+  return /\b(401|404)\b/.test(text) || /Unauthorized|Not Found|invalid token/i.test(text);
+}
+
+const BOOT_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 10000];
+
 async function startBotWithRetry() {
+  let launched = false;
   try {
     // Restore ALL saved `.json` accounts from Persistent Cloud Vault BEFORE serving orders!
     await hydrateAccountsFromCloudVault().catch(e => console.warn('CloudVault boot warning:', e.message));
@@ -11965,7 +12005,25 @@ async function startBotWithRetry() {
     // may have written a newer token into db.waf).
     wafPool.loadFromDb();
 
-    const me = await bot.telegram.getMe();
+    // If getMe() throws once (Telegram hiccup, DNS blip) the old code logged it and
+    // returned — the process then exited 0 and the platform marked the deploy
+    // healthy while the bot was dead. Retry, then fail loudly.
+    let me = null;
+    for (let attempt = 0; attempt <= BOOT_RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        me = await bot.telegram.getMe();
+        break;
+      } catch (err) {
+        if (isFatalTelegramAuthError(err)) {
+          console.error('× Telegram rejected BOT_TOKEN — check the token in the environment:', err.message);
+          process.exit(1);
+        }
+        if (attempt === BOOT_RETRY_DELAYS_MS.length) throw err;
+        const wait = BOOT_RETRY_DELAYS_MS[attempt];
+        console.warn(`◷ Telegram getMe failed (${err.message}) — retry ${attempt + 1}/${BOOT_RETRY_DELAYS_MS.length} in ${wait / 1000}s`);
+        await new Promise(r => setTimeout(r, wait));
+      }
+    }
     console.log(`⚙ Logged in as @${me.username} (${me.first_name}) [ID: ${me.id}]`);
 
     for (let attempt = 1; attempt <= 10; attempt++) {
@@ -11978,6 +12036,9 @@ async function startBotWithRetry() {
           prewarmBrowser().catch(e => console.log('Prewarm init note:', e.message));
         }
         await bot.launch({ dropPendingUpdates: true });
+        launched = true;
+        botRuntimeState.launched = true;
+        botRuntimeState.launchedAt = new Date().toISOString();
         try { await setupBotMenu(); } catch (e) { console.error('Menu setup error:', e.message); }
         resumeAutoTrackingForRecentOrders();
         break;
@@ -11992,7 +12053,15 @@ async function startBotWithRetry() {
       }
     }
   } catch (err) {
+    botRuntimeState.bootError = err?.message || String(err);
     console.error('× Failed to connect to Telegram:', err);
+  }
+
+  // Never exit 0 with a dead bot: a clean exit looks like a healthy deploy to the
+  // host and nothing ever restarts it. A non-zero exit triggers a container restart.
+  if (!launched) {
+    console.error('× Bot never started polling — exiting with code 1 so the host restarts the container.');
+    process.exit(1);
   }
 }
 
@@ -12160,5 +12229,7 @@ if (!process.env.TEST_MODE && !process.env.BOT_TEST_MODE) {
   startBotWithRetry();
 }
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+// `bot.stop()` throws when polling never started (bad token, boot failure) —
+// swallow it so shutdown stays clean instead of surfacing as an uncaught throw.
+process.once('SIGINT', () => { try { bot.stop('SIGINT'); } catch {} });
+process.once('SIGTERM', () => { try { bot.stop('SIGTERM'); } catch {} });

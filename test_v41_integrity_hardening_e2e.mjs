@@ -182,6 +182,67 @@ console.log('\n--- Scenario 6: no duplicate telegraf handlers ---');
     dupHears.length === 0);
 }
 
+// ---------------------------------------------------------------------------
+console.log('\n--- Scenario 7: a dead bot never exits 0 (host must restart it) ---');
+{
+  const { isFatalTelegramAuthError } = await import('./index.js');
+  check('a revoked token is treated as fatal (no pointless retries)',
+    isFatalTelegramAuthError({ response: { error_code: 401 }, description: 'Unauthorized' }));
+  check('an unknown bot id is treated as fatal',
+    isFatalTelegramAuthError({ response: { error_code: 404 }, description: 'Not Found' }));
+  check('a network blip is retryable, not fatal',
+    !isFatalTelegramAuthError({ code: 'ECONNRESET', message: 'socket disconnected' }));
+
+  const src = fs.readFileSync('index.js', 'utf8');
+  check('boot retries getMe before giving up',
+    /isFatalTelegramAuthError\(err\)/.test(src) &&
+    /retry \$\{attempt \+ 1\}/.test(src) &&
+    /await new Promise\(r => setTimeout\(r, wait\)\)/.test(src));
+  check('boot exits non-zero when polling never started',
+    /if \(!launched\) \{[\s\S]{0,200}?process\.exit\(1\);/.test(src));
+  check('a successful launch marks the bot as launched', /launched = true;/.test(src));
+  check('the health payload reports the real bot state instead of a hardcoded "online"',
+    /botRuntimeState\.launched \? 'online' : 'not-running'/.test(src) &&
+    /launched: botRuntimeState\.launched/.test(src) &&
+    /status: botRuntimeState\.launched \? 'ok' : 'starting'/.test(src));
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n--- Scenario 8: link classification + no pointless re-paste ---');
+{
+  const { isValidSwiggyCartUrl, isValidDeliveryAddressUrl } = await import('./index.js');
+  const { getOfoResolutionFailureReason } = await import('./swiggy-cart.js');
+  const carts = [
+    'https://swig.gy/gc/AbC123xyZ',
+    'https://www.swiggy.com/gc/Pl8Kk',
+    'https://www.swiggy.com/restaurants/pizza-hut-12345?group_cart_id=98765'
+  ];
+  const adds = [
+    'https://swiggy.onelink.me/JgkQ/9k2h4',
+    'https://www.swiggy.com/address/abc123',
+    'https://www.swiggy.com/ofo/address/1a2b3c',
+    'https://maps.app.goo.gl/Xk29aBcD7'
+  ];
+  check('every real cart link shape is accepted', carts.every((u) => isValidSwiggyCartUrl(u)));
+  check('every real address link shape is accepted', adds.every((u) => isValidDeliveryAddressUrl(u)));
+  check('a tracking link is never mistaken for a cart',
+    !isValidSwiggyCartUrl('https://r.swiggy.com/swiggy/ofo/track/251999888777666'));
+  check('an address link is never mistaken for a cart',
+    adds.every((u) => !isValidSwiggyCartUrl(u)));
+  check('a bare restaurant page is not sold as a cart (it has no cart to read)',
+    !isValidSwiggyCartUrl('https://www.swiggy.com/restaurants/pizza-hut-12345'));
+
+  check('an unvisited token reports no failure reason', getOfoResolutionFailureReason('https://swiggy.onelink.me/JgkQ/never-seen') === '');
+
+  const src = fs.readFileSync('index.js', 'utf8');
+  check('a dead address link is the ONLY case that asks for a new link',
+    /REASON|reason === 'EXPIRED'/.test(src) && /Address link expire ho gaya/.test(src));
+  check('a transient failure keeps the saved link and offers retry',
+    /dobara paste karne ki zaroorat nahi/.test(src) && /callback_data: 'simple_retry_address'/.test(src));
+  check('the retry button has a handler (no dead callback)',
+    /bot\.action\('simple_retry_address'/.test(src));
+}
+
 console.log('\n================================================================');
 const passed = results.filter((r) => r.ok).length;
 console.log(`📊 RESULT: ${passed}/${results.length} checks passed`);
