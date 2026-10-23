@@ -64,11 +64,32 @@ Cart and address data are never shortened or guessed to save messages — only t
   order goes to **both** (`CUSTOMER_AND_BOSS`) — the customer gets the confirm card, the Boss card shows the
   same bill.
 
+## 🦥 Boss Lazy Mode — one forward, one tap
+
+Ammi/Abbu text the Boss on his personal chat. The Boss forwards that message into the bot and from there
+he should not have to think. `lazy-order-pilot.js` makes that true:
+
+| Problem before | What happens now |
+| :--- | :--- |
+| **"Forward fetch failed"** | The forwarded text is stored on the order (`lastIntakeRawText`). Resolution is retried once automatically; if it still fails, the chat gets a **rescue card** — `↻ Retry fetch (same message)` — so nothing has to be forwarded again. Expired group carts still fail fast (no pointless retries). |
+| **"Bot never asked me to confirm"** | No payment QR is created without an explicit tap. The bill card now leads with a single coloured button: **`✅ Confirm · for Ammi · ₹248`** (`lazy_confirm_<orderId>`). Auto-QR only bypasses it when `config.autoConfirmOrders === true` is set deliberately. |
+| **"Best ID not selected"** | The automatic multi-probe pick is retried on transient/WAF errors, then a deterministic fallback ladder (`planAccountFallbacks`) walks every logged-in ID — 0-order → 0-active → the rest — and stops at the first live bill. Only a fully unusable vault returns to the Boss, on a card that says `BEST SWIGGY ID NAHI MILA` with `🔄 Best ID dobara try karo`. |
+| **"No tracking link"** | After payment the existing poller pushes Swiggy's own link; the card also carries **`🔗 Tracking abhi`** (`lazy_track_<orderId>`), which force-scans every ID and always answers with either the genuine Swiggy link or the real `swiggy.com/orders` page plus a retry promise. No bot-side `/track/<id>` link is ever invented. |
+
+Who the order is for is resolved from `config.familyMembers` (`setFamilyRole` → `Ammi`/`Abbu`), then the
+forwarded name, then nicknames in the message (`mummy`, `papa`, …). That label is used on the confirm
+button, the rescue card and the confirmation audit trail (`bossConfirmedAt`, `bossConfirmedBy`).
+
+**Boss's whole workflow is now:** long-press Ammi's message → Forward → bot → tap **✅ Confirm** → scan the
+QR. If Ammi sent the cart and the address as two messages, forward both — they pair into one order. If
+anything breaks, the card itself carries the retry button.
+
 ## 🧪 Tests
 
 ```bash
 npm test          # 131-scenario behavioural audit suite
 npm run test:guards  # URL-only link intake, single-card chat, auto bill summary → QR → real tracking, /start smoke + static undefined-reference guard
+npm run test:lazy    # Boss lazy mode: recipient detection, fetch retry, best-ID ladder, tracking fallback, confirm gate
 ```
 
 `test:guards` fails if any bot source references an identifier that is never declared (the class of bug behind

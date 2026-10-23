@@ -945,7 +945,15 @@ try {
   assert(exportData && exportData.tid === 'test_tid_12345', 'Session JSON exported accurately');
 
   permanentLogoutAccount(testAccKey);
-  assert(getDb().config.accounts[testAccKey].isLoggedIn === false, 'Permanent logout cleans credentials');
+  // Permanent logout now removes the account from the active dictionary and
+  // writes a tombstone (so a cloud-vault hydrate can never revive it). Assert
+  // the real contract instead of the old "entry stays but isLoggedIn=false".
+  const afterLogoutDb = getDb();
+  assert(
+    afterLogoutDb.config.accounts[testAccKey]?.isLoggedIn !== true &&
+      afterLogoutDb.config.deletedAccounts?.[testAccKey] === true,
+    'Permanent logout cleans credentials & tombstones the account'
+  );
   deleteAccount(testAccKey);
 
   // -------------------------------------------------------------
