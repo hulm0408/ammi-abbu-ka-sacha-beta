@@ -220,15 +220,41 @@ async function ensureOrphanVaultBranchExists(token) {
 
 export async function pullAccountsFromCloudVault() {
   const token = resolveVaultToken();
-  if (!token) return null;
 
   try {
-    const url = `https://api.github.com/repos/${VAULT_OWNER}/${VAULT_REPO}/contents/${VAULT_PATH}?ref=${encodeURIComponent(VAULT_BRANCH)}`;
-    const res = await fetch(url, { headers: ghHeaders(token), signal: AbortSignal.timeout(8000) });
-    if (!res.ok) return null;
-    const meta = await res.json();
-    if (!meta?.content) return null;
-    const raw = Buffer.from(meta.content.replace(/\s+/g, ''), 'base64').toString('utf8');
+    let raw = '';
+    if (token) {
+      const url = `https://api.github.com/repos/${VAULT_OWNER}/${VAULT_REPO}/contents/${VAULT_PATH}?ref=${encodeURIComponent(VAULT_BRANCH)}`;
+      const res = await fetch(url, { headers: ghHeaders(token), signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const meta = await res.json();
+        if (meta?.content) {
+          raw = Buffer.from(meta.content.replace(/\s+/g, ''), 'base64').toString('utf8');
+        }
+      }
+    }
+    // Fallback 1: Public raw github endpoint (works seamlessly when GITHUB_VAULT_TOKEN is unset)
+    if (!raw) {
+      const rawUrl = `https://raw.githubusercontent.com/${VAULT_OWNER}/${VAULT_REPO}/${VAULT_BRANCH}/${VAULT_PATH}`;
+      const rawRes = await fetch(rawUrl, { signal: AbortSignal.timeout(8000) }).catch(() => null);
+      if (rawRes && rawRes.ok) {
+        raw = await rawRes.text();
+      }
+    }
+    // Fallback 2: Local git branch if running inside a git checkout
+    if (!raw) {
+      try {
+        const { execSync } = await import('node:child_process');
+        for (const ref of ['upstream-ammi/bot-vault', 'origin/bot-vault', 'bot-vault']) {
+          try {
+            raw = execSync(`git show ${ref}:${VAULT_PATH}`, { maxBuffer: 10 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).toString('utf8');
+            if (raw && raw.length > 50) break;
+          } catch {}
+        }
+      } catch {}
+    }
+
+    if (!raw) return null;
     return decryptVaultPayloadText(raw);
   } catch (err) {
     console.warn('[CloudVault] Pull skipped:', err.message);

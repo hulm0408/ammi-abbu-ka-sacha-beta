@@ -2760,10 +2760,10 @@ const MOBILE_UA = 'Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 
 // actually returns the `ofo/address/<user>/<token>` deep link in production.
 async function expandShortUrl(rawUrl) {
   const first = await followShortChain(rawUrl, DESKTOP_UA);
-  if (first && /\/(?:ofo|gc|restaurants|menu)\b/i.test(first)) return first;
-  const mobile = await followShortChain(first || rawUrl, MOBILE_UA);
-  if (mobile && /\/(?:ofo|gc|restaurants|menu)\b/i.test(mobile)) return mobile;
-  return mobile || first || rawUrl;
+  if (first && (/\/(?:ofo\/address|gc)\b/i.test(first) || /[?&](?:af_dp|deep_link_value)=/i.test(first))) return first;
+  const mobile = await followShortChain(rawUrl, MOBILE_UA);
+  if (mobile && (/\/(?:ofo\/address|gc)\b/i.test(mobile) || /[?&](?:af_dp|deep_link_value)=/i.test(mobile))) return mobile;
+  return first || mobile || rawUrl;
 }
 
 async function followShortChain(startUrl, userAgent) {
@@ -2787,6 +2787,10 @@ async function followShortChain(startUrl, userAgent) {
           ? loc
           : new URL(loc, current).toString();
         if (current.startsWith('swiggy://') || current.startsWith('intent://')) break;
+        // If current already carries an OFO address, Group Cart, or deep link param, stop following!
+        if (/\/(?:ofo\/address|gc)\/([^\/\s?#]+)/i.test(current) || /[?&](?:af_dp|deep_link_value)=/i.test(current)) {
+          break;
+        }
         continue;
       }
       // No Location header — try following redirects automatically (Swiggy may set
@@ -2796,6 +2800,21 @@ async function followShortChain(startUrl, userAgent) {
       if (res.status === 200 && res.headers.get('content-type')?.includes('text/html')) {
         try {
           const html = await res.text();
+          // 0. Extract app_link or store_link variable from AppsFlyer landing script
+          const appLinkMatch = html.match(/(?:app_link|store_link|referrer)\s*=\s*['"]([^'"]+)['"]/i);
+          if (appLinkMatch) {
+            let unescaped = appLinkMatch[1].replace(/\\u003d/gi, '=').replace(/\\u0026/gi, '&').replace(/\\u002f/gi, '/');
+            try { unescaped = decodeURIComponent(unescaped); } catch {}
+            const innerOfo = unescaped.match(/(?:https?:\/\/www\.swiggy\.com)?\/ofo\/address\/[^\/\s?#]+\/[^\/\s?#&]+/i) ||
+                             unescaped.match(/(?:https?:\/\/[^\s"'<>]*swiggy\.com)?\/gc\/[0-9]+\/[^\/\s?#]+-[0-9]+/i) ||
+                             unescaped.match(/swiggy:\/\/[^\s"'<>]+/i);
+            if (innerOfo) {
+              current = innerOfo[0].startsWith('http') || innerOfo[0].startsWith('swiggy://')
+                ? innerOfo[0]
+                : 'https://www.swiggy.com' + innerOfo[0];
+              break;
+            }
+          }
           // 1. <meta http-equiv="refresh" content="0;url=...">
           const metaMatch = html.match(/<meta[^>]+http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"']+)["']/i);
           if (metaMatch) {
@@ -2811,8 +2830,9 @@ async function followShortChain(startUrl, userAgent) {
             if (/^https?:\/\//i.test(decoded) || /^swiggy:\/\//i.test(decoded)) { current = decoded; break; }
             if (/^https?:\/\//i.test(jsLoc[1]) || /^swiggy:\/\//i.test(jsLoc[1])) { current = jsLoc[1]; break; }
           }
-          // 3. Any swiggy:// or https swiggy link in HTML
-          const anySwiggy = html.match(/https?:\/\/[^"'\s<>]*swiggy[^"'\s<>]*/i) || html.match(/swiggy:\/\/[^"'\s<>]*/i);
+          // 3. Any genuine swiggy food/ofo/gc link in HTML (NEVER analytics.swiggy.com)
+          const anySwiggy = html.match(/https?:\/\/(?:www\.)?swiggy\.com\/(?:ofo|gc|restaurants|menu)[^"'\s<>]*/i) ||
+                            html.match(/swiggy:\/\/(?:webviewV2|gc|ofo)[^"'\s<>]*/i);
           if (anySwiggy) { current = anySwiggy[0]; break; }
         } catch {}
       }
@@ -2905,7 +2925,7 @@ export async function resolveSwiggyLink(input) {
     ofoToken = ofoDirect[2];
   }
   const onelinkAddrMatch = combinedForMatch.match(/onelink\.me\/[a-zA-Z0-9]+\/([a-zA-Z0-9_\-]+)/i);
-  const isOneLinkShort = Boolean(onelinkAddrMatch && !ofoDirect);
+  const isOneLinkShort = Boolean(onelinkAddrMatch && (!ofoToken || ofoToken === onelinkAddrMatch[1]));
   if (onelinkAddrMatch && !ofoToken) {
     ofoToken = onelinkAddrMatch[1];
   }
@@ -2987,7 +3007,7 @@ export async function resolveSwiggyLink(input) {
       // Sending it to social/getAddress always failed, and the "invalid token"
       // answer was then shown to the customer as "your link expired" — even
       // though the link had never been opened. Classify it honestly instead.
-      const tokenIsUnexpandedShortId = Boolean(isOneLinkShort && !ofoDirect);
+      const tokenIsUnexpandedShortId = Boolean(onelinkAddrMatch && ofoToken === onelinkAddrMatch[1]);
       // Still worth one attempt (some shares do carry a usable id), but a failure
       // here can never be reported as "expired": we never saw the real token.
       const socialAddr = await resolveSharedOfoAddress(ofoToken, ofoUser);
