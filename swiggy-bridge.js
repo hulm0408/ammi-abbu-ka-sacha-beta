@@ -864,6 +864,12 @@ function createSwiggyHttpAuthSession(phone, targetAcc = '', targetAccName = null
 }
 
 function buildAuthRequestHeaders(session, { referer = 'https://www.swiggy.com/auth', useAndroidUa = false, extra = {} } = {}) {
+  try { wafPool.loadFromDb?.(); } catch {}
+  const poolWafToken = wafPool.getTokenSync?.() || '';
+  if (poolWafToken && !session.cookieMap.has('aws-waf-token')) {
+    session.cookieMap.set('aws-waf-token', poolWafToken);
+  }
+
   const cookieHeader = serializeCookieMap(session.cookieMap);
   const dev = session.deviceProfile || buildAntiBotDeviceProfile(session.phone || '');
   if (useAndroidUa || session.transportMode === 'android') {
@@ -872,18 +878,20 @@ function buildAuthRequestHeaders(session, { referer = 'https://www.swiggy.com/au
     return {
       ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
       'User-Agent': 'Swiggy-Android',
-      'Accept': 'application/json, text/plain, */*',
+      'Accept': 'application/json',
       'Content-Type': 'application/json',
-      'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8',
-      'Origin': 'https://www.swiggy.com',
-      'Referer': referer,
-      'app-version': '4.67.0',
-      'version-code': '1365',
+      'platform': 'swiggy-android',
+      'agent-type': 'Swiggy-Android',
+      'analyticsPlatform': 'an',
+      'version-code': '1800',
+      'app-version': '4.99.0',
       'os-version': dev.osVersion || '14',
       'deviceId': dev.deviceId,
+      'device-id': dev.deviceId,
       'swuid': dev.swuid,
       ...(sidVal ? { 'sid': sidVal } : {}),
       ...(tidVal ? { 'tid': tidVal } : {}),
+      ...(poolWafToken ? { 'aws-waf-token': poolWafToken } : {}),
       ...extra
     };
   }
@@ -904,6 +912,7 @@ function buildAuthRequestHeaders(session, { referer = 'https://www.swiggy.com/au
     'Sec-Fetch-Dest': 'empty',
     'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Site': 'same-origin',
+    ...(poolWafToken ? { 'aws-waf-token': poolWafToken } : {}),
     ...extra
   };
 }
@@ -926,8 +935,9 @@ function isCsrfMismatchResponse(status, rawText = '', data = null) {
   return /csrf|invalid token|forbidden/.test(combined) && !isAwsWafChallengeResponse(status, rawText);
 }
 
-// Fast (~200-350ms, 0MB RAM, zero-Chromium) Swiggy `_csrf` + `_guest_tid` + `_sid` bootstrap!
+// Fast (~200-350ms, 0MB RAM, zero-Chromium) Swiggy `_csrfToken` + `_guest_tid` + `_sid` bootstrap!
 async function bootstrapSwiggyAuthJar(session, { forceFresh = false } = {}) {
+  try { wafPool.loadFromDb?.(); } catch {}
   if (!forceFresh && session.csrfToken && (session.cookieMap.has('_csrf') || session.cookieMap.has('_sid') || session.cookieMap.has('_guest_tid'))) {
     return session.csrfToken;
   }
@@ -936,9 +946,10 @@ async function bootstrapSwiggyAuthJar(session, { forceFresh = false } = {}) {
     session.cookieMap.delete('_csrf');
   }
 
-  // Probe 1: Fast WebView HTML route `/web-cart-add-address` (sets `_csrf` cookie + embeds `window._csrf` with zero WAF)
+  const dev = session.deviceProfile || buildAntiBotDeviceProfile(session.phone || '');
+
+  // Probe 1: Fast WebView HTML route `/web-cart-add-address` (sets `_csrf` cookie + embeds `window._csrfToken` with zero WAF)
   try {
-    const dev = session.deviceProfile || buildAntiBotDeviceProfile(session.phone || '');
     const res = await fetch('https://www.swiggy.com/web-cart-add-address', {
       method: 'GET',
       headers: {
@@ -955,8 +966,33 @@ async function bootstrapSwiggyAuthJar(session, { forceFresh = false } = {}) {
     const html = await res.text().catch(() => '');
     let parsedJson = null;
     try { parsedJson = JSON.parse(html); } catch {}
-    const csrfMatch = html.match(/window\._csrf\s*=\s*["']([^"']+)["']/) || html.match(/csrfToken["']?\s*:\s*["']([^"']+)["']/);
+    const csrfMatch = html.match(/window\._csrf(?:Token)?\s*=\s*["']([^"']+)["']/i) || html.match(/csrfToken["']?\s*:\s*["']([^"']+)["']/i);
     const extracted = (csrfMatch && csrfMatch[1]) || parsedJson?.csrfToken || '';
+    if (extracted) {
+      session.csrfToken = extracted;
+      return session.csrfToken;
+    }
+  } catch {}
+
+  // Probe 1b: Primary Swiggy Auth page `/auth` (embeds `window._csrfToken` + sets full web auth cookies)
+  try {
+    const res = await fetch('https://www.swiggy.com/auth', {
+      method: 'GET',
+      headers: {
+        'Cookie': serializeCookieMap(session.cookieMap),
+        'User-Agent': dev.ua,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8',
+        'Sec-Ch-Ua': dev.secChUa,
+        'Sec-Ch-Ua-Mobile': '?1',
+        'Sec-Ch-Ua-Platform': '"Android"'
+      },
+      signal: AbortSignal.timeout(3500)
+    });
+    applySetCookiesToMap(session.cookieMap, getResponseSetCookies(res));
+    const html = await res.text().catch(() => '');
+    const csrfMatch = html.match(/window\._csrf(?:Token)?\s*=\s*["']([^"']+)["']/i) || html.match(/csrfToken["']?\s*:\s*["']([^"']+)["']/i);
+    const extracted = (csrfMatch && csrfMatch[1]) || '';
     if (extracted) {
       session.csrfToken = extracted;
       return session.csrfToken;
@@ -1037,7 +1073,18 @@ async function postSwiggyAuthJson(session, endpointUrl, payload = {}, { timeoutM
     out = await sendOnce(true);
   }
 
-  // Auto-recover 3: Optional Stealth Browser escalation ONLY if still WAF-challenged AND local Chromium exists!
+  // Auto-recover 3: If STILL WAF-challenged and stealth browser is available, refresh WAF token and retry!
+  if (allowBrowserEscalation && isAwsWafChallengeResponse(out.status, out.rawText, out.headers) && canUseStealthBrowser()) {
+    try {
+      const freshWaf = await getLiveSwiggyWafToken(true);
+      if (freshWaf) {
+        session.cookieMap.set('aws-waf-token', freshWaf);
+        out = await sendOnce(session.transportMode === 'android');
+      }
+    } catch {}
+  }
+
+  // Auto-recover 4: Optional Stealth Browser escalation ONLY if still WAF-challenged AND local Chromium exists!
   if (allowBrowserEscalation && isAwsWafChallengeResponse(out.status, out.rawText, out.headers) && canUseStealthBrowser()) {
     try {
       if (!session.page || !session.browser?.connected) {
@@ -1050,10 +1097,13 @@ async function postSwiggyAuthJson(session, endpointUrl, payload = {}, { timeoutM
       }
       const pageCookies = await session.page.cookies().catch(() => []);
       const wafToken = pageCookies.find(c => c.name === 'aws-waf-token')?.value || '';
+      if (wafToken) {
+        try { wafPool.seedToken(wafToken, { source: 'chromium' }); } catch {}
+      }
       const relPath = endpointUrl.replace(/^https?:\/\/www\.swiggy\.com/i, '');
       const browserOut = await safeEvaluateAuthOnce(session.page, async (targetPath, bodyInput, waf) => {
         try {
-          const csrf = (typeof window !== 'undefined' && window._csrf) ? window._csrf : '';
+          const csrf = (typeof window !== 'undefined' && (window._csrfToken || window._csrf)) ? (window._csrfToken || window._csrf) : '';
           const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
           if (waf) headers['aws-waf-token'] = waf;
           const finalPayload = { ...bodyInput, ...(csrf && bodyInput._csrf === undefined ? { _csrf: csrf } : {}) };
@@ -1601,7 +1651,7 @@ async function resolveDeleteCookieJarAndCsrf(acc, cleanPhone = '', targetAcc = '
 }
 
 async function ensureDeleteCsrfToken(cookieMap, currentCsrf = '', deviceProfile = null) {
-  if (currentCsrf && cookieMap.has('_csrf')) return currentCsrf;
+  if (currentCsrf && (cookieMap.has('_csrf') || currentCsrf.length > 20)) return currentCsrf;
   const dev = deviceProfile || buildAntiBotDeviceProfile('');
 
   try {
@@ -1618,7 +1668,24 @@ async function ensureDeleteCsrfToken(cookieMap, currentCsrf = '', deviceProfile 
     });
     applySetCookiesToMap(cookieMap, getResponseSetCookies(res));
     const html = await res.text().catch(() => '');
-    const m = html.match(/window\._csrf\s*=\s*["']([^"']+)["']/) || html.match(/csrfToken["']?\s*:\s*["']([^"']+)["']/);
+    const m = html.match(/window\._csrf(?:Token)?\s*=\s*["']([^"']+)["']/i) || html.match(/csrfToken["']?\s*:\s*["']([^"']+)["']/i);
+    if (m && m[1]) return m[1];
+  } catch {}
+
+  try {
+    const res = await fetch('https://www.swiggy.com/auth', {
+      method: 'GET',
+      headers: {
+        'Cookie': serializeCookieMap(cookieMap),
+        'User-Agent': dev.ua,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8'
+      },
+      signal: AbortSignal.timeout(3000)
+    });
+    applySetCookiesToMap(cookieMap, getResponseSetCookies(res));
+    const html = await res.text().catch(() => '');
+    const m = html.match(/window\._csrf(?:Token)?\s*=\s*["']([^"']+)["']/i) || html.match(/csrfToken["']?\s*:\s*["']([^"']+)["']/i);
     if (m && m[1]) return m[1];
   } catch {}
 
