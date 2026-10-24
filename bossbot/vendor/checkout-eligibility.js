@@ -52,3 +52,32 @@ export function freeCashStatus(cart = {}, claim = null) {
   }
   return 'Swiggy cart ne eligible Free Cash confirm nahi kiya. Claim/slot, minimum spend aur account eligibility check karein; extra discount assume nahi kiya gaya.';
 }
+
+// Wallet credit is not proof of a Night campaign reward. Always report the
+// booking and cart reward separately, even when another wallet discount exists.
+export function nightOfferDiagnostic(cart = {}, claim = null) {
+  const slot = claim?.lateNight;
+  const reward = money(cart.campaignFreeCash);
+  const wallet = money(cart.walletSplitPayAmount);
+  const state = slot?.slotState || 'UNVERIFIED';
+  let message;
+  if (state === 'ACTIVE_NOW') {
+    message = Number(slot.offerValue || claim?.offerValue || 1) !== 1
+      ? 'Night mein coupon option selected hai, ₹50 Free Cash option nahi.'
+      : reward > 0
+        ? `Night booking active; cart reward ₹${reward}. Reward ka Night campaign attribution abhi verify nahi hua.`
+        : 'Night booking active, lekin live Swiggy cart mein campaign reward ₹0 hai; discount confirmed nahi hai.';
+  } else if (state === 'CUTOFF_PASSED_LOCKED_NEXT_14D') {
+    message = 'Night booking cutoff ke baad hui; current night ka discount confirmed nahi hai.';
+  } else if (state === 'LOCKED_FOR_TODAY') {
+    message = 'Night booking confirmed; redeem slot abhi active nahi hai.';
+  } else if (state === 'SLOT_ENDED') {
+    message = 'Night redeem slot khatam ho chuka hai.';
+  } else {
+    message = 'Current Night booking/time Swiggy se verify nahi hua; Night offer applied nahi maana gaya.';
+  }
+  if (wallet > 0) message += ` Wallet ₹${wallet} alag hai; ise Night reward nahi maana gaya.`;
+  return { state, campaignReward: reward, wallet, message,
+    bookedAt: slot?.bookedAt || null, cutoffMs: slot?.cutoffMs ?? null,
+    slotOpenMs: slot?.slotOpenMs ?? null, slotEndMs: slot?.slotEndMs ?? null };
+}

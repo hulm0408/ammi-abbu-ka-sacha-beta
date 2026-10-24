@@ -1,3 +1,4 @@
+import { orderDiscountBreakdown } from './bill-discounts.js';
 import './network-shield.js';
 import { createIpv4TelegramAgent, installBulletproofTelegramTransport } from './network-shield.js';
 import { installBossMirror } from './boss-mirror.js';
@@ -811,6 +812,7 @@ export function formatUserOrderCardText(order, isBossView = false) {
     const freeCash = Number(order.freeCashApplied || 0);
     if (freeCash > 0) billLines.push(`Extra Discount ( Free Cash ): −₹${freeCash}`);
     else if (order.freeCashDiagnostics) billLines.push(`Free Cash: ${esc(order.freeCashDiagnostics)}`);
+    if (order.nightOfferDiagnostic?.message) billLines.push(`Night offer: ${esc(order.nightOfferDiagnostic.message)}`);
 
     const oneFee = Number(order.swiggyOneMembershipFee || 0);
     if (oneFee > 0) billLines.push(`Swiggy One Lite Membership: +₹${oneFee}`);
@@ -965,7 +967,7 @@ export function formatUserOrderCard(order) {
 }
 
 // Format Detailed Account Review Card for Boss (Address History, Order Items, Coupons, Final Charges & Payment)
-function formatBossAccountReviewCard(order) {
+export function formatBossAccountReviewCard(order) {
   const db = getDb();
   const acc = db.config?.accounts?.[order.selectedAccount];
   const accPhone = order.orderAccount || acc?.phone || acc?.mobile || 'Selected Account';
@@ -1022,19 +1024,22 @@ function formatBossAccountReviewCard(order) {
     const topCoupons = order.availableCoupons.slice(0, 5).map(c => c.code).join(', ');
     offersBody += `${field('Available on Account', `<code>${esc(topCoupons)}</code>`)}\n`;
   }
+  if (order.nightOfferDiagnostic?.message) offersBody += `${esc(order.nightOfferDiagnostic.message)}\n`;
   text += section('◇ Coupon & offers', offersBody);
 
   // ---------- 4. FINAL BILL (table inside border) ----------
+  const billDiscounts = orderDiscountBreakdown(order);
   const billRows = [['Final Bill', '']];
   billRows.push(['Items Total', `₹${order.subtotal || 0}`]);
-  if (order.tradeDiscountTotal > 0) billRows.push(['Restaurant Offer Discount', `−₹${order.tradeDiscountTotal}`]);
+  if (billDiscounts.merchant > 0) billRows.push(['Restaurant Offer Discount', `−₹${billDiscounts.merchant}`]);
   if (order.couponCode && order.discountAmount > 0) {
     billRows.push([`Coupon ${esc(order.couponCode)}`, `−₹${order.discountAmount}`]);
   }
   if (Number(order.swiggyOneMembershipFee || 0) > 0) {
     billRows.push(['Swiggy One Lite Membership', `+₹${order.swiggyOneMembershipFee}`]);
   }
-  if (order.freeCashApplied > 0) billRows.push(['Swiggy Money / Free Cash', `−₹${order.freeCashApplied}`]);
+  if (billDiscounts.campaign > 0) billRows.push(['Campaign / Reward Discount', `−₹${billDiscounts.campaign}`]);
+  if (billDiscounts.wallet > 0) billRows.push(['Swiggy Money Wallet', `−₹${billDiscounts.wallet}`]);
   const revSavedDel = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
   const revIsFreeDel = Number(order.deliveryFee || 0) <= 0 && (order.swiggyOneApplied || revSavedDel > 0 || Number(order.swiggyOneMembershipFee || 0) > 0 || order.freeDelivery);
   if (revIsFreeDel) {
@@ -1046,8 +1051,8 @@ function formatBossAccountReviewCard(order) {
   }
   if (order.packingCharges > 0) billRows.push(['Packing Charges', `₹${order.packingCharges}`]);
   if (order.taxesAndCharges > 0) billRows.push(['GST & Other Charges', `₹${order.taxesAndCharges}`]);
-  if (order.totalSavings > 0) billRows.push(['Total Savings', `₹${order.totalSavings}`]);
-  billRows.push([`<b>Final Total</b>`, `<b>₹${order.finalPayable || order.subtotal || 0}</b>`]);
+  if (billDiscounts.savings > 0) billRows.push(['Total Savings', `₹${billDiscounts.savings}`]);
+  billRows.push([`<b>Final Total</b>`, `<b>₹${order.finalPayable ?? order.subtotal ?? 0}</b>`]);
   text += section('₹ Final bill', table(billRows));
 
   // ---------- 5. OFFICIAL SWIGGY PAYMENT ----------
