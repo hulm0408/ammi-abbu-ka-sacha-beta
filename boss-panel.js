@@ -1,3 +1,4 @@
+import { orderDiscountBreakdown } from './bill-discounts.js';
 import { Telegraf, Markup } from 'telegraf';
 import { getDb, saveDb, isBoss, canTransitionOrder } from './store.js';
 import {
@@ -52,10 +53,11 @@ function billSection(order) {
     return section('Final Bill', sub('Calculating max coupon and final bill — items not loaded yet'));
   }
   const subtotal = Number(order.subtotal || order.itemTotal || 0);
-  const tradeDiscountTotal = Number(order.tradeDiscountTotal || 0);
+  const discounts = orderDiscountBreakdown(order);
+  const tradeDiscountTotal = discounts.merchant;
   const discountAmount = Number(order.discountAmount || 0);
   const swiggyOneMembershipFee = Number(order.swiggyOneMembershipFee || 0);
-  const freeCashApplied = Number(order.freeCashApplied || 0);
+  const freeCashApplied = discounts.freeCash;
   const deliveryFee = Number(order.deliveryFee || 0);
   const packingCharges = Number(order.packingCharges || 0);
   const taxesAndCharges = Number(order.taxesAndCharges || 0);
@@ -64,12 +66,10 @@ function billSection(order) {
   // Correct mathematically consistent total
   const computedPayable = Math.max(0, Math.round((subtotal - tradeDiscountTotal - discountAmount - freeCashApplied + swiggyOneMembershipFee + deliveryFee + packingCharges + taxesAndCharges) * 100) / 100);
 
-  let finalPayable = Number(order.finalPayable);
-  const totalDiscounts = tradeDiscountTotal + discountAmount + freeCashApplied;
-  if (!finalPayable || (totalDiscounts > 0 && finalPayable >= subtotal && computedPayable < finalPayable)) {
-    finalPayable = computedPayable;
-    order.finalPayable = finalPayable;
-  }
+  // Rendering must never mutate/reprice a Swiggy-confirmed bill.
+  const hasTotal = order.finalPayable != null && Number.isFinite(Number(order.finalPayable)) && Number(order.finalPayable) >= 0;
+  const finalPayable = hasTotal ? Number(order.finalPayable) : computedPayable;
+  const totalDiscounts = discounts.total;
 
   const rows = [['Final Bill', '']];
   rows.push(['Items Total', `₹${subtotal}`]);
@@ -80,7 +80,8 @@ function billSection(order) {
   if (swiggyOneMembershipFee > 0) {
     rows.push(['Swiggy One Lite Membership', `+₹${swiggyOneMembershipFee}`]);
   }
-  if (freeCashApplied > 0) rows.push(['Swiggy Money / Free Cash', `−₹${freeCashApplied}`]);
+  if (discounts.campaign > 0) rows.push(['Campaign / Reward Discount', `−₹${discounts.campaign}`]);
+  if (discounts.wallet > 0) rows.push(['Swiggy Money Wallet', `−₹${discounts.wallet}`]);
   const isFreeDel =
     deliveryFee <= 0 &&
     (order.swiggyOneApplied || savedDel > 0 || swiggyOneMembershipFee > 0 || order.freeDelivery);
@@ -94,7 +95,7 @@ function billSection(order) {
   if (packingCharges > 0) rows.push(['Packing Charges', `₹${packingCharges}`]);
   if (taxesAndCharges > 0) rows.push(['GST & Other Charges', `₹${taxesAndCharges}`]);
   const calcSavings = Math.round((totalDiscounts + (isFreeDel && savedDel > 0 ? savedDel : 0)) * 100) / 100;
-  const totalSavings = Math.max(Number(order.totalSavings || 0), calcSavings);
+  const totalSavings = calcSavings;
   if (totalSavings > 0) rows.push(['Total Savings', `₹${totalSavings}`]);
   rows.push([`<b>Final Total</b>`, `<b>₹${finalPayable}</b>`]);
   rows.push(['Payment Options', 'UPI QR, Card, Wallet via Swiggy']);
@@ -417,7 +418,12 @@ export function buildBossOrderCard(order, db = getDb()) {
   if (order.autoOptimizeError) {
     offerLine = `\n<b>Auto offers:</b> <i>${esc(order.autoOptimizeError)}</i>`;
   } else if (order.autoOptimized) {
-    offerLine = `\n<b>Auto offers:</b> ✓ Best account + max coupon locked${order.orderAccount ? ` (${esc(String(order.orderAccount))})` : ''}`;
+    offerLine = `\n<b>Auto offers:</b> Account/coupon scan complete; Night credit checked separately${order.orderAccount ? ` (${esc(String(order.orderAccount))})` : ''}`;
+  }
+  if (order.nightOfferDiagnostic?.message) {
+    text += section('Night offer check', esc(order.nightOfferDiagnostic.message));
+  } else if (order.eventsClaimSummary?.lateNightMsg) {
+    text += section('Night offer check', esc(order.eventsClaimSummary.lateNightMsg));
   }
   text += section('Cart & Delivery', [
     `<b>Cart:</b> ${order.cart ? `<a href="${esc(order.cart)}">Open cart link</a>` : '<i>Not added</i>'}`,

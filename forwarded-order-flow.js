@@ -1255,6 +1255,9 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     if (Number(order.walletSplitPayAmount || 0) > 0) {
       offerNotes.push(`₹ <b>Wallet Split-Pay Ready:</b> ₹${order.walletSplitPayAmount} Swiggy Money auto-deducts from UPI QR!`);
     }
+    if (order.nightOfferDiagnostic?.message) {
+      offerNotes.push(`i <i>${escapeHtml(order.nightOfferDiagnostic.message)}</i>`);
+    }
     if (order.freeCashDiagnostics && !Number(order.freeCashApplied || 0)) {
       offerNotes.push(`i <i>${escapeHtml(order.freeCashDiagnostics)}</i>`);
     }
@@ -3082,11 +3085,9 @@ export function registerForwardedOrderHandlers(bot, {
     }
     await ctx.answerCbQuery('▣ Re-claiming Free Cash & testing all Max Coupons...').catch(() => {});
     try {
-      const { claimSwiggyBreakfastAndLateNightOffers } = await import('./swiggy-bridge.js');
-      await claimSwiggyBreakfastAndLateNightOffers(acc, { force: true }).catch(() => null);
       order.couponCode = null;
       await withSwiggyAccountLock(accKey, async () => {
-        const res = await syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false });
+        const res = await syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false, forceEventRefresh: true });
         if (!res?.success) throw new Error(res?.error || 'Re-scan sync failed');
       });
       order.cardStage = 'BILL_READY';

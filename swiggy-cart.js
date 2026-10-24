@@ -1,3 +1,5 @@
+import { checkoutCooldownResponse, observeCheckoutResponse, checkoutFailureResult } from './checkout-network-health.js';
+import { orderDiscountBreakdown } from './bill-discounts.js';
 import { normalizeTrackingText, expandTrackingCandidates, trackingQueryMatchesOrder } from './tracking-link-utils.js';
 import './network-shield.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -8,7 +10,7 @@ import QRCode from 'qrcode';
 import { getDb, saveDb, updateAccount } from './store.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
-import { eligibleWalletBalance, verifiedOrderHistory, freeCashStatus } from './checkout-eligibility.js';
+import { eligibleWalletBalance, verifiedOrderHistory, freeCashStatus, nightOfferDiagnostic } from './checkout-eligibility.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken, isAccountEventOfferActiveNow, getReusableEventOffers } from './swiggy-bridge.js';
 
 const CHROME_PATH = findChromePath();
@@ -784,6 +786,8 @@ export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = fals
 // Automatically executes via Web DAPI when `_session_tid` works, or seamlessly via Native Android `chkout`!
 // ---------------------------------------------------------------------------
 async function androidCheckoutCartCall(accountOrCookies, endpointPath, { method = 'GET', body = undefined, lat = '26.8658609', lng = '80.9307755', timeoutMs = 9000 } = {}) {
+  const cooldown = checkoutCooldownResponse();
+  if (cooldown) return cooldown;
   const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
   const auth = await getSwiggySessionAuth(accountOrCookies);
   if (!auth?.jwtTid && !auth?.token) {
@@ -804,6 +808,11 @@ async function androidCheckoutCartCall(accountOrCookies, endpointPath, { method 
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     signal: AbortSignal.timeout(timeoutMs)
   });
+  const networkDiagnostic = observeCheckoutResponse(res);
+  if (networkDiagnostic) {
+    // Do not parse/store a challenge body or fall through to a different endpoint.
+    return { ok: false, status: res.status, json: null, networkDiagnostic };
+  }
   const json = await res.json().catch(() => null);
   if (acc && json?.tid && String(json.tid).includes('.')) {
     acc.jwtTid = json.tid;
@@ -828,6 +837,7 @@ async function androidCheckoutCartCall(accountOrCookies, endpointPath, { method 
 export async function swiggyCartGet(accountOrCookies, { lat = '26.8658609', lng = '80.9307755', timeoutMs = 9000 } = {}) {
   // Fast Path 1 (~220ms ZERO-CHROMIUM pure HTTP): Native Android `chkout.swiggy.com/api/v2/cart/client`!
   const aRes = await androidCheckoutCartCall(accountOrCookies, 'client', { method: 'GET', lat, lng, timeoutMs }).catch(() => null);
+  if (aRes?.networkDiagnostic) return aRes;
   if (aRes?.json) {
     if (aRes.json.statusCode === 0) return aRes;
     if (/session expired|login again/i.test(String(aRes.json.statusMessage || ''))) return aRes;
@@ -869,6 +879,7 @@ export async function swiggyCartUpdate(accountOrCookies, cartPayload, { lat = ''
       subscriptionItems: Array.isArray(cartPayload.subscriptionItems) ? cartPayload.subscriptionItems : []
     }
   }).catch(() => null);
+  if (aRes?.networkDiagnostic) return aRes;
   if (aRes?.json) {
     if (aRes.json.tid && String(aRes.json.tid).includes('.') && typeof accountOrCookies === 'object' && accountOrCookies) {
       accountOrCookies.jwtTid = aRes.json.tid;
@@ -903,6 +914,7 @@ export async function swiggyCartUpdate(accountOrCookies, cartPayload, { lat = ''
 
 export async function swiggyCartFlush(accountOrCookies, { lat = '26.8658609', lng = '80.9307755', timeoutMs = 8000 } = {}) {
   const aRes = await androidCheckoutCartCall(accountOrCookies, 'client/flush', { method: 'DELETE', lat, lng, timeoutMs }).catch(() => null);
+  if (aRes?.networkDiagnostic) return aRes;
   if (aRes?.json?.statusCode === 0) return aRes;
   const acc = (typeof accountOrCookies === 'object' && !Array.isArray(accountOrCookies)) ? accountOrCookies : null;
   const cleanCookies = cleanSwiggyCookieString(accountOrCookies, acc);
@@ -3156,24 +3168,22 @@ export function applyMaxOfferToOrder(order) {
   order.subtotal = Math.round(subtotal * 100) / 100;
   order.itemTotal = order.itemTotal || order.subtotal;
 
-  const discount = Number(order.discountAmount || 0);
-  const tradeDisc = Number(order.tradeDiscountTotal || 0);
-  const freeCash = Number(order.freeCashApplied || 0);
+  const discounts = orderDiscountBreakdown(order);
+  const discount = discounts.coupon;
+  const tradeDisc = discounts.merchant;
+  const freeCash = discounts.freeCash;
   const swiggyOneFee = Number(order.swiggyOneMembershipFee || 0);
   const delivery = Number(order.deliveryFee || 0);
   const packing = Number(order.packingCharges || 0);
   const taxes = Number(order.taxesAndCharges || 0);
-  const freeDelSaved = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
-
   if (!order.totalSavings || !order.swiggyVerified) {
-    order.totalSavings = Math.round((freeDelSaved + discount + tradeDisc + freeCash) * 100) / 100;
+    order.totalSavings = discounts.savings;
   }
 
-  // If Swiggy checkout returned an authoritative `order_total`, keep it intact unless un-discounted
-  const totalDeductions = discount + tradeDisc + freeCash;
+  // Preserve any authoritative Swiggy total, including zero or fees above subtotal.
   const calculatedPayable = Math.max(
-    1,
-    Math.round(order.subtotal - discount - tradeDisc - freeCash + swiggyOneFee + delivery + (taxes > 0 ? taxes : packing))
+    0,
+    Math.round(order.subtotal - discount - tradeDisc - freeCash + swiggyOneFee + delivery + packing + taxes)
   );
 
   const hasAuthoritativeVerifiedTotal = Boolean(
@@ -3181,8 +3191,7 @@ export function applyMaxOfferToOrder(order) {
     order.finalPayable !== null &&
     order.finalPayable !== undefined &&
     Number.isFinite(Number(order.finalPayable)) &&
-    Number(order.finalPayable) >= 0 &&
-    (totalDeductions <= 0 || Number(order.finalPayable) < order.subtotal)
+    Number(order.finalPayable) >= 0
   );
   if (!hasAuthoritativeVerifiedTotal) {
     order.finalPayable = calculatedPayable;
@@ -5572,13 +5581,13 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       return { fetchedAddrs, earlySaved, resolvedAddr };
     })();
 
-    const existingOffers = getReusableEventOffers(account);
+    const existingOffers = options.forceEventRefresh ? null : getReusableEventOffers(account);
     const [auth, eventsClaimRes, cartMeta, addrBundle, inspectedInitialCart] = await Promise.all([
       getSwiggySessionAuth(account, false),
       // Reuse saved bookings, but await a new claim before calculating the cart.
       existingOffers
         ? Promise.resolve(existingOffers)
-        : claimSwiggyBreakfastAndLateNightOffers(account, { quickLockOnly: true }).catch(() => null),
+        : claimSwiggyBreakfastAndLateNightOffers(account, { quickLockOnly: true, force: Boolean(options.forceEventRefresh) }).catch(() => null),
       order.cart && !alreadyHasResolvedCart
         ? resolveSwiggyLink(order.cart).catch(() => null)
         : Promise.resolve(null),
@@ -5815,6 +5824,8 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
         }
       );
 
+      const networkFailure = checkoutFailureResult(syncOutcome);
+      if (networkFailure) return networkFailure;
       const syncJson = syncOutcome?.json;
       const parsedSynced = syncJson?.data ? parseDapiCartPayload(syncJson.data) : null;
       if (parsedSynced) {
@@ -6015,16 +6026,9 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       if (mcpSuggested) {
         pushCoupon(mcpSuggested, mcpSuggested, 'Swiggy Auto-Suggested Best Coupon', 3);
       }
-      const mcpRewardCash = Number(
-        mcpCartData?.pricing?.trade_discount_reward_amount ??
-        mcpCartData?.offers?.reward_discount ??
-        mcpCartData?.offers?.free_cash ??
-        0
-      );
-      if (mcpRewardCash > 0 && liveCart && mcpRewardCash > (liveCart.campaignFreeCash || 0)) {
-        liveCart.campaignFreeCash = mcpRewardCash;
-        liveCart.freeCashApplied = Math.round((mcpRewardCash + (liveCart.walletSplitPayAmount || 0)) * 100) / 100;
-      }
+      // Rewards and balances must come from the same cart as finalPayable,
+      // never from a separately fetched MCP cart. Only harvest coupon suggestions.
+
     }
 
     // Priority 3: Official Swiggy Food MCP `fetch_food_coupons` structured coupons (sorted by applicable first!)
@@ -6186,6 +6190,9 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       liveCart = bestCartState;
     }
 
+    const activeNetworkFailure = checkoutFailureResult(checkoutCooldownResponse());
+    if (activeNetworkFailure) return activeNetworkFailure;
+
     // Step 6: Populate `order` cleanly with 100% genuine Swiggy numbers
     if (liveCart && liveCart.items?.length > 0 && (!restaurantId || String(liveCart.restaurantId) === String(restaurantId))) {
       order.items = liveCart.items;
@@ -6208,6 +6215,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       order.freeCashBalance = liveCart.freeCashBalance || 0;
       order.freeCashApplied = liveCart.freeCashApplied || 0;
       order.freeCashDiagnostics = freeCashStatus(liveCart, eventsClaimRes);
+      order.nightOfferDiagnostic = nightOfferDiagnostic(liveCart, eventsClaimRes);
       order.campaignFreeCash = liveCart.campaignFreeCash || 0;
       order.walletSplitPayAmount = liveCart.walletSplitPayAmount || 0;
       order.rawCartOrderTotal = liveCart.rawCartOrderTotal || liveCart.finalPayable;
@@ -6248,6 +6256,8 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
         lat: String(order.addressDetails.lat),
         lng: String(order.addressDetails.lng)
       }).catch(() => null);
+      const networkFailure = checkoutFailureResult(probe);
+      if (networkFailure) return networkFailure;
       const swiggyMsg = probe?.json?.statusMessage || probe?.json?.data?.cartMeta?.cart_banner_message || probe?.json?.data?.cart_banner_message || '';
       if (probe?.json?.statusCode === 999 || (probe?.json?.statusCode === 1 && /session|login|auth/i.test(swiggyMsg))) {
         const accLabel = account?.phone || account?.mobile || account?.name || 'Selected Account';
@@ -6258,7 +6268,8 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
         };
       }
       order.swiggyVerified = false;
-      applyMaxOfferToOrder(order);
+      return { success: false, code: 'CART_NOT_VERIFIED',
+        error: 'Live Swiggy cart verify nahi hua. Night discount ya final bill confirm nahi kiya gaya; network/account response check karke retry karein.' };
     }
 
     const cartData = {
@@ -6277,6 +6288,8 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       freeCashApplied: order.freeCashApplied || 0,
       campaignFreeCash: order.campaignFreeCash || 0,
       walletSplitPayAmount: order.walletSplitPayAmount || 0,
+      merchantTradeDiscount: order.merchantTradeDiscount ?? null,
+      nightOfferDiagnostic: order.nightOfferDiagnostic || null,
       offerDiagnostics: order.offerDiagnostics || null,
       eventsClaimSummary: order.eventsClaimSummary || null,
       swiggyOneApplied: Boolean(order.swiggyOneApplied),
@@ -7187,6 +7200,12 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       swiggyCartGet(account, { lat: reqLat, lng: reqLng }),
       fetchAccountAddresses(account).catch(() => [])
     ]);
+    const networkFailure = checkoutFailureResult(curCart);
+    if (networkFailure) {
+      const err = new Error(networkFailure.error);
+      err.diag = { ...networkFailure.networkDiagnostic };
+      throw err;
+    }
     if (!auth?.userId || !auth?.jwtTid) {
       auth = await getSwiggySessionAuth(account, true);
     }
