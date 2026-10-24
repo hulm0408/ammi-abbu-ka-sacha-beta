@@ -37,6 +37,13 @@ export function verifiedOrderHistory(account = {}, foodResponse, instamartRespon
 export function freeCashStatus(cart = {}, claim = null) {
   if (money(cart.freeCashApplied) > 0) return '';
   const slots = [claim?.breakfast?.slotState, claim?.lateNight?.slotState];
+  const active = claim?.lateNight?.slotState === 'ACTIVE_NOW' ? claim.lateNight :
+    claim?.breakfast?.slotState === 'ACTIVE_NOW' ? claim.breakfast : null;
+  const option = Number(active?.offerValue || claim?.offerValue || 1);
+  if (active && option !== 1) {
+    const minimum = option === 2 ? '₹249' : option === 4 ? '₹149' : 'selected coupon ke terms';
+    return `Selected event option Free Cash nahi, coupon hai (minimum ${minimum}). Current items: ₹${money(cart.itemTotal || cart.subtotal)}. Coupon Swiggy-confirmed hone par hi discount count hoga.`;
+  }
   if (slots.includes('ACTIVE_NOW')) {
     return 'Free Cash cart mein apply nahi hua. Swiggy ki minimum spend, eligible items aur account eligibility check karein; booking alone discount ki guarantee nahi hai.';
   }

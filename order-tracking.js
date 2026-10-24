@@ -21,7 +21,7 @@ import {
   getStoredSwiggyTrackingUrl,
   isOfficialSwiggyTrackingUrl,
   validateTrackingUrlForOrder,
-  extractOrderShareUrlDeep,
+  extractOrderShareUrlForOrder,
   dapiFetch,
   buildSignedOrderTrackUrl,
   getSwiggyOrderSnapshot,
@@ -410,7 +410,7 @@ export async function refreshLatestOrderTrackingForAccount(accKey) {
   const latest = orders[0];
   if (!latest) return { ok: false, error: 'No orders found on this account' };
   const orderId = normalizeSwiggyOrderId(latest.order_id);
-  let trackingUrl = extractOrderShareUrlDeep(latest);
+  let trackingUrl = extractOrderShareUrlForOrder(orderId, latest);
   if (!trackingUrl && orderId) {
     const customerId = String(latest?.customer_id || acc?.customerId || acc?.userId || '');
     const [detRes, trkRes, trackClassicRes] = await Promise.all([
@@ -419,7 +419,7 @@ export async function refreshLatestOrderTrackingForAccount(accKey) {
       dapiFetch(acc, `order/track?order_id=${encodeURIComponent(orderId)}`, { timeoutMs: 4000 }).catch(() => null)
     ]);
     const detOrder = detRes?.json?.data?.orders?.[0] || detRes?.json?.data?.order || null;
-    trackingUrl = extractOrderShareUrlDeep(latest, detOrder, trkRes?.json?.data, trackClassicRes?.json?.data);
+    trackingUrl = extractOrderShareUrlForOrder(orderId, latest, detOrder, trkRes?.json?.data, trackClassicRes?.json?.data);
   }
   return {
     ok: Boolean(orderId),
