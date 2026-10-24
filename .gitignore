@@ -69,3 +69,6 @@ extract_frames.py
 extracted_mp4_frames/
 
 
+
+!test_v45_suspended_account_qr.mjs
+!test_v46_checkout_eligibility.mjs

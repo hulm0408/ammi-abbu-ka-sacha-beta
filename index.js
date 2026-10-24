@@ -790,7 +790,7 @@ export function formatUserOrderCardText(order, isBossView = false) {
 
   // ---------- 5. BILL SUMMARY (clean, consistent) ----------
   const billLines = [];
-  const hasBill = Number(order.finalPayable || order.subtotal || 0) > 0;
+  const hasBill = Number(order.finalPayable ?? order.subtotal ?? 0) > 0;
   if (hasBill) {
     billLines.push('<b>Bill Summary</b>');
     billLines.push(`Items Total: ₹${Number(order.subtotal || order.itemTotal || 0)}`);
@@ -810,6 +810,7 @@ export function formatUserOrderCardText(order, isBossView = false) {
 
     const freeCash = Number(order.freeCashApplied || 0);
     if (freeCash > 0) billLines.push(`Extra Discount ( Free Cash ): −₹${freeCash}`);
+    else if (order.freeCashDiagnostics) billLines.push(`Free Cash: ${esc(order.freeCashDiagnostics)}`);
 
     const oneFee = Number(order.swiggyOneMembershipFee || 0);
     if (oneFee > 0) billLines.push(`Swiggy One Lite Membership: +₹${oneFee}`);
@@ -832,7 +833,7 @@ export function formatUserOrderCardText(order, isBossView = false) {
     if (Number(order.totalSavings || 0) > 0) {
       billLines.push(`Total Savings: ₹${Number(order.totalSavings)}`);
     }
-    billLines.push(`<b>To Pay: ₹${Number(order.finalPayable || order.subtotal || 0)}</b>`);
+    billLines.push(`<b>To Pay: ₹${Number(order.finalPayable ?? order.subtotal ?? 0)}</b>`);
     // Card & other payment options (new)
     billLines.push(`<i>Pay via UPI QR, Card, or Wallet on Swiggy</i>`);
     blocks.push(billLines.join('\n'));

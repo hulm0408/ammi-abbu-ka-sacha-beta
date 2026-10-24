@@ -86,6 +86,7 @@ import {
   syncGroupCartAndCheckoutForAccount,
   findBestMaxCouponAccountForOrder,
   generateRealSwiggyMerchantUpiQr,
+  assertSwiggyAccountNotSuspended,
   checkRealSwiggyPaymentAndExtractTracking,
   extractTrackingViaAllAccounts,
   extractSwiggyProvidedTrackingUrl,
@@ -294,6 +295,9 @@ function hasLiveWebSessionCookie(acc) {
 
 export function formatBossDiagnosticErrorMessage(err, meta = {}) {
   const code = err?.diag?.code || err?.code || 'UNEXPECTED_ERROR';
+  if (code === 'SWIGGY_ACCOUNT_SUSPENDED') {
+    return `⚠️ <b>Swiggy account suspended</b>\nOrder #${escapeHtml(meta.orderId || 'N/A')} ka QR nahi bana. Payment request rok di gayi hai; automatic retry/account switch nahi hoga.\n\nAccount restore karwane ke liye <b>support@swiggy.in</b> se contact karein. Bot suspension remove nahi kar sakta.`;
+  }
   const stage = meta.stage || err?.diag?.stage || 'UNKNOWN_STAGE';
   const msg = err?.message || String(err || 'Unknown failure');
   const lines = [
@@ -1251,6 +1255,9 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     if (Number(order.walletSplitPayAmount || 0) > 0) {
       offerNotes.push(`₹ <b>Wallet Split-Pay Ready:</b> ₹${order.walletSplitPayAmount} Swiggy Money auto-deducts from UPI QR!`);
     }
+    if (order.freeCashDiagnostics && !Number(order.freeCashApplied || 0)) {
+      offerNotes.push(`i <i>${escapeHtml(order.freeCashDiagnostics)}</i>`);
+    }
     if (order.offerDiagnostics) {
       offerNotes.push(`i <i>${escapeHtml(order.offerDiagnostics)}</i>`);
     }
@@ -1649,7 +1656,7 @@ export async function finalizePaidOrderCard({
       (persistedOrder?.status === 'COMPLETED' && persistedOrder?.cardStage === 'PAID_CONFIRMED');
     if (usedAccObj && !alreadyCounted && !alreadyCompleted) {
       const knownCounts = [usedAccObj.totalOrdersCount, usedAccObj.cachedTotalOrdersCount, order.selectedAccountTotalOrders]
-        .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)))
+        .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) && Number(value) !== 999999)
         .map(value => Math.max(0, Number(value)));
       const nextOrderCount = (knownCounts.length ? Math.max(...knownCounts) : 0) + 1;
       usedAccObj.isZeroOrderAccount = false;
@@ -2137,6 +2144,7 @@ export async function executeRealQrGenerationForOrder({
 
   let accKey = order.selectedAccount;
   let acc = accKey ? db.config?.accounts?.[accKey] : null;
+  if (acc) assertSwiggyAccountNotSuspended(acc);
   if (!acc || !acc.isLoggedIn) {
     const autoPick = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false });
     if (autoPick?.success && autoPick.winningKey) {
@@ -2157,6 +2165,7 @@ export async function executeRealQrGenerationForOrder({
     // Per-account lock: 10 orders on 10 different Swiggy IDs generate ALL 10 QRs 100% simultaneously in parallel (~1.8s)!
     realQr = await withSwiggyAccountLock(accKey, () => generator(acc, order));
   } catch (qrErr) {
+    if (qrErr?.diag?.code === 'SWIGGY_ACCOUNT_SUSPENDED') throw qrErr;
     const msg = String(qrErr?.message || '');
     const swMsg = String(qrErr?.diag?.swiggyMessage || '');
     const isSessionDead = /session expired|login again|unauthorized|unauthenticated/i.test(`${msg} ${swMsg}`) || Number(qrErr?.diag?.swiggyStatusCode) === 999;

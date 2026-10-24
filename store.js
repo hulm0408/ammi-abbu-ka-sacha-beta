@@ -328,7 +328,7 @@ export function cleanEssentialSwiggyCookies(cookieStr = '', fallback = {}) {
 }
 
 export function isAccountLoggedInSession(acc) {
-  if (!acc || !acc.isLoggedIn || acc.isLoggedOut || acc.sessionExpired) return false;
+  if (!acc || acc.isSuspended || !acc.isLoggedIn || acc.isLoggedOut || acc.sessionExpired) return false;
   // If tid is a JWT with an expired exp and no _session_tid cookie, it is expired!
   if (acc.tid && typeof acc.tid === 'string' && acc.tid.includes('.')) {
     try {
@@ -851,6 +851,24 @@ export function saveDb(data) {
           const existedAtRead = Object.prototype.hasOwnProperty.call(baseAccMap, ak);
           const presentInCaller = Object.prototype.hasOwnProperty.call(data.config.accounts, ak);
           const diskPhone = normalizeTenDigitPhone(diskAcc?.phone || diskAcc?.mobile || String(ak).replace(/^acc_/, ''));
+          // A background offer/profile write must not erase a newly detected suspension.
+          const baseAcc = baseAccMap[ak] ? JSON.parse(baseAccMap[ak]) : null;
+          // Lifetime usage is monotonic: an old offer scan/import cannot turn a used ID fresh.
+          if (presentInCaller) {
+            const callerAcc = data.config.accounts[ak];
+            const knownCounts = [diskAcc.totalOrdersCount, diskAcc.cachedTotalOrdersCount, callerAcc.totalOrdersCount, callerAcc.cachedTotalOrdersCount]
+              .filter(v => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)) && Number(v) !== 999999);
+            const usageFloor = Math.max(0, ...knownCounts.map(Number));
+            if (usageFloor > 0) {
+              callerAcc.totalOrdersCount = usageFloor;
+              callerAcc.cachedTotalOrdersCount = usageFloor;
+              callerAcc.isZeroOrderAccount = false;
+            }
+          }
+          if (diskAcc.isSuspended && !baseAcc?.isSuspended && presentInCaller) {
+            data.config.accounts[ak].isSuspended = true;
+            data.config.accounts[ak].suspendedAt = diskAcc.suspendedAt;
+          }
           if (!existedAtRead && !presentInCaller && !isAccountTombstoned(callerDeleted, ak, diskPhone)) {
             // Brand-new `.json` account imported concurrently while this fiber was awaiting Swiggy — NEVER WIPE IT!
             data.config.accounts[ak] = diskAcc;

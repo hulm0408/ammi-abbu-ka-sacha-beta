@@ -7,6 +7,7 @@ import QRCode from 'qrcode';
 import { getDb, saveDb, updateAccount } from './store.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
+import { eligibleWalletBalance, verifiedOrderHistory, freeCashStatus } from './checkout-eligibility.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken } from './swiggy-bridge.js';
 
 const CHROME_PATH = findChromePath();
@@ -3182,7 +3183,7 @@ export function applyMaxOfferToOrder(order) {
     Number(order.finalPayable) >= 0 &&
     (totalDeductions <= 0 || Number(order.finalPayable) < order.subtotal)
   );
-  if (!hasAuthoritativeVerifiedTotal || !order.finalPayable || Number(order.finalPayable) <= 0) {
+  if (!hasAuthoritativeVerifiedTotal) {
     order.finalPayable = calculatedPayable;
   }
 
@@ -3359,7 +3360,7 @@ export function parseDapiCartPayload(data) {
   // 2. Swiggy Money / Wallet Free Cash Split-Pay (`user_swiggy_money` / `swiggy_pay_eligible_balance`):
   // Before placing the order, `cm.swiggy_money` is `0` while `cm.user_swiggy_money` holds the available balance (e.g. ₹50 / ₹100)!
   // Passing `swiggy_pay_amount` on `chkout/payments order/place` deducts this directly from the live UPI QR!
-  const freeCashBalance = Math.max(0, Number(cm.user_swiggy_money ?? cm.swiggy_pay_eligible_balance ?? 0));
+  const freeCashBalance = eligibleWalletBalance(cm);
   const alreadyDeductedWallet = Math.max(0, Number(cm.swiggy_money ?? 0));
   const walletSplitPayAmount = alreadyDeductedWallet > 0
     ? alreadyDeductedWallet
@@ -3410,7 +3411,7 @@ export function parseDapiCartPayload(data) {
     rawCartOrderTotal: Math.round(rawOrderTotal * 100) / 100,
     packingCharges: Math.round(packingCharges * 100) / 100,
     taxesAndCharges: Math.round(taxesAndCharges * 100) / 100,
-    finalPayable: Math.round(orderTotal > 0 ? orderTotal : Math.max(0, itemTotal - couponDiscount - tradeDiscountTotal + swiggyOneMembershipFee + deliveryFee + taxesAndCharges)),
+    finalPayable: Math.round(rawOrderTotal > 0 ? orderTotal : Math.max(0, itemTotal - couponDiscount - tradeDiscountTotal + swiggyOneMembershipFee + deliveryFee + taxesAndCharges)),
     totalSavings
   };
 }
@@ -4943,6 +4944,9 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
       lines.push(`Offer check: ${String(order.offerDiagnostics)}`);
     }
 
+    if (order.freeCashDiagnostics && !Number(order.freeCashApplied || 0)) {
+      lines.push(`Free Cash check: ${order.freeCashDiagnostics}`);
+    }
     const oneFee = Number(order.swiggyOneMembershipFee || 0);
     if (oneFee > 0) {
       lines.push(`Swiggy One Lite Membership: +₹${oneFee}`);
@@ -5569,10 +5573,9 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
 
     const [auth, eventsClaimRes, cartMeta, addrBundle, inspectedInitialCart] = await Promise.all([
       getSwiggySessionAuth(account, false),
-      Promise.race([
-        claimSwiggyBreakfastAndLateNightOffers(account).catch(() => null),
-        new Promise(r => setTimeout(r, 450))
-      ]),
+      // Finish today's booking before the first cart update; a 450ms race lost
+      // the reward when the claim completed after the cart had been calculated.
+      claimSwiggyBreakfastAndLateNightOffers(account, { quickLockOnly: true }).catch(() => null),
       order.cart && !alreadyHasResolvedCart
         ? resolveSwiggyLink(order.cart).catch(() => null)
         : Promise.resolve(null),
@@ -5761,7 +5764,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     // Do NOT skip cart update if incoming items carry `offer_ids` that weren't applied on `liveCart` yet!
     const incomingHasItemOffers = syncableItems.some(si => Array.isArray(si.offer_ids) && si.offer_ids.length > 0);
     const sameCartAlreadyLoaded = Boolean(
-      !incomingHasItemOffers &&
+      !incomingHasItemOffers && !eventsClaimRes?.success &&
       liveCart &&
       liveCart.items?.length > 0 &&
       restaurantId &&
@@ -6191,6 +6194,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       order.discountAmount = liveCart.discountAmount || 0;
       order.freeCashBalance = liveCart.freeCashBalance || 0;
       order.freeCashApplied = liveCart.freeCashApplied || 0;
+      order.freeCashDiagnostics = freeCashStatus(liveCart, eventsClaimRes);
       order.campaignFreeCash = liveCart.campaignFreeCash || 0;
       order.walletSplitPayAmount = liveCart.walletSplitPayAmount || 0;
       order.rawCartOrderTotal = liveCart.rawCartOrderTotal || liveCart.finalPayable;
@@ -6381,7 +6385,11 @@ export function clearAllAccountReservations() {
 
 export function invalidateAccountOrderProfileCache(accKey = null) {
   if (!accKey) accountOrderProfileCache.clear();
-  else accountOrderProfileCache.delete(accKey);
+  else {
+    for (const key of accountOrderProfileCache.keys()) {
+      if (key === accKey || key.startsWith(`${accKey}|`)) accountOrderProfileCache.delete(key);
+    }
+  }
 }
 
 export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force = false } = {}) {
@@ -6391,12 +6399,12 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     accKey = acc.id || acc.account || (acc.phone ? `acc_${acc.phone}` : 'acc_temp');
   }
 
-  if (!acc || !acc.isLoggedIn || acc.isLoggedOut || acc.sessionExpired || (!acc.cookies && !acc.tid && !acc.jwtTid && !acc.token)) {
+  if (!acc || acc.isSuspended || !acc.isLoggedIn || acc.isLoggedOut || acc.sessionExpired || (!acc.cookies && !acc.tid && !acc.jwtTid && !acc.token)) {
     return {
       key: accKey,
       valid: false,
-      reason: acc?.sessionExpired ? 'SESSION_EXPIRED' : (acc?.isLoggedOut ? 'LOGGED_OUT' : 'NOT_LOGGED_IN'),
-      error: acc?.sessionExpired
+      reason: acc?.isSuspended ? 'ACCOUNT_SUSPENDED' : acc?.sessionExpired ? 'SESSION_EXPIRED' : (acc?.isLoggedOut ? 'LOGGED_OUT' : 'NOT_LOGGED_IN'),
+      error: acc?.isSuspended ? 'Account suspended by Swiggy — contact support@swiggy.in' : acc?.sessionExpired
         ? 'Account session expired on Swiggy — re-login required'
         : (acc?.isLoggedOut ? 'Account was permanently logged out' : 'Account is logged out or missing session cookies/token'),
       totalOrdersCount: typeof acc?.totalOrdersCount === 'number' ? acc.totalOrdersCount : 999999,
@@ -6411,37 +6419,11 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
 
   const sig = `${accKey}|${(acc.jwtTid || acc.tid || '').slice(0, 28)}|${acc.totalOrdersCount ?? ''}`;
   const cached = accountOrderProfileCache.get(sig);
-  if (!force && cached && (Date.now() - cached.ts) < 15 * 60 * 1000) {
+  if (!force && cached && (Date.now() - cached.ts) < 60 * 1000) {
     if (!acc.sessionExpired && !acc.isLoggedOut) {
       return cached.profile;
     }
     accountOrderProfileCache.delete(sig);
-  }
-
-  // Fast-path: If the account was ALREADY verified live against Swiggy backend,
-  // build the profile in 0ms without firing network calls to Swiggy on every cart scan!
-  if (!force && !acc.sessionExpired && !acc.isLoggedOut && acc.ordersVerifiedLive === true && ((acc.cachedTotalOrdersCount !== undefined && acc.cachedTotalOrdersCount !== null && acc.cachedTotalOrdersCount !== 999999) || (typeof acc.totalOrdersCount === 'number' && acc.totalOrdersCount !== 999999))) {
-    const totalOrdersCount = Math.max(0, Number(acc.cachedTotalOrdersCount ?? acc.totalOrdersCount ?? 0));
-    const profile = {
-      key: accKey,
-      valid: true,
-      userId: String(acc.customerId || acc.userId || '1'),
-      phone: acc.phone || acc.mobile || accKey,
-      name: acc.name || accKey,
-      totalOrdersCount,
-      isZeroOrderAccount: totalOrdersCount === 0,
-      ordersVerifiedLive: true,
-      liveActiveOrdersCount: 0,
-      hasZeroActiveOrders: true,
-      superStatus: String(acc.superStatus || acc.userSuperStatus || 'UNKNOWN'),
-      preferredOfferValue: Number(acc.preferredOfferValue || 1),
-      walletBalance: Math.max(0, Number(acc.walletBalance || acc.swiggyMoney || 0)),
-      freeCashEstimate: Math.max(0, Number(acc.freeCashBalance || (acc.offers?.bothClaimed ? 50 : 0)))
-    };
-    acc.cachedTotalOrdersCount = totalOrdersCount;
-    acc.isZeroOrderAccount = profile.isZeroOrderAccount;
-    accountOrderProfileCache.set(sig, { ts: Date.now(), profile });
-    return profile;
   }
 
   const auth = await getSwiggySessionAuth(acc, false).catch(() => null);
@@ -6485,55 +6467,16 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     return invalidProfile;
   }
 
-  let rawOrders = Array.isArray(auth.orders) ? auth.orders : [];
-  let fetchedDirectOrders = false;
-  if (rawOrders.length === 0 || force) {
-    const [foodRes, imRes] = await Promise.all([
-      dapiFetch(acc, 'order/all', { timeoutMs: 8000 }).catch(() => null),
-      dapiFetch(acc, 'order/all?order_id=&deliveryType=INSTAMART', { timeoutMs: 8000 }).catch(() => null)
-    ]);
-    const foodOrders = Array.isArray(foodRes?.json?.data?.orders) ? foodRes.json.data.orders : [];
-    const imOrders = Array.isArray(imRes?.json?.data?.orders) ? imRes.json.data.orders : [];
-    if (foodOrders.length > 0 || imOrders.length > 0) {
-      const seen = new Set();
-      const combined = [];
-      for (const o of [...foodOrders, ...imOrders]) {
-        const id = String(o?.order_id || o?.id || '');
-        if (id && !seen.has(id)) {
-          seen.add(id);
-          combined.push(o);
-        } else if (!id) {
-          combined.push(o);
-        }
-      }
-      rawOrders = combined;
-      fetchedDirectOrders = true;
-    } else if (foodRes?.json?.statusCode === 0 || imRes?.json?.statusCode === 0) {
-      // Swiggy explicitly returned valid 0 orders
-      rawOrders = [];
-      fetchedDirectOrders = true;
-    }
-  }
-
-  const realPastOrdersCount = rawOrders.filter(o => {
-    const st = String(o?.order_status || o?.post_status || '').toLowerCase();
-    const paySt = String(o?.payment_txn_status || '').toLowerCase();
-    if (/failed|cancelled|canceled/.test(st)) return false;
-    if (paySt && paySt !== 'success' && !/delivered|completed/.test(st)) return false;
-    return true;
-  }).length;
-  // Live order section inspection on upload/login:
-  // When direct orders were fetched from Swiggy (or forced check), use the exact real live count
-  // so any stale count in an imported JSON file does not prevent 0-order accounts from being detected!
-  let totalOrdersCount;
-  if (fetchedDirectOrders || force) {
-    totalOrdersCount = realPastOrdersCount;
-  } else {
-    const knownOrderCounts = [acc.totalOrdersCount, acc.cachedTotalOrdersCount, realPastOrdersCount]
-      .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) && Number(value) !== 999999)
-      .map(value => Math.max(0, Number(value)));
-    totalOrdersCount = knownOrderCounts.length ? Math.max(...knownOrderCounts) : realPastOrdersCount;
-  }
+  // Authentication success is not proof of an empty order history. Both history
+  // responses must have a successful status AND an orders array to certify unused.
+  const [foodRes, imRes] = await Promise.all([
+    dapiFetch(acc, 'order/all', { timeoutMs: 8000 }).catch(() => null),
+    dapiFetch(acc, 'order/all?order_id=&deliveryType=INSTAMART', { timeoutMs: 8000 }).catch(() => null)
+  ]);
+  const history = verifiedOrderHistory(acc, foodRes, imRes);
+  const rawOrders = history.orders;
+  const totalOrdersCount = history.totalOrdersCount;
+  const fetchedDirectOrders = history.ordersVerifiedLive;
 
   const nowMs = Date.now();
   const liveActiveOrdersCount = rawOrders.filter(o => {
@@ -6552,14 +6495,14 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     phone: acc.phone || acc.mobile || accKey,
     name: acc.name || accKey,
     totalOrdersCount,
-    isZeroOrderAccount: totalOrdersCount === 0,
+    isZeroOrderAccount: history.isZeroOrderAccount,
     ordersVerifiedLive: Boolean(fetchedDirectOrders),
     liveActiveOrdersCount,
     hasZeroActiveOrders: liveActiveOrdersCount === 0,
     superStatus: String(acc.superStatus || acc.userSuperStatus || 'UNKNOWN'),
     preferredOfferValue: Number(acc.preferredOfferValue || 1),
     walletBalance: Math.max(0, Number(acc.walletBalance || acc.swiggyMoney || 0)),
-    freeCashEstimate: Math.max(0, Number(acc.freeCashBalance || (acc.offers?.bothClaimed ? 50 : 0)))
+    freeCashEstimate: Math.max(0, Number(acc.freeCashBalance || 0))
   };
   acc.totalOrdersCount = totalOrdersCount;
   acc.cachedTotalOrdersCount = totalOrdersCount;
@@ -6587,7 +6530,7 @@ export function getBusySwiggyAccountsMap(db, excludeOrderId = null) {
   for (const o of Object.values(orders)) {
     if (!o || (excludeOrderId && o.id === excludeOrderId)) continue;
     if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status)) continue;
-    if (o.selectedAccount && ['AUTO_SELECTING', 'BILL_READY', 'QR_GENERATED'].includes(o.cardStage)) {
+    if (o.selectedAccount) {
       busy.set(o.selectedAccount, o);
     }
   }
@@ -6636,7 +6579,7 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   const {
     captureScreenshot = false,
     excludeAccountKeys = [],
-    strictZeroOrdersOnly = false,
+    strictZeroOrdersOnly = true,
     preferZeroOrderAccounts = true,
     maxParallelProbes = 3
   } = options;
@@ -6644,7 +6587,7 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   const db = getDb();
   const accounts = db?.config?.accounts || {};
 
-  const allEntries = Object.entries(accounts).filter(([, a]) => a && a.isLoggedIn && !a.isLoggedOut && (a.cookies || a.tid || a.jwtTid || a.token));
+  const allEntries = Object.entries(accounts).filter(([, a]) => a && !a.isSuspended && a.isLoggedIn && !a.isLoggedOut && (a.cookies || a.tid || a.jwtTid || a.token));
   if (allEntries.length === 0) {
     const totalAccountsInDb = Object.keys(accounts).length;
     return {
@@ -6666,7 +6609,7 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
       while (inspectCursor < allEntries.length) {
         const idx = inspectCursor++;
         const [k, a] = allEntries[idx];
-        const p = await inspectAccountOrderHistoryAndOffers(k, a);
+        const p = await inspectAccountOrderHistoryAndOffers(k, a, { force: true });
         profilesList[idx] = { key: k, acc: a, profile: p };
       }
     })
@@ -6678,6 +6621,13 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
       success: false,
       code: 'ALL_SESSIONS_EXPIRED',
       error: `All logged-in Swiggy accounts (${expiredPhones.join(', ') || 'in vault'}) have expired sessions — re-login accounts via OTP in ☎ Accounts or drop new Session JSON!`
+    };
+  }
+
+  if (strictZeroOrdersOnly && !validPool.some(x => x.profile.ordersVerifiedLive && x.profile.isZeroOrderAccount && x.profile.hasZeroActiveOrders)) {
+    return {
+      success: false, code: 'NO_VERIFIED_UNUSED_ACCOUNTS',
+      error: 'Koi live-verified unused (0-order) Swiggy account available nahi hai. Used/unverified ID auto-select nahi hogi. Order history retry karein ya eligible unused account add karein.'
     };
   }
 
@@ -7065,11 +7015,49 @@ export function isZeroSmsTestSandboxActive() {
   return /(?:^|[\\/])test[_-].*\.(?:mjs|cjs|js)$/i.test(entry);
 }
 
+// Suspension is an account-level refusal, not an endpoint/session failure.
+// Never retry it through another gateway or silently switch the customer's account.
+export function assertSwiggyAccountNotSuspended(account, response = null, httpStatus = null) {
+  const rejected = response?.statusCode !== 0 &&
+    /\baccount\b.{0,60}\bsuspended\b/i.test(String(response?.statusMessage || ''));
+  const db = getDb();
+  const phone = String(account?.phone || account?.mobile || '');
+  const matches = Object.entries(db.config?.accounts || {}).filter(([key, acc]) =>
+    (account?.id && key === account.id) || (phone && String(acc?.phone || acc?.mobile || '') === phone));
+  if (!rejected && !account?.isSuspended && !matches.some(([, acc]) => acc.isSuspended)) return;
+
+  if (rejected) {
+    const patch = { isSuspended: true, suspendedAt: new Date().toISOString() };
+    if (account) Object.assign(account, patch);
+    for (const [key, acc] of matches) {
+      Object.assign(acc, patch);
+      invalidateAccountOrderProfileCache(key);
+      releaseSwiggyAccountReservation(key);
+    }
+    // Preserve session material for support/recovery, but keep it out of ordering.
+    if (matches.length) saveDb(db);
+  }
+  const err = new Error('Swiggy ne is account ko suspend kiya hai. QR/payment request rok di gayi hai. Account restore karwane ke liye support@swiggy.in se contact karein; bot suspension remove nahi kar sakta.');
+  err.diag = {
+    code: 'SWIGGY_ACCOUNT_SUSPENDED', stage: 'GENERATE_REAL_SWIGGY_QR',
+    httpStatus, swiggyStatusCode: response?.statusCode ?? null,
+    swiggyMessage: 'Your account has been suspended. Please contact support@swiggy.in for assistance',
+    retryable: false
+  };
+  throw err;
+}
+
+function handlePlaceOrderTransportFailure(err) {
+  if (err?.diag?.code === 'SWIGGY_ACCOUNT_SUSPENDED') throw err;
+  return null;
+}
+
 export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder) {
   const isWrapped = accountOrOpts && typeof accountOrOpts === 'object' && ('account' in accountOrOpts) && !maybeOrder;
   const account = isWrapped ? accountOrOpts.account : accountOrOpts;
   const order = isWrapped ? accountOrOpts.order : maybeOrder;
   const forceNewQr = Boolean(isWrapped && accountOrOpts.forceNewQr);
+  assertSwiggyAccountNotSuspended(account);
 
   // CONTRACT RULE (Screen 05 & 07): Paid is FINAL — NEVER create another payment QR!
   if (order && (order.status === 'PAID' || order.status === 'COMPLETED' || order.paymentVerified === true)) {
@@ -7139,6 +7127,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
   }
 
   return withSwiggyAccountLock(account, async () => {
+    assertSwiggyAccountNotSuspended(account);
     if (!account || (!account.cookies && !account.tid && !account.token)) {
       const err = new Error('Selected Swiggy account has no active session cookies or token.');
       err.diag = { code: 'QR_NO_ACCOUNT_COOKIES', stage: 'GENERATE_REAL_QR' };
@@ -7325,7 +7314,12 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     // AUTOMATIC SWIGGY MONEY / WALLET FREE CASH SPLIT-PAY ON REAL MERCHANT QR:
     let rawOrderTotal = Number(cm.order_total || 0);
     const alreadyDeductedWallet = Math.max(0, Number(cm.swiggy_money || 0));
-    const availableWallet = Math.max(0, Number(cm.user_swiggy_money ?? cm.swiggy_pay_eligible_balance ?? 0));
+    const availableWallet = eligibleWalletBalance(cm);
+    if (alreadyDeductedWallet === 0 && availableWallet >= rawOrderTotal && rawOrderTotal > 0) {
+      const err = new Error('Eligible Swiggy Money covers the whole bill. Complete wallet-only payment in the official Swiggy app; no full-price UPI QR was created.');
+      err.diag = { code: 'QR_WALLET_ONLY_PAYMENT_REQUIRED', stage: 'GENERATE_REAL_SWIGGY_QR' };
+      throw err;
+    }
     const desiredSplitPay = alreadyDeductedWallet === 0 && availableWallet > 0 && availableWallet < rawOrderTotal
       ? Math.round(availableWallet * 100) / 100
       : 0;
@@ -7416,6 +7410,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       let txt = await r.text();
       let parsed = null;
       try { parsed = JSON.parse(txt); } catch {}
+      assertSwiggyAccountNotSuspended(account, parsed, r.status);
       if (parsed?.tid && String(parsed.tid).includes('.')) {
         latestTid = parsed.tid;
         account.jwtTid = parsed.tid;
@@ -7442,6 +7437,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
           txt = await r.text();
           parsed = null;
           try { parsed = JSON.parse(txt); } catch {}
+          assertSwiggyAccountNotSuspended(account, parsed, r.status);
           if (parsed?.tid && String(parsed.tid).includes('.')) {
             account.jwtTid = parsed.tid;
           }
@@ -7503,6 +7499,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       const txt = await r.text();
       let parsed = null;
       try { parsed = JSON.parse(txt); } catch {}
+      assertSwiggyAccountNotSuspended(account, parsed, r.status);
       return { placeRes: r, rawText: txt, json: parsed, splitPayUsed: splitPayAmt };
     };
 
@@ -7510,20 +7507,12 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     // OR try Native Android `chkout/api/v2/order/place` first whenever native item/reward discounts are active!
     let attemptOut = null;
     if (desiredSplitPay > 0 && Number(cm.trade_discount_total || 0) === 0 && Number(cm.subscription_total || 0) === 0) {
-      attemptOut = await sendWebPaymentsPlaceOrder(desiredSplitPay).catch(() => null);
-      if (!attemptOut || !attemptOut.placeRes?.ok || attemptOut.json?.statusCode !== 0 || !extractUpiFromPlaceJson(attemptOut.json).upiIntentUrl) {
-        attemptOut = await sendWebPaymentsPlaceOrder(0).catch(() => null);
-      }
+      attemptOut = await sendWebPaymentsPlaceOrder(desiredSplitPay).catch(handlePlaceOrderTransportFailure);
     } else {
-      attemptOut = await sendNativeAndroidPlaceOrder(desiredSplitPay).catch(() => null);
-      if (desiredSplitPay > 0 && (!attemptOut || !attemptOut.placeRes?.ok || attemptOut.json?.statusCode !== 0 || !extractUpiFromPlaceJson(attemptOut.json).upiIntentUrl)) {
-        attemptOut = await sendNativeAndroidPlaceOrder(0).catch(() => null);
-      }
+      attemptOut = await sendNativeAndroidPlaceOrder(desiredSplitPay).catch(handlePlaceOrderTransportFailure);
       if (!attemptOut || !attemptOut.placeRes?.ok || attemptOut.json?.statusCode !== 0 || !extractUpiFromPlaceJson(attemptOut.json).upiIntentUrl) {
-        attemptOut = await sendWebPaymentsPlaceOrder(desiredSplitPay).catch(() => null);
-        if (desiredSplitPay > 0 && (!attemptOut || !attemptOut.placeRes?.ok || attemptOut.json?.statusCode !== 0 || !extractUpiFromPlaceJson(attemptOut.json).upiIntentUrl)) {
-          attemptOut = await sendWebPaymentsPlaceOrder(0).catch(() => null);
-        }
+        // Keep the quoted wallet split on fallback. Never silently retry at full price.
+        attemptOut = await sendWebPaymentsPlaceOrder(desiredSplitPay).catch(handlePlaceOrderTransportFailure);
       }
     }
 
