@@ -1137,15 +1137,18 @@ async function postSwiggyAuthJson(session, endpointUrl, payload = {}, { timeoutM
     out = await sendOnce(false);
   }
 
-  // Auto-recover 2: If challenged by AWS WAF (HTTP 202 or WAF header), refresh WAF token and retry over mweb!
-  if (allowBrowserEscalation && isAwsWafChallengeResponse(out.status, out.rawText, out.headers)) {
-    try {
-      const freshWaf = await getLiveSwiggyWafToken(true);
-      if (freshWaf) {
-        session.cookieMap.set('aws-waf-token', freshWaf);
-        out = await sendOnce(false);
-      }
-    } catch {}
+  // Auto-recover 2: Zero-WAF Swiggy-Android transport switch!
+  // When mWeb is challenged by AWS WAF (HTTP 202/403 or WAF header), automatically switch
+  // to native Swiggy-Android transport headers which bypass mWeb JavaScript captcha!
+  if (
+    isAwsWafChallengeResponse(out.status, out.rawText, out.headers) ||
+    (out.status === 403 && !isCsrfMismatchResponse(out.status, out.rawText, out.data))
+  ) {
+    session.transportMode = 'android';
+    const androidOut = await sendOnce(true);
+    if (androidOut && (androidOut.status === 200 || androidOut.data?.statusCode === 0 || androidOut.data?.statusCode === 1)) {
+      out = androidOut;
+    }
   }
 
   // Auto-recover 3: Optional Stealth Browser escalation ONLY if still WAF-challenged AND local Chromium exists!

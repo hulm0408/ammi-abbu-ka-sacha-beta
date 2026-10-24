@@ -1021,6 +1021,11 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
             })).filter(([, v]) => v !== '' && v !== null && v !== undefined)
           )
         : {};
+      // DAPI/MAPI endpoints on www.swiggy.com authenticate via Cookie jar (_session_tid, tid, _sid).
+      // Sending duplicate `tid` and `token` as HTTP request headers causes Swiggy DAPI (e.g. order/all)
+      // to fail with `statusCode: 1 ("Oops!! Something went wrong")`!
+      delete androidHeaders.tid;
+      delete androidHeaders.token;
 
       let fastBody = body ? { ...body } : null;
       if (method !== 'GET' && fastBody && fastBody._csrf === undefined) {
