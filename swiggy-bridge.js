@@ -422,6 +422,9 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
     : 1;
   const chosenMeta = EVENT_OFFER_OPTIONS[chosenVal] || EVENT_OFFER_OPTIONS[1];
   const accSig = `${String(account.id || account.phone || account.customerId || account.token || (account.cookies || '').slice(0, 60))}:v${chosenVal}`;
+  if (!force && !forcePatch && account.offers && (account.offers.bothClaimed || account.offers.lateNight?.slotState)) {
+    return account.offers;
+  }
   if (!force && !forcePatch && accSig && offerClaimCache.has(accSig)) {
     const prev = offerClaimCache.get(accSig);
     if (Date.now() - prev.ts < OFFER_CLAIM_TTL_MS) return prev.result;

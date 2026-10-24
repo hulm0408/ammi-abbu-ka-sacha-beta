@@ -5567,12 +5567,15 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       return { fetchedAddrs, earlySaved, resolvedAddr };
     })();
 
+    const existingOffers = (account.offers && (account.offers.bothClaimed || account.offers.lateNight?.slotState)) ? account.offers : null;
     const [auth, eventsClaimRes, cartMeta, addrBundle, inspectedInitialCart] = await Promise.all([
       getSwiggySessionAuth(account, false),
-      Promise.race([
-        claimSwiggyBreakfastAndLateNightOffers(account).catch(() => null),
-        new Promise(r => setTimeout(r, 450))
-      ]),
+      existingOffers
+        ? Promise.resolve(existingOffers)
+        : Promise.race([
+            claimSwiggyBreakfastAndLateNightOffers(account).catch(() => null),
+            new Promise(r => setTimeout(r, 450))
+          ]),
       order.cart && !alreadyHasResolvedCart
         ? resolveSwiggyLink(order.cart).catch(() => null)
         : Promise.resolve(null),
