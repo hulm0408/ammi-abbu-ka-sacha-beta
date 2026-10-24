@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import puppeteer from 'puppeteer-core';
 import QRCode from 'qrcode';
-import { getDb, saveDb, updateAccount } from './store.js';
+import { getDb, saveDb, updateAccount, syncAccountsJsonMirror } from './store.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken } from './swiggy-bridge.js';
@@ -1021,11 +1021,13 @@ export async function dapiFetch(accountOrCookies, endpoint, options = {}) {
             })).filter(([, v]) => v !== '' && v !== null && v !== undefined)
           )
         : {};
-      // DAPI/MAPI endpoints on www.swiggy.com authenticate via Cookie jar (_session_tid, tid, _sid).
-      // Sending duplicate `tid` and `token` as HTTP request headers causes Swiggy DAPI (e.g. order/all)
+      // DAPI order/all endpoint on www.swiggy.com authenticates via Cookie jar (_session_tid, tid, _sid).
+      // Sending duplicate `tid` and `token` as HTTP request headers causes order/all
       // to fail with `statusCode: 1 ("Oops!! Something went wrong")`!
-      delete androidHeaders.tid;
-      delete androidHeaders.token;
+      if (/^order\/all(?:\?|$)/i.test(relEndpoint)) {
+        delete androidHeaders.tid;
+        delete androidHeaders.token;
+      }
 
       let fastBody = body ? { ...body } : null;
       if (method !== 'GET' && fastBody && fastBody._csrf === undefined) {
@@ -3654,13 +3656,32 @@ export function validateTrackingUrlForOrder(url, order, source = '') {
   if (!url || typeof url !== 'string') return false;
   const trimmed = url.trim();
   if (!trimmed) return false;
-  try { const p = new URL(trimmed); if (p.protocol !== 'https:' && p.protocol !== 'http:') return false; if (p.username || p.password || p.port) return false; } catch { return false; }
-  const allowProviderShort = source === 'SWIGGY_API';
+  try {
+    const p = new URL(trimmed);
+    if (p.protocol !== 'https:' && p.protocol !== 'http:') return false;
+    if (p.username || p.password || p.port) return false;
+  } catch {
+    return false;
+  }
+  const allowProviderShort = source === 'SWIGGY_API' || !source || source === 'BOSS_PROVIDED';
   if (!isOfficialSwiggyTrackingUrl(trimmed, { allowProviderShortLink: allowProviderShort })) return false;
   const orderId = String(order?.swiggyOrderId || order?.pendingSwiggyOrderId || order?.id || '').trim();
-  if (isFabricatedTrackingUrl(trimmed, orderId)) return false;
-  if (trimmed === 'https://www.swiggy.com/orders' || trimmed === 'https://www.swiggy.com/track') return false;
-  try { const parsed = new URL(trimmed); const qOrderId = parsed.searchParams.get('order_id') || parsed.searchParams.get('orderId') || parsed.searchParams.get('orderid'); if (qOrderId && orderId && qOrderId !== orderId) return false; } catch {}
+  if (source !== 'SWIGGY_API' && isFabricatedTrackingUrl(trimmed, orderId)) return false;
+  if (source === 'SWIGGY_API') {
+    try {
+      const p = new URL(trimmed);
+      const h = p.hostname.toLowerCase();
+      if ((h === 'r.swiggy.com' || h.endsWith('.r.swiggy.com')) && orderId && (p.pathname === `/${orderId}` || p.pathname === `/${orderId}/`)) {
+        return false;
+      }
+    } catch {}
+  }
+  if (trimmed === 'https://www.swiggy.com/orders' || trimmed === 'https://www.swiggy.com/track' || trimmed === 'https://www.swiggy.com/' || trimmed === 'https://www.swiggy.com') return false;
+  try {
+    const parsed = new URL(trimmed);
+    const qOrderId = parsed.searchParams.get('order_id') || parsed.searchParams.get('orderId') || parsed.searchParams.get('orderid');
+    if (qOrderId && orderId && qOrderId !== orderId) return false;
+  } catch {}
   return true;
 }
 
@@ -3681,11 +3702,30 @@ export function hasValidTrackingForOrder(order) {
 }
 
 export function getStoredSwiggyTrackingUrl(order) {
-  const source = String(order?.trackingLinkSource || '');
-  if (!['SWIGGY_API', 'BOSS_PROVIDED'].includes(source)) return '';
-  const value = String(order?.trackingLink || '').trim();
-  if (!validateTrackingUrlForOrder(value, order, source)) return '';
-  return isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink: source === 'SWIGGY_API' }) ? value : '';
+  if (!order || typeof order !== 'object') return '';
+  const source = String(order?.trackingLinkSource || '').trim();
+  const candidate = String(
+    order?.trackingLink ||
+    order?.trackingUrl ||
+    order?.nativeShareUrl ||
+    order?.shareTrackUrl ||
+    order?.swiggyWebTrackUrl ||
+    order?.shareable_url ||
+    ''
+  ).trim();
+  if (!candidate) return '';
+
+  const effectiveSource = source || 'SWIGGY_API';
+  if (!['SWIGGY_API', 'BOSS_PROVIDED'].includes(effectiveSource)) return '';
+
+  if (!validateTrackingUrlForOrder(candidate, order, effectiveSource)) return '';
+  const allowShort = effectiveSource === 'SWIGGY_API' || effectiveSource === 'BOSS_PROVIDED';
+  const valid = isOfficialSwiggyTrackingUrl(candidate, { allowProviderShortLink: allowShort }) ? candidate : '';
+  if (valid && !order.trackingLink) {
+    order.trackingLink = valid;
+    order.trackingLinkSource = effectiveSource;
+  }
+  return valid;
 }
 
 function cleanCandidateUrlToken(rawToken) {
@@ -3799,7 +3839,7 @@ export function extractSwiggyProvidedTrackingUrl(...sources) {
       for (const url of extractTrackingCandidateUrlsFromString(trimmed)) {
         const isExplicitTrackUrl = /r\.swiggy\.com\//i.test(url) || /swiggy\.com\/(?:(?:swiggy\/)?ofo\/track|track-order|order-track|orders?\/track)\//i.test(url);
         const isTrackingContext = /track|tracking|share|ofo/i.test(context);
-        const isBlockedField = NON_TRACKING_KEY_CONTEXT_RE.test(context) && !/(?:ofo\/track|r\.swiggy\.com\/.*\/track\/)/i.test(url);
+        const isBlockedField = NON_TRACKING_KEY_CONTEXT_RE.test(context) && !/(?:ofo\/track|r\.swiggy\.com\/(?:.*\/)?track\/|r\.swiggy\.com\/[a-z0-9_-]+)/i.test(url);
         if (isBlockedField) continue;
         if ((isTrackingContext || isExplicitTrackUrl) &&
             isOfficialSwiggyTrackingUrl(url, { allowProviderShortLink: isTrackingContext || /r\.swiggy\.com/i.test(url) })) {
@@ -7681,7 +7721,7 @@ export function extractOrderShareUrlDeep(...sources) {
   const consider = (rawValue, keyContext = '') => {
     for (const value of extractTrackingCandidateUrlsFromString(rawValue)) {
       if (!isSwiggyOwnedOrderHost(value)) continue;
-      const isBlockedField = NON_TRACKING_KEY_CONTEXT_RE.test(keyContext) && !/(?:ofo\/track|r\.swiggy\.com\/.*\/track\/)/i.test(value);
+      const isBlockedField = NON_TRACKING_KEY_CONTEXT_RE.test(keyContext) && !/(?:ofo\/track|r\.swiggy\.com\/(?:.*\/)?track\/|r\.swiggy\.com\/[a-z0-9_-]+)/i.test(value);
       if (isBlockedField) continue;
       let pathAndQuery = '';
       try {
@@ -7761,8 +7801,11 @@ async function fetchSecondaryOrderSharePayloads(accountOrCookies, orderId, custo
     { route: `order/track?order_id=${encodeURIComponent(cleanId)}`, opts: { timeoutMs, useMobileWebUa: true } },
     { route: `order/details?order_id=${encodeURIComponent(cleanId)}&type=full&version=V2`, opts: { timeoutMs, useMobileWebUa: true } },
     { route: `order/share?order_id=${encodeURIComponent(cleanId)}`, opts: { timeoutMs } },
+    { route: `order/shareableLink?order_id=${encodeURIComponent(cleanId)}`, opts: { timeoutMs } },
     { route: `ofo/share?order_id=${encodeURIComponent(cleanId)}`, opts: { timeoutMs } },
     { route: `mapi/order/details?order_id=${encodeURIComponent(cleanId)}&type=full&version=V2`, opts: { timeoutMs } },
+    { route: `mapi/order/share?order_id=${encodeURIComponent(cleanId)}`, opts: { timeoutMs } },
+    { route: `mapi/order/shareableLink?order_id=${encodeURIComponent(cleanId)}`, opts: { timeoutMs } },
     { route: `mapi/order/track?order_id=${encodeURIComponent(cleanId)}&version=V2`, opts: { timeoutMs } },
     ...(allowMapiTrackV4
       ? [
@@ -8387,6 +8430,7 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
     deliveryOtp,
     nativeShareUrl,
     swiggyWebTrackUrl: nativeShareUrl || null,
+    trackingUrl: nativeShareUrl || null,
     swiggyAppDeepLink: null
   };
 }

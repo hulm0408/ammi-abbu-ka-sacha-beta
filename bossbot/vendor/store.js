@@ -565,7 +565,7 @@ export async function hydrateAccountsFromCloudVault() {
   }
 }
 
-function syncAccountsJsonMirror(data, { skipCloudPush = false } = {}) {
+export function syncAccountsJsonMirror(data, { skipCloudPush = false } = {}) {
   try {
     const accounts = data?.config?.accounts || {};
     const mirrorList = Object.entries(accounts)

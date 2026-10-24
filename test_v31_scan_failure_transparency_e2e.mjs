@@ -126,6 +126,8 @@ try {
     // The other-bot fact: the same past-exp token was serving calls at 3:14 PM.
     deadCookieReject = false;
     captured.length = 0;
+    delete expiredAcc.sessionExpired;
+    expiredAcc.isLoggedIn = true;
     const scan = await scanOrderAcrossAccounts(ORDER_ID, { budgetMs: 15000, deep: true, getAccountsFn: () => ({ acc_exp: expiredAcc }) });
     assert.strictEqual(scan.hasOrder, true, `order must be found via the past-exp-tid account: status=${scan.status} ${JSON.stringify(scan.failures)}`);
     assert.strictEqual((scan.failures || []).length, 0, 'no failure may be recorded when Swiggy accepts the calls');
@@ -137,6 +139,8 @@ try {
   await check('When the account is rejected, NOT_FOUND carries the per-account failure + okScanned=0', async () => {
     // Fresh cookie value → fresh `sig` → bypasses the 45s sessionAuthCache
     // that test 2 (accepted) populated for the identical cookies.
+    delete expiredAcc.sessionExpired;
+    expiredAcc.isLoggedIn = true;
     const freshSigAcc = { ...expiredAcc, cookies: expiredAcc.cookies.replace('swiggy_dead_marker=1', 'swiggy_dead_marker=2') };
     const scan = await scanOrderAcrossAccounts('259999999999999', { budgetMs: 12000, deep: true, getAccountsFn: () => ({ acc_exp: freshSigAcc }) });
     assert.strictEqual(scan.hasOrder, false);

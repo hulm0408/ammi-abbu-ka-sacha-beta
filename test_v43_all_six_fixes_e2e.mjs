@@ -43,6 +43,11 @@ const expiredAccount = {
 };
 
 const db = getDb();
+if (db.config.deletedAccounts) {
+  delete db.config.deletedAccounts['acc_expired_1'];
+  delete db.config.deletedAccounts['acc_9876543210'];
+  delete db.config.deletedAccounts['9876543210'];
+}
 db.config.accounts['acc_expired_1'] = expiredAccount;
 saveDb(db);
 
@@ -168,8 +173,14 @@ const couponRes = await applyLiveCouponToOrder(activeAccount, dummyOrder, 'SWIGG
 ok(couponRes?.code !== 'DELIVERY_ADDRESS_NOT_BOUND', 'Bound address passes validation and executes coupon engines');
 
 // Auto Account Selection with active pool
-db.config.accounts['acc_active_hero'] = activeAccount;
-saveDb(db);
+const heroDb = getDb();
+if (heroDb.config.deletedAccounts) {
+  delete heroDb.config.deletedAccounts['acc_active_hero'];
+  delete heroDb.config.deletedAccounts['acc_9888877777'];
+  delete heroDb.config.deletedAccounts['9888877777'];
+}
+heroDb.config.accounts['acc_active_hero'] = activeAccount;
+saveDb(heroDb);
 
 const autoPick = await findBestMaxCouponAccountForOrder({
   id: 'ORD_AUTO_PICK_TEST',
@@ -190,8 +201,14 @@ console.log('\n--- 5. Order Count Verification & Increment ---');
 activeAccount.totalOrdersCount = 2;
 activeAccount.cachedTotalOrdersCount = 2;
 activeAccount.isZeroOrderAccount = false;
-db.config.accounts['acc_active_hero'] = activeAccount;
-saveDb(db);
+const countDb = getDb();
+if (countDb.config.deletedAccounts) {
+  delete countDb.config.deletedAccounts['acc_active_hero'];
+  delete countDb.config.deletedAccounts['acc_9888877777'];
+  delete countDb.config.deletedAccounts['9888877777'];
+}
+countDb.config.accounts['acc_active_hero'] = activeAccount;
+saveDb(countDb);
 
 strictEqual(getDb().config.accounts['acc_active_hero'].totalOrdersCount, 2, 'Total orders count persisted in DB');
 strictEqual(getDb().config.accounts['acc_active_hero'].isZeroOrderAccount, false, 'isZeroOrderAccount updated');
