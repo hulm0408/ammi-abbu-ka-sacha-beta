@@ -490,7 +490,11 @@ export function buildBossOrderCard(order, db = getDb()) {
 
     rows.push([
       Markup.button.callback('✓ Accept Order', `boss_action_accept_${order.id}`),
+      Markup.button.callback('❌ Cancel Order', `boss_action_cancel_${order.id}`),
+    ]);
+    rows.push([
       Markup.button.callback('× Reject Order', `boss_action_sorry_${order.id}`),
+      Markup.button.callback('▣ View User QR Code', `boss_get_qr_${order.id}`),
     ]);
     if (order.cart || order.address) {
       rows.push([
@@ -524,7 +528,11 @@ export function buildBossOrderCard(order, db = getDb()) {
     ]);
     rows.push([
       Markup.button.callback('✓ Mark done', `boss_action_done_${order.id}`),
+      Markup.button.callback('❌ Cancel Order', `boss_action_cancel_${order.id}`),
+    ]);
+    rows.push([
       Markup.button.callback('× Reject order', `boss_action_sorry_${order.id}`),
+      Markup.button.callback('▣ View User QR Code', `boss_get_qr_${order.id}`),
     ]);
   } else {
     rows.push([Markup.button.callback('Message user', `boss_text_user_${order.id}`)]);
@@ -544,6 +552,16 @@ export function buildBossOrderCard(order, db = getDb()) {
       }
       rows.push([
         Markup.button.callback('🔗 Extract Delivery (All IDs)', `fwd_extract_all_${order.id}`),
+      ]);
+    }
+    if (order.status !== 'CANCELLED' && order.status !== 'REJECTED') {
+      rows.push([
+        Markup.button.callback('❌ Cancel Order', `boss_action_cancel_${order.id}`),
+        Markup.button.callback('▣ View User QR Code', `boss_get_qr_${order.id}`),
+      ]);
+    } else if (order.status === 'CANCELLED') {
+      rows.push([
+        Markup.button.callback('× View Cancelled Orders', 'boss_view_cancelled_orders')
       ]);
     }
     if (order.cart || order.address) {

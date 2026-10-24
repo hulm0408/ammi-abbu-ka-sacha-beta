@@ -660,7 +660,7 @@ try {
       status: 'Out for delivery'
     })
   });
-  await new Promise(resolve => setTimeout(resolve, 35));
+  await new Promise(resolve => setTimeout(resolve, 120));
   stopOrderDeliveryInfoPoller(pollOrderId);
   globalThis.fetch = realFetchForPoll;
   delete process.env.SMS_WEBHOOK_URL;

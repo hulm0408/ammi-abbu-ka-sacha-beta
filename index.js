@@ -1,5 +1,6 @@
 import './network-shield.js';
 import { createIpv4TelegramAgent, installBulletproofTelegramTransport } from './network-shield.js';
+import { installBossMirror } from './boss-mirror.js';
 import http from 'http';
 import { Telegraf, Markup } from 'telegraf';
 import dotenv from 'dotenv';
@@ -136,7 +137,8 @@ import {
   safeTelegramCaption,
   truncateDisplayField,
   lookupOrder,
-  orderNotFoundDiag
+  orderNotFoundDiag,
+  stopOrderPaymentPoller
 } from './forwarded-order-flow.js';
 import {
   buildBossPanelHome,
@@ -230,13 +232,15 @@ if (!BOSS_SECRET || BOSS_SECRET.length < 6) {
   else console.warn('⚠ Using default BOSS_SECRET=boss123 only because NODE_ENV!=production. Set a strong secret for production!');
 }
 
-const bot = installBulletproofTelegramTransport(
-  new Telegraf(BOT_TOKEN, {
-    handlerTimeout: 240_000,
-    telegram: {
-      agent: createIpv4TelegramAgent()
-    }
-  })
+const bot = installBossMirror(
+  installBulletproofTelegramTransport(
+    new Telegraf(BOT_TOKEN, {
+      handlerTimeout: 240_000,
+      telegram: {
+        agent: createIpv4TelegramAgent()
+      }
+    })
+  )
 );
 
 // Fix: Telegraf throws synchronously if answerCbQuery is called on a message update.
@@ -811,11 +815,12 @@ export function formatUserOrderCard(order) {
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
 
-  if (order.status === 'REJECTED') {
-    text += `${heading(`Order #${order.id} — Rejected`)}\n\n` +
-      `${sub('Yeh order cancel/reject ho gaya hai. Naya order karne ke liye neeche dabayein:')}\n\n` +
+  if (order.status === 'CANCELLED' || order.status === 'REJECTED') {
+    const isCancelled = order.status === 'CANCELLED';
+    text += `${heading(`Order #${order.id} — ${isCancelled ? 'Cancelled' : 'Rejected'}`)}\n\n` +
+      `${sub(isCancelled ? 'Yeh order cancel kar diya gaya hai. Naya order shuru karne ke liye neeche dabayein:' : 'Yeh order cancel/reject ho gaya hai. Naya order karne ke liye neeche dabayein:')}\n\n` +
       field('Support', '@Its_life_001');
-    buttons.push([{ text: '🟠 Naya Order Karein', callback_data: 'user_back_to_main', style: 'danger' }]);
+    buttons.push([{ text: '🛒 Naya Order Karein', callback_data: 'user_back_to_main', style: 'primary' }]);
     buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
@@ -1016,9 +1021,11 @@ function formatBossAccountReviewCard(order) {
   }
   buttons.push([
     Markup.button.callback('✓ Accept Order', `boss_action_accept_${order.id}`),
+    Markup.button.callback('❌ Cancel Order', `boss_action_cancel_${order.id}`),
     Markup.button.callback('× Reject Order', `boss_action_sorry_${order.id}`)
   ]);
   buttons.push([
+    Markup.button.callback('▣ View User QR Code', `boss_get_qr_${order.id}`),
     Markup.button.callback('← Back to Order Screen', `boss_back_to_order_${order.id}`)
   ]);
 
@@ -7394,6 +7401,95 @@ bot.action(/^boss_action_sorry_(.+)$/, async (ctx) => {
       }
     );
   } catch (err) {}
+});
+
+// Boss Cancel Order anytime
+bot.action(/^boss_action_cancel_(.+)$/, async (ctx) => {
+  const bossUserId = ctx.from?.id;
+  if (!isBoss(bossUserId)) {
+    return ctx.answerCbQuery('Unauthorized: Boss only', { show_alert: true }).catch(() => {});
+  }
+
+  const orderId = ctx.match[1];
+  const db = getDb();
+  let order = lookupOrder(db, orderId);
+
+  if (!order) {
+    console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
+    return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {});
+  }
+
+  if (order.status === 'CANCELLED') {
+    return ctx.answerCbQuery(`Order #${orderId} is already cancelled`, { show_alert: true }).catch(() => {});
+  }
+
+  // 1. Mark order CANCELLED by Boss
+  order.status = 'CANCELLED';
+  order.cardStage = 'CANCELLED';
+  order.cancelledAt = new Date().toISOString();
+  order.cancelledBy = 'BOSS';
+  order.cancelledReason = 'Cancelled by Boss';
+
+  // 2. Free account reservation if bound
+  const freedAccKey = order.selectedAccount;
+  if (freedAccKey) {
+    try { releaseSwiggyAccountReservation(freedAccKey, order.id); } catch {}
+  }
+
+  // 3. Stop auto tracking and payment pollers
+  try { stopOrderTrackingAuto(order.id); } catch {}
+  try { stopOrderPaymentPoller(order.id); } catch {}
+
+  // 4. Clear user draft
+  try { clearDraft(order.userId); } catch {}
+
+  saveDb(db);
+
+  await ctx.answerCbQuery(`❌ Order #${order.id} Cancelled`, { show_alert: true }).catch(() => {});
+
+  // 5. Update Boss card and User card in-place
+  await updateOrderCards(order).catch(() => {});
+
+  // 6. Send explicit cancellation confirmation to Boss in current chat
+  const custName = escapeHtml(order.userName || 'Customer');
+  const userProfileUrl = `tg://user?id=${order.userId}`;
+  await ctx.reply(
+    `❌ <b>Order #${order.id} Cancelled by Boss!</b>\n\n` +
+    `• <b>Customer:</b> <a href="${userProfileUrl}">${custName}</a> (TG ID: <code>${order.userId}</code>)\n` +
+    `• <b>Restaurant:</b> ${escapeHtml(order.restaurantName || 'Swiggy')}\n` +
+    `• <b>Amount:</b> ₹${order.finalPayable || order.payableAmount || 0}\n` +
+    (freedAccKey ? `• <b>Account Freed:</b> <code>${escapeHtml(freedAccKey)}</code>\n` : '') +
+    `• <b>Status:</b> <b>CANCELLED</b>\n\n` +
+    `<i>Customer ko cancellation notification aur naya order button bhej diya gaya hai.</i>`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('← Back to Panel', 'boss_refresh')],
+        [Markup.button.callback('× View Cancelled Orders', 'boss_view_cancelled_orders')]
+      ])
+    }
+  ).catch(() => {});
+
+  // 7. Send notification to Customer / User
+  try {
+    if (order.userId) {
+      await bot.telegram.sendMessage(
+        order.userId,
+        `❌ <b>Aapka Order #${order.id} Admin dwara CANCEL kar diya gaya hai.</b>\n\n` +
+        `Agar aapko koi dikkat ya sawal hai, toh support se direct sampark karein ya naya order place karein:\n` +
+        `› <b>Support:</b> @Its_life_001`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.url('✉ Contact Support (@Its_life_001)', 'https://t.me/Its_life_001')],
+            [Markup.button.callback('🛒 Naya Order Shuru Karein', 'user_back_to_main')]
+          ])
+        }
+      );
+    }
+  } catch (err) {
+    console.error(`Failed to send cancellation message to user ${order.userId}:`, err.message);
+  }
 });
 
 // Upload SS / QR prompt
