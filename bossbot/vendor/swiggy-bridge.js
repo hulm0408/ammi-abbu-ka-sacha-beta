@@ -463,14 +463,21 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
 
     const syncSingleCampaign = async (campaignId, referer) => {
       for (let tryIdx = 0; tryIdx < 2; tryIdx++) {
-        if (tryIdx > 0) await new Promise(r => setTimeout(r, 5500));
+        if (tryIdx > 0) await new Promise(r => setTimeout(r, 4000));
 
-        const statusRes = await fetch(`https://events.swiggy.com/api/notify?campaign=${encodeURIComponent(campaignId)}`, {
-          headers: baseHeaders,
-          signal: AbortSignal.timeout(5500)
-        });
-        if ((statusRes.status === 403 || statusRes.status === 429) && tryIdx === 0) continue;
-        const statusJson = await statusRes.json().catch(() => ({}));
+        let statusRes = null;
+        let statusJson = {};
+        try {
+          statusRes = await fetch(`https://events.swiggy.com/api/notify?campaign=${encodeURIComponent(campaignId)}`, {
+            headers: baseHeaders,
+            signal: AbortSignal.timeout(5500)
+          });
+          if ((statusRes.status === 403 || statusRes.status === 429) && tryIdx === 0) continue;
+          statusJson = await statusRes.json().catch(() => ({}));
+        } catch (fetchErr) {
+          if (tryIdx === 0) continue;
+          return { res: { ok: false, status: 500, statusText: fetchErr.message }, json: { message: fetchErr.message }, statusJson: {} };
+        }
 
         const isSubscribed = Boolean(statusJson?.shouldNotify);
         const curVal = Number(statusJson?.value || 0);
@@ -483,28 +490,42 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
 
         // Need either `POST` (first time subscribing) or `PATCH` (switching reward option 1..4)!
         const writeMethod = isSubscribed ? 'PATCH' : 'POST';
-        const writeRes = await fetch('https://events.swiggy.com/api/notify', {
-          method: writeMethod,
-          headers: { ...baseHeaders, 'Referer': referer },
-          body: JSON.stringify({ campaign: campaignId, value: chosenVal }),
-          signal: AbortSignal.timeout(6500)
-        });
-        if ((writeRes.status === 403 || writeRes.status === 429) && tryIdx === 0) continue;
-        const writeJson = await writeRes.json().catch(() => ({}));
-
-        // If `POST` says already subscribed with a different value, do a single `PATCH` to update `value`:
-        const alreadyMsg = String(writeJson?.message || '').toLowerCase().includes('already');
-        if (writeMethod === 'POST' && alreadyMsg && Number(writeJson?.value || 0) !== chosenVal) {
-          const patchRes = await fetch('https://events.swiggy.com/api/notify', {
-            method: 'PATCH',
+        let writeRes = null;
+        let writeJson = {};
+        try {
+          writeRes = await fetch('https://events.swiggy.com/api/notify', {
+            method: writeMethod,
             headers: { ...baseHeaders, 'Referer': referer },
             body: JSON.stringify({ campaign: campaignId, value: chosenVal }),
             signal: AbortSignal.timeout(6500)
           });
-          if ((patchRes.status === 403 || patchRes.status === 429) && tryIdx === 0) continue;
-          const patchJson = await patchRes.json().catch(() => ({}));
-          if (patchRes.ok) prevLockedMap[campaignId] = chosenVal;
-          return { res: patchRes, json: patchJson, statusJson: { ...statusJson, shouldNotify: true, value: chosenVal } };
+          if ((writeRes.status === 403 || writeRes.status === 429) && tryIdx === 0) continue;
+          writeJson = await writeRes.json().catch(() => ({}));
+        } catch (fetchErr) {
+          if (tryIdx === 0) continue;
+          return { res: { ok: false, status: 500, statusText: fetchErr.message }, json: { message: fetchErr.message }, statusJson: {} };
+        }
+
+        // If `POST` says already subscribed with a different value, do a single `PATCH` to update `value`:
+        const alreadyMsg = String(writeJson?.message || '').toLowerCase().includes('already');
+        if (writeMethod === 'POST' && alreadyMsg && Number(writeJson?.value || 0) !== chosenVal) {
+          let patchRes = null;
+          let patchJson = {};
+          try {
+            patchRes = await fetch('https://events.swiggy.com/api/notify', {
+              method: 'PATCH',
+              headers: { ...baseHeaders, 'Referer': referer },
+              body: JSON.stringify({ campaign: campaignId, value: chosenVal }),
+              signal: AbortSignal.timeout(6500)
+            });
+            if ((patchRes.status === 403 || patchRes.status === 429) && tryIdx === 0) continue;
+            patchJson = await patchRes.json().catch(() => ({}));
+            if (patchRes.ok) prevLockedMap[campaignId] = chosenVal;
+            return { res: patchRes, json: patchJson, statusJson: { ...statusJson, shouldNotify: true, value: chosenVal } };
+          } catch (fetchErr) {
+            if (tryIdx === 0) continue;
+            return { res: { ok: false, status: 500, statusText: fetchErr.message }, json: { message: fetchErr.message }, statusJson: {} };
+          }
         }
 
         if (writeRes.ok || alreadyMsg) {
@@ -654,6 +675,13 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
         rawMessage: lnJson.message || '',
         message: lnDesc.msg
       }
+    };
+    claimOut.offers = {
+      bothClaimed: claimOut.bothClaimed,
+      breakfast: claimOut.breakfast,
+      lateNight: claimOut.lateNight,
+      lockedMap: claimOut.lockedMap,
+      offerValue: claimOut.offerValue
     };
     if (accSig) offerClaimCache.set(accSig, { result: claimOut, ts: Date.now() });
     return claimOut;

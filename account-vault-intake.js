@@ -265,30 +265,40 @@ export async function ingestAndPersistRawAccountTexts(
     // Immediately flush to persistent Cloud Vault (`bot-vault` branch) so Render restarts NEVER lose any file!
     await Promise.resolve(syncVaultFn(getDb())).catch(() => {});
 
-    // Trigger immediate evaluation & pre-fetch of Breakfast + Late Night offers + possible discounts on login!
-    Promise.allSettled(
-      savedAccounts.slice(0, 25).map(async ({ account, key }) => {
-        try {
-          const claimOut = await claimOffersFn(account, {
-            force: true,
-            offerValue: account.preferredOfferValue || 1
-          });
-          const freshDb = getDb();
-          const target = freshDb.config?.accounts?.[key] || account;
-          if (target && claimOut) {
-            target.offers = claimOut.offers || target.offers || {};
-            target.hasBreakfast = Boolean(claimOut.breakfast?.status === 'CLAIMED');
-            target.hasLateNight = Boolean(claimOut.lateNight?.status === 'CLAIMED');
-            let possibleDiscounts = (target.isZeroOrderAccount || target.totalOrdersCount === 0) ? 1 : 0;
-            if (target.hasBreakfast) possibleDiscounts += 1;
-            if (target.hasLateNight) possibleDiscounts += 1;
-            if (target.preferredOfferValue > 0) possibleDiscounts += 1;
-            target.possibleDiscountsCount = possibleDiscounts;
-            saveDb(freshDb);
-          }
-        } catch {}
-      })
-    ).catch(() => {});
+    // Trigger immediate evaluation & pre-fetch of Breakfast + Late Night offers in gentle batches (2 at a time)!
+    (async () => {
+      const targets = savedAccounts.slice(0, 25);
+      const BATCH_SZ = 2;
+      for (let i = 0; i < targets.length; i += BATCH_SZ) {
+        const chunk = targets.slice(i, i + BATCH_SZ);
+        await Promise.allSettled(
+          chunk.map(async ({ account, key }) => {
+            try {
+              const claimOut = await claimOffersFn(account, {
+                force: true,
+                offerValue: account.preferredOfferValue || 1
+              });
+              const freshDb = getDb();
+              const target = freshDb.config?.accounts?.[key] || account;
+              if (target && claimOut) {
+                target.offers = claimOut.offers || claimOut;
+                target.hasBreakfast = Boolean(claimOut.breakfast?.status === 'CLAIMED');
+                target.hasLateNight = Boolean(claimOut.lateNight?.status === 'CLAIMED');
+                let possibleDiscounts = (target.isZeroOrderAccount || target.totalOrdersCount === 0) ? 1 : 0;
+                if (target.hasBreakfast) possibleDiscounts += 1;
+                if (target.hasLateNight) possibleDiscounts += 1;
+                if (target.preferredOfferValue > 0) possibleDiscounts += 1;
+                target.possibleDiscountsCount = possibleDiscounts;
+                saveDb(freshDb);
+              }
+            } catch {}
+          })
+        );
+        if (i + BATCH_SZ < targets.length) {
+          await new Promise(r => setTimeout(r, 350));
+        }
+      }
+    })().catch(() => {});
   }
 
   const allVaultActive = Object.values(getDb().config?.accounts || {}).filter(a => a?.isLoggedIn);

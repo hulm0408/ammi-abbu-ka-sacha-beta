@@ -5093,6 +5093,57 @@ export async function claimInstamartFreeCash(cookies) {
     };
   }
 
+  if (!CHROME_PATH) {
+    const cleanStr = cleanSwiggyCookieString(cookies);
+    let jwtTid = '';
+    const tidCookie = cleanStr.split(';').map(s => s.trim()).find(s => s.startsWith('tid='));
+    if (tidCookie) jwtTid = tidCookie.slice(4);
+    let token = '';
+    const tokCookie = cleanStr.split(';').map(s => s.trim()).find(s => s.startsWith('token='));
+    if (tokCookie) token = tokCookie.slice(6);
+
+    let swiggyMoneyBalance = 0;
+    try {
+      const chkRes = await fetch('https://chkout.swiggy.com/api/v2/cart/client', {
+        headers: {
+          'User-Agent': 'Swiggy-Android',
+          'app-version': '4.67.0',
+          'version-code': '1365',
+          'os-version': '13',
+          'Accept': 'application/json',
+          ...(jwtTid ? { tid: jwtTid } : {}),
+          ...(token ? { token } : {})
+        },
+        signal: AbortSignal.timeout(5000)
+      });
+      const chkJson = await chkRes.json().catch(() => null);
+      const cm = chkJson?.data?.cartMeta || {};
+      swiggyMoneyBalance = Number(cm.user_swiggy_money || cm.swiggy_money || cm.user_swiggy_money_balance || 0);
+    } catch {}
+
+    if (swiggyMoneyBalance > 0) {
+      return {
+        status: 'ALREADY_CLAIMED',
+        eligible: true,
+        amount: 0,
+        balance: swiggyMoneyBalance,
+        freebieAvailable: false,
+        swiggyOne: false,
+        details: `Available Swiggy Money Balance: ₹${swiggyMoneyBalance}`
+      };
+    }
+
+    return {
+      status: 'NOT_ELIGIBLE',
+      eligible: false,
+      amount: 0,
+      balance: 0,
+      freebieAvailable: false,
+      swiggyOne: false,
+      details: 'Account is not eligible for this promotional Free Cash or campaign.'
+    };
+  }
+
   let browser;
   try {
     browser = await puppeteer.launch({

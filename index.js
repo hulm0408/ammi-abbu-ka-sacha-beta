@@ -2793,12 +2793,12 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
       try {
         const claimOut = await claimSwiggyBreakfastAndLateNightOffers(accTarget, { force: true, offerValue: 1 });
         if (claimOut) {
-          accTarget.offers = claimOut.offers || accTarget.offers || {};
+          accTarget.offers = claimOut.offers || claimOut;
           accTarget.hasBreakfast = Boolean(claimOut.breakfast?.status === 'CLAIMED');
           accTarget.hasLateNight = Boolean(claimOut.lateNight?.status === 'CLAIMED');
           if (!accInfo.offers) accInfo.offers = {};
-          if (claimOut.offers?.lateNight) accInfo.offers.lateNight = claimOut.offers.lateNight;
-          if (claimOut.offers?.breakfast) accInfo.offers.breakfast = claimOut.offers.breakfast;
+          accInfo.offers.lateNight = claimOut.lateNight || claimOut.offers?.lateNight;
+          accInfo.offers.breakfast = claimOut.breakfast || claimOut.offers?.breakfast;
         }
       } catch (e) {}
     }
@@ -3130,8 +3130,13 @@ bot.action(/^boss_retry_claim_(.+)$/, async (ctx) => {
   if (!acc) return ctx.reply('× Account not found.');
 
   const retryWait = await ctx.reply(`◷ <i>Swiggy Breakfast & Late Night offers claim request process ho rahi hai for <b>${escapeHtml(acc.name || accKey)}</b>...</i>`, { parse_mode: 'HTML' });
-  const claimRes = await claimSwiggyBreakfastAndLateNightOffers(acc);
+  const claimRes = await claimSwiggyBreakfastAndLateNightOffers(acc, {
+    force: true,
+    offerValue: acc.preferredOfferValue || 1
+  });
   acc.offers = claimRes;
+  acc.hasBreakfast = Boolean(claimRes.breakfast?.status === 'CLAIMED');
+  acc.hasLateNight = Boolean(claimRes.lateNight?.status === 'CLAIMED');
   saveDb(db);
   try { await bot.telegram.deleteMessage(ctx.chat.id, retryWait.message_id); } catch (e) {}
 
@@ -6471,25 +6476,36 @@ async function runBossEventOffersClaim(ctx, chosenOfferValue = null) {
     { parse_mode: 'HTML' }
   );
 
-  // Claim ALL accounts IN PARALLEL (`Promise.all`) across today + next 14 days!
-  const settled = await Promise.all(
-    activeEntries.map(async ([key, acc]) => {
-      const accLabel = `${acc.phone || key}${acc.name ? ` (${acc.name})` : ''}`;
-      if (effectiveVal) acc.preferredOfferValue = effectiveVal;
-      try {
-        const claimRes = await claimSwiggyBreakfastAndLateNightOffers(acc, {
-          force: true,
-          forcePatch: Boolean(effectiveVal),
-          offerValue: effectiveVal || acc.preferredOfferValue || 1
-        });
-        acc.offers = claimRes;
-        if (claimRes.sessionExpired) acc.isLoggedIn = false;
-        return { label: accLabel, key, res: claimRes };
-      } catch (e) {
-        return { label: accLabel, key, res: { success: false, error: e.message } };
-      }
-    })
-  );
+  // Process accounts in batches of 2 to stay well under CloudFront burst rate limit (<40 req/10s/IP)!
+  const settled = [];
+  const CLAIM_BATCH_SIZE = 2;
+  for (let b = 0; b < activeEntries.length; b += CLAIM_BATCH_SIZE) {
+    const chunk = activeEntries.slice(b, b + CLAIM_BATCH_SIZE);
+    const chunkRes = await Promise.all(
+      chunk.map(async ([key, acc]) => {
+        const accLabel = `${acc.phone || key}${acc.name ? ` (${acc.name})` : ''}`;
+        if (effectiveVal) acc.preferredOfferValue = effectiveVal;
+        try {
+          const claimRes = await claimSwiggyBreakfastAndLateNightOffers(acc, {
+            force: true,
+            forcePatch: Boolean(effectiveVal),
+            offerValue: effectiveVal || acc.preferredOfferValue || 1
+          });
+          acc.offers = claimRes;
+          acc.hasBreakfast = Boolean(claimRes.breakfast?.status === 'CLAIMED');
+          acc.hasLateNight = Boolean(claimRes.lateNight?.status === 'CLAIMED');
+          if (claimRes.sessionExpired) acc.isLoggedIn = false;
+          return { label: accLabel, key, res: claimRes };
+        } catch (e) {
+          return { label: accLabel, key, res: { success: false, error: e.message } };
+        }
+      })
+    );
+    settled.push(...chunkRes);
+    if (b + CLAIM_BATCH_SIZE < activeEntries.length) {
+      await new Promise(r => setTimeout(r, 350));
+    }
+  }
 
   let successCount = 0;
   let partialCount = 0;
@@ -12027,15 +12043,26 @@ function startAutoEventOffersPrebookLoop() {
       const db = getDb();
       const entries = Object.entries(db?.config?.accounts || {}).filter(([, a]) => a?.isLoggedIn && (a.cookies || a.tid || a.token));
       if (entries.length === 0) return;
-      await Promise.all(
-        entries.map(async ([, acc]) => {
-          const out = await claimSwiggyBreakfastAndLateNightOffers(acc, {
-            force: true,
-            offerValue: acc.preferredOfferValue || 1
-          }).catch(() => null);
-          if (out) acc.offers = out;
-        })
-      );
+      const CLAIM_BATCH_SIZE = 2;
+      for (let b = 0; b < entries.length; b += CLAIM_BATCH_SIZE) {
+        const chunk = entries.slice(b, b + CLAIM_BATCH_SIZE);
+        await Promise.all(
+          chunk.map(async ([, acc]) => {
+            const out = await claimSwiggyBreakfastAndLateNightOffers(acc, {
+              force: true,
+              offerValue: acc.preferredOfferValue || 1
+            }).catch(() => null);
+            if (out) {
+              acc.offers = out;
+              acc.hasBreakfast = Boolean(out.breakfast?.status === 'CLAIMED');
+              acc.hasLateNight = Boolean(out.lateNight?.status === 'CLAIMED');
+            }
+          })
+        );
+        if (b + CLAIM_BATCH_SIZE < entries.length) {
+          await new Promise(r => setTimeout(r, 350));
+        }
+      }
       saveDb(db);
       console.log(`▣ [AutoPreBook] Locked Breakfast + Late Night offers across 15 days for ${entries.length} account(s)!`);
     } catch (e) {
