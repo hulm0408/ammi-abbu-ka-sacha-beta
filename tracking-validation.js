@@ -1,3 +1,4 @@
+import { trackingQueryMatchesOrder } from './tracking-link-utils.js';
 /**
  * Tracking validation — prevents fabricated Swiggy tracking URLs.
  * Real tracking URLs only come from authenticated Swiggy API responses
@@ -178,16 +179,8 @@ export function validateTrackingUrlForOrder(url, order, source = '') {
   if (trimmed === 'https://www.swiggy.com/orders' || trimmed === 'https://www.swiggy.com/track' || trimmed === 'https://www.swiggy.com/' || trimmed === 'https://www.swiggy.com') {
     return false;
   }
-  // Cross-order contamination check: if URL contains an order_id query param, it must match this order
-  // e.g., https://www.swiggy.com/order-tracking?order_id=251... must match order.swiggyOrderId
-  try {
-    const parsed = new URL(trimmed);
-    const qOrderId = parsed.searchParams.get('order_id') || parsed.searchParams.get('orderId') || parsed.searchParams.get('orderid');
-    if (qOrderId && orderId && qOrderId !== orderId) {
-      // URL contains a different order's ID — reject to prevent cross-order contamination
-      return false;
-    }
-  } catch {}
+  // Check all duplicate/case variants, including encoded AppsFlyer targets.
+  if (!trackingQueryMatchesOrder(trimmed, orderId)) return false;
   return true;
 }
 

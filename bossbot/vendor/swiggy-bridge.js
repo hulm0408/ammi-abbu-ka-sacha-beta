@@ -1,3 +1,4 @@
+import { refreshEventOfferSnapshot, activeEventOffer } from './event-offer-state.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -365,54 +366,16 @@ function resolveCampaignWindowInfo(boundaries, prefix, defaultDay = 15, isLateNi
     ),
     cutoffMs,
     slotOpenMs,
-    endMs: matched?.endMs || null
+    endMs: slotOpenMs ? Math.min(matched?.endMs || Infinity, slotOpenMs + (isLateNight ? 9 : 4) * 3600 * 1000) : null
   };
 }
 
 export function isAccountEventOfferActiveNow(acc, nowMs = Date.now()) {
-  if (!acc) return { active: false, slot: null, amount: 0, state: '' };
-  const offers = acc.offers?.offers || acc.offers || {};
-  const ln = offers.lateNight || {};
-  const bf = offers.breakfast || {};
+  return activeEventOffer(acc, nowMs);
+}
 
-  // Current time in IST (UTC + 5:30)
-  const istOffsetMs = 5.5 * 3600 * 1000;
-  const istDate = new Date(nowMs + istOffsetMs);
-  const istHours = istDate.getUTCHours();
-  const istMinutes = istDate.getUTCMinutes();
-  const totalMin = istHours * 60 + istMinutes;
-
-  // Late Night redemption window: 21:00 to 06:00 IST (1260 to 1440 min, or 0 to 360 min)
-  const isLnWindow = totalMin >= 21 * 60 || totalMin < 6 * 60;
-  // Breakfast redemption window: 07:00 to 11:00 IST (420 to 660 min)
-  const isBfWindow = totalMin >= 7 * 60 && totalMin < 11 * 60;
-
-  const lnState = String(ln.slotState || ln.state || '');
-  const bfState = String(bf.slotState || bf.state || '');
-
-  // An offer is LIVE right now if:
-  // 1) It was marked ACTIVE_NOW (booked before cutoff, during active window), OR
-  // 2) It was marked LOCKED_FOR_TODAY (booked before cutoff earlier today) AND we are now inside the window!
-  const lnLive = isLnWindow && (lnState === 'ACTIVE_NOW' || lnState === 'LOCKED_FOR_TODAY');
-  const bfLive = isBfWindow && (bfState === 'ACTIVE_NOW' || bfState === 'LOCKED_FOR_TODAY');
-
-  if (lnLive) {
-    const val = Number(ln.offerValue || 1);
-    const amount = val === 4 ? 125 : (val === 3 ? 100 : (val === 2 ? 80 : 50));
-    return { active: true, slot: 'LATE_NIGHT', amount, state: lnState };
-  }
-  if (bfLive) {
-    const val = Number(bf.offerValue || 1);
-    const amount = val === 4 ? 125 : (val === 3 ? 100 : (val === 2 ? 80 : 50));
-    return { active: true, slot: 'BREAKFAST', amount, state: bfState };
-  }
-
-  return {
-    active: false,
-    slot: isLnWindow ? 'LATE_NIGHT' : (isBfWindow ? 'BREAKFAST' : null),
-    amount: 0,
-    state: isLnWindow ? lnState : (isBfWindow ? bfState : '')
-  };
+export function getReusableEventOffers(account, nowMs = Date.now()) {
+  return refreshEventOfferSnapshot(account?.offers, nowMs);
 }
 
 export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = false, offerValue = null, forcePatch = false, quickLockOnly = false } = {}) {
@@ -427,7 +390,10 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
   }
   if (!force && !forcePatch && accSig && offerClaimCache.has(accSig)) {
     const prev = offerClaimCache.get(accSig);
-    if (Date.now() - prev.ts < OFFER_CLAIM_TTL_MS) return prev.result;
+    if (Date.now() - prev.ts < OFFER_CLAIM_TTL_MS) {
+      const refreshed = refreshEventOfferSnapshot(prev.result);
+      if (refreshed) return refreshed;
+    }
   }
 
   let token = account.token || '';
@@ -541,6 +507,9 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
       ? { ...account.offers.lockedMap }
       : {};
 
+    const campaignSucceeded = (res, json) => Boolean(res?.ok && json?.success !== false &&
+      !json?.error && (json?.statusCode == null || [0, 200].includes(Number(json.statusCode))));
+
     const syncSingleCampaign = async (campaignId, referer) => {
       for (let tryIdx = 0; tryIdx < 2; tryIdx++) {
         if (tryIdx > 0) await new Promise(r => setTimeout(r, 4000));
@@ -587,7 +556,7 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
         }
 
         // If `POST` says already subscribed with a different value, do a single `PATCH` to update `value`:
-        const alreadyMsg = String(writeJson?.message || '').toLowerCase().includes('already');
+        const alreadyMsg = campaignSucceeded(writeRes, writeJson) && String(writeJson?.message || '').toLowerCase().includes('already');
         if (writeMethod === 'POST' && alreadyMsg && Number(writeJson?.value || 0) !== chosenVal) {
           let patchRes = null;
           let patchJson = {};
@@ -600,15 +569,17 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
             });
             if ((patchRes.status === 403 || patchRes.status === 429) && tryIdx === 0) continue;
             patchJson = await patchRes.json().catch(() => ({}));
-            if (patchRes.ok) prevLockedMap[campaignId] = chosenVal;
-            return { res: patchRes, json: patchJson, statusJson: { ...statusJson, shouldNotify: true, value: chosenVal } };
+            const patchOk = campaignSucceeded(patchRes, patchJson);
+            if (patchOk) prevLockedMap[campaignId] = chosenVal;
+            return { res: patchRes, json: patchJson, statusJson: { ...statusJson, shouldNotify: patchOk, value: patchOk ? chosenVal : curVal } };
           } catch (fetchErr) {
             if (tryIdx === 0) continue;
             return { res: { ok: false, status: 500, statusText: fetchErr.message }, json: { message: fetchErr.message }, statusJson: {} };
           }
         }
 
-        if (writeRes.ok || alreadyMsg) {
+        const writeOk = campaignSucceeded(writeRes, writeJson);
+        if (writeOk) {
           prevLockedMap[campaignId] = chosenVal;
         }
         return {
@@ -616,8 +587,8 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
           json: writeJson,
           statusJson: {
             ...statusJson,
-            shouldNotify: Boolean(writeRes.ok || alreadyMsg || isSubscribed),
-            value: chosenVal,
+            shouldNotify: writeOk,
+            value: writeOk ? chosenVal : curVal,
             timestamp: statusJson?.timestamp || writeJson?.currentTime || new Date().toISOString()
           }
         };
@@ -680,11 +651,13 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
     const { res: resBf, json: bfJson } = bfAll[0];
     const { res: resLn, json: lnJson } = lnAll[0];
 
-    const bfLockedCount = bfAll.filter(x => x.res.ok || String(x.json?.message || '').toLowerCase().includes('already')).length;
-    const lnLockedCount = lnAll.filter(x => x.res.ok || String(x.json?.message || '').toLowerCase().includes('already')).length;
+    const bfLockedCount = bfAll.filter(x => campaignSucceeded(x.res, x.json) && x.statusJson?.shouldNotify === true).length;
+    const lnLockedCount = lnAll.filter(x => campaignSucceeded(x.res, x.json) && x.statusJson?.shouldNotify === true).length;
 
-    const bfOk = bfLockedCount > 0;
-    const lnOk = lnLockedCount > 0;
+    // Tomorrow's successful reservation cannot prove today's booking.
+    const confirmedToday = item => Boolean(campaignSucceeded(item?.res, item?.json) && item?.statusJson?.shouldNotify === true && Number(item.statusJson.value) === chosenVal);
+    const bfOk = confirmedToday(bfAll[0]);
+    const lnOk = confirmedToday(lnAll[0]);
 
     const describeSlotState = (ok, res, json, statusNow, win, isLn) => {
       if (!ok) {
@@ -692,14 +665,20 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
         if (res.status === 403) return { state: 'FORBIDDEN', msg: 'HTTP 403 Forbidden (WAF Blocked)' };
         return { state: 'FAILED', msg: `HTTP ${res.status} (${json.message || res.statusText || 'Error'})` };
       }
-      const bookedAtMs = statusNow?.timestamp ? Date.parse(statusNow.timestamp) : nowMs;
-      const bookedBeforeCutoff = !win.cutoffMs || bookedAtMs <= win.cutoffMs;
+      const bookedAtMs = statusNow?.timestamp ? Date.parse(statusNow.timestamp) : NaN;
+      const bookedBeforeCutoff = Number.isFinite(bookedAtMs) && Number.isFinite(win.cutoffMs) && bookedAtMs <= win.cutoffMs;
       const inRedeemSlotNow = Boolean(win.slotOpenMs && win.endMs && nowMs >= win.slotOpenMs && nowMs < win.endMs);
       const valTag = (EVENT_OFFER_OPTIONS[statusNow?.value || chosenVal] || chosenMeta).shortLabel;
       const daysTag = `+${Math.max(0, (isLn ? lnLockedCount : bfLockedCount) - 1)} next days pre-locked`;
 
+      if (!Number.isFinite(bookedAtMs) || !Number.isFinite(win.cutoffMs)) {
+        return { state: 'BOOKING_TIME_UNVERIFIED', msg: 'Booking time/campaign window verify nahi hua; discount sirf live Swiggy cart par confirm hoga.' };
+      }
+      if (bookedBeforeCutoff && nowMs >= win.endMs) {
+        return { state: 'SLOT_ENDED', msg: 'Redeem slot khatam; current booking dobara verify karein.' };
+      }
       if (bookedBeforeCutoff && inRedeemSlotNow) {
-        return { state: 'ACTIVE_NOW', msg: `● LIVE IN CART NOW (${valTag} • ${daysTag})` };
+        return { state: 'ACTIVE_NOW', msg: `● REDEEM SLOT ACTIVE (cart confirmation required) (${valTag} • ${daysTag})` };
       }
       if (bookedBeforeCutoff) {
         return {
@@ -722,7 +701,12 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
       lateNight: { campaign: lnWin.todayCampaign, lockedDays: lnLockedCount, state: lnDesc.state }
     });
 
+    const slotEvidence = (win, statusNow, confirmed) => ({
+      bookingConfirmed: confirmed, bookedAt: statusNow?.timestamp || '',
+      cutoffMs: win.cutoffMs, slotOpenMs: win.slotOpenMs, slotEndMs: win.endMs
+    });
     const claimOut = {
+      verifiedAt: nowMs,
       success: bfOk || lnOk,
       bothClaimed: bfOk && lnOk,
       offerValue: chosenVal,
@@ -730,6 +714,7 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
       lockedMap: prevLockedMap,
       sessionExpired: !bfOk && !lnOk && (resBf.status === 401 || resLn.status === 401 || liveSessionDead),
       breakfast: {
+        ...slotEvidence(bfWin, bfStatusNow, bfOk),
         name: 'Breakfast Morning (7AM–11AM)',
         campaign: bfWin.todayCampaign,
         lockedDaysCount: bfLockedCount,
@@ -743,6 +728,7 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
         message: bfDesc.msg
       },
       lateNight: {
+        ...slotEvidence(lnWin, lnStatusNow, lnOk),
         name: 'Late Night (9PM–6AM)',
         campaign: lnWin.todayCampaign,
         lockedDaysCount: lnLockedCount,
@@ -757,6 +743,7 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
       }
     };
     claimOut.offers = {
+      verifiedAt: nowMs,
       bothClaimed: claimOut.bothClaimed,
       breakfast: claimOut.breakfast,
       lateNight: claimOut.lateNight,
