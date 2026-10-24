@@ -4498,7 +4498,7 @@ bot.action(/^boss_remove_local_(.+)$/, async (ctx) => {
     delete userWaitState[userId];
   }
 
-  await deactivateSwiggyAccountViaBridge(userId, key, false).catch(() => {});
+  await deactivateSwiggyAccountViaBridge(userId, key, true).catch(() => {});
   permanentLogoutAccount(key, { purgeVault: true });
   deleteAccount(key, { purgeVault: true });
 
@@ -5011,7 +5011,7 @@ bot.action(/^boss_logout_single_(.+)$/, async (ctx) => {
   const phone = acc?.phone || acc?.mobile || key.replace(/^acc_/, '');
   const cleanPhone = normalizeIndianMobileNumber(phone) || '';
   const accName = acc?.name || key;
-  await deactivateSwiggyAccountViaBridge(ctx.from.id, key, false).catch(() => {});
+  await deactivateSwiggyAccountViaBridge(ctx.from.id, key, true).catch(() => {});
   permanentLogoutAccount(key, { purgeVault: true });
   deleteAccount(key, { purgeVault: true });
 
@@ -5060,6 +5060,11 @@ bot.action('boss_logout_all_confirm', async (ctx) => {
 bot.action('boss_logout_all_exec', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
+  const db = getDb();
+  const allKeys = Object.keys(db.config?.accounts || {});
+  for (const k of allKeys) {
+    await deactivateSwiggyAccountViaBridge(ctx.from.id, k, true).catch(() => {});
+  }
   const count = logoutAllAccounts({ purgeVault: true });
   // The profile cache lives in swiggy-cart.js; clearing it through the exported
   // helper avoids the old `accountOrderProfileCache is not defined` crash.
@@ -5369,8 +5374,9 @@ bot.action('boss_exlo_confirm', async (ctx) => {
 
     // Now logout only after successful export
     try {
-      await deactivateSwiggyAccountViaBridge(ctx.from.id, key, false).catch(() => {});
-      permanentLogoutAccount(key);
+      await deactivateSwiggyAccountViaBridge(ctx.from.id, key, true).catch(() => {});
+      permanentLogoutAccount(key, { purgeVault: true });
+      deleteAccount(key, { purgeVault: true });
       loggedOutCount++;
     } catch (e) {
       await ctx.reply(`⚠️ Export hua par logout fail for ${escapeHtml(phone)}: ${escapeHtml(e.message)}`, { parse_mode: 'HTML' });
@@ -8002,7 +8008,7 @@ bot.on('text', async (ctx, next) => {
       delete userWaitState[userId];
 
       try {
-        await deactivateSwiggyAccountViaBridge(userId, key, false).catch(() => {});
+        await deactivateSwiggyAccountViaBridge(userId, key, true).catch(() => {});
       } catch (e) {}
 
       deleteAccount(key, { purgeVault: true });

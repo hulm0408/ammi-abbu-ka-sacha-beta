@@ -6478,10 +6478,32 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
   }
 
   let rawOrders = Array.isArray(auth.orders) ? auth.orders : [];
-  if (rawOrders.length === 0) {
-    const listRes = await dapiFetch(acc, 'order/all', { timeoutMs: 8000 }).catch(() => null);
-    if (Array.isArray(listRes?.json?.data?.orders)) {
-      rawOrders = listRes.json.data.orders;
+  let fetchedDirectOrders = false;
+  if (rawOrders.length === 0 || force) {
+    const [foodRes, imRes] = await Promise.all([
+      dapiFetch(acc, 'order/all', { timeoutMs: 8000 }).catch(() => null),
+      dapiFetch(acc, 'order/all?order_id=&deliveryType=INSTAMART', { timeoutMs: 8000 }).catch(() => null)
+    ]);
+    const foodOrders = Array.isArray(foodRes?.json?.data?.orders) ? foodRes.json.data.orders : [];
+    const imOrders = Array.isArray(imRes?.json?.data?.orders) ? imRes.json.data.orders : [];
+    if (foodOrders.length > 0 || imOrders.length > 0) {
+      const seen = new Set();
+      const combined = [];
+      for (const o of [...foodOrders, ...imOrders]) {
+        const id = String(o?.order_id || o?.id || '');
+        if (id && !seen.has(id)) {
+          seen.add(id);
+          combined.push(o);
+        } else if (!id) {
+          combined.push(o);
+        }
+      }
+      rawOrders = combined;
+      fetchedDirectOrders = true;
+    } else if (foodRes?.json?.statusCode === 0 || imRes?.json?.statusCode === 0) {
+      // Swiggy explicitly returned valid 0 orders
+      rawOrders = [];
+      fetchedDirectOrders = true;
     }
   }
 
@@ -6492,13 +6514,18 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     if (paySt && paySt !== 'success' && !/delivered|completed/.test(st)) return false;
     return true;
   }).length;
-  // Stored/imported account counts and the observed Swiggy history are both lower bounds.
-  // Keep the maximum so a stale `0` (or an empty recent-history page) cannot make an
-  // already-used account look new and win the automatic fresh-account tier again.
-  const knownOrderCounts = [acc.totalOrdersCount, acc.cachedTotalOrdersCount, realPastOrdersCount]
-    .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) && Number(value) !== 999999)
-    .map(value => Math.max(0, Number(value)));
-  const totalOrdersCount = knownOrderCounts.length ? Math.max(...knownOrderCounts) : realPastOrdersCount;
+  // Live order section inspection on upload/login:
+  // When direct orders were fetched from Swiggy (or forced check), use the exact real live count
+  // so any stale count in an imported JSON file does not prevent 0-order accounts from being detected!
+  let totalOrdersCount;
+  if (fetchedDirectOrders || force) {
+    totalOrdersCount = realPastOrdersCount;
+  } else {
+    const knownOrderCounts = [acc.totalOrdersCount, acc.cachedTotalOrdersCount, realPastOrdersCount]
+      .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) && Number(value) !== 999999)
+      .map(value => Math.max(0, Number(value)));
+    totalOrdersCount = knownOrderCounts.length ? Math.max(...knownOrderCounts) : realPastOrdersCount;
+  }
 
   const nowMs = Date.now();
   const liveActiveOrdersCount = rawOrders.filter(o => {

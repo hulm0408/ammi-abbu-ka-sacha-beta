@@ -1276,6 +1276,8 @@ export function exportSessionJson(key) {
     sid,
     deviceId,
     cookies: cleanCookies,
+    totalOrdersCount: typeof source.totalOrdersCount === 'number' ? source.totalOrdersCount : 0,
+    isZeroOrderAccount: source.totalOrdersCount === 0 || Boolean(source.isZeroOrderAccount),
     savedAt: source.savedAt || new Date().toISOString()
   };
 }

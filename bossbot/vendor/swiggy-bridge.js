@@ -2574,9 +2574,13 @@ export async function deactivateSwiggyAccountViaBridge(userId, targetAcc, revoke
 
   if (revokeRemote) {
     try {
-      const { getDb } = await import('./store.js');
+      const { getDb, exportSessionJson } = await import('./store.js');
       const db = getDb();
-      const acc = db.config?.accounts?.[targetAcc];
+      const accKey = typeof targetAcc === 'string' ? targetAcc : (targetAcc?.account || targetAcc?.id || '');
+      const rawPhone = accKey.replace(/^acc_/, '').replace(/\D/g, '').slice(-10);
+      const acc = (typeof targetAcc === 'object' && targetAcc !== null)
+        ? targetAcc
+        : (db.config?.accounts?.[accKey] || db.sessionVault?.[accKey] || (rawPhone ? db.sessionVault?.[rawPhone] : null) || (accKey ? exportSessionJson(accKey) : null));
       const cleanCk = stripStaleWafCookie(acc?.cookies || '');
       if (cleanCk) {
         const cookieMap = new Map();
@@ -2585,23 +2589,36 @@ export async function deactivateSwiggyAccountViaBridge(userId, targetAcc, revoke
           const eq = t.indexOf('=');
           if (eq > 0) cookieMap.set(t.slice(0, eq).trim(), t.slice(eq + 1).trim());
         }
-        const csrf = await ensureDeleteCsrfToken(cookieMap, '', buildAntiBotDeviceProfile(acc?.phone || ''));
+        let csrf = cookieMap.get('_csrf') || '';
+        const dev = buildAntiBotDeviceProfile(acc?.phone || rawPhone || '');
+        if (!csrf) {
+          csrf = await ensureDeleteCsrfToken(cookieMap, '', dev);
+        }
+        const headers = {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'User-Agent': dev.ua || 'Swiggy-Android',
+          'Origin': 'https://www.swiggy.com',
+          'Referer': 'https://www.swiggy.com/my-account',
+          'Cookie': serializeCookieMap(cookieMap),
+          '__fetch_req__': 'true'
+        };
+        const tid = acc?.tid || cookieMap.get('tid') || cookieMap.get('_session_tid');
+        if (tid) headers['tid'] = tid;
+
         await fetch('https://www.swiggy.com/dapi/auth/logout', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'User-Agent': 'Swiggy-Android',
-            'Origin': 'https://www.swiggy.com',
-            'Referer': 'https://www.swiggy.com/my-account',
-            'Cookie': serializeCookieMap(cookieMap)
-          },
+          headers,
           body: JSON.stringify(csrf ? { _csrf: csrf } : {}),
-          signal: AbortSignal.timeout(3000)
+          signal: AbortSignal.timeout(4000)
         }).catch(() => {});
+        console.log(`[Bridge] Remote Swiggy session revoked for ${accKey || acc?.phone || 'account'}`);
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn('[Bridge] Remote logout warning:', e?.message || e);
+    }
   }
 
   return true;
 }
+
