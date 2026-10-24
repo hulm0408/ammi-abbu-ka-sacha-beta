@@ -2480,7 +2480,8 @@ bot.action(/^resend_otp_(\d{10})$/, async (ctx) => {
       action: 'waiting_swiggy_otp_bridge',
       targetAcc: existingKey,
       phone,
-      name: existingName
+      name: existingName,
+      isNewUser: Boolean(result.isNewUser || previousState?.isNewUser)
     };
     await ctx.reply(
       otpSentCard(phone, [`› <i>6-digit OTP yahan type karein:</i>`]),
@@ -2533,13 +2534,15 @@ bot.action(/^prompt_reenter_otp_(\d{10})$/, async (ctx) => {
   const existingName = existing ? (existing[1]?.name || existing[0]) : null;
 
   const prevOrderId = userWaitState[userId]?.orderId || null;
+  const prevIsNewUser = Boolean(userWaitState[userId]?.isNewUser);
 
   userWaitState[userId] = {
     action: 'waiting_swiggy_otp_bridge',
     targetAcc: existingKey,
     phone,
     name: existingName,
-    orderId: prevOrderId
+    orderId: prevOrderId,
+    isNewUser: prevIsNewUser
   };
 
   await ctx.reply(
@@ -2915,6 +2918,100 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
 
   await sendSafeHtml(ctx, cardText, { reply_markup: { inline_keyboard: keyboardButtons } });
 }
+
+// Completes new Swiggy account setup with user's chosen custom name (or auto-assigned name)
+async function completeNewAccountWithChosenName(ctx, userId, chosenRawName) {
+  const currentState = userWaitState[userId];
+  if (!currentState) return;
+  const cleanRaw = String(chosenRawName || '').trim();
+  const cleanName = cleanRaw && !/^user\s*\d*$/i.test(cleanRaw) ? cleanRaw : getNextAutoUserName();
+  const phone = currentState.phone;
+  const orderId = currentState.orderId;
+  const accKey = currentState.targetAcc || currentState.savedSessionKey || `acc_${phone}`;
+
+  delete userWaitState[userId];
+
+  if (currentState.needsSignupCall) {
+    const signupRes = await signupSwiggyViaBridge(userId, cleanName);
+    if (signupRes.success) {
+      syncCloudVaultNow(getDb()).catch(() => {});
+      await sendAccountLoginAndOffersCard(ctx, signupRes, userId, orderId);
+    } else if (['SWIGGY_SECURITY_CHALLENGE', 'SWIGGY_RATE_LIMIT'].includes(signupRes.code)) {
+      const errCard = formatOtpSendErrorCard(phone, signupRes);
+      await ctx.reply(errCard.text, { parse_mode: 'HTML', ...errCard.keyboard });
+    } else {
+      await ctx.reply(`<blockquote>${escapeHtml(signupRes.message)}</blockquote>`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
+    }
+    return;
+  }
+
+  // Step 2 was already verified in verifySwiggyOtpViaBridge!
+  const db = getDb();
+  updateAccount(accKey, {
+    name: cleanName,
+    swiggyName: cleanName,
+    botTag: cleanName
+  });
+
+  if (db.sessionVault) {
+    if (db.sessionVault[phone]) {
+      db.sessionVault[phone].name = cleanName;
+      db.sessionVault[phone].swiggyName = cleanName;
+      db.sessionVault[phone].botTag = cleanName;
+    }
+    if (db.sessionVault[accKey]) {
+      db.sessionVault[accKey].name = cleanName;
+      db.sessionVault[accKey].swiggyName = cleanName;
+      db.sessionVault[accKey].botTag = cleanName;
+    }
+  }
+  saveDb(db);
+  syncCloudVaultNow(db).catch(() => {});
+
+  const baseResult = currentState.verifyResult || {
+    success: true,
+    accountKey: accKey,
+    phone,
+    totalOrdersCount: 0,
+    isZeroOrderAccount: true,
+    customerId: db.config.accounts?.[accKey]?.customerId || 'Verified'
+  };
+
+  const finalResult = {
+    ...baseResult,
+    name: cleanName,
+    swiggyName: cleanName,
+    botTag: cleanName
+  };
+  if (finalResult.exportJson) {
+    finalResult.exportJson.name = cleanName;
+    finalResult.exportJson.swiggyName = cleanName;
+    finalResult.exportJson.botTag = cleanName;
+  }
+
+  await sendAccountLoginAndOffersCard(ctx, finalResult, userId, orderId);
+}
+
+// Quick Auto-Assign or Keep Name for New Swiggy Accounts
+bot.action(/^auto_assign_new_name_(\d{10})$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const state = userWaitState[userId];
+  if (!state || (state.action !== 'waiting_swiggy_new_account_name' && state.action !== 'waiting_name_for_new_swiggy_signup')) {
+    return ctx.answerCbQuery('Session expired or already processed.').catch(() => {});
+  }
+  await ctx.answerCbQuery('Auto-assigning name...').catch(() => {});
+  await completeNewAccountWithChosenName(ctx, userId, getNextAutoUserName());
+});
+
+bot.action(/^keep_new_acc_name_(\d{10})$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const state = userWaitState[userId];
+  if (!state || (state.action !== 'waiting_swiggy_new_account_name' && state.action !== 'waiting_name_for_new_swiggy_signup')) {
+    return ctx.answerCbQuery('Session expired or already processed.').catch(() => {});
+  }
+  await ctx.answerCbQuery('Keeping name...').catch(() => {});
+  await completeNewAccountWithChosenName(ctx, userId, state.existingName || getNextAutoUserName());
+});
 
 // Action: Previous orders from login card or account card
 bot.action(/^boss_prev_orders_(.+)$/, async (ctx) => {
@@ -3798,7 +3895,8 @@ bot.action(/^relogin_phone_(\d{10})$/, async (ctx) => {
         action: 'waiting_swiggy_otp_bridge',
         targetAcc: accKey,
         phone,
-        name: accName
+        name: accName,
+        isNewUser: Boolean(result.isNewUser)
       };
       await ctx.reply(
         `☎ <b>Swiggy OTP Sent!</b>\n` +
@@ -3868,7 +3966,8 @@ bot.action(/^boss_login_acc_otp_(.+)$/, async (ctx) => {
         targetAcc: accKey,
         phone,
         name: accName,
-        orderId
+        orderId,
+        isNewUser: Boolean(result.isNewUser)
       };
       await ctx.reply(
         `☎ <b>Swiggy OTP Sent Successfully!</b>\n` +
@@ -5477,7 +5576,8 @@ bot.action(/^boss_fast_otp_(.+)_(\d{10})$/, async (ctx) => {
       action: 'waiting_swiggy_otp_bridge',
       targetAcc,
       phone,
-      name: accName
+      name: accName,
+      isNewUser: Boolean(result.isNewUser)
     };
     await ctx.reply(
       `☎ <b>OTP Sent</b>\n☎ <code>${phone}</code>\n\n› <i>Enter OTP:</i>`,
@@ -8045,7 +8145,7 @@ bot.on('text', async (ctx, next) => {
     createAccount(cleanKey, accName, phone);
     const result = await requestSwiggyOtpViaBridge(userId, phone, cleanKey, accName);
     if (result.success) {
-      userWaitState[userId] = { action: 'waiting_swiggy_otp_bridge', targetAcc: cleanKey, phone, name: accName };
+      userWaitState[userId] = { action: 'waiting_swiggy_otp_bridge', targetAcc: cleanKey, phone, name: accName, isNewUser: Boolean(result.isNewUser) };
       await ctx.reply(
         otpSentCard(phone, [`◉ <b>Account:</b> ${escapeHtml(accName)}`, `› <i>6-digit OTP yahan type karein:</i>`]),
         {
@@ -8278,7 +8378,8 @@ bot.on('text', async (ctx, next) => {
         targetAcc: matchedKey,
         phone: phoneToLogin,
         name: autoName,
-        orderId: pendingOrderId
+        orderId: pendingOrderId,
+        isNewUser: Boolean(result.isNewUser)
       };
 
       await ctx.reply(
@@ -8355,22 +8456,9 @@ bot.on('text', async (ctx, next) => {
     return;
   }
 
-  // C: Handle Name for New Swiggy User Signup (auto-handled)
-  if (state && state.action === 'waiting_name_for_new_swiggy_signup') {
-    const enteredName = rawText.trim() || getNextAutoUserName();
-    const cleanPhone = state.phone;
-    const orderId = state.orderId;
-    delete userWaitState[userId];
-
-    const signupRes = await signupSwiggyViaBridge(userId, enteredName);
-    if (signupRes.success) {
-      await sendAccountLoginAndOffersCard(ctx, signupRes, userId, orderId);
-    } else if (['SWIGGY_SECURITY_CHALLENGE', 'SWIGGY_RATE_LIMIT'].includes(signupRes.code)) {
-      const errCard = formatOtpSendErrorCard(cleanPhone, signupRes);
-      await ctx.reply(errCard.text, { parse_mode: 'HTML', ...errCard.keyboard });
-    } else {
-      await ctx.reply(`<blockquote>${escapeHtml(signupRes.message)}</blockquote>`, { parse_mode: 'HTML', ...getBossPanelKeyboard() });
-    }
+  // Handle Name for New Swiggy Account Registration (Prompted after OTP verification)
+  if (state && (state.action === 'waiting_swiggy_new_account_name' || state.action === 'waiting_name_for_new_swiggy_signup')) {
+    await completeNewAccountWithChosenName(ctx, userId, rawText);
     return;
   }
 
@@ -8433,7 +8521,8 @@ bot.on('text', async (ctx, next) => {
         targetAcc,
         phone: cleanPhone,
         name: autoName,
-        orderId: pendingOrderId
+        orderId: pendingOrderId,
+        isNewUser: Boolean(result.isNewUser)
       };
 
       await ctx.reply(
@@ -8562,6 +8651,64 @@ bot.on('text', async (ctx, next) => {
 
     const result = await verifySwiggyOtpViaBridge(userId, enteredOtp);
 
+    const isBrandNewAccount = Boolean(
+      result.wasNewSignup ||
+      result.isNewUser ||
+      result.needsSignup ||
+      state.isNewUser
+    );
+
+    // If it's a brand-new Swiggy account registration, ask the user for their desired account name!
+    if (isBrandNewAccount && (result.success || result.isNewUser || result.needsSignup)) {
+      const orderId = state.orderId;
+      const effectiveKey = result.accountKey || state.targetAcc || `acc_${state.phone}`;
+      userWaitState[userId] = {
+        action: 'waiting_swiggy_new_account_name',
+        phone: state.phone,
+        targetAcc: effectiveKey,
+        savedSessionKey: effectiveKey,
+        orderId,
+        verifyResult: result.success ? result : null,
+        needsSignupCall: Boolean(!result.success && (result.isNewUser || result.needsSignup)),
+        existingName: state.name || null
+      };
+
+      const keyboardButtons = [];
+      if (state.name && !/^user\s*\d*$/i.test(state.name) && !/rahul kumar/i.test(state.name)) {
+        keyboardButtons.push([
+          { text: `⚡ Keep "${state.name}"`, callback_data: `keep_new_acc_name_${state.phone}` }
+        ]);
+      }
+      keyboardButtons.push([
+        { text: '⚡ Auto Assign (User)', callback_data: `auto_assign_new_name_${state.phone}` }
+      ]);
+      keyboardButtons.push([
+        { text: '⌂ Main Menu', callback_data: 'boss_panel_home' },
+        { text: '× Close', callback_data: 'close_menu' }
+      ]);
+
+      await ctx.reply(
+        `🎉 <b>Naya Swiggy Account Detect Hua!</b>\n` +
+        `☎ <b>Mobile:</b> <code>${escapeHtml(state.phone)}</code>\n` +
+        `✓ <b>OTP Verified Successfully!</b>\n\n` +
+        `› <b>Is account ka kya naam rakhna chahte hain?</b>\n` +
+        `Apna naam ya custom slot label type karke bhejein (jaise: <code>Rahul</code>, <code>Aman</code>, <code>Bhai</code>, <code>Slot 5</code>):`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: keyboardButtons
+          }
+        }
+      );
+      await ctx.reply('› Enter Account Name:', {
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: 'Enter Account Name (e.g. Aman, Rahul)...'
+        }
+      });
+      return;
+    }
+
     if (result.success) {
       const orderId = state.orderId;
       delete userWaitState[userId];
@@ -8571,7 +8718,6 @@ bot.on('text', async (ctx, next) => {
     }
 
     if (result.isNewUser || result.needsSignup) {
-      // Auto-assign sequential name without prompting user
       const autoName = state.name || getNextAutoUserName();
       const signupRes = await signupSwiggyViaBridge(userId, autoName);
       if (signupRes.success) {
@@ -8610,7 +8756,8 @@ bot.on('text', async (ctx, next) => {
         targetAcc: state.targetAcc,
         phone: state.phone,
         name: state.name,
-        orderId: state.orderId
+        orderId: state.orderId,
+        isNewUser: Boolean(state.isNewUser)
       };
       await ctx.reply(
         `× <b>Galat OTP / Verification Failed!</b>\n` +
@@ -12354,6 +12501,8 @@ bot.on('text', async (ctx) => {
 // Exposed for the offline e2e suites (single-card chat behaviour).
 export {
   bot,
+  userWaitState,
+  completeNewAccountWithChosenName,
   renderUserCard,
   cleanupUserChat,
   userChatCards,
