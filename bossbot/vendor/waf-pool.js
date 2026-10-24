@@ -26,7 +26,7 @@
 
 import { getDb, saveDb } from './store.js';
 
-const TOKEN_TTL_MS = 2 * 60 * 60 * 1000;        // a WAF token lives ~hours; 2h refresh budget
+const TOKEN_TTL_MS = 6 * 60 * 1000;            // AWS WAF token lifetime (~6 min)
 const ESCALATION_WINDOW_MS = 30 * 60 * 1000;    // hits within 30 min escalate
 const STREAK_RESET_MS = 60 * 60 * 1000;         // 60 min clean → streak back to 0
 const HIT_DEBOUNCE_MS = 120 * 1000;             // a scan's burst of 403s = ONE incident

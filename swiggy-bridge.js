@@ -7,34 +7,65 @@ import { updateAccount, getNextAutoUserName, cleanEssentialSwiggyCookies } from 
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import * as wafPool from './waf-pool.js';
 
+function findBinaryRecursively(dir, maxDepth = 4) {
+  if (!dir || maxDepth <= 0) return null;
+  try {
+    if (!fs.existsSync(dir)) return null;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isFile() && (ent.name === 'chrome' || ent.name === 'chromium' || ent.name === 'chrome.exe')) {
+        return full;
+      }
+      if (ent.isDirectory() && maxDepth > 1) {
+        const found = findBinaryRecursively(full, maxDepth - 1);
+        if (found) return found;
+      }
+    }
+  } catch {}
+  return null;
+}
+
 export function findChromePath() {
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
-  if (process.env.CHROME_BIN) return process.env.CHROME_BIN;
+  if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  if (process.env.CHROME_BIN && fs.existsSync(process.env.CHROME_BIN)) {
+    return process.env.CHROME_BIN;
+  }
   if (process.platform === 'win32') {
-    return 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+    const winPaths = [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'Application', 'chrome.exe')
+    ];
+    for (const p of winPaths) {
+      try { if (fs.existsSync(p)) return p; } catch {}
+    }
   }
   const linuxPaths = [
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
     '/opt/playwright/browsers/chromium-1247/chrome-linux64/chrome'
   ];
   for (const p of linuxPaths) {
-    try { if (fs.existsSync(p)) return p; } catch (e) {}
+    try { if (fs.existsSync(p)) return p; } catch {}
   }
-  for (const rootDir of ['/opt/playwright/browsers', path.join(os.homedir(), '.cache', 'puppeteer'), '/root/.cache/puppeteer']) {
-    try {
-      if (!fs.existsSync(rootDir)) continue;
-      for (const entry of fs.readdirSync(rootDir)) {
-        for (const sub of ['chrome-linux64/chrome', 'chrome-linux/chrome']) {
-          const full = path.join(rootDir, entry, sub);
-          if (fs.existsSync(full)) return full;
-        }
-      }
-    } catch (e) {}
+  const rootDirs = [
+    process.env.PUPPETEER_CACHE_DIR,
+    '/opt/render/.cache/puppeteer',
+    path.join(os.homedir(), '.cache', 'puppeteer'),
+    '/root/.cache/puppeteer',
+    '/opt/playwright/browsers'
+  ].filter(Boolean);
+
+  for (const rootDir of rootDirs) {
+    const found = findBinaryRecursively(rootDir, 5);
+    if (found) return found;
   }
-  return '/usr/bin/chromium';
+  return null;
 }
 
 const CHROME_PATH = findChromePath();
@@ -57,7 +88,7 @@ let prewarmedAt = 0;
 let latestSharedWafToken = '';
 let latestSharedWafAt = 0;
 let wafSolvePromise = null;
-const WAF_CACHE_TTL_MS = 8 * 60 * 1000; // 8 minutes
+const WAF_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 const SWIGGY_WAF_COOKIE_WAIT_MS = 15000;
 const SWIGGY_WAF_COOKIE_POLL_MS = 250;
@@ -708,6 +739,7 @@ async function launchStealthSwiggyBrowser() {
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
+      ...(IS_LINUX ? ['--single-process', '--no-zygote'] : []),
       '--window-size=1366,768',
       '--lang=en-IN,en-US,en'
     ]
@@ -764,7 +796,7 @@ async function launchStealthSwiggyBrowser() {
   return { browser, page };
 }
 
-function canUseStealthBrowser() {
+export function canUseStealthBrowser() {
   try {
     return Boolean(CHROME_PATH && fs.existsSync(CHROME_PATH));
   } catch {
@@ -1061,6 +1093,17 @@ async function bootstrapSwiggyAuthJar(session, { forceFresh = false } = {}) {
 async function postSwiggyAuthJson(session, endpointUrl, payload = {}, { timeoutMs = 6500, allowBrowserEscalation = true } = {}) {
   await bootstrapSwiggyAuthJar(session);
 
+  // Proactive check: Ensure session has a live, non-stale AWS WAF token before firing:
+  let poolWaf = wafPool.getTokenSync?.() || '';
+  if (!poolWaf) {
+    try {
+      poolWaf = await getLiveSwiggyWafToken(false);
+    } catch {}
+  }
+  if (poolWaf && !session.cookieMap.has('aws-waf-token')) {
+    session.cookieMap.set('aws-waf-token', poolWaf);
+  }
+
   const sendOnce = async (useAndroidUa = false) => {
     const bodyObj = { ...payload };
     if (session.csrfToken && bodyObj._csrf === undefined) {
@@ -1086,33 +1129,26 @@ async function postSwiggyAuthJson(session, endpointUrl, payload = {}, { timeoutM
     return { status: res.status, data, rawText, headers: res.headers };
   };
 
-  let out = await sendOnce(session.transportMode === 'android');
+  let out = await sendOnce(false);
 
   // Auto-recover 1: Stale or missing CSRF token (HTTP 403/400 `invalid csrf token`, NOT AWS WAF!)
   if (isCsrfMismatchResponse(out.status, out.rawText, out.data)) {
     await bootstrapSwiggyAuthJar(session, { forceFresh: true });
-    out = await sendOnce(session.transportMode === 'android');
+    out = await sendOnce(false);
   }
 
-  // Auto-recover 2: If mWeb transport hit an AWS WAF challenge, retry once over `Swiggy-Android` transport!
-  if (isAwsWafChallengeResponse(out.status, out.rawText, out.headers) && session.transportMode !== 'android') {
-    session.transportMode = 'android';
-    await bootstrapSwiggyAuthJar(session, { forceFresh: true });
-    out = await sendOnce(true);
-  }
-
-  // Auto-recover 3: If STILL WAF-challenged and stealth browser is available, refresh WAF token and retry!
-  if (allowBrowserEscalation && isAwsWafChallengeResponse(out.status, out.rawText, out.headers) && canUseStealthBrowser()) {
+  // Auto-recover 2: If challenged by AWS WAF (HTTP 202 or WAF header), refresh WAF token and retry over mweb!
+  if (allowBrowserEscalation && isAwsWafChallengeResponse(out.status, out.rawText, out.headers)) {
     try {
       const freshWaf = await getLiveSwiggyWafToken(true);
       if (freshWaf) {
         session.cookieMap.set('aws-waf-token', freshWaf);
-        out = await sendOnce(session.transportMode === 'android');
+        out = await sendOnce(false);
       }
     } catch {}
   }
 
-  // Auto-recover 4: Optional Stealth Browser escalation ONLY if still WAF-challenged AND local Chromium exists!
+  // Auto-recover 3: Optional Stealth Browser escalation ONLY if still WAF-challenged AND local Chromium exists!
   if (allowBrowserEscalation && isAwsWafChallengeResponse(out.status, out.rawText, out.headers) && canUseStealthBrowser()) {
     try {
       if (!session.page || !session.browser?.connected) {
@@ -1163,14 +1199,18 @@ async function postSwiggyAuthJson(session, endpointUrl, payload = {}, { timeoutM
 
 function isUnregisteredSwiggyAuthResponse(result) {
   if (!result || (result.status !== 200 && result.status !== 202)) return false;
-  const msgLower = `${result.data?.statusMessage || ''} ${result.data?.message || ''} ${result.rawText || ''}`.toLowerCase();
-  if (/rate limit|too many|limit reached|maximum|valid 10 digit|invalid otp|incorrect otp|wrong otp|expired otp|something went wrong|internal server|csrf|blocked|suspended/.test(msgLower)) {
+  const statusMsgLower = `${result.data?.statusMessage || ''} ${result.data?.message || ''}`.toLowerCase();
+  if (/rate limit|too many|limit reached|maximum|valid 10 digit|invalid otp|incorrect otp|wrong otp|expired otp|something went wrong|internal server|invalid csrf|csrf mismatch|blocked|suspended/.test(statusMsgLower)) {
     return false;
   }
   if (isAwsWafChallengeResponse(result.status, result.rawText, result.headers)) {
     return false;
   }
-  if (/not\s*registered|user\s*not\s*found|does\s*not\s*exist|no\s*account|new\s*user|sign\s*up|signup|register\s*first|unregistered/.test(msgLower)) {
+  if (/not\s*registered|user\s*not\s*found|does\s*not\s*exist|no\s*account|new\s*user|sign\s*up|signup|register\s*first|unregistered/.test(statusMsgLower)) {
+    return true;
+  }
+  const rawLower = String(result.rawText || '').toLowerCase();
+  if (!/rate limit|too many|limit reached/i.test(rawLower) && /not\s*registered|user\s*not\s*found|does\s*not\s*exist|unregistered/i.test(rawLower)) {
     return true;
   }
   return result.data?.statusCode === 999;
@@ -1244,6 +1284,21 @@ export async function getLiveSwiggyWafToken(forceRefresh = false) {
     } catch {}
   }
 
+  // If local Chromium is not available (e.g. Render node environment), pull latest live WAF token from Cloud Vault!
+  if (!canUseStealthBrowser()) {
+    try {
+      const { pullAccountsFromCloudVault } = await import('./vault-sync.js');
+      const remote = await pullAccountsFromCloudVault();
+      if (remote?.waf?.token && (Date.now() - (remote.waf.acquiredAt || 0) < WAF_CACHE_TTL_MS)) {
+        latestSharedWafToken = remote.waf.token;
+        latestSharedWafAt = Number(remote.waf.acquiredAt) || Date.now();
+        try { wafPool.seedToken(latestSharedWafToken, { source: 'vault', acquiredAt: latestSharedWafAt }); } catch {}
+        return latestSharedWafToken;
+      }
+    } catch {}
+    return latestSharedWafToken || '';
+  }
+
   // 2. Coalesce concurrent requests so we only launch one solver:
   if (wafSolvePromise) return wafSolvePromise;
 
@@ -1263,7 +1318,12 @@ export async function getLiveSwiggyWafToken(forceRefresh = false) {
       if (token) {
         latestSharedWafToken = token;
         latestSharedWafAt = Date.now();
-        try { wafPool.seedToken(token, { source: 'chromium' }); } catch {}
+        try {
+          wafPool.seedToken(token, { source: 'chromium' });
+          import('./store.js').then(({ getDb, syncCloudVaultNow }) => {
+            syncCloudVaultNow(getDb()).catch(() => {});
+          }).catch(() => {});
+        } catch {}
         // Allow challenge reload/navigation to settle
         await new Promise(r => setTimeout(r, 1500));
       }
