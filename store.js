@@ -11,9 +11,9 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DATA_DIR = path.join(__dirname, 'data');
-const DB_FILE = path.join(DATA_DIR, 'db.json');
-const ACCOUNTS_JSON_FILE = path.join(__dirname, 'accounts.json');
+export const getDataDir = () => process.env.DATA_DIR || path.join(__dirname, 'data');
+export const getDbFile = () => process.env.DB_FILE || path.join(getDataDir(), 'db.json');
+export const getAccountsJsonFile = () => process.env.ACCOUNTS_JSON_FILE || path.join(__dirname, 'accounts.json');
 
 const defaultData = {
   config: {
@@ -199,7 +199,8 @@ export function normalizeSwiggySessionPayload(rawInput) {
     deviceId,
     cookies: rawCookieStr,
     ...(typeof src.totalOrdersCount === 'number' ? { totalOrdersCount: src.totalOrdersCount } : {}),
-    ...(typeof src.isZeroOrderAccount === 'boolean' ? { isZeroOrderAccount: src.isZeroOrderAccount } : {})
+    ...(typeof src.isZeroOrderAccount === 'boolean' ? { isZeroOrderAccount: src.isZeroOrderAccount } : {}),
+    ...(typeof src.ordersVerifiedLive === 'boolean' ? { ordersVerifiedLive: src.ordersVerifiedLive } : {})
   };
 
   normalized.cookies = cleanEssentialSwiggyCookies(rawCookieStr, normalized);
@@ -591,7 +592,7 @@ function syncAccountsJsonMirror(data, { skipCloudPush = false } = {}) {
           savedAt: a.savedAt || new Date().toISOString()
         };
       });
-    fs.writeFileSync(ACCOUNTS_JSON_FILE, JSON.stringify(mirrorList, null, 2), 'utf-8');
+    fs.writeFileSync(getAccountsJsonFile(), JSON.stringify(mirrorList, null, 2), 'utf-8');
     if (!skipCloudPush) {
       scheduleCloudVaultSync(() => buildCloudVaultSnapshot(getDb()));
     }
@@ -599,11 +600,13 @@ function syncAccountsJsonMirror(data, { skipCloudPush = false } = {}) {
 }
 
 function ensureDb() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  const dir = getDataDir();
+  const dbPath = getDbFile();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
-  if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(defaultData, null, 2), 'utf-8');
+  if (!fs.existsSync(dbPath)) {
+    fs.writeFileSync(dbPath, JSON.stringify(defaultData, null, 2), 'utf-8');
   }
 }
 
@@ -611,8 +614,9 @@ let accountsSeeded = false;
 function seedAccountsFromJson(data) {
   if (accountsSeeded) return;
   try {
-    if (fs.existsSync(ACCOUNTS_JSON_FILE)) {
-      const raw = fs.readFileSync(ACCOUNTS_JSON_FILE, 'utf-8');
+    const accFile = getAccountsJsonFile();
+    if (fs.existsSync(accFile)) {
+      const raw = fs.readFileSync(accFile, 'utf-8');
       const list = JSON.parse(raw);
       if (Array.isArray(list)) {
         if (!data.config.accounts) data.config.accounts = {};
@@ -666,7 +670,7 @@ function seedAccountsFromJson(data) {
 export function getDb() {
   ensureDb();
   try {
-    const raw = fs.readFileSync(DB_FILE, 'utf-8');
+    const raw = fs.readFileSync(getDbFile(), 'utf-8');
     const data = JSON.parse(raw);
     if (!data.config) data.config = { ...defaultData.config };
     if (!data.config.bossIds) {
@@ -758,9 +762,10 @@ export function saveDb(data) {
 
   // Concurrent-Safe Parallel Merge for Orders + Uploaded Accounts + Session Vault!
   // Any account/vault/order written concurrently to disk after `getDb()` was called is 100% preserved unless explicitly mutated/deleted by caller!
-  if (data && fs.existsSync(DB_FILE)) {
+  const dbFile = getDbFile();
+  if (data && fs.existsSync(dbFile)) {
     try {
-      const liveDisk = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+      const liveDisk = JSON.parse(fs.readFileSync(dbFile, 'utf-8'));
 
       if (data.__baseDraftsJson && typeof data.drafts === 'object' && data.drafts !== null) {
         const diskDrafts = liveDisk?.drafts || {};
@@ -893,15 +898,15 @@ export function saveDb(data) {
     } catch (e) {}
   }
 
-  const tmpFile = `${DB_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  const tmpFile = `${dbFile}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
     fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), 'utf-8');
-    fs.renameSync(tmpFile, DB_FILE);
+    fs.renameSync(tmpFile, dbFile);
   } catch (err) {
     try {
       if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
     } catch (e) {}
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    fs.writeFileSync(dbFile, JSON.stringify(data, null, 2), 'utf-8');
   }
 }
 
@@ -1105,6 +1110,66 @@ function pickNextActiveAccountKey(accounts, excludeKey = null) {
   return null;
 }
 
+export function cleanupDiskFilesForAccount(phone, accountKey = '') {
+  const cleanPhone = normalizeTenDigitPhone(phone || '') || String(phone || '').replace(/\D/g, '').slice(-10);
+  const targets = new Set();
+  if (cleanPhone && cleanPhone.length === 10) {
+    targets.add(cleanPhone);
+  }
+  if (accountKey && typeof accountKey === 'string' && accountKey.trim()) {
+    targets.add(accountKey.trim());
+  }
+  if (targets.size === 0) return 0;
+
+  let deletedCount = 0;
+  const searchDirs = [
+    __dirname,
+    path.join(__dirname, 'data'),
+    path.join(__dirname, 'scratch')
+  ];
+
+  for (const dir of searchDirs) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        const fullPath = path.join(dir, file);
+        try {
+          const stat = fs.statSync(fullPath);
+          if (!stat.isFile()) continue;
+        } catch {
+          continue;
+        }
+
+        // Never delete core codebase, config or database files
+        if (file === 'db.json' || file === 'accounts.json' || file === 'package.json' || file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.yaml') || file.endsWith('.yml')) {
+          continue;
+        }
+
+        const lowerFile = file.toLowerCase();
+        let matches = false;
+        for (const t of targets) {
+          if (lowerFile.includes(t.toLowerCase())) {
+            matches = true;
+            break;
+          }
+        }
+
+        if (matches && (lowerFile.endsWith('.json') || lowerFile.endsWith('.txt') || lowerFile.endsWith('.log') || lowerFile.includes('sms') || lowerFile.includes('otp') || lowerFile.includes('session'))) {
+          try {
+            fs.unlinkSync(fullPath);
+            deletedCount++;
+            console.log(`[FileClean] Deleted old account file: ${fullPath}`);
+          } catch (e) {
+            console.warn(`[FileClean] Could not delete ${fullPath}:`, e.message);
+          }
+        }
+      }
+    } catch {}
+  }
+  return deletedCount;
+}
+
 export function deleteAccount(key, options = {}) {
   const db = getDb();
   if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
@@ -1146,6 +1211,11 @@ export function deleteAccount(key, options = {}) {
     const nextKey = pickNextActiveAccountKey(db.config.accounts, null);
     if (nextKey) db.config.activeOrderAccount = nextKey;
     else delete db.config.activeOrderAccount;
+  }
+
+  // Automatically delete all old session JSON and SMS/OTP files on disk for this account
+  if (options.cleanupFiles !== false) {
+    cleanupDiskFilesForAccount(phone, key);
   }
 
   saveDb(db);
@@ -1369,14 +1439,13 @@ export function importSessionJson(rawJson, targetKey = null) {
         sid: sid || db.config.accounts[key].sid || '',
         deviceId: deviceId || db.config.accounts[key].deviceId || '',
         cookies: cookieStr,
-        ...(typeof data.totalOrdersCount === 'number' && data.totalOrdersCount !== 999999 ? {
+        ...(data.ordersVerifiedLive === true && typeof data.totalOrdersCount === 'number' && data.totalOrdersCount !== 999999 ? {
           totalOrdersCount: data.totalOrdersCount,
           cachedTotalOrdersCount: data.totalOrdersCount,
+          ordersVerifiedLive: true,
           isZeroOrderAccount: data.totalOrdersCount === 0
-        } : (typeof data.cachedTotalOrdersCount === 'number' && data.cachedTotalOrdersCount !== 999999 ? {
-          totalOrdersCount: data.cachedTotalOrdersCount,
-          cachedTotalOrdersCount: data.cachedTotalOrdersCount,
-          isZeroOrderAccount: data.cachedTotalOrdersCount === 0
+        } : (typeof data.totalOrdersCount === 'number' && data.totalOrdersCount !== 999999 ? {
+          totalOrdersCount: data.totalOrdersCount
         } : {})),
         isLoggedIn: true,
         freshlyAuthenticated: true,
@@ -1458,7 +1527,7 @@ export function setActiveOrderAccountKey(key) {
 }
 
 // Permanently logs out and purges account from active pool and tombstones so Cloud Vault never revives it
-export function permanentLogoutAccount(key, { purgeVault = true } = {}) {
+export function permanentLogoutAccount(key, { purgeVault = true, cleanupFiles = true } = {}) {
   const db = getDb();
   if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
   if (!db.config.accounts) db.config.accounts = {};
@@ -1519,6 +1588,11 @@ export function permanentLogoutAccount(key, { purgeVault = true } = {}) {
     else delete db.config.activeOrderAccount;
   }
 
+  // Delete all old session JSON and SMS files on disk
+  if (cleanupFiles !== false) {
+    cleanupDiskFilesForAccount(phone, key);
+  }
+
   saveDb(db);
   syncAccountsJsonMirror(db);
   syncCloudVaultNow(db).catch(() => {});
@@ -1527,7 +1601,7 @@ export function permanentLogoutAccount(key, { purgeVault = true } = {}) {
 }
 
 // Completely logs out and purges ALL accounts across DB, Session Vault, accounts.json, and Cloud Vault
-export function logoutAllAccounts({ purgeVault = true } = {}) {
+export function logoutAllAccounts({ purgeVault = true, cleanupFiles = true } = {}) {
   const db = getDb();
   if (!db.config.deletedAccounts) db.config.deletedAccounts = {};
   if (!db.config.accounts) db.config.accounts = {};
@@ -1553,6 +1627,9 @@ export function logoutAllAccounts({ purgeVault = true } = {}) {
     if (purgeVault) {
       delete db.sessionVault[k];
       if (phone) delete db.sessionVault[phone];
+    }
+    if (cleanupFiles !== false) {
+      cleanupDiskFilesForAccount(phone, k);
     }
     count++;
   }

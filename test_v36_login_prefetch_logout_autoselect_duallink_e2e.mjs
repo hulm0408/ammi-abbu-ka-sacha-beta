@@ -28,8 +28,6 @@ function ok(cond, msg) {
   console.log(`✅ ${msg}`);
 }
 
-const originalDbRaw = fs.readFileSync('./data/db.json', 'utf8');
-
 try {
   console.log('--- 1. Login-Time Pre-Fetch (Orders, Breakfast, Late-Night, Possible Discounts) ---');
 
@@ -193,5 +191,12 @@ try {
   console.log('================================================================\n');
 
 } finally {
-  fs.writeFileSync('./data/db.json', originalDbRaw, 'utf8');
+  try {
+    const curDb = JSON.parse(fs.readFileSync('./data/db.json', 'utf8'));
+    delete curDb.config?.accounts?.['acc_9876500999'];
+    delete curDb.sessionVault?.['acc_9876500999'];
+    delete curDb.config?.deletedAccounts?.['acc_9876500999'];
+    delete curDb.config?.deletedAccounts?.['9876500999'];
+    fs.writeFileSync('./data/db.json', JSON.stringify(curDb, null, 2), 'utf8');
+  } catch {}
 }

@@ -1,5 +1,7 @@
 process.env.TEST_MODE = process.env.TEST_MODE || '1';
 process.env.BOT_TOKEN = process.env.BOT_TOKEN || '123456:TEST-TOKEN-FOR-OFFLINE-E2E';
+process.env.DB_FILE = './data/test_v39_db.json';
+process.env.ACCOUNTS_JSON_FILE = './data/test_v39_accounts.json';
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -27,9 +29,6 @@ function ok(cond, msg) {
   passed++;
   console.log(`✅ ${msg}`);
 }
-
-const originalDbRaw = fs.readFileSync('./data/db.json', 'utf8');
-const originalAccountsRaw = fs.readFileSync('./accounts.json', 'utf8');
 
 try {
   console.log('=== TEST SUITE V39: LOGOUT ALL & SEQUENTIAL FILE INTAKE & ORDER COUNT ===');
@@ -79,7 +78,8 @@ try {
   ok(freshDb.config.deletedAccounts?.['9876543210'] === true, '9876543210 phone is tombstoned');
   ok(freshDb.config.deletedAccounts?.['acc_9123456780'] === true, 'acc_9123456780 is tombstoned');
 
-  const accountsJsonContent = JSON.parse(fs.readFileSync('./accounts.json', 'utf8'));
+  const accountsJsonFile = process.env.ACCOUNTS_JSON_FILE || './accounts.json';
+  const accountsJsonContent = JSON.parse(fs.readFileSync(accountsJsonFile, 'utf8'));
   ok(Array.isArray(accountsJsonContent) && accountsJsonContent.length === 0, 'accounts.json on disk is []');
 
   // =========================================================================
@@ -112,6 +112,7 @@ try {
     isLoggedIn: true,
     totalOrdersCount: 0,
     cachedTotalOrdersCount: 0,
+    ordersVerifiedLive: true,
     isZeroOrderAccount: true,
     cookies: '_session_tid=fake_live_tid_0; token=tok0;'
   };
@@ -128,6 +129,7 @@ try {
     isLoggedIn: true,
     totalOrdersCount: 5,
     cachedTotalOrdersCount: 5,
+    ordersVerifiedLive: true,
     isZeroOrderAccount: false,
     cookies: '_session_tid=fake_live_tid_5; token=tok5;'
   };
@@ -157,6 +159,7 @@ try {
     phone: '8880008888',
     name: 'Imported User',
     totalOrdersCount: 0,
+    ordersVerifiedLive: true,
     isZeroOrderAccount: true,
     cookies: '_session_tid=sess_888; tid=tid_888; token=tok_888;'
   });
@@ -196,6 +199,8 @@ try {
 
   console.log(`\n🎉 ALL ${passed} TESTS PASSED CLEANLY!`);
 } finally {
-  fs.writeFileSync('./data/db.json', originalDbRaw, 'utf8');
-  fs.writeFileSync('./accounts.json', originalAccountsRaw, 'utf8');
+  try {
+    if (fs.existsSync('./data/test_v39_db.json')) fs.unlinkSync('./data/test_v39_db.json');
+    if (fs.existsSync('./data/test_v39_accounts.json')) fs.unlinkSync('./data/test_v39_accounts.json');
+  } catch {}
 }

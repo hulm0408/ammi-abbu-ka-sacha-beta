@@ -17,8 +17,6 @@ function ok(cond, msg) {
   console.log(`✅ [PASS ${String(passed).padStart(2, '0')}] ${msg}`);
 }
 
-const originalDbRaw = fs.readFileSync('./data/db.json', 'utf8');
-
 try {
   console.log('================================================================');
   console.log('🧪 LIVE E2E SUITE: PUNE RECEIPT FORMAT + DELULU4FOOD + MAX COUPON ENGINE');
@@ -192,5 +190,5 @@ Pune, Maharashtra 411030
   console.log(`🏆 ALL ${passed}/${passed} PUNE FINAL BILL + MAX COUPON LIVE TESTS PASSED!`);
   console.log(`================================================================`);
 } finally {
-  fs.writeFileSync('./data/db.json', originalDbRaw, 'utf8');
+  // Safe exit
 }

@@ -234,9 +234,10 @@ export async function ingestAndPersistRawAccountTexts(
       const orderCount = (typeof prof?.totalOrdersCount === 'number' && prof.totalOrdersCount !== 999999)
         ? prof.totalOrdersCount
         : (typeof prof?.orderCount === 'number' && prof.orderCount !== 999999 ? prof.orderCount : null);
-      if (typeof orderCount === 'number' && Number.isFinite(orderCount) && prof?.valid !== false) {
+      if (typeof orderCount === 'number' && Number.isFinite(orderCount) && prof?.valid !== false && prof?.ordersVerifiedLive === true) {
         mergedPayload.totalOrdersCount = orderCount;
         mergedPayload.cachedTotalOrdersCount = orderCount;
+        mergedPayload.ordersVerifiedLive = true;
         mergedPayload.isZeroOrderAccount = (orderCount === 0);
       }
     } catch {}

@@ -25,9 +25,6 @@ function ok(cond, msg) {
   console.log(`✅ [PASS ${String(passed).padStart(2, '0')}] ${msg}`);
 }
 
-const originalDbRaw = fs.readFileSync('./data/db.json', 'utf8');
-const originalAccRaw = fs.existsSync('./accounts.json') ? fs.readFileSync('./accounts.json', 'utf8') : null;
-
 try {
   console.log('================================================================');
   console.log('🧪 LIVE E2E SUITE: LOGIN / LOGOUT / DELETE / RE-LOGIN / OFFER CLAIM');
@@ -108,6 +105,12 @@ try {
   console.log(`🏆 ALL ${passed}/${passed} LIFECYCLE + LIVE SWIGGY TESTS PASSED!`);
   console.log(`================================================================`);
 } finally {
-  fs.writeFileSync('./data/db.json', originalDbRaw, 'utf8');
-  if (originalAccRaw !== null) fs.writeFileSync('./accounts.json', originalAccRaw, 'utf8');
+  try {
+    const curDb = JSON.parse(fs.readFileSync('./data/db.json', 'utf8'));
+    delete curDb.config?.accounts?.['acc_9999999991'];
+    delete curDb.sessionVault?.['acc_9999999991'];
+    delete curDb.config?.deletedAccounts?.['acc_9999999991'];
+    delete curDb.config?.deletedAccounts?.['9999999991'];
+    fs.writeFileSync('./data/db.json', JSON.stringify(curDb, null, 2), 'utf8');
+  } catch {}
 }

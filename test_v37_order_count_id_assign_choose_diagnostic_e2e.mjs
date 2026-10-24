@@ -32,8 +32,6 @@ function ok(cond, msg) {
   console.log(`✅ ${msg}`);
 }
 
-const originalDbRaw = fs.readFileSync('./data/db.json', 'utf8');
-
 try {
   console.log('--- 1. Polymorphic Account Inspection & Order Count ---');
 
@@ -192,5 +190,17 @@ try {
   console.log('================================================================\n');
 
 } finally {
-  fs.writeFileSync('./data/db.json', originalDbRaw, 'utf8');
+  try {
+    const curDb = JSON.parse(fs.readFileSync('./data/db.json', 'utf8'));
+    for (const k of ['acc_9111111111', 'acc_9222222222']) {
+      delete curDb.config?.accounts?.[k];
+      delete curDb.sessionVault?.[k];
+      delete curDb.config?.deletedAccounts?.[k];
+    }
+    delete curDb.config?.deletedAccounts?.['9111111111'];
+    delete curDb.config?.deletedAccounts?.['9222222222'];
+    delete curDb.orders?.['V37_ASSIGN_TEST'];
+    delete curDb.drafts?.['888777666'];
+    fs.writeFileSync('./data/db.json', JSON.stringify(curDb, null, 2), 'utf8');
+  } catch {}
 }

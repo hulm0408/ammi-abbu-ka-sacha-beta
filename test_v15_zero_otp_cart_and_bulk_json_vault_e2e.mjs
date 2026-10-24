@@ -93,8 +93,6 @@ function makeFakeJwt(userId) {
   return `${h}.${p}.sig`;
 }
 
-const rawDbBackup = fs.readFileSync('./data/db.json', 'utf-8');
-const rawAccountsJsonBackup = fs.existsSync('./accounts.json') ? fs.readFileSync('./accounts.json', 'utf-8') : null;
 const origFetch = globalThis.fetch;
 
 console.log('🚀 Running V15 Zero-OTP Cart Intake + 40-File Bulk JSON/ZIP Collector + Concurrent DB Guard + Cloud Vault Suite...\n');
@@ -435,10 +433,20 @@ try {
   cancelScheduledCloudVaultSync();
   delete process.env.DISABLE_CLOUD_VAULT;
   globalThis.fetch = origFetch;
-  if (rawAccountsJsonBackup !== null) {
-    fs.writeFileSync('./accounts.json', rawAccountsJsonBackup, 'utf-8');
-  }
-  fs.writeFileSync('./data/db.json', rawDbBackup, 'utf-8');
+  try {
+    const curDb = JSON.parse(fs.readFileSync('./data/db.json', 'utf-8'));
+    for (let i = 1; i <= 40; i++) {
+      const k = `acc_9999${String(i).padStart(6, '0')}`;
+      delete curDb.config?.accounts?.[k];
+      delete curDb.sessionVault?.[k];
+      delete curDb.config?.deletedAccounts?.[k];
+    }
+    delete curDb.config?.accounts?.['acc_dead_midway'];
+    delete curDb.config?.accounts?.['acc_live_backup'];
+    delete curDb.sessionVault?.['acc_dead_midway'];
+    delete curDb.sessionVault?.['acc_live_backup'];
+    fs.writeFileSync('./data/db.json', JSON.stringify(curDb, null, 2), 'utf-8');
+  } catch {}
 }
 
 // =========================================================================

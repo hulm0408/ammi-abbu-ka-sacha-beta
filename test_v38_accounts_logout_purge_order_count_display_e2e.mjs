@@ -1,5 +1,7 @@
 process.env.TEST_MODE = process.env.TEST_MODE || '1';
 process.env.BOT_TOKEN = process.env.BOT_TOKEN || '123456:TEST-TOKEN-FOR-OFFLINE-E2E';
+process.env.DB_FILE = './data/test_v38_db.json';
+process.env.ACCOUNTS_JSON_FILE = './data/test_v38_accounts.json';
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -27,9 +29,6 @@ function ok(cond, msg) {
   passed++;
   console.log(`✅ ${msg}`);
 }
-
-const originalDbRaw = fs.readFileSync('./data/db.json', 'utf8');
-const originalAccountsRaw = fs.readFileSync('./accounts.json', 'utf8');
 
 try {
   console.log('--- 1. Order Count Display in showFamilyAccounts ---');
@@ -162,7 +161,9 @@ try {
   console.log('================================================================\n');
 
 } finally {
-  fs.writeFileSync('./data/db.json', originalDbRaw, 'utf8');
-  fs.writeFileSync('./accounts.json', originalAccountsRaw, 'utf8');
+  try {
+    if (fs.existsSync('./data/test_v38_db.json')) fs.unlinkSync('./data/test_v38_db.json');
+    if (fs.existsSync('./data/test_v38_accounts.json')) fs.unlinkSync('./data/test_v38_accounts.json');
+  } catch {}
 }
 process.exit(0);

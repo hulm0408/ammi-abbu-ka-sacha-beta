@@ -6418,9 +6418,9 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     accountOrderProfileCache.delete(sig);
   }
 
-  // Fast-path: If the account already has a known cachedTotalOrdersCount / totalOrdersCount,
+  // Fast-path: If the account was ALREADY verified live against Swiggy backend,
   // build the profile in 0ms without firing network calls to Swiggy on every cart scan!
-  if (!force && !acc.sessionExpired && !acc.isLoggedOut && ((acc.cachedTotalOrdersCount !== undefined && acc.cachedTotalOrdersCount !== null && acc.cachedTotalOrdersCount !== 999999) || (typeof acc.totalOrdersCount === 'number' && acc.totalOrdersCount !== 999999))) {
+  if (!force && !acc.sessionExpired && !acc.isLoggedOut && acc.ordersVerifiedLive === true && ((acc.cachedTotalOrdersCount !== undefined && acc.cachedTotalOrdersCount !== null && acc.cachedTotalOrdersCount !== 999999) || (typeof acc.totalOrdersCount === 'number' && acc.totalOrdersCount !== 999999))) {
     const totalOrdersCount = Math.max(0, Number(acc.cachedTotalOrdersCount ?? acc.totalOrdersCount ?? 0));
     const profile = {
       key: accKey,
@@ -6430,6 +6430,7 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
       name: acc.name || accKey,
       totalOrdersCount,
       isZeroOrderAccount: totalOrdersCount === 0,
+      ordersVerifiedLive: true,
       liveActiveOrdersCount: 0,
       hasZeroActiveOrders: true,
       superStatus: String(acc.superStatus || acc.userSuperStatus || 'UNKNOWN'),
@@ -6456,8 +6457,9 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
       valid: false,
       reason,
       error: diagError,
-      totalOrdersCount: typeof acc?.totalOrdersCount === 'number' && acc.totalOrdersCount !== 999999 ? acc.totalOrdersCount : (acc?.isZeroOrderAccount ? 0 : 999999),
-      isZeroOrderAccount: acc?.totalOrdersCount === 0 || Boolean(acc?.isZeroOrderAccount),
+      totalOrdersCount: typeof acc?.totalOrdersCount === 'number' && acc.ordersVerifiedLive && acc.totalOrdersCount !== 999999 ? acc.totalOrdersCount : 999999,
+      isZeroOrderAccount: false,
+      ordersVerifiedLive: false,
       liveActiveOrdersCount: 0,
       hasZeroActiveOrders: true,
       superStatus: 'UNKNOWN',
@@ -6551,6 +6553,7 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     name: acc.name || accKey,
     totalOrdersCount,
     isZeroOrderAccount: totalOrdersCount === 0,
+    ordersVerifiedLive: Boolean(fetchedDirectOrders),
     liveActiveOrdersCount,
     hasZeroActiveOrders: liveActiveOrdersCount === 0,
     superStatus: String(acc.superStatus || acc.userSuperStatus || 'UNKNOWN'),
@@ -6561,12 +6564,14 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
   acc.totalOrdersCount = totalOrdersCount;
   acc.cachedTotalOrdersCount = totalOrdersCount;
   acc.isZeroOrderAccount = profile.isZeroOrderAccount;
+  acc.ordersVerifiedLive = Boolean(fetchedDirectOrders);
   try {
     const liveDb = getDb();
     if (liveDb?.config?.accounts?.[accKey]) {
       liveDb.config.accounts[accKey].totalOrdersCount = totalOrdersCount;
       liveDb.config.accounts[accKey].cachedTotalOrdersCount = totalOrdersCount;
       liveDb.config.accounts[accKey].isZeroOrderAccount = profile.isZeroOrderAccount;
+      liveDb.config.accounts[accKey].ordersVerifiedLive = Boolean(fetchedDirectOrders);
       delete liveDb.config.accounts[accKey].accountError;
       saveDb(liveDb);
     }

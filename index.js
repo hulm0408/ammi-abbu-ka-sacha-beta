@@ -36,6 +36,7 @@ import {
   generateOrderId,
   isAccountLoggedInSession,
   findAccountKeyByPhone,
+  cleanupDiskFilesForAccount,
 } from './store.js';
 import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
 import { isMenuText, isCommandText, looksLikePlainOrderId } from './menu-labels.js';
@@ -8007,25 +8008,63 @@ bot.on('text', async (ctx, next) => {
     if (result.success) {
       delete userWaitState[userId];
 
+      // 1. Export session backup BEFORE deletion
+      const exportData = exportSessionJson(key) || getDb().config?.accounts?.[key] || null;
+      const jsonFormatted = exportData ? JSON.stringify(exportData, null, 2) : '';
+      const jsonCompact = exportData ? JSON.stringify(exportData) : '';
+
       try {
         await deactivateSwiggyAccountViaBridge(userId, key, true).catch(() => {});
       } catch (e) {}
 
-      deleteAccount(key, { purgeVault: true });
+      // 2. Delete all related disk files (session JSON, SMS/OTP logs, debug files)
+      const removedFilesCount = cleanupDiskFilesForAccount(phone, key);
+
+      // 3. Purge account and tombstones
+      deleteAccount(key, { purgeVault: true, cleanupFiles: true });
+
+      // 4. Deliver backup JSON file directly to user
+      if (jsonFormatted) {
+        await ctx.replyWithDocument(
+          {
+            source: Buffer.from(jsonFormatted, 'utf-8'),
+            filename: `swiggy_${phone || key}_deleted_backup.json`
+          },
+          {
+            caption: `📁 <b>Backup Session File</b> (Deleted: <code>${escapeHtml(phone)}</code>)`,
+            parse_mode: 'HTML'
+          }
+        ).catch(() => {});
+      }
+
+      // 5. Send message with expandable collapsible code block AND dedicated copy button
+      const delButtons = [];
+      if (jsonCompact) {
+        // Native copy_text button: copies directly to clipboard on tap without expanding message!
+        delButtons.push([{ text: '📋 Copy Code', copy_text: { text: jsonCompact } }]);
+      }
+      delButtons.push([
+        Markup.button.url('Open official Swiggy', 'https://www.swiggy.com/'),
+        Markup.button.callback('Add Another Account', 'send_to_another_number')
+      ]);
+      delButtons.push([
+        Markup.button.callback('Main Menu', 'boss_panel_home')
+      ]);
+
+      const codeBlock = jsonFormatted
+        ? `\n\n<b>Backup Session Code:</b>\n<blockquote expandable><pre><code>${escapeHtml(jsonFormatted)}</code></pre></blockquote>\n<i>(Neeche "📋 Copy Code" button dabane se bina expand hue code clipboard me copy ho jayega)</i>`
+        : '';
 
       await ctx.reply(
-        `<blockquote>✓ <b>SWIGGY ACCOUNT DELETED</b></blockquote>\n\n` +
+        `<blockquote>✓ <b>SWIGGY ACCOUNT DELETED SUCCESSFULLY</b></blockquote>\n\n` +
         `☎ <b>Number:</b> <code>${escapeHtml(phone)}</code> (${escapeHtml(accName)})\n` +
-        `The account was removed from Swiggy and from this bot. Use Swiggy’s official app/site if you need to manage the number again.`,
+        `🗑 <b>Cleanup:</b> Purane session JSON aur SMS/OTP files disk se delete kar diye gaye (${removedFilesCount} files removed).\n` +
+        `◈ <b>Status:</b> Account Swiggy server aur bot dono se permanently remove ho gaya hai.${codeBlock}`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.url('Open official Swiggy', 'https://www.swiggy.com/')],
-            [
-              Markup.button.callback('Add Another Account', 'send_to_another_number'),
-              Markup.button.callback('Main Menu', 'boss_panel_home')
-            ]
-          ])
+          reply_markup: {
+            inline_keyboard: delButtons
+          }
         }
       );
     } else {

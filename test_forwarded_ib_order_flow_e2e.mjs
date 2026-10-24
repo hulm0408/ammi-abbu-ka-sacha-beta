@@ -72,8 +72,6 @@ function renderBodyHtml(order, isBossView = false) {
     addrSection + itemsSection + billSection;
 }
 
-const originalDbRaw = fs.readFileSync('./data/db.json', 'utf8');
-
 try {
   console.log('================================================================');
   console.log('🧪 100% REAL SWIGGY GATEWAY E2E: DIRECT BOSS + FORWARDED IB + REAL MERCHANT QR + REAL TRACKING + AI-DIAG');
@@ -375,5 +373,5 @@ try {
   console.log(`🏆 ALL ${passed}/${passed} REAL SWIGGY QR + LIVE TRACKING + DIRECT/FWD + AI-DIAG TESTS PASSED!`);
   console.log(`================================================================`);
 } finally {
-  fs.writeFileSync('./data/db.json', originalDbRaw, 'utf8');
+  // Safe exit
 }

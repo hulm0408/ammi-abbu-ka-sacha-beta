@@ -22,8 +22,6 @@ import {
   parseSwiggyOtpError,
 } from './swiggy-bridge.js';
 
-const originalDbRaw = fs.readFileSync('./data/db.json', 'utf8');
-const originalAccRaw = fs.existsSync('./accounts.json') ? fs.readFileSync('./accounts.json', 'utf8') : null;
 const realFetch = globalThis.fetch;
 
 let passed = 0;
@@ -469,6 +467,13 @@ try {
   console.log(`========================================================================`);
 } finally {
   globalThis.fetch = realFetch;
-  fs.writeFileSync('./data/db.json', originalDbRaw, 'utf8');
-  if (originalAccRaw !== null) fs.writeFileSync('./accounts.json', originalAccRaw, 'utf8');
+  try {
+    const curDb = JSON.parse(fs.readFileSync('./data/db.json', 'utf8'));
+    for (const testKey of ['acc_9876543210', 'acc_9876543211', 'acc_9876543212', 'acc_9876500033', 'acc_9876500034', 'acc_9876500035']) {
+      delete curDb.config?.accounts?.[testKey];
+      delete curDb.sessionVault?.[testKey];
+      delete curDb.config?.deletedAccounts?.[testKey];
+    }
+    fs.writeFileSync('./data/db.json', JSON.stringify(curDb, null, 2), 'utf8');
+  } catch {}
 }

@@ -31,8 +31,6 @@ function renderBodyHtml(order) {
   );
 }
 
-const originalDbRaw = fs.readFileSync('./data/db.json', 'utf8');
-
 try {
   console.log('================================================================');
   console.log('⚡ LIVE SIMULTANEOUS MULTI-ID PARALLEL SWIGGY FETCH + PLACEMENT E2E');
@@ -283,5 +281,12 @@ try {
   console.log(`🏆 ALL ${passed}/${passed} SIMULTANEOUS MULTI-ID PARALLEL SWIGGY TESTS PASSED!`);
   console.log(`================================================================`);
 } finally {
-  fs.writeFileSync('./data/db.json', originalDbRaw, 'utf8');
+  try {
+    const curDb = JSON.parse(fs.readFileSync('./data/db.json', 'utf8'));
+    delete curDb.config?.accounts?.['acc_8001201740'];
+    delete curDb.sessionVault?.['acc_8001201740'];
+    delete curDb.config?.deletedAccounts?.['acc_8001201740'];
+    delete curDb.config?.deletedAccounts?.['8001201740'];
+    fs.writeFileSync('./data/db.json', JSON.stringify(curDb, null, 2), 'utf8');
+  } catch {}
 }

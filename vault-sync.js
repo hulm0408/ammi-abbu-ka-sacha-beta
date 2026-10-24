@@ -1,5 +1,6 @@
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
+import { execSync } from 'node:child_process';
 
 const VAULT_OWNER = process.env.GITHUB_VAULT_OWNER || 'hulm0408';
 const VAULT_REPO = process.env.GITHUB_VAULT_REPO || 'ammi-abbu-ka-sacha-beta';
@@ -263,8 +264,39 @@ export async function pullAccountsFromCloudVault() {
 }
 
 export async function pushAccountsToCloudVaultNow(payloadObj) {
+  if (!payloadObj) return { ok: false, reason: 'NO_PAYLOAD' };
   const token = resolveVaultToken();
-  if (!token || !payloadObj) return { ok: false, reason: 'NO_TOKEN' };
+  if (!token) {
+    // Git CLI plumbing fallback: When GITHUB_VAULT_TOKEN is not in env (e.g. running locally or on server with git credentials),
+    // write directly to the local orphan `bot-vault` branch and push to remotes!
+    try {
+      const encryptedText = encryptVaultPayloadText(payloadObj);
+      const blobSha = execSync('git hash-object -w --stdin', { input: Buffer.from(encryptedText, 'utf8'), stdio: ['pipe', 'pipe', 'ignore'] }).toString('utf8').trim();
+      const vaultTreeInput = `100644 blob ${blobSha}\taccounts-vault.json\n`;
+      const vaultTreeSha = execSync('git mktree', { input: vaultTreeInput, stdio: ['pipe', 'pipe', 'ignore'] }).toString('utf8').trim();
+      const rootTreeInput = `040000 tree ${vaultTreeSha}\tvault\n`;
+      const rootTreeSha = execSync('git mktree', { input: rootTreeInput, stdio: ['pipe', 'pipe', 'ignore'] }).toString('utf8').trim();
+
+      let parentArg = '';
+      try {
+        const parentSha = execSync(`git rev-parse ${VAULT_BRANCH}`, { stdio: ['ignore', 'pipe', 'ignore'] }).toString('utf8').trim();
+        if (parentSha) parentArg = `-p ${parentSha}`;
+      } catch {}
+
+      const msg = `chore(vault): sync ${Object.keys(payloadObj.accounts || {}).length} saved Swiggy accounts (cli)`;
+      const commitSha = execSync(`git commit-tree ${rootTreeSha} ${parentArg} -m "${msg}"`, { stdio: ['pipe', 'pipe', 'ignore'] }).toString('utf8').trim();
+      execSync(`git update-ref refs/heads/${VAULT_BRANCH} ${commitSha}`, { stdio: ['pipe', 'pipe', 'ignore'] });
+
+      for (const remoteName of ['upstream-ammi', 'origin']) {
+        try {
+          execSync(`git push ${remoteName} ${VAULT_BRANCH}:${VAULT_BRANCH}`, { stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 });
+        } catch {}
+      }
+      return { ok: true, source: 'git_cli', commitSha };
+    } catch (cliErr) {
+      return { ok: false, reason: 'NO_TOKEN', error: cliErr.message };
+    }
+  }
 
   pushInFlight = pushInFlight.then(async () => {
     try {
