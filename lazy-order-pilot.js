@@ -19,6 +19,7 @@
 // ============================================================================
 
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl } from './link-utils.js';
+import { isAccountEventOfferActiveNow } from './swiggy-bridge.js';
 
 export const SWIGGY_ORDERS_PAGE = 'https://www.swiggy.com/orders';
 
@@ -176,6 +177,11 @@ export function planAccountFallbacks(accounts = {}, order = null, { exclude = []
     if (Number.isFinite(freeCash) && freeCash > 0) {
       score += Math.min(150, freeCash);
       reasons.push(`₹${Math.round(freeCash)} free cash`);
+    }
+    const liveOffer = isAccountEventOfferActiveNow(acc);
+    if (liveOffer.active) {
+      score += 500;
+      reasons.push(`₹${liveOffer.amount} ${liveOffer.slot === 'LATE_NIGHT' ? 'night' : 'breakfast'} cash live`);
     }
     const last = Number(acc.lastOrderAt ? new Date(acc.lastOrderAt).getTime() : 0);
     if (last) {

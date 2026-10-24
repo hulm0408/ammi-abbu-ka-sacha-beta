@@ -369,6 +369,52 @@ function resolveCampaignWindowInfo(boundaries, prefix, defaultDay = 15, isLateNi
   };
 }
 
+export function isAccountEventOfferActiveNow(acc, nowMs = Date.now()) {
+  if (!acc) return { active: false, slot: null, amount: 0, state: '' };
+  const offers = acc.offers?.offers || acc.offers || {};
+  const ln = offers.lateNight || {};
+  const bf = offers.breakfast || {};
+
+  // Current time in IST (UTC + 5:30)
+  const istOffsetMs = 5.5 * 3600 * 1000;
+  const istDate = new Date(nowMs + istOffsetMs);
+  const istHours = istDate.getUTCHours();
+  const istMinutes = istDate.getUTCMinutes();
+  const totalMin = istHours * 60 + istMinutes;
+
+  // Late Night redemption window: 21:00 to 06:00 IST (1260 to 1440 min, or 0 to 360 min)
+  const isLnWindow = totalMin >= 21 * 60 || totalMin < 6 * 60;
+  // Breakfast redemption window: 07:00 to 11:00 IST (420 to 660 min)
+  const isBfWindow = totalMin >= 7 * 60 && totalMin < 11 * 60;
+
+  const lnState = String(ln.slotState || ln.state || '');
+  const bfState = String(bf.slotState || bf.state || '');
+
+  // An offer is LIVE right now if:
+  // 1) It was marked ACTIVE_NOW (booked before cutoff, during active window), OR
+  // 2) It was marked LOCKED_FOR_TODAY (booked before cutoff earlier today) AND we are now inside the window!
+  const lnLive = isLnWindow && (lnState === 'ACTIVE_NOW' || lnState === 'LOCKED_FOR_TODAY');
+  const bfLive = isBfWindow && (bfState === 'ACTIVE_NOW' || bfState === 'LOCKED_FOR_TODAY');
+
+  if (lnLive) {
+    const val = Number(ln.offerValue || 1);
+    const amount = val === 4 ? 125 : (val === 3 ? 100 : (val === 2 ? 80 : 50));
+    return { active: true, slot: 'LATE_NIGHT', amount, state: lnState };
+  }
+  if (bfLive) {
+    const val = Number(bf.offerValue || 1);
+    const amount = val === 4 ? 125 : (val === 3 ? 100 : (val === 2 ? 80 : 50));
+    return { active: true, slot: 'BREAKFAST', amount, state: bfState };
+  }
+
+  return {
+    active: false,
+    slot: isLnWindow ? 'LATE_NIGHT' : (isBfWindow ? 'BREAKFAST' : null),
+    amount: 0,
+    state: isLnWindow ? lnState : (isBfWindow ? bfState : '')
+  };
+}
+
 export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = false, offerValue = null, forcePatch = false, quickLockOnly = false } = {}) {
   if (!account) return { success: false, reason: 'No account provided' };
   const chosenVal = [1, 2, 3, 4].includes(Number(offerValue || account.preferredOfferValue))
@@ -660,7 +706,7 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
       }
       return {
         state: 'CUTOFF_PASSED_LOCKED_NEXT_14D',
-        msg: `◷ Today's ${isLn ? '6:30 PM' : '5:00 AM'} cutoff passed before login — Next 14 Days PRE-LOCKED (${valTag})!`
+        msg: `◷ Today's ${isLn ? '6:30 PM' : '5:00 AM'} cutoff passed before login — activates TOMORROW ${isLn ? '9:00 PM' : '7:00 AM'} (${valTag})!`
       };
     };
 

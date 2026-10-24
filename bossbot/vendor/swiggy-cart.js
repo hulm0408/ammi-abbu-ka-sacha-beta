@@ -7,7 +7,7 @@ import QRCode from 'qrcode';
 import { getDb, saveDb, updateAccount } from './store.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
-import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken } from './swiggy-bridge.js';
+import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken, isAccountEventOfferActiveNow } from './swiggy-bridge.js';
 
 const CHROME_PATH = findChromePath();
 const PUPPETEER_HEADLESS = (process.platform === 'linux' || process.env.RAILWAY_ENVIRONMENT || process.env.HEADLESS === 'true') ? 'new' : false;
@@ -3929,7 +3929,7 @@ function isPrivateOrLocalHost(hostname) {
 }
 
 export function computeTrackHmac(orderId) {
-  const secret = process.env.BOT_TOKEN || 'bossbot-track-secret';
+  const secret = process.env.BOT_TOKEN || 'ammi-abbu-ka-sacha-beta-secret';
   return crypto.createHmac('sha256', secret).update(`track:${String(orderId || '').trim()}`).digest('hex').slice(0, 24);
 }
 
@@ -3966,7 +3966,8 @@ export function getPublicServiceBaseUrl() {
     process.env.RAILWAY_STATIC_URL ? (String(process.env.RAILWAY_STATIC_URL).startsWith('http') ? process.env.RAILWAY_STATIC_URL : `https://${process.env.RAILWAY_STATIC_URL}`) : '',
     process.env.KOYEB_PUBLIC_DOMAIN ? `https://${String(process.env.KOYEB_PUBLIC_DOMAIN).replace(/^https?:\/\//i, '')}` : '',
     process.env.FLY_APP_NAME ? `https://${String(process.env.FLY_APP_NAME).trim()}.fly.dev` : '',
-    detectedPublicServiceOrigin
+    detectedPublicServiceOrigin,
+    'https://ammi-abbu-ka-sacha-beta.onrender.com'
   ];
   for (const cand of candidates) {
     const clean = String(cand || '').trim().replace(/\/+$/, '');
@@ -3976,7 +3977,7 @@ export function getPublicServiceBaseUrl() {
       if (/^https?:$/i.test(parsed.protocol)) return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, '');
     } catch {}
   }
-  return '';
+  return 'https://ammi-abbu-ka-sacha-beta.onrender.com';
 }
 
 export function buildSignedOrderTrackUrl(orderOrId) {
@@ -6211,6 +6212,15 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       } else {
         order.offerDiagnostics = null;
       }
+      const itemSubtotal = Number(liveCart.itemTotal || order.itemTotal || order.subtotal || 0);
+      const isLnActive = eventsClaimRes?.lateNight?.slotState === 'ACTIVE_NOW' || eventsClaimRes?.lateNight?.slotState === 'CUTOFF_PASSED_LOCKED_NEXT_14D';
+      const isBfActive = eventsClaimRes?.breakfast?.slotState === 'ACTIVE_NOW' || eventsClaimRes?.breakfast?.slotState === 'CUTOFF_PASSED_LOCKED_NEXT_14D';
+      if (itemSubtotal > 0 && itemSubtotal < 199 && (isLnActive || isBfActive) && Number(liveCart.freeCashApplied || 0) === 0) {
+        const gap = Math.round(199 - itemSubtotal);
+        order.freeCashMovNote = `₹50 Free Cash requires Min Order Value ₹199 (Current items: ₹${itemSubtotal} • Add ₹${gap} more items to trigger ₹50 Free Cash!)`;
+      } else {
+        order.freeCashMovNote = null;
+      }
       order.packingCharges = liveCart.packingCharges || 0;
       order.taxesAndCharges = liveCart.taxesAndCharges || 0;
       order.finalPayable = liveCart.finalPayable;
@@ -6435,7 +6445,9 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
       superStatus: String(acc.superStatus || acc.userSuperStatus || 'UNKNOWN'),
       preferredOfferValue: Number(acc.preferredOfferValue || 1),
       walletBalance: Math.max(0, Number(acc.walletBalance || acc.swiggyMoney || 0)),
-      freeCashEstimate: Math.max(0, Number(acc.freeCashBalance || (acc.offers?.bothClaimed ? 50 : 0)))
+      freeCashEstimate: Math.max(0, Number(acc.freeCashBalance || 0)) + (isAccountEventOfferActiveNow(acc).active ? isAccountEventOfferActiveNow(acc).amount : 0),
+      hasLiveEventCash: isAccountEventOfferActiveNow(acc).active,
+      liveEventOffer: isAccountEventOfferActiveNow(acc)
     };
     acc.cachedTotalOrdersCount = totalOrdersCount;
     acc.isZeroOrderAccount = profile.isZeroOrderAccount;
@@ -6558,7 +6570,9 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     superStatus: String(acc.superStatus || acc.userSuperStatus || 'UNKNOWN'),
     preferredOfferValue: Number(acc.preferredOfferValue || 1),
     walletBalance: Math.max(0, Number(acc.walletBalance || acc.swiggyMoney || 0)),
-    freeCashEstimate: Math.max(0, Number(acc.freeCashBalance || (acc.offers?.bothClaimed ? 50 : 0)))
+    freeCashEstimate: Math.max(0, Number(acc.freeCashBalance || 0)) + (isAccountEventOfferActiveNow(acc).active ? isAccountEventOfferActiveNow(acc).amount : 0),
+    hasLiveEventCash: isAccountEventOfferActiveNow(acc).active,
+    liveEventOffer: isAccountEventOfferActiveNow(acc)
   };
   acc.totalOrdersCount = totalOrdersCount;
   acc.cachedTotalOrdersCount = totalOrdersCount;
@@ -6613,6 +6627,10 @@ function scoreAccountOfferPotential(profile, estSubtotal = 250) {
   if (profile.isZeroOrderAccount) score += 100_000;
   // #2 Zero active un-delivered orders on Swiggy right now
   if (profile.hasZeroActiveOrders) score += 10_000;
+  // #2.5 Real Live Event Free Cash active right now (Late Night 9PM-6AM / Breakfast 7AM-11AM)!
+  // Massive +50,000 priority bonus so live ₹50 Free Cash accounts ALWAYS get probed & picked ahead
+  // of accounts where cutoff passed!
+  if (profile.hasLiveEventCash) score += 50_000;
   // #3 Offer tier richness (`preferredOfferValue`: 4 => ₹125, 3 => ₹100, 2 => ₹80, 1 => ₹50) + Wallet + SUPER
   const tierValMap = { 1: 50, 2: 80, 3: 100, 4: 125 };
   score += Math.max(tierValMap[profile.preferredOfferValue] || 50, profile.freeCashEstimate || 0);
@@ -6738,6 +6756,11 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     const incumbentHasPayable = Number.isFinite(incumbentPayable) && incumbentPayable >= 0;
     if (candidateHasPayable !== incumbentHasPayable) return candidateHasPayable;
     if (candidateHasPayable && candidatePayable !== incumbentPayable) return candidatePayable < incumbentPayable;
+
+    // Tie-break by live Free Cash / reward amount actually applied on Swiggy bill:
+    const candidateFreeCash = Number(candidate.probeOrder?.freeCashApplied || candidate.probeOrder?.walletSplitPayAmount || 0);
+    const incumbentFreeCash = Number(incumbent.probeOrder?.freeCashApplied || incumbent.probeOrder?.walletSplitPayAmount || 0);
+    if (candidateFreeCash !== incumbentFreeCash) return candidateFreeCash > incumbentFreeCash;
 
     const candidateSavings = Number(candidate.probeOrder?.totalSavings || 0);
     const incumbentSavings = Number(incumbent.probeOrder?.totalSavings || 0);

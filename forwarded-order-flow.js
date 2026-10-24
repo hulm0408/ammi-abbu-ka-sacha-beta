@@ -1254,6 +1254,9 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     if (order.offerDiagnostics) {
       offerNotes.push(`i <i>${escapeHtml(order.offerDiagnostics)}</i>`);
     }
+    if (order.freeCashMovNote) {
+      offerNotes.push(`i <i>${escapeHtml(order.freeCashMovNote)}</i>`);
+    }
     const offerStrip = offerNotes.length > 0 ? `\n\n${offerNotes.join('\n')}` : '';
     const qrStatusNote = order.cardStage === 'QR_GENERATED'
       ? `\n\n● <b>Official Swiggy Dynamic QR Active</b> (Swiggy Order <code>${escapeHtml(String(order.pendingSwiggyOrderId || ''))}</code> • Auto-detecting payment every 5s or tap <b>Paid</b>)`
