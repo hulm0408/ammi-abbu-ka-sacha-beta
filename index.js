@@ -1,6 +1,13 @@
 import './network-shield.js';
 import { createIpv4TelegramAgent, installBulletproofTelegramTransport } from './network-shield.js';
 import { installBossMirror } from './boss-mirror.js';
+import {
+  REQUIRED_CHANNEL,
+  formatChannelJoinCard,
+  checkUserChannelMembership,
+  clearChannelMemberCache,
+  isTestRunner
+} from './channel-gate.js';
 import http from 'http';
 import { Telegraf, Markup } from 'telegraf';
 import dotenv from 'dotenv';
@@ -273,6 +280,68 @@ try {
     }
   };
 } catch {}
+
+// ================= MANDATORY CHANNEL SUBSCRIPTION GATE =================
+// Requires all non-boss users to join @its_NoooB before using any bot features.
+bot.use(async (ctx, next) => {
+  const userId = ctx.from?.id;
+  if (!userId) return next();
+
+  // Boss is unconditionally exempt from channel gate
+  if (isBoss(userId)) return next();
+
+  // Allow the verification button callback to execute
+  if (ctx.callbackQuery?.data === 'check_channel_joined') return next();
+
+  // In offline automated test suites where ENFORCE_CHANNEL_GATE is not set, allow next()
+  if (isTestRunner()) return next();
+
+  const status = await checkUserChannelMembership(ctx.telegram || bot.telegram, userId);
+  if (status.isMember) return next();
+
+  // User is NOT a member: block access and present the Force-Join card
+  const card = formatChannelJoinCard();
+  if (ctx.callbackQuery) {
+    await ctx.answerCbQuery('⚠️ Pehle @its_NoooB channel join karein!', { show_alert: true }).catch(() => {});
+    try {
+      await ctx.editMessageText(card.text, { parse_mode: 'HTML', ...card.keyboard });
+    } catch {
+      await ctx.reply(card.text, { parse_mode: 'HTML', ...card.keyboard }).catch(() => {});
+    }
+    return;
+  }
+
+  await ctx.reply(card.text, { parse_mode: 'HTML', ...card.keyboard }).catch(() => {});
+});
+
+bot.action('check_channel_joined', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCbQuery().catch(() => {});
+
+  clearChannelMemberCache(userId);
+  const status = await checkUserChannelMembership(ctx.telegram || bot.telegram, userId, { bypassCache: true });
+
+  if (status.isMember) {
+    await ctx.answerCbQuery('✅ Shukriya! Channel verified. Ab aap bot use kar sakte hain.', { show_alert: true }).catch(() => {});
+    try { await ctx.deleteMessage().catch(() => {}); } catch {}
+
+    // Present user welcome screen
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(
+      '🙏 <b>Assalamu Alaikum!</b> Access unlock ho gaya hai. Sirf <b>Cart link</b> + <b>Address link</b> bhejein — baaki sab bot karega.',
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+    const cardMsg = await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard }).catch(() => {});
+    rememberUserCard(userId, cardMsg);
+    return;
+  }
+
+  if (status.reason === 'ADMIN_REQUIRED') {
+    return ctx.answerCbQuery('⚠️ Bot ko @its_NoooB channel me Administrator banayein taaki verification chal sake!', { show_alert: true }).catch(() => {});
+  }
+
+  return ctx.answerCbQuery('❌ Aapne abhi tak @its_NoooB channel join nahi kiya hai! Pehle join karein aur phir Check dabayein.', { show_alert: true }).catch(() => {});
+});
 
 const userWaitState = {};
 

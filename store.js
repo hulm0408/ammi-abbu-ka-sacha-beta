@@ -974,9 +974,12 @@ export function canTransitionOrder(currentStatus, targetStatus) {
 }
 
 export function isBoss(userId) {
-  const db = getDb();
   const idNum = Number(userId);
-  return db.config.bossIds.map(Number).includes(idNum);
+  if (!idNum) return false;
+  const envBossId = Number(process.env.BOSS_ID || 0);
+  if (envBossId && idNum === envBossId) return true;
+  const db = getDb();
+  return (db.config?.bossIds || []).map(Number).includes(idNum);
 }
 
 export function addBoss(userId) {

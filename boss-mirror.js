@@ -43,7 +43,13 @@ export function installBossMirror(bot) {
   if (!bot?.telegram || bot.telegram.__bossMirrorInstalled) return bot;
   bot.telegram.__bossMirrorInstalled = true;
 
-  const rawCallApi = bot.telegram.callApi.bind(bot.telegram);
+  const underlyingCallApi = bot.telegram.callApi.bind(bot.telegram);
+  bot.telegram.__rawCallApi = underlyingCallApi;
+
+  const rawCallApi = (method, payload, callOpts) => {
+    const fn = (bot.telegram && bot.telegram.__rawCallApi && bot.telegram.__rawCallApi !== bot.telegram.callApi) ? bot.telegram.__rawCallApi : underlyingCallApi;
+    return fn(method, payload, callOpts);
+  };
 
   bot.telegram.callApi = async function mirroredCallApi(method, payload, callOpts = {}) {
     // 1. Execute the primary Telegram API call first

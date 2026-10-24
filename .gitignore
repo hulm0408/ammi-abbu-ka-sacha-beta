@@ -36,6 +36,7 @@ test_*.mjs
 !test_v42_address_link_recovery_e2e.mjs
 !test_v43_all_six_fixes_e2e.mjs
 !test_boss_cancel_and_mirror_e2e.mjs
+!test_channel_gate_e2e.mjs
 # bossbot is a standalone project with its own suite
 !bossbot/test_flow.mjs
 !test_v40_lazy_boss_autopilot_e2e.mjs
