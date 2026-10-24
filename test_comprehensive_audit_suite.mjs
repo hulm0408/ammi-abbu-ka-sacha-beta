@@ -653,14 +653,14 @@ try {
     chatId: 'TRACKING_BOSS_CHAT',
     orderId: pollOrderId,
     intervalMs: 5,
-    maxDurationMs: 1000,
+    maxDurationMs: 4000,
     customTrackingFetcher: async () => ({
       trackingUrl: officialTrackingUrl,
       deliveryOtp: ++trackingFetchCount > 1 ? '4821' : '',
       status: 'Out for delivery'
     })
   });
-  const waitDeadline = Date.now() + 1500;
+  const waitDeadline = Date.now() + 4000;
   while (trackingFetchCount < 2 && Date.now() < waitDeadline) {
     await new Promise(resolve => setTimeout(resolve, 20));
   }

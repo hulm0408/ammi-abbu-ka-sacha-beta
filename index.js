@@ -761,6 +761,8 @@ export function formatUserOrderCardText(order, isBossView = false) {
     if (ad.address) addrLines.push(...ad.address.split('\n').map(line => esc(line)));
     if (ad.lat) addrLines.push(`Latitude: ${esc(String(ad.lat))}`);
     if (ad.lng) addrLines.push(`Longitude: ${esc(String(ad.lng))}`);
+    addrLines.push('🕶 Incognito: ON — order disappears from order history after 3 hrs');
+    addrLines.push('Auto Delete: ON — all saved addresses auto-deleted after order');
   } else if (order.addressDetails?.unresolvableShortLink) {
     addrLines.push('<b>Delivering To</b>');
     addrLines.push('<i>Address link could not be resolved — send a fresh address link or GPS pin.</i>');
@@ -829,6 +831,7 @@ export function formatUserOrderCardText(order, isBossView = false) {
     if (order.packingCharges > 0) billLines.push(`Packing Charges: ₹${Number(order.packingCharges)}`);
     if (order.taxesAndCharges > 0) billLines.push(`GST & Other Charges: ₹${Number(order.taxesAndCharges)}`);
 
+    billLines.push('━━━━━━━━━━━━━━');
     if (Number(order.totalSavings || 0) > 0) {
       billLines.push(`Total Savings: ₹${Number(order.totalSavings)}`);
     }

@@ -6060,12 +6060,10 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       v3CouponsResp?.statusCode === 0
     );
 
-    // Priority 5: ONLY probe universal fallback codes if ALL 4 live Swiggy offer APIs failed/timed out!
-    // When live discovery succeeded and Swiggy confirmed `0` eligible codes, skipping blind guesses saves ~24s of wasted roundtrips!
-    if (!liveDiscoverySucceeded) {
-      for (const std of ['TRYNEW', 'SWIGGYIT', 'WELCOME50']) {
-        pushCoupon(std, std, 'Swiggy Universal Promo', 40);
-      }
+    // Priority 5: Universal fallback codes
+    // Always include top high-discount promo codes (SNACKIT, TRYNEW, STEALDEAL, SWIGGYIT, WELCOME50) so eligible discounts are always tested!
+    for (const std of ['SNACKIT', 'TRYNEW', 'STEALDEAL', 'SWIGGYIT', 'WELCOME50']) {
+      pushCoupon(std, std, 'Swiggy Promo Offer', 35);
     }
 
     availableCoupons.sort((a, b) => (a.priority || 50) - (b.priority || 50));
@@ -6587,6 +6585,11 @@ export function getBusySwiggyAccountsMap(db, excludeOrderId = null) {
     if (!o || (excludeOrderId && o.id === excludeOrderId)) continue;
     if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status)) continue;
     if (o.selectedAccount && ['AUTO_SELECTING', 'BILL_READY', 'QR_GENERATED'].includes(o.cardStage)) {
+      const orderTs = new Date(o.updatedAt || o.createdAt || 0).getTime();
+      // Unpaid bill / QR orders older than 20 minutes are stale and must not lock vault accounts permanently
+      if (orderTs > 0 && (now - orderTs) > 20 * 60 * 1000) {
+        continue;
+      }
       busy.set(o.selectedAccount, o);
     }
   }
@@ -6729,15 +6732,17 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   const isBetterProbe = (candidate, incumbent) => {
     if (!candidate) return false;
     if (!incumbent) return true;
-    if (preferZeroOrderAccounts && candidate.profile.isZeroOrderAccount !== incumbent.profile.isZeroOrderAccount) {
-      return candidate.profile.isZeroOrderAccount;
-    }
     const candidatePayable = Number(candidate.probeOrder?.finalPayable);
     const incumbentPayable = Number(incumbent.probeOrder?.finalPayable);
     const candidateHasPayable = Number.isFinite(candidatePayable) && candidatePayable >= 0;
     const incumbentHasPayable = Number.isFinite(incumbentPayable) && incumbentPayable >= 0;
     if (candidateHasPayable !== incumbentHasPayable) return candidateHasPayable;
     if (candidateHasPayable && candidatePayable !== incumbentPayable) return candidatePayable < incumbentPayable;
+
+    // Lowest payable wins! Only use 0-order accounts as tie-breaker when payables are equal
+    if (preferZeroOrderAccounts && candidate.profile.isZeroOrderAccount !== incumbent.profile.isZeroOrderAccount) {
+      return candidate.profile.isZeroOrderAccount;
+    }
 
     const candidateSavings = Number(candidate.probeOrder?.totalSavings || 0);
     const incumbentSavings = Number(incumbent.probeOrder?.totalSavings || 0);

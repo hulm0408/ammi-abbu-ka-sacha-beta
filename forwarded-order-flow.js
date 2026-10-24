@@ -1464,6 +1464,14 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
     return { updatedCart, updatedAddress: true };
   }
 
+  // Extract forwarded coupon / promo code if present in the message
+  const couponMatch = trimmed.match(/(?:coupon|promo|code)\s*[:\-]?\s*([A-Z0-9_-]{3,25})\b/i);
+  if (couponMatch && !/^(?:on|off|true|false|none|null|undefined)$/i.test(couponMatch[1])) {
+    const extractedCode = couponMatch[1].toUpperCase();
+    order.couponCode = extractedCode;
+    order.discoveredCoupon = extractedCode;
+  }
+
   const allUrls = extractSharedUrls(trimmed);
   const swiggyUrls = allUrls.filter(u => /(swiggy\.com|swig\.gy|onelink\.me)/i.test(u) && !isOfficialSwiggyTrackingUrl(u) && !/r\.swiggy\.com.*\/track\//i.test(u));
   const mapsUrls = allUrls.filter(u => /(maps\.app\.goo\.gl|google\.com\/maps|goo\.gl\/maps)/i.test(u));
