@@ -997,6 +997,124 @@ export function addBoss(userId) {
   }
 }
 
+export function isServicePaused() {
+  const db = getDb();
+  return Boolean(db.config?.servicePaused);
+}
+
+export function setServicePaused(paused, notice = null) {
+  const db = getDb();
+  if (!db.config) db.config = {};
+  db.config.servicePaused = Boolean(paused);
+  if (notice !== null && notice !== undefined) {
+    db.config.servicePausedNotice = String(notice).trim();
+  }
+  saveDb(db);
+  return db.config.servicePaused;
+}
+
+export function recordKnownUser(from) {
+  if (!from || !from.id) return;
+  try {
+    const db = getDb();
+    if (!db.knownUsers) db.knownUsers = {};
+    const idStr = String(from.id);
+    const existing = db.knownUsers[idStr];
+    const username = from.username || '';
+    const firstName = from.first_name || '';
+    const lastName = from.last_name || '';
+    const now = Date.now();
+    if (!existing || existing.username !== username || existing.firstName !== firstName || (now - (existing.lastSeen || 0) > 3600000)) {
+      db.knownUsers[idStr] = {
+        id: from.id,
+        username,
+        firstName,
+        lastName,
+        phone: existing?.phone || '',
+        lastSeen: now
+      };
+      saveDb(db);
+    }
+  } catch (err) {
+    console.warn('[recordKnownUser] warning:', err?.message || err);
+  }
+}
+
+export function recordUserPhone(userId, phone) {
+  const p = normalizeTenDigitPhone(phone);
+  if (!userId || !p) return false;
+  try {
+    const db = getDb();
+    if (!db.knownUsers) db.knownUsers = {};
+    const idStr = String(userId);
+    if (!db.knownUsers[idStr]) {
+      db.knownUsers[idStr] = { id: Number(userId), phone: p, lastSeen: Date.now() };
+    } else {
+      db.knownUsers[idStr].phone = p;
+      db.knownUsers[idStr].lastSeen = Date.now();
+    }
+    saveDb(db);
+    return true;
+  } catch (err) {
+    console.warn('[recordUserPhone] warning:', err?.message || err);
+    return false;
+  }
+}
+
+export function getUserLastDeliveryPhone(userId) {
+  if (!userId) return '';
+  const db = getDb();
+  const knownPhone = normalizeTenDigitPhone(db.knownUsers?.[String(userId)]?.phone || '');
+  if (knownPhone) return knownPhone;
+  const orders = Object.values(db.orders || {})
+    .filter(o => o && (String(o.userId) === String(userId) || String(o.chatId) === String(userId)))
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  for (const o of orders) {
+    const p = normalizeTenDigitPhone(
+      o.addressDetails?.mobile ||
+      o.recipientMobile ||
+      o.phone ||
+      (o.addressDetails?.mobileSource !== 'ACCOUNT_FALLBACK' ? o.addressDetails?.mobile : '')
+    );
+    const accPhone = normalizeTenDigitPhone(o.orderAccount || '');
+    if (p && p !== accPhone) {
+      return p;
+    }
+  }
+  return '';
+}
+
+export function getAllBroadcastUserIds() {
+  const db = getDb();
+  const ids = new Set();
+  if (db.knownUsers) {
+    for (const k of Object.keys(db.knownUsers)) {
+      const n = Number(k);
+      if (Number.isFinite(n) && n > 0) ids.add(n);
+    }
+  }
+  if (db.orders) {
+    for (const order of Object.values(db.orders)) {
+      if (order?.userId && Number(order.userId) > 0) ids.add(Number(order.userId));
+      if (order?.chatId && Number(order.chatId) > 0) ids.add(Number(order.chatId));
+      if (order?.fwdSenderUserId && Number(order.fwdSenderUserId) > 0) ids.add(Number(order.fwdSenderUserId));
+    }
+  }
+  if (db.drafts) {
+    for (const k of Object.keys(db.drafts)) {
+      const n = Number(k);
+      if (Number.isFinite(n) && n > 0) ids.add(n);
+    }
+  }
+  if (db.userStates) {
+    for (const k of Object.keys(db.userStates)) {
+      const n = Number(k);
+      if (Number.isFinite(n) && n > 0) ids.add(n);
+    }
+  }
+  return Array.from(ids);
+}
+
 export function setFamilyRole(userId, role) {
   const db = getDb();
   db.config.familyMembers[String(userId)] = role;

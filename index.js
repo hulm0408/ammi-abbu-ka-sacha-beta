@@ -17,6 +17,12 @@ import {
   saveDb,
   isBoss,
   addBoss,
+  isServicePaused,
+  setServicePaused,
+  recordKnownUser,
+  recordUserPhone,
+  getUserLastDeliveryPhone,
+  getAllBroadcastUserIds,
   setFamilyRole,
   getFamilyRole,
   getAccounts,
@@ -283,14 +289,37 @@ try {
   };
 } catch {}
 
-// ================= MANDATORY CHANNEL SUBSCRIPTION GATE =================
+// ================= MANDATORY CHANNEL SUBSCRIPTION GATE & SERVICE PAUSE =================
 // Requires all non-boss users to join @its_NoooB before using any bot features.
 bot.use(async (ctx, next) => {
   const userId = ctx.from?.id;
   if (!userId) return next();
 
-  // Boss is unconditionally exempt from channel gate
+  // Record user activity into knownUsers inventory for announcements & broadcast
+  recordKnownUser(ctx.from);
+
+  // Boss is unconditionally exempt from service pause and channel gate
   if (isBoss(userId)) return next();
+
+  // Allow boss login commands (/boss, /admin) through
+  const msgText = String(ctx.message?.text || '').trim();
+  if (msgText.startsWith('/boss') || msgText.startsWith('/admin')) {
+    return next();
+  }
+
+  // Service pause check: if Boss turned service OFF, block customers and show pause notice
+  if (isServicePaused()) {
+    const db = getDb();
+    const pauseNotice = db.config?.servicePausedNotice ||
+      '🔴 <b>Service Abhi Band Hai</b>\n\n' +
+      'Admin ne service temporary pause ki hui hai. Kripya thodi der baad try karein.\n\n' +
+      '<i>Service resume hote hi aap order kar sakenge.</i>';
+
+    if (ctx.callbackQuery) {
+      return ctx.answerCbQuery('🔴 Service abhi band hai. Kripya thodi der baad try karein.', { show_alert: true }).catch(() => {});
+    }
+    return ctx.reply(pauseNotice, { parse_mode: 'HTML' }).catch(() => {});
+  }
 
   // Allow the verification button callback to execute
   if (ctx.callbackQuery?.data === 'check_channel_joined') return next();
@@ -2418,6 +2447,133 @@ bot.command('setupi', async (ctx) => {
   db.config.bossUpiId = newUpi;
   saveDb(db);
   await ctx.reply(`✓ <b>Payment UPI ID updated to:</b> <code>${newUpi}</code>\nAb se generated QR par payment seedha is ID par aayega!`, { parse_mode: 'HTML' });
+});
+
+// ================= BOSS SERVICE ON / OFF TOGGLE & BROADCAST =================
+
+bot.action('boss_toggle_service', async (ctx) => {
+  if (!isBoss(ctx.from?.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const newPaused = !isServicePaused();
+  setServicePaused(newPaused);
+  const alertTxt = newPaused
+    ? '🔴 Service is now PAUSED! Customers will see the offline notice.'
+    : '🟢 Service is now ACTIVE! Customers can order normally.';
+  await ctx.answerCbQuery(alertTxt, { show_alert: true }).catch(() => {});
+  try {
+    const home = getBossPanelHome();
+    await ctx.editMessageText(home.text, { parse_mode: 'HTML', ...home.keyboard }).catch(() => {});
+  } catch {}
+});
+
+bot.command(['service', 'toggle_service', 'pause_service', 'resume_service'], async (ctx) => {
+  if (!isBoss(ctx.from?.id)) return ctx.reply('⛔ Sirf Boss ye command use kar sakta hai.').catch(() => {});
+  const parts = ctx.message.text.trim().split(/\s+/);
+  const cmd = parts[0].toLowerCase().replace(/^\//, '');
+  const subCmd = (parts[1] || '').toLowerCase();
+  const customNotice = parts.slice(subCmd ? 2 : 1).join(' ').trim();
+
+  let newPaused = false;
+  if (cmd === 'pause_service' || subCmd === 'off' || subCmd === 'pause') {
+    newPaused = true;
+    setServicePaused(true, customNotice || null);
+  } else if (cmd === 'resume_service' || subCmd === 'on' || subCmd === 'resume') {
+    newPaused = false;
+    setServicePaused(false);
+  } else if (subCmd === 'status') {
+    const p = isServicePaused();
+    return ctx.reply(
+      `📊 <b>Service Status:</b> ${p ? '🔴 <b>PAUSED (Offline)</b>' : '🟢 <b>ACTIVE (Online)</b>'}\n\n` +
+      `Toggle karein: <code>/service on</code> ya <code>/service off</code>`,
+      { parse_mode: 'HTML' }
+    );
+  } else {
+    newPaused = !isServicePaused();
+    setServicePaused(newPaused, customNotice || null);
+  }
+
+  const statusTxt = newPaused
+    ? '🔴 <b>Service OFF kar di gayi hai (PAUSED).</b>\n\nAb koi bhi customer order ya link nahi bhej payega. Unhe pause notice dikhega.\nDobara ON karne ke liye: <code>/service on</code>'
+    : '🟢 <b>Service ON kar di gayi hai (ACTIVE).</b>\n\nAb sabhi customers order kar sakte hain.\nOFF karne ke liye: <code>/service off</code>';
+
+  await ctx.reply(statusTxt, { parse_mode: 'HTML' });
+});
+
+bot.action('boss_broadcast_prompt', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!isBoss(userId)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[userId] = { action: 'waiting_broadcast_message' };
+  const allUsers = getAllBroadcastUserIds();
+  await ctx.reply(
+    `📢 <b>Broadcast Announcement</b>\n\n` +
+    `Ab jo bhi text message aap agla bhejenge, wo bot ke <b>${allUsers.length}</b> users ko deliver hoga.\n\n` +
+    `<i>Ya direct command use karein:</i>\n<code>/broadcast Aapka message yahan...</code>\n\n` +
+    `<i>Cancel karne ke liye:</i> <code>/cancel</code>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+async function executeBroadcast(ctx, messageText) {
+  const text = String(messageText || '').trim();
+  if (!text) {
+    return ctx.reply(
+      '📢 <b>Broadcast Announcement</b>\n\n' +
+      'Usage: <code>/broadcast Aapka message yahan...</code>\n\n' +
+      'Ye message bot ke sabhi customers/users ko deliver hoga.',
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  const allUsers = getAllBroadcastUserIds();
+  if (allUsers.length === 0) {
+    return ctx.reply('⚠️ Koi users nahi mile broadcast karne ke liye.');
+  }
+
+  const progressMsg = await ctx.reply(
+    `📢 <i>Broadcasting message to <b>${allUsers.length}</b> users...</i>`,
+    { parse_mode: 'HTML' }
+  ).catch(() => null);
+
+  let sent = 0;
+  let failed = 0;
+
+  for (const targetId of allUsers) {
+    try {
+      await ctx.telegram.sendMessage(targetId, text, { parse_mode: 'HTML' });
+      sent++;
+    } catch {
+      try {
+        await ctx.telegram.sendMessage(targetId, text);
+        sent++;
+      } catch (err) {
+        failed++;
+        console.warn(`[Broadcast] Could not send to ${targetId}:`, err?.message || err);
+      }
+    }
+    // Rate limit throttle: 35ms sleep
+    await new Promise(r => setTimeout(r, 35));
+  }
+
+  const report =
+    `✅ <b>Broadcast Completed!</b>\n\n` +
+    `👥 <b>Total Users:</b> ${allUsers.length}\n` +
+    `✓ <b>Delivered:</b> ${sent}\n` +
+    (failed > 0 ? `× <b>Failed/Blocked:</b> ${failed}\n` : '') +
+    `\n<i>Broadcast messages have been sent.</i>`;
+
+  if (progressMsg?.message_id) {
+    await ctx.telegram.editMessageText(ctx.chat.id, progressMsg.message_id, undefined, report, { parse_mode: 'HTML' }).catch(async () => {
+      await ctx.reply(report, { parse_mode: 'HTML' }).catch(() => {});
+    });
+  } else {
+    await ctx.reply(report, { parse_mode: 'HTML' }).catch(() => {});
+  }
+}
+
+bot.command(['broadcast', 'announce'], async (ctx) => {
+  if (!isBoss(ctx.from?.id)) return ctx.reply('⛔ Sirf Boss ye command use kar sakta hai.').catch(() => {});
+  const msgText = ctx.message.text.replace(/^\/(?:broadcast|announce)(?:@[a-zA-Z0-9_]+)?\s*/i, '').trim();
+  await executeBroadcast(ctx, msgText);
 });
 
 bot.action('boss_prompt_set_upi', async (ctx) => {
@@ -7996,6 +8152,13 @@ bot.on('text', async (ctx, next) => {
   // ================= PRIORITY #1: ZERO-OTP CART / ADDRESS / JSON GUARD (BOTH BOSS & CUSTOMERS!) =================
   // NEVER let a stale OTP wait state OR digits inside a Swiggy URL / Address hijack ANY Cart, Address, or Session JSON!
   if (isBoss(userId)) {
+    // 1A-0. Boss broadcast message wait state
+    if (state && state.action === 'waiting_broadcast_message') {
+      delete userWaitState[userId];
+      await executeBroadcast(ctx, rawText);
+      return;
+    }
+
     // 1A. Pasted Session JSON anywhere in chat -> straight to Vault Saver (clears any stale OTP wait state!)
     if (
       (!state || state.action !== 'waiting_fc_json') &&
@@ -8123,6 +8286,7 @@ bot.on('text', async (ctx, next) => {
   if (state?.action === 'waiting_recipient_mobile' && !isBoss(userId)) {
     const recipientMobile = extractStandaloneMobileNumber(rawText);
     if (recipientMobile) {
+      recordUserPhone(userId, recipientMobile);
       const draft = getDraft(userId);
       if (!draft.addressDetails?.address) {
         delete userWaitState[userId];
@@ -8152,6 +8316,38 @@ bot.on('text', async (ctx, next) => {
       await ctx.reply('📞 Sirf <b>10-digit mobile number</b> bhejein:', { parse_mode: 'HTML' });
       return;
     }
+  }
+
+  // Intercept standalone phone number sent by customer anytime in chat
+  const standaloneMobile = !isBoss(userId) && (!state || state.action === 'waiting_both_links') ? extractStandaloneMobileNumber(rawText) : null;
+  if (standaloneMobile) {
+    recordUserPhone(userId, standaloneMobile);
+    const draft = getDraft(userId);
+    draft.addressDetails = { ...(draft.addressDetails || {}), mobile: standaloneMobile };
+    updateDraft(userId, { addressDetails: draft.addressDetails });
+
+    const activeOrder = getActiveUserOrder(userId);
+    if (activeOrder && (!activeOrder.status || activeOrder.status === 'PENDING' || activeOrder.cardStage === 'REVIEW')) {
+      activeOrder.addressDetails = { ...(activeOrder.addressDetails || {}), mobile: standaloneMobile };
+      activeOrder.recipientMobile = standaloneMobile;
+      const db = getDb();
+      if (db.orders?.[activeOrder.id]) {
+        db.orders[activeOrder.id].addressDetails = activeOrder.addressDetails;
+        db.orders[activeOrder.id].recipientMobile = standaloneMobile;
+        saveDb(db);
+      }
+    }
+
+    await ctx.reply(
+      `📞 <b>Delivery Mobile Number Saved:</b> <code>${standaloneMobile}</code>\n\n` +
+      `Delivery partner isi number par call karega. Order for Others enabled hai.`,
+      { parse_mode: 'HTML' }
+    );
+    if (simpleChatForUser(userId)) {
+      const screen = getUserScreen(userId, ctx.from);
+      await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard }).catch(() => {});
+    }
+    return;
   }
 
   // Handle in-flight delete OTP initiation (prevents any accidental login trigger while waiting for Swiggy)
@@ -9754,6 +9950,43 @@ async function handleIncomingTelegramLocation(ctx, loc) {
   if (mobilePrompt) rememberUserPrompt(userId, mobilePrompt);
 }
 
+bot.on('contact', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  const rawContact = ctx.message?.contact?.phone_number || '';
+  const cleanPhone = normalizeIndianMobileNumber(rawContact);
+  if (!cleanPhone) {
+    return ctx.reply('⚠️ Please share a valid 10-digit Indian mobile number.');
+  }
+  recordUserPhone(userId, cleanPhone);
+  const draft = getDraft(userId);
+  draft.addressDetails = { ...(draft.addressDetails || {}), mobile: cleanPhone };
+  updateDraft(userId, { addressDetails: draft.addressDetails });
+
+  const activeOrder = getActiveUserOrder(userId);
+  if (activeOrder && (!activeOrder.status || activeOrder.status === 'PENDING' || activeOrder.cardStage === 'REVIEW')) {
+    activeOrder.addressDetails = { ...(activeOrder.addressDetails || {}), mobile: cleanPhone };
+    activeOrder.recipientMobile = cleanPhone;
+    const db = getDb();
+    if (db.orders?.[activeOrder.id]) {
+      db.orders[activeOrder.id].addressDetails = activeOrder.addressDetails;
+      db.orders[activeOrder.id].recipientMobile = cleanPhone;
+      saveDb(db);
+    }
+  }
+
+  delete userWaitState[userId];
+  await ctx.reply(
+    `✅ <b>Delivery Mobile Number Saved:</b> <code>${cleanPhone}</code>\n\n` +
+    `Swiggy delivery partner isi number par call karega. Order for Others enabled hai.`,
+    { parse_mode: 'HTML' }
+  );
+  if (simpleChatForUser(userId)) {
+    const screen = getUserScreen(userId, ctx.from);
+    await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard }).catch(() => {});
+  }
+});
+
 bot.on('location', async (ctx) => {
   if (ctx.from?.id && isBoss(ctx.from.id)) {
     const userId = ctx.from.id;
@@ -10101,14 +10334,15 @@ async function handleSendToBoss(ctx) {
     // receiver's number; if Swiggy omitted it we continue without a prompt and
     // fall back to the saved contact of the Swiggy account placing the order.
     if (simpleChatForUser(userId)) {
-      const savedMobile = normalizeDeliveryContact(
+      const userLastPhone = getUserLastDeliveryPhone(userId);
+      const savedMobile = userLastPhone || normalizeDeliveryContact(
         deliveryDetails.mobile ||
         deliveryDetails.phone ||
         getDb().config?.accounts?.[getActiveOrderAccountKey()]?.phone ||
         ''
       );
       deliveryDetails.mobile = savedMobile || '';
-      deliveryDetails.mobileSource = savedMobile ? 'ACCOUNT_FALLBACK' : 'MISSING';
+      deliveryDetails.mobileSource = userLastPhone ? 'USER_MEMORY' : (savedMobile ? 'ACCOUNT_FALLBACK' : 'MISSING');
       updateDraft(userId, { addressDetails: deliveryDetails });
       draft = getDraft(userId);
     } else {

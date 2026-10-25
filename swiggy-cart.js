@@ -864,7 +864,16 @@ export async function swiggyCartUpdate(accountOrCookies, cartPayload, { lat = ''
       couponCode: String(cartPayload.couponCode || ''),
       cartItems: Array.isArray(cartPayload.cartItems) ? cartPayload.cartItems : [],
       mealItems: Array.isArray(cartPayload.mealItems) ? cartPayload.mealItems : [],
-      subscriptionItems: Array.isArray(cartPayload.subscriptionItems) ? cartPayload.subscriptionItems : []
+      subscriptionItems: Array.isArray(cartPayload.subscriptionItems) ? cartPayload.subscriptionItems : [],
+      ...(cartPayload.order_comments ? { order_comments: cartPayload.order_comments } : {}),
+      ...(cartPayload.delivery_instructions ? { delivery_instructions: cartPayload.delivery_instructions } : {}),
+      ...(cartPayload.alternate_mobile ? { alternate_mobile: cartPayload.alternate_mobile, alternate_phone: cartPayload.alternate_mobile } : {}),
+      ...(cartPayload.recipient_details ? { recipient_details: cartPayload.recipient_details } : {}),
+      ...(cartPayload.is_order_for_someone_else !== undefined ? {
+        is_order_for_someone_else: cartPayload.is_order_for_someone_else,
+        ordering_for_someone_else: cartPayload.is_order_for_someone_else,
+        order_for_others: cartPayload.is_order_for_someone_else
+      } : {})
     }
   }).catch(() => null);
   if (aRes?.json) {
@@ -4633,6 +4642,13 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
       const textMatch = hasSameAddressText(enriched.address, sa.address);
       const coordsValid = isValidIndianDeliveryCoordinates(enriched.lat, enriched.lng) && isValidIndianDeliveryCoordinates(sa.lat, sa.lng);
       const dist = coordsValid ? distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng) : Infinity;
+      const saPhone = normalizeIndianMobile(sa.mobile || sa.phone);
+      // ONLY reuse existing address if it already carries the recipient's mobile number,
+      // or if sa has no phone bound. If sa is bound to a different mobile number (e.g. account owner),
+      // we must create a new address with the recipient's mobile number so Swiggy's delivery partner
+      // receives the recipient's phone number!
+      const phoneMatches = !saPhone || saPhone === rawPhone;
+      if (!phoneMatches) return false;
       if (textMatch) return true;
       if (coordsValid && dist < 120) return true;
       return false;
@@ -7299,6 +7315,20 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       const directSubItems = Array.isArray(order?.activeSubscriptionItems)
         ? order.activeSubscriptionItems
         : (Number(order?.swiggyOneMembershipFee || 0) > 0 ? [{ plan_id: '773', quantity: 1 }] : []);
+      const rawRecipientPhone = order?.addressDetails?.mobile || order?.recipientMobile || order?.phone || '';
+      const recipientPhone = normalizeIndianMobile(rawRecipientPhone);
+      const recipientName = String(order?.addressDetails?.name || order?.recipientName || order?.name || 'Customer').trim();
+      const accountPhone = normalizeIndianMobile(account?.phone || '');
+      const isForOthers = Boolean(recipientPhone && (!accountPhone || recipientPhone !== accountPhone));
+      const orderComments = recipientPhone ? `Call ${recipientPhone} on arrival. Order for: ${recipientName}.` : '';
+      const deliveryInstructions = recipientPhone ? [
+        {
+          type: 'CALL_PHONE',
+          phone: recipientPhone,
+          instruction: `Call ${recipientPhone} on arrival. Order for ${recipientName}.`
+        }
+      ] : [];
+
       const directSync = await swiggyCartUpdate(
         account,
         {
@@ -7307,7 +7337,20 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
           couponCode: String(order.couponCode || ''),
           cartItems: buildSwiggyCartItemsPayload(order.items),
           mealItems: [],
-          subscriptionItems: directSubItems
+          subscriptionItems: directSubItems,
+          ...(isForOthers ? {
+            is_order_for_someone_else: true,
+            ordering_for_someone_else: true,
+            order_for_others: true,
+            alternate_mobile: recipientPhone,
+            order_comments: orderComments,
+            delivery_instructions: deliveryInstructions,
+            recipient_details: {
+              name: recipientName,
+              phone: recipientPhone,
+              mobile: recipientPhone
+            }
+          } : {})
         },
         { lat: directLat, lng: directLng, flushFirst: true }
       );
@@ -7383,6 +7426,22 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       ? Math.round(availableWallet * 100) / 100
       : 0;
 
+    // RECIPIENT & ORDER-FOR-OTHERS ROUTING:
+    // Ensures delivery partner calls the customer's phone number, NOT the bot's Swiggy account phone!
+    const rawRecipientPhone = order?.addressDetails?.mobile || order?.recipientMobile || order?.phone || '';
+    const recipientPhone = normalizeIndianMobile(rawRecipientPhone);
+    const recipientName = String(order?.addressDetails?.name || order?.recipientName || order?.name || 'Customer').trim();
+    const accountPhone = normalizeIndianMobile(account?.phone || '');
+    const isForOthers = Boolean(recipientPhone && (!accountPhone || recipientPhone !== accountPhone));
+    const orderComments = recipientPhone ? `Call ${recipientPhone} on arrival. Order for: ${recipientName}.` : '';
+    const deliveryInstructions = recipientPhone ? [
+      {
+        type: 'CALL_PHONE',
+        phone: recipientPhone,
+        instruction: `Call ${recipientPhone} on arrival. Order for ${recipientName}.`
+      }
+    ] : [];
+
     // ENGINE A (PRIMARY — 100% NATIVE SWIGGY ANDROID `POST https://chkout.swiggy.com/api/v2/order/place`):
     // Preserves 100% of App-Only Item Offers (`CRAZY_DEALS`/`NBH_OFFER`), App Free Cash (`₹80`/`₹50`),
     // AND `+₹1` Swiggy One Lite Free Delivery directly inside the real `upi://pay?pa=upiswiggy@icici` QR!
@@ -7401,7 +7460,8 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
             paymentamount: String(cm.order_total),
             cartid: String(cm.cartId || cartId),
             cartaddressid: String(addressId),
-            addressid: String(addressId)
+            addressid: String(addressId),
+            ...(recipientPhone ? { alternatephone: String(recipientPhone), recipientphone: String(recipientPhone) } : {})
           }
         }),
         payload: {
@@ -7409,7 +7469,33 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
           lat: String(lat),
           lng: String(lng),
           payment_cod_method: 'UPIIntent',
-          order_comments: '',
+          order_comments: orderComments,
+          ...(isForOthers ? {
+            ordering_for_someone_else: true,
+            is_order_for_someone_else: true,
+            order_for_others: true,
+            alternate_mobile: recipientPhone,
+            alternate_phone: recipientPhone,
+            recipient_name: recipientName,
+            recipient_phone: recipientPhone,
+            recipient_mobile: recipientPhone,
+            recipient_details: {
+              name: recipientName,
+              phone: recipientPhone,
+              mobile: recipientPhone
+            },
+            contact_details: {
+              name: recipientName,
+              phone: recipientPhone,
+              mobile: recipientPhone
+            },
+            alternate_contact: {
+              name: recipientName,
+              phone: recipientPhone,
+              mobile: recipientPhone
+            },
+            delivery_instructions: deliveryInstructions
+          } : {}),
           order_total: cm.order_total,
           bill_total: cm.order_total,
           cart_total: cm.order_total,
@@ -7512,8 +7598,34 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         lat,
         lng,
         payment_cod_method: 'UPIIntent',
-        order_comments: '',
+        order_comments: orderComments,
         force_validate_coupon: false,
+        ...(isForOthers ? {
+          ordering_for_someone_else: true,
+          is_order_for_someone_else: true,
+          order_for_others: true,
+          alternate_mobile: recipientPhone,
+          alternate_phone: recipientPhone,
+          recipient_name: recipientName,
+          recipient_phone: recipientPhone,
+          recipient_mobile: recipientPhone,
+          recipient_details: {
+            name: recipientName,
+            phone: recipientPhone,
+            mobile: recipientPhone
+          },
+          contact_details: {
+            name: recipientName,
+            phone: recipientPhone,
+            mobile: recipientPhone
+          },
+          alternate_contact: {
+            name: recipientName,
+            phone: recipientPhone,
+            mobile: recipientPhone
+          },
+          delivery_instructions: deliveryInstructions
+        } : {}),
         ...(splitPayAmt > 0 ? { swiggy_pay_amount: String(splitPayAmt) } : {}),
         upi_transaction_info: {
           intent_app: 'com.google.android.apps.nbu.paisa.user',

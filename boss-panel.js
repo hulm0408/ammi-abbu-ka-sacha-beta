@@ -189,7 +189,13 @@ export function buildBossPanelHome(db) {
     accBody += `<b>${esc(acc.name || key)}:</b> <b>${esc(status)}</b>\n`;
   }
 
+  const isPaused = Boolean(db?.config?.servicePaused);
+  const serviceStatusLine = isPaused
+    ? '🔴 <b>Service Status: PAUSED (Offline for customers)</b>'
+    : '🟢 <b>Service Status: ACTIVE (Online for customers)</b>';
+
   const text = section('Boss Panel', [
+    serviceStatusLine,
     section('Swiggy Accounts', accBody || sub('No accounts added yet. Tap Login to add.')),
     section('Orders', [
       `<b>Pending:</b> <b>${pending}</b>`,
@@ -201,6 +207,10 @@ export function buildBossPanelHome(db) {
 
   // Complete Boss Panel — combines both telegram-slot-bot features & new ammi-abbu features
   const keyboard = Markup.inlineKeyboard([
+    [
+      { text: isPaused ? '🟢 Resume Service (Turn ON)' : '🔴 Pause Service (Turn OFF)', callback_data: 'boss_toggle_service' },
+      { text: '📢 Broadcast to All', callback_data: 'boss_broadcast_prompt' }
+    ],
     [
       { text: '📊 Dashboard', callback_data: 'boss_dashboard' },
       { text: '🔗 Extract Tracking', callback_data: 'boss_extract_tracking_prompt' }
