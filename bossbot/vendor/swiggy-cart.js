@@ -1889,32 +1889,94 @@ export async function geocodeAddressDetails(addrObj, accountOrCookies = null) {
 // WHY a shared-address link failed matters to the customer:
 //   EXPIRED   -> the link really is dead, ask for a fresh one
 //   NO_ACCOUNT/NETWORK -> our side hiccuped, the link is probably still fine
-// Telling someone their link expired when Swiggy merely timed out makes them
-// paste the same link again for nothing.
-const ofoResolutionFailures = new Map();
+// Telling someone their link expired when Swiggy merely timed out (or when our
+// own session/WAF was blocked) makes them paste the same healthy link forever.
+//
+// HARD RULE: "EXPIRED" may only come from a real 2xx JSON answer in which Swiggy
+// itself says the token/link is expired / invalid / not found. A WAF 403, a 202
+// challenge, a 401 from a token-only session, a 429/5xx, a timeout or a generic
+// "Something went wrong" is OUR problem and must never be reported as expiry.
+const OFO_FAILURE_TTL_MS = {
+  EXPIRED: 5 * 60 * 1000,
+  UNEXPANDED: 5 * 60 * 1000,
+  NO_ACCOUNT: 2 * 60 * 1000,
+  NETWORK: 30 * 1000
+};
+// Stronger facts win over weaker ones so a late network blip cannot erase the
+// knowledge that a link is un-expandable (or that Swiggy really killed it).
+const OFO_FAILURE_RANK = { UNEXPANDED: 3, EXPIRED: 2, NO_ACCOUNT: 1, NETWORK: 1 };
+const ofoResolutionFailures = new Map(); // key -> { reason, at }
+
 function noteOfoFailure(key, reason) {
   const k = String(key || '').trim();
-  if (!k) return;
-  ofoResolutionFailures.set(k, reason);
+  if (!k || !reason) return;
+  const prev = ofoResolutionFailures.get(k);
+  if (prev && (OFO_FAILURE_RANK[prev.reason] || 0) > (OFO_FAILURE_RANK[reason] || 0)) return;
+  ofoResolutionFailures.set(k, { reason, at: Date.now() });
 }
-export function getOfoResolutionFailureReason(ofoTokenOrUrl) {
-  const raw = String(ofoTokenOrUrl || '').trim();
-  if (!raw) return '';
-  if (ofoResolutionFailures.has(raw)) return ofoResolutionFailures.get(raw);
-  // Callers often hold the full share URL — try the token inside it.
+
+function readOfoFailure(key) {
+  const k = String(key || '').trim();
+  if (!k) return '';
+  const entry = ofoResolutionFailures.get(k);
+  if (!entry) return '';
+  const ttl = OFO_FAILURE_TTL_MS[entry.reason] || 30_000;
+  if (Date.now() - entry.at > ttl) {
+    ofoResolutionFailures.delete(k);
+    return '';
+  }
+  return entry.reason;
+}
+
+function ofoFailureKeys(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return [];
+  const keys = [raw];
+  // Callers often hold the full share URL — also index the token inside it.
   const onelink = raw.match(/onelink\.me\/[a-zA-Z0-9]+\/([a-zA-Z0-9_\-]+)/i);
   const ofo = raw.match(/\/ofo\/address\/([^\/\?\s]+)\/([^\/\?\s&]+)/i);
-  for (const candidate of [ofo?.[2], onelink?.[1]]) {
-    if (candidate && ofoResolutionFailures.has(candidate)) return ofoResolutionFailures.get(candidate);
+  for (const candidate of [ofo?.[2], onelink?.[1]]) if (candidate) keys.push(candidate);
+  return keys;
+}
+
+export function getOfoResolutionFailureReason(ofoTokenOrUrl) {
+  for (const key of ofoFailureKeys(ofoTokenOrUrl)) {
+    const reason = readOfoFailure(key);
+    if (reason) return reason;
   }
   return '';
+}
+
+// A freshly pasted link deserves a fresh attempt: drop any remembered verdict so
+// an old (possibly wrong) "expired" can never make the new paste fail instantly.
+export function clearOfoResolutionFailures(input) {
+  for (const key of ofoFailureKeys(input)) ofoResolutionFailures.delete(key);
+}
+
+// Our-side problems (session, WAF, generic Swiggy failure). Never proof of expiry.
+function isOfoSessionOrTransportProblem(msg) {
+  return /unauthori[sz]ed|not\s+logged|log\s?in|log\s?out|session|csrf|waf|captcha|rate\s*limit|too\s*many|try\s+again|later|something\s+went\s+wrong|oops|internal\s+server|service\s+unavailable|unable\s+to\s+process|timeout|timed\s+out|invalid\s+(request|session|user|payload|params?|csrf)/i
+    .test(String(msg || ''));
+}
+
+// Swiggy explicitly telling us the shared-address token itself is dead.
+function isOfoTokenDeadAnswer(msg) {
+  const text = String(msg || '').trim();
+  if (!text) return false;
+  if (isOfoSessionOrTransportProblem(text)) return false;
+  if (/expire/i.test(text)) return true;
+  if (/no\s+longer\s+(valid|available|exists?|active)/i.test(text)) return true;
+  if (/(link|address|token|share)\s*(is\s*)?(invalid|dead|expired|not\s+(valid|found|available))/i.test(text)) return true;
+  if (/invalid\s+(or\s+expired\s+)?(link|address|token|share|url)/i.test(text)) return true;
+  if (/not\s+found|does\s+not\s+exist|deleted|removed/i.test(text)) return true;
+  return false;
 }
 
 export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountOrCookies = null) {
   if (!ofoToken) return null;
   const tok = String(ofoToken).trim();
   if (tok.length < 6) return null;
-  if (ofoResolutionFailures.get(tok) === 'EXPIRED') return null;
+  if (readOfoFailure(tok) === 'EXPIRED') return null;
   ofoResolutionFailures.delete(tok);
 
   try {
@@ -1929,11 +1991,14 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
         .slice(0, 3)
         .map(x => x.acc);
     const hadRealSession = allCandidates.some((c) => c && (c.isLoggedIn || c.cookies || c.tid || c.token));
+    // Only a *web* cookie session (`_session_tid`) can read /dapi/*. Token-only
+    // Android sessions answer 401 by design — that says nothing about the link.
+    const hadWebSession = allCandidates.some((c) => String(c?.cookies || '').includes('_session_tid='));
     if (allCandidates.length === 0) {
       allCandidates.push({});
     }
-    let sawUsableResponse = false;
-    let sawAnyHttpStatus = false;
+    let sawRealAnswer = false;
+    let sawTransportBlock = false;
     const deadline = Date.now() + 8000;
 
     for (const cand of allCandidates) {
@@ -1941,11 +2006,26 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
       if (Date.now() >= deadline) break;
       const perCallTimeout = Math.max(1500, Math.min(4500, deadline - Date.now()));
       const dapiRes = await dapiFetch(cand, `social/getAddress/${encodeURIComponent(tok)}`, { timeoutMs: perCallTimeout }).catch(() => null);
-      if (dapiRes && Number(dapiRes.status) > 0) sawAnyHttpStatus = true;
+      const httpStatus = Number(dapiRes?.status) || 0;
       const rJson = dapiRes?.json;
-      if (rJson?.statusCode === 1 && /invalid|expired|not found/i.test(String(rJson?.statusMessage || ''))) {
-        ofoResolutionFailures.set(tok, 'EXPIRED');
-        return null;
+      // A real answer = 2xx WITH a parsed JSON body. 401/403(WAF)/202/429/5xx or
+      // an HTML challenge page are transport problems, not evidence of expiry.
+      const answeredCleanly = Boolean(rJson) && httpStatus >= 200 && httpStatus < 300;
+      if (answeredCleanly) sawRealAnswer = true;
+      else if (httpStatus > 0) sawTransportBlock = true;
+      if (answeredCleanly && Number(rJson?.statusCode) === 1) {
+        const msg = rJson?.statusMessage || rJson?.status_message || rJson?.message || '';
+        if (isOfoTokenDeadAnswer(msg)) {
+          console.warn(`[OfoResolve] token=${String(tok).slice(0, 16)} swiggy says dead: ${String(msg).slice(0, 80)}`);
+          noteOfoFailure(tok, 'EXPIRED');
+          return null;
+        }
+        // Generic refusal (session/WAF/"something went wrong") -> try next account.
+        console.warn(`[OfoResolve] token=${String(tok).slice(0, 16)} swiggy said "${String(msg).slice(0, 60)}" (not expiry)`);
+        continue;
+      }
+      if (httpStatus && !answeredCleanly) {
+        console.warn(`[OfoResolve] token=${String(tok).slice(0, 16)} http=${httpStatus} — not expiry`);
       }
       const addrWrap = rJson?.data?.address || rJson?.data;
       const act = addrWrap?.actual_address || addrWrap;
@@ -1957,7 +2037,6 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
         `${act?.address_line && act.address_line !== 'None' ? act.address_line + ', ' : ''}${act?.address || act?.address_line1 || ''}`.trim();
 
       if (rJson?.statusCode === 0 && (resolvedLat || resolvedDisplay)) {
-        sawUsableResponse = true;
         return {
           id: addrWrap?.id || act?.id || '',
           name: act?.contact_name || act?.name || ofoUser || 'Customer',
@@ -1973,12 +2052,16 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
         };
       }
     }
-    // We reached Swiggy and it answered, but never with an address for this token
-    // -> the share link itself is dead. If we never got an answer at all, it is
-    // our network / session, not the customer's link.
-    ofoResolutionFailures.set(tok, hadRealSession && sawAnyHttpStatus && !sawUsableResponse ? 'EXPIRED' : (hadRealSession ? 'NETWORK' : 'NO_ACCOUNT'));
+    // We never received a clean answer that Swiggy rejects the token, so this is
+    // OUR side: report a transport/session problem, never "your link expired".
+    // (A transport block after a clean "success but empty" answer still counts.)
+    const reason = sawTransportBlock || sawRealAnswer
+      ? (hadWebSession ? 'NETWORK' : 'NO_ACCOUNT')
+      : (hadRealSession ? 'NETWORK' : 'NO_ACCOUNT');
+    console.warn(`[OfoResolve] token=${String(tok).slice(0, 16)} unresolved reason=${reason} webSession=${hadWebSession}`);
+    noteOfoFailure(tok, reason);
   } catch (e) {
-    ofoResolutionFailures.set(tok, 'NETWORK');
+    noteOfoFailure(tok, 'NETWORK');
   }
   return null;
 }

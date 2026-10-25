@@ -127,7 +127,8 @@ import {
   dapiFetch,
   getCachedWafToken,
   invalidateAccountOrderProfileCache,
-  getOfoResolutionFailureReason
+  getOfoResolutionFailureReason,
+  clearOfoResolutionFailures
 } from './swiggy-cart.js';
 import {
   extractForwardSenderInfo,
@@ -629,7 +630,8 @@ export function isValidDeliveryAddressUrl(urlStr) {
                        (host.endsWith('.google.com') && (path.includes('/maps') || path.includes('/place')));
 
   // Swiggy mobile app share address format: https://swiggy.onelink.me/JgkQ/...
-  const isSwiggyOneLink = (host === 'swiggy.onelink.me' || host.endsWith('.onelink.me')) && path.length >= 3;
+  // (bare `onelink.me/JgkQ/...` shares appear too, so accept the base host)
+  const isSwiggyOneLink = (host === 'onelink.me' || host.endsWith('.onelink.me')) && path.length >= 3;
   // Swiggy web address URLs
   const isSwiggyWeb = (host === 'swiggy.com' || host.endsWith('.swiggy.com') || host === 'swig.gy') &&
                       (path.includes('address') || full.includes('ofo/address') || path.includes('y313q1wv') || path.includes('jgkq'));
@@ -9779,6 +9781,12 @@ bot.on('text', async (ctx, next) => {
     let addedAddress = false;
     let hadFake = false;
 
+    // A freshly pasted address link gets a fresh chance: forget any remembered
+    // verdict for that token, otherwise an old "expired" would fire instantly
+    // and the customer would swear the bot rejects every new link.
+    if (validAddrLink) clearOfoResolutionFailures(validAddrLink);
+    if (parsedAddrDirect) clearOfoResolutionFailures(rawText);
+
     // Fetch both Cart and Address links simultaneously in parallel via Promise.all!
     const [cartMeta, addrMeta] = await Promise.all([
       validCartLink ? resolveSwiggyLink(validCartLink).catch(() => null) : Promise.resolve(null),
@@ -9820,6 +9828,11 @@ bot.on('text', async (ctx, next) => {
       // A typed/GPS address replaces any previously stored share link — otherwise
       // the stale (broken) link keeps being used and fails forever.
       const typedOverridesLink = Boolean(parsedAddrDirect) && !validAddrLink;
+      // A new link/typed address is a NEW attempt: drop the previous failure
+      // marker so an old dead link's verdict can never be shown for this one.
+      const freshAddressDetails = { ...(geoAddr || {}) };
+      delete freshAddressDetails.unresolvableShortLink;
+      delete freshAddressDetails.unresolvedReason;
       // NEVER overwrite clean street address with bare JgkQ URL!
       updateDraft(userId, {
         address: geoAddr?.address || validAddrLink || `${geoAddr?.city || 'Delivery'} Address`,
@@ -9828,7 +9841,7 @@ bot.on('text', async (ctx, next) => {
         ...(validAddrLink
           ? { addressLink: validAddrLink, addressTyped: false }
           : (typedOverridesLink ? { addressLink: null, addressTyped: true } : {})),
-        ...(geoAddr ? { addressDetails: geoAddr } : {})
+        addressDetails: freshAddressDetails
       });
       addedAddress = true;
     }
@@ -10261,9 +10274,25 @@ async function handleSendToBoss(ctx) {
   // again, even after a perfectly good address had been typed.
   const typedAddress = draft.addressTyped ? String(draft.address || '').trim() : '';
   const addressSource = typedAddress || draft.addressOriginalText || draft.address;
-  const addressLink = typedAddress
+  let addressLink = typedAddress
     ? ''
     : (draft.addressLink || extractAddressShareUrl(addressSource) || (isAddressShareUrl(addressSource) ? addressSource : ''));
+
+  // We already hold a real, geocoded delivery address for this draft. A stored
+  // share link that we already know is dead must not be re-resolved just to say
+  // "expired" again — the customer's address is right there.
+  const draftAddressText = String(draft.addressDetails?.address || '').trim();
+  const draftHasUsableAddress = Boolean(
+    draftAddressText && !isLinkString(draftAddressText) &&
+    (draftAddressText.length >= 8 || (draft.addressDetails?.lat && draft.addressDetails?.lng))
+  );
+  if (addressLink && draftHasUsableAddress) {
+    const knownFailure = getOfoResolutionFailureReason(addressLink);
+    if (knownFailure) {
+      console.warn(`[AddressResolve] using stored address (known link failure=${knownFailure})`);
+      addressLink = '';
+    }
+  }
 
   if (addressLink) {
     // URL-FIRST: try link first, but fall back to verified address text if link fails or is unexpanded
@@ -10292,16 +10321,45 @@ async function handleSendToBoss(ctx) {
     }
   }
 
+  // A verified street address / GPS pin in hand means we can deliver — a dead or
+  // un-openable share link must never block an order we can already fulfil.
+  const usableFallbackAddress = Boolean(
+    (String(deliveryDetails.address || '').trim() && !/^https?:\/\//i.test(String(deliveryDetails.address || '').trim())) ||
+    (deliveryDetails.lat && deliveryDetails.lng)
+  );
+  if (addressLink && deliveryDetails.unresolvableShortLink && usableFallbackAddress) {
+    console.warn(`[AddressResolve] order=${userId} link unusable but address present — continuing`);
+    delete deliveryDetails.unresolvableShortLink;
+    delete deliveryDetails.unresolvedReason;
+    updateDraft(userId, { addressDetails: deliveryDetails });
+    draft = getDraft(userId);
+  }
+
   if (addressLink && deliveryDetails.unresolvableShortLink) {
     // Only claim "expired" when Swiggy itself rejected the token. An un-expanded
-    // AppsFlyer short link, a timeout or a missing session are OUR side, and the
-    // customer must always keep a way forward (retry / type the address).
+    // AppsFlyer short link, a timeout, a WAF block or a missing session are OUR
+    // side, and the customer must always keep a way forward (retry / type address).
     const reason = deliveryDetails.unresolvedReason ||
       getOfoResolutionFailureReason(addressLink) ||
       getOfoResolutionFailureReason(addressSource);
     console.warn(`[AddressResolve] order=${userId} reason=${reason || 'UNKNOWN'} link=${String(addressLink).slice(0, 120)}`);
 
     if (reason === 'EXPIRED') {
+      // The token really is dead. Drop it from the draft (and forget its verdict)
+      // so Continue/Retry can never silently re-run the same dead link and show
+      // "expired" a second time for a link the customer already replaced.
+      clearOfoResolutionFailures(addressLink);
+      const keepTyped = Boolean(draft.addressTyped && draft.address && !isLinkString(String(draft.address)));
+      const scrubbedOriginal = typeof stripSharedLinks === 'function'
+        ? String(stripSharedLinks(draft.addressOriginalText || '') || '').trim()
+        : '';
+      updateDraft(userId, {
+        address: keepTyped ? draft.address : null,
+        addressOriginalText: keepTyped ? (draft.addressOriginalText || '') : scrubbedOriginal,
+        addressLink: null,
+        addressDetails: keepTyped ? (draft.addressDetails || {}) : {},
+        addressTyped: keepTyped
+      });
       userWaitState[userId] = { action: 'waiting_address' };
       return ctx.reply(
         `🟠 <b>Address link expire ho gaya</b> — naya link bhejein, ya seedha address type kar dein 👇`,
@@ -10712,6 +10770,10 @@ bot.action('simple_type_address', async (ctx) => {
 // The address share link is still saved — retry the same links, no re-paste.
 bot.action('simple_retry_address', async (ctx) => {
   await ctx.answerCbQuery('Dobara try kar raha hoon…').catch(() => {});
+  // Retry means really retry: forget the remembered failure for this link,
+  // otherwise the cached verdict answers instantly without asking Swiggy.
+  const retryDraft = getDraft(ctx.from.id);
+  clearOfoResolutionFailures(retryDraft.addressLink || retryDraft.addressOriginalText || retryDraft.address || '');
   const started = await startSimpleOrderFromDraft(ctx, ctx.from.id);
   if (!started) await renderUserCard(ctx, ctx.from.id, { notice: 'Abhi bhi nahi mila — thodi der baad try karein' }).catch(() => {});
 });

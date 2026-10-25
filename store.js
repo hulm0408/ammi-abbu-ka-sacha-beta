@@ -1769,7 +1769,7 @@ export function logoutAllAccounts({ purgeVault = true, cleanupFiles = true } = {
 
   // Clear accounts.json mirror
   try {
-    fs.writeFileSync(ACCOUNTS_JSON_FILE, '[]', 'utf-8');
+    fs.writeFileSync(getAccountsJsonFile(), '[]', 'utf-8');
   } catch {}
 
   saveDb(db);
