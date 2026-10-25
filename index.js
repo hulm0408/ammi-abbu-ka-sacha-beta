@@ -795,8 +795,11 @@ export function formatUserOrderCardText(order, isBossView = false) {
     if (ad.address) addrLines.push(...ad.address.split('\n').map(line => esc(line)));
     if (ad.lat) addrLines.push(`Latitude: ${esc(String(ad.lat))}`);
     if (ad.lng) addrLines.push(`Longitude: ${esc(String(ad.lng))}`);
-    addrLines.push('🕶 Incognito: ON — order disappears from order history after 3 hrs');
-    addrLines.push('Auto Delete: ON — all saved addresses auto-deleted after order');
+    // NOTE: the card used to advertise a fake private mode and automatic
+    // address wipe here. Neither feature exists: nothing purges db.orders on a
+    // timer and saved addresses are never deleted, so those claims only scared
+    // customers into thinking their order history would vanish. Do not add them
+    // back — the card shows the delivery address and nothing else.
   } else if (order.addressDetails?.unresolvableShortLink) {
     addrLines.push('<b>Delivering To</b>');
     addrLines.push('<i>Address link could not be resolved — send a fresh address link or GPS pin.</i>');
