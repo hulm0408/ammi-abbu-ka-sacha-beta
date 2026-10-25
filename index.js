@@ -9538,10 +9538,16 @@ bot.on('text', async (ctx, next) => {
       let instantUrl = '';
       if (isNumericSwiggyId) {
         const accMap = db2.config?.accounts || {};
+        // Stale `sessionExpired` / `isLoggedOut` flags do NOT exclude an ID here:
+        // the flags come from an older background call, and Swiggy can still
+        // answer on that same session. Only "no credentials at all" is skipped.
         const likelyKeys = [order.selectedAccount, ...Object.keys(accMap)].filter(Boolean)
           .filter((k, i, arr) => arr.indexOf(k) === i)
-          .filter((k) => accMap[k] && accMap[k].isLoggedIn && !accMap[k].isLoggedOut && (accMap[k].cookies || accMap[k].tid || accMap[k].token));
-        for (const key of likelyKeys.slice(0, 3)) {
+          .filter((k) => {
+            const acc = accMap[k];
+            return Boolean(acc && (acc.cookies || acc.tid || acc.jwtTid || acc.token || acc.auth_token || acc.access_token));
+          });
+        for (const key of likelyKeys.slice(0, 6)) {
           try {
             const fast = await fetchSwiggyTrackingLinkFast(accMap[key], q, { budgetMs: 2500, attempts: 1 });
             if (fast?.url) {
@@ -9566,7 +9572,16 @@ bot.on('text', async (ctx, next) => {
 
       const result = instantUrl
         ? { status: 'TRACKING_FOUND', hasOrder: true, scanned: 1 }
-        : await ensureOrderTracking(order, { force: true, budgetMs: 20000, deep: true });
+        : await ensureOrderTracking(order, {
+            force: true,
+            budgetMs: isNumericSwiggyId ? 32000 : 20000,
+            deep: true,
+            // The human is waiting on this exact id: never answer "not found"
+            // because a background sweep happened to set a WAF cooldown, and let
+            // every ID with credentials be asked (flags can be stale).
+            ignoreWafCooldown: isNumericSwiggyId,
+            includeStaleFlags: isNumericSwiggyId
+          });
       if (statusMsg) { try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch {} }
 
       if (result?.status === 'WAF_COOLDOWN') {
