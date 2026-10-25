@@ -37,6 +37,7 @@ test_*.mjs
 !test_v43_all_six_fixes_e2e.mjs
 !test_v44_injected_session_delivery_updates_e2e.mjs
 !test_v45_order_for_others_service_toggle_broadcast_e2e.mjs
+!test_v46_fyi_details_track_v4_instant_e2e.mjs
 !test_boss_cancel_and_mirror_e2e.mjs
 !test_channel_gate_e2e.mjs
 # bossbot is a standalone project with its own suite

@@ -3755,6 +3755,36 @@ function cleanCandidateUrlToken(rawToken) {
   return token.trim();
 }
 
+function extractUrlsFromArbitraryText(rawText) {
+  const found = [];
+  if (!rawText) return found;
+  let cur = String(rawText).trim();
+  if (!cur) return found;
+
+  // Try up to 3 decode passes if percent encoded (handles single and double-encoded URLs)
+  for (let pass = 0; pass < 3; pass++) {
+    if (/%[0-9a-fA-F]{2}/.test(cur)) {
+      try {
+        const next = decodeURIComponent(cur.replace(/\+/g, ' '));
+        if (next !== cur) cur = next;
+        else break;
+      } catch {
+        break;
+      }
+    } else {
+      break;
+    }
+  }
+
+  // Match direct http/https urls
+  const matches = cur.match(/https?:\/\/[^\s"'<>\\]+/gi) || [];
+  for (const m of matches) {
+    const cleaned = cleanCandidateUrlToken(m);
+    if (/^https?:\/\//i.test(cleaned)) found.push(cleaned);
+  }
+  return found;
+}
+
 export function extractTrackingCandidateUrlsFromString(rawValue) {
   const out = [];
   if (typeof rawValue !== 'string') return out;
@@ -3762,33 +3792,25 @@ export function extractTrackingCandidateUrlsFromString(rawValue) {
   if (!text) return out;
   if (text.includes('\\/')) text = text.replace(/\\\//g, '/');
 
-  // 1. Swiggy app deep links (`swiggy://order?tracking_url=...`)
+  // 1. Swiggy app deep links (`swiggy://share?text=...`, `swiggy://order?tracking_url=...`, etc.)
   const deepLinkMatches = text.match(/swiggy:\/\/[^\s"'<>\]\\)]+/gi) || [];
   for (const dl of deepLinkMatches) {
     try {
       const qIndex = dl.indexOf('?');
       if (qIndex !== -1) {
         const qs = new URLSearchParams(dl.slice(qIndex + 1));
-        for (const param of ['tracking_url', 'track_url', 'shareable_url', 'share_url', 'ofo_share_url', 'ofo_url', 'url', 'link', 'redirect_url']) {
-          const val = qs.get(param);
-          if (val) {
-            let decoded = val;
-            try { if (/^https?%3a/i.test(decoded)) decoded = decodeURIComponent(decoded); } catch {}
-            const cleaned = cleanCandidateUrlToken(decoded);
-            if (/^https?:\/\//i.test(cleaned)) out.push(cleaned);
+        for (const [, rawVal] of qs.entries()) {
+          for (const u of extractUrlsFromArbitraryText(rawVal)) {
+            out.push(u);
           }
         }
       }
     } catch {}
   }
 
-  // 2. Percent-encoded http(s) URLs (`https%3A%2F%2Fr.swiggy.com%2F...`)
-  const encodedMatches = text.match(/https?%3A%2F%2F[^\s"'<>\]\\)&]+/gi) || [];
-  for (const enc of encodedMatches) {
-    try {
-      const cleaned = cleanCandidateUrlToken(decodeURIComponent(enc));
-      if (/^https?:\/\//i.test(cleaned)) out.push(cleaned);
-    } catch {}
+  // 2. Percent-encoded http(s) URLs (`https%3A%2F%2F...`, `https%253A%252F%252F...`)
+  for (const u of extractUrlsFromArbitraryText(text)) {
+    out.push(u);
   }
 
   // 3. Direct or sentence-embedded http(s) URLs (e.g. `"Click this link to track: http://r.swiggy.com/swiggy/ofo/track/..."`)
@@ -3799,6 +3821,44 @@ export function extractTrackingCandidateUrlsFromString(rawValue) {
   }
 
   return [...new Set(out)];
+}
+
+export function extractTrackingUrlFromSwiggyFyiDetails(...sources) {
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue;
+    const items = Array.isArray(source)
+      ? source
+      : (Array.isArray(source.fyi_details)
+          ? source.fyi_details
+          : (Array.isArray(source.data?.fyi_details)
+              ? source.data.fyi_details
+              : (Array.isArray(source.fyi) ? source.fyi : [])));
+    for (const item of items) {
+      if (!item) continue;
+      const candidates = [
+        item?.value?.cta_link,
+        item?.value?.cta?.link,
+        item?.value?.share_url,
+        item?.value?.share_link,
+        item?.value?.tracking_url,
+        item?.value?.url,
+        item?.value?.text,
+        item?.cta_link,
+        item?.share_url,
+        item?.tracking_url,
+        item?.url
+      ].filter(v => typeof v === 'string' && v.trim());
+
+      for (const cand of candidates) {
+        for (const extractedUrl of extractTrackingCandidateUrlsFromString(cand)) {
+          if (isOfficialSwiggyTrackingUrl(extractedUrl, { allowProviderShortLink: true })) {
+            return extractedUrl;
+          }
+        }
+      }
+    }
+  }
+  return null;
 }
 
 function scoreSwiggyTrackingUrl(url, keyContext = '') {
@@ -3836,6 +3896,9 @@ function scoreSwiggyTrackingUrl(url, keyContext = '') {
 // Accept a tracking/share URL only when Swiggy's own response includes it under a
 // tracking/share field (or an action/message explicitly carrying a Swiggy tracking link).
 export function extractSwiggyProvidedTrackingUrl(...sources) {
+  const fromFyi = extractTrackingUrlFromSwiggyFyiDetails(...sources);
+  if (fromFyi) return fromFyi;
+
   const scored = new Map();
   const walk = (node, context = '', depth = 0) => {
     if (node === null || node === undefined || depth > 12) return;
@@ -7831,6 +7894,9 @@ const ORDER_PATH_CONTEXT = /\/(?:(?:swiggy\/)?ofo\/track|track-order|order-track
  * Swiggy OFO/tracking URLs above generic order links and rejecting all dummy/asset URLs.
  */
 export function extractOrderShareUrlDeep(...sources) {
+  const fromFyi = extractTrackingUrlFromSwiggyFyiDetails(...sources);
+  if (fromFyi) return fromFyi;
+
   const scored = new Map();
 
   const direct = extractSwiggyProvidedTrackingUrl(...sources);
@@ -8499,9 +8565,11 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
   const confirmedOrderId = String(matchedOrder.order_id);
   const customerId = String(matchedOrder.customer_id || auth.userId || '');
 
+  const cidParam = customerId ? `&customer_id=${encodeURIComponent(customerId)}` : '';
+
   // Step 3: Fetch live `trackV4` + `trackV2/de` + `order/details` for real-time status text, ETA, rider & share link!
   const [trkRes, deRes, detRes] = await Promise.all([
-    dapiFetch(account, `order/trackV4?order_id=${encodeURIComponent(confirmedOrderId)}&type=full&version=V2&customer_id=${encodeURIComponent(customerId)}`).catch(() => null),
+    dapiFetch(account, `order/trackV4?order_id=${encodeURIComponent(confirmedOrderId)}&type=full&version=V2${cidParam}`).catch(() => null),
     dapiFetch(account, `order/trackV2/de?order_id=${encodeURIComponent(confirmedOrderId)}`).catch(() => null),
     dapiFetch(account, `order/details?order_id=${encodeURIComponent(confirmedOrderId)}&type=full&version=V2`).catch(() => null)
   ]);
