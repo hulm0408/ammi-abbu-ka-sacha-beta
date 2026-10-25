@@ -1,5 +1,20 @@
 name: Auto-Trigger Render Deploy
 
+# ---------------------------------------------------------------------------
+# HOW TO CONFIGURE (one time, in GitHub)
+#   Repo -> Settings -> Secrets and variables -> Actions
+#     -> "Secrets" tab -> New repository secret
+#        Name  : RENDER_DEPLOY_HOOK_URL
+#        Value : the Render Deploy Hook URL, i.e.
+#                https://api.render.com/deploy/srv-xxxxxxxx?key=xxxxxxxxxxxx
+#   Get that URL from: Render Dashboard -> service "ammi-abbu-ka-sacha-beta"
+#     -> Settings -> Deploy Hook -> Copy.
+#
+#   The value is a URL, NOT a file path. Pasting something like
+#   ".github/workflows/deploy-render.yml" here does nothing.
+#   A repository *Variable* with the same name also works (see below).
+# ---------------------------------------------------------------------------
+
 on:
   push:
     branches:
@@ -12,12 +27,28 @@ jobs:
     steps:
       - name: Trigger Render Deploy Hook (if configured)
         env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          # Secret is preferred; a plain repository Variable is also accepted so
+          # a hook URL saved in the wrong tab does not silently stop deploys.
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL || vars.RENDER_DEPLOY_HOOK_URL }}
         run: |
-          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
-            echo "🚀 Triggering Render Deploy Hook..."
-            curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_URL"
-            echo "✅ Render Deploy triggered successfully!"
-          else
-            echo "ℹ️ RENDER_DEPLOY_HOOK_URL secret not set yet — use Render Dashboard -> Manual Deploy -> Deploy latest commit (or add Deploy Hook URL secret for automatic future deploys)."
+          hook="${RENDER_DEPLOY_HOOK_URL:-}"
+          if [ -z "$hook" ]; then
+            echo "ℹ️ RENDER_DEPLOY_HOOK_URL is not set."
+            echo "   Render still auto-deploys because render.yaml has autoDeploy: true."
+            echo "   To add the hook: Render -> service -> Settings -> Deploy Hook -> copy URL,"
+            echo "   then GitHub -> Settings -> Secrets and variables -> Actions -> Secrets -> New repository secret."
+            exit 0
           fi
+
+          # The value must be the Render Deploy Hook URL — never a file path.
+          if ! printf '%s' "$hook" | grep -Eq '^https://api\.render\.com/deploy/[A-Za-z0-9_-]+\?key=[A-Za-z0-9_-]+$'; then
+            echo "❌ RENDER_DEPLOY_HOOK_URL does not look like a deploy hook URL."
+            echo "   Expected: https://api.render.com/deploy/srv-xxxxxxxx?key=xxxxxxxxxxxx"
+            echo "   Copy it from Render Dashboard -> service -> Settings -> Deploy Hook."
+            exit 1
+          fi
+
+          echo "🚀 Triggering Render Deploy Hook for commit ${GITHUB_SHA}..."
+          curl -fsSL -X POST "$hook" -o /tmp/render-deploy-response.txt
+          cat /tmp/render-deploy-response.txt || true
+          echo "✅ Render Deploy triggered successfully!"

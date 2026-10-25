@@ -40,6 +40,18 @@ const autoTimers = new Map();
 // cadence spaces out to 3–8 min gaps so the bot's IP stays under Swiggy's radar.
 export const DEFAULT_AUTO_DELAYS = [0, 15_000, 180_000, 300_000, 480_000, 900_000, 1_500_000, 2_400_000];
 
+// PAYMENT PROFILE — "payment hote hi OFO link".
+// Swiggy publishes the share/OFO link (trackV4 →
+// data.fyi_details[].value.cta_link → swiggy://share?text=<https://www.swiggy.com/ofo/track/…>)
+// a few seconds to a couple of minutes AFTER the payment goes through. The
+// default ladder jumped straight from 15s to 3 min, so customers waited minutes
+// for a link that already existed. This ladder saturates that first 2 minutes
+// (every 5–30s), then falls back to the normal slow cadence for hours.
+export const PAYMENT_TRACKING_DELAYS = [
+  0, 5_000, 10_000, 15_000, 30_000, 45_000, 60_000, 90_000,
+  120_000, 180_000, 240_000, 300_000, 480_000, 900_000, 1_500_000, 2_400_000
+];
+
 let trackingNotifier = null;
 let milestoneNotifier = null;
 

@@ -1972,6 +1972,163 @@ function isOfoTokenDeadAnswer(msg) {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// OFO PAGE FALLBACK — resolve a shared address straight from the page Swiggy
+// itself renders (`/ofo/address/<user>/<token>`).
+// WHY: `/dapi/social/getAddress/<token>` is an internal mobile endpoint. It
+// answers "invalid / expired" for perfectly good links (different token type,
+// WAF, token-only sessions, A/B rollout), which is what made customers see
+// "address fetch nahi hua — retry" for links that open fine in the Swiggy app.
+// The share page is plain HTML, so it still works when that API refuses.
+// ---------------------------------------------------------------------------
+function pickOfoAddressFromJson(node, depth = 0) {
+  if (!node || depth > 12) return null;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = pickOfoAddressFromJson(child, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (typeof node !== 'object') return null;
+
+  const lat = node.location?.lat ?? node.lat ?? node.latitude;
+  const lng = node.location?.lng ?? node.lng ?? node.longitude;
+  const line = node.address_line || node.address_line1 || node.address || node.formatted_address || '';
+  const display = node.display_address || node.formatted_address || node.address || '';
+  const hasCoords = Number(lat) >= 5.5 && Number(lat) <= 38.5 && Number(lng) >= 67 && Number(lng) <= 99;
+  const looksLikeAddress = Boolean(
+    (node.locality || node.area || node.city || node.address_line || node.flat_no || node.pincode) &&
+    (line || display)
+  );
+  if (hasCoords && looksLikeAddress) {
+    const resolvedDisplay = String(display || '').trim() ||
+      [
+        node.address_line && node.address_line !== 'None' ? node.address_line : '',
+        node.locality || node.area || '',
+        node.city || ''
+      ].filter(Boolean).join(', ');
+    return {
+      id: node.id || node.address_id || '',
+      name: node.contact_name || node.name || node.receiver_name || '',
+      mobile: String(node.phone || node.mobile || node.contact_number || '').replace(/\D/g, '').slice(-10),
+      flat_no: node.address_line && node.address_line !== 'None' ? node.address_line : (node.flat_no || ''),
+      area: node.locality || node.area || '',
+      landmark: node.landmark || node.locality || '',
+      city: node.city || 'Address',
+      address: resolvedDisplay,
+      lat: String(lat),
+      lng: String(lng),
+      annotation: (Array.isArray(node.tags) && node.tags[0]) || node.annotation || 'Shared'
+    };
+  }
+
+  for (const value of Object.values(node)) {
+    if (!value || typeof value !== 'object') continue;
+    const hit = pickOfoAddressFromJson(value, depth + 1);
+    if (hit) {
+      // The wrapper usually carries the human-readable street line
+      // (`display_address`) while the inner `actual_address` only has the flat
+      // + locality. Prefer the fuller text so the customer sees the real street.
+      const parentDisplay = String(node.display_address || node.formatted_address || '').trim();
+      if (parentDisplay && parentDisplay.length > String(hit.address || '').length) {
+        hit.address = parentDisplay;
+      }
+      if (!hit.id && (node.id || node.address_id)) hit.id = node.id || node.address_id;
+      return hit;
+    }
+  }
+  return null;
+}
+
+function extractJsonBlobsFromHtml(html) {
+  const text = String(html || '');
+  const blobs = [];
+  const patterns = [
+    /<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i,
+    /window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/i,
+    /window\.__PRELOADED_STATE__\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/i,
+    /__SWIGGY_STATE__\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/i
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m?.[1]) blobs.push(m[1]);
+  }
+  // Last resort: any inline JSON object that mentions an address line.
+  if (blobs.length === 0) {
+    const m = text.match(/\{[\s\S]{40,20000}?"address_line"[\s\S]{0,20000}?\}/);
+    if (m) blobs.push(m[0]);
+  }
+  return blobs;
+}
+
+const ofoPageAddressCache = new Map(); // token -> { value, at }
+const OFO_PAGE_CACHE_TTL = 10 * 60 * 1000;
+
+export async function resolveOfoAddressFromPage(ofoToken, ofoUser = null, accountOrCookies = null) {
+  const tok = String(ofoToken || '').trim();
+  if (tok.length < 4) return null;
+  const cached = ofoPageAddressCache.get(tok);
+  if (cached && Date.now() - cached.at < OFO_PAGE_CACHE_TTL) return cached.value;
+
+  const candidates = accountOrCookies
+    ? [accountOrCookies]
+    : getCandidateAccounts()
+      .filter(({ acc }) => acc && !acc.isLoggedOut && !acc.sessionExpired && (acc.cookies || acc.tid || acc.token))
+      .slice(0, 2)
+      .map((x) => x.acc);
+
+  const urls = [
+    `https://www.swiggy.com/ofo/address/${encodeURIComponent(ofoUser || 'customer')}/${encodeURIComponent(tok)}?pushScreen=true`,
+    `https://www.swiggy.com/ofo/address/${encodeURIComponent(ofoUser || 'customer')}/${encodeURIComponent(tok)}`
+  ];
+
+  for (const acc of (candidates.length ? candidates : [null])) {
+    const cookieParts = [];
+    try {
+      const clean = acc ? cleanSwiggyCookieString(acc.cookies || '', acc) : '';
+      if (clean) cookieParts.push(clean);
+    } catch {}
+    try {
+      const waf = wafPool.getTokenSync();
+      if (waf) cookieParts.push(`aws-waf-token=${waf}`);
+    } catch {}
+
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, {
+          redirect: 'follow',
+          headers: {
+            'User-Agent': MOBILE_WEB_UA,
+            'Accept': 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-IN,en;q=0.9',
+            'Referer': 'https://www.swiggy.com/',
+            ...(cookieParts.length ? { 'Cookie': cookieParts.join('; ') } : {})
+          },
+          signal: AbortSignal.timeout(6000)
+        });
+        if (!res || !res.ok) continue;
+        const html = await res.text();
+        if (!html || html.length < 200) continue;
+        for (const blob of extractJsonBlobsFromHtml(html)) {
+          let parsed = null;
+          try { parsed = JSON.parse(blob); } catch { continue; }
+          const hit = pickOfoAddressFromJson(parsed);
+          if (hit && (hit.address || (hit.lat && hit.lng))) {
+            console.log(`[OfoPage] resolved address for token=${tok.slice(0, 12)} via share page`);
+            ofoPageAddressCache.set(tok, { value: hit, at: Date.now() });
+            return hit;
+          }
+        }
+        ofoPageAddressCache.set(tok, { value: null, at: Date.now() });
+      } catch (err) {
+        // network / timeout — try the next candidate, never treat as expiry
+      }
+    }
+  }
+  return null;
+}
+
 export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountOrCookies = null) {
   if (!ofoToken) return null;
   const tok = String(ofoToken).trim();
@@ -2016,7 +2173,11 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
       if (answeredCleanly && Number(rJson?.statusCode) === 1) {
         const msg = rJson?.statusMessage || rJson?.status_message || rJson?.message || '';
         if (isOfoTokenDeadAnswer(msg)) {
-          console.warn(`[OfoResolve] token=${String(tok).slice(0, 16)} swiggy says dead: ${String(msg).slice(0, 80)}`);
+          console.warn(`[OfoResolve] token=${String(tok).slice(0, 16)} swiggy API says "${String(msg).slice(0, 60)}" — trying the share page`);
+          // The API can reject a token the share page still renders. Try the
+          // page before telling the customer anything.
+          const pageHit = await resolveOfoAddressFromPage(tok, ofoUser).catch(() => null);
+          if (pageHit) return pageHit;
           noteOfoFailure(tok, 'EXPIRED');
           return null;
         }
@@ -2054,7 +2215,10 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
     }
     // We never received a clean answer that Swiggy rejects the token, so this is
     // OUR side: report a transport/session problem, never "your link expired".
-    // (A transport block after a clean "success but empty" answer still counts.)
+    // Before giving up, let the share *page* answer — it is plain HTML and keeps
+    // working when the mobile API refuses (WAF, token-only session, A/B rollout).
+    const pageHit = await resolveOfoAddressFromPage(tok, ofoUser).catch(() => null);
+    if (pageHit) return pageHit;
     const reason = sawTransportBlock || sawRealAnswer
       ? (hadWebSession ? 'NETWORK' : 'NO_ACCOUNT')
       : (hadRealSession ? 'NETWORK' : 'NO_ACCOUNT');
@@ -3161,7 +3325,7 @@ export async function resolveSwiggyLink(input) {
       // Still worth one attempt (some shares do carry a usable id), but a failure
       // here can never be reported as "expired": we never saw the real token.
       const socialAddr = await resolveSharedOfoAddress(ofoToken, ofoUser);
-      if (tokenIsUnexpandedShortId) {
+      if (tokenIsUnexpandedShortId && !socialAddr) {
         noteOfoFailure(ofoToken, 'UNEXPANDED');
         noteOfoFailure(primaryUrl, 'UNEXPANDED');
         noteOfoFailure(addressShareUrl, 'UNEXPANDED');
@@ -8714,6 +8878,7 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
 
   const confirmedOrderId = String(matchedOrder.order_id);
   const customerId = String(matchedOrder.customer_id || auth.userId || '');
+
   const cidParam = customerId ? `&customer_id=${encodeURIComponent(customerId)}` : '';
 
   // Step 3: Fetch live `trackV4` + `trackV2/de` + `order/details` for real-time status text, ETA, rider & share link!
