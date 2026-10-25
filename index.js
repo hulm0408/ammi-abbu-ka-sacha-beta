@@ -10266,20 +10266,25 @@ async function handleSendToBoss(ctx) {
     : (draft.addressLink || extractAddressShareUrl(addressSource) || (isAddressShareUrl(addressSource) ? addressSource : ''));
 
   if (addressLink) {
-    // URL-FIRST: the shared Swiggy address link is the only source of delivery
-    // data. Never merge name / mobile / area from the pasted chat text.
+    // URL-FIRST: try link first, but fall back to verified address text if link fails or is unexpanded
     try {
-      const addrMeta = await resolveSwiggyLink(addressLink);
+      const addrMeta = await resolveSwiggyLink(addressSource || addressLink);
       const resolvedAd = addrMeta?.addressDetails;
-      if (resolvedAd && !resolvedAd.unresolvableShortLink) {
+      if (resolvedAd && !resolvedAd.unresolvableShortLink && (resolvedAd.address || (resolvedAd.lat && resolvedAd.lng))) {
         deliveryDetails = { ...resolvedAd };
       } else {
-        deliveryDetails = { ...deliveryDetails, ...(resolvedAd || {}), unresolvableShortLink: true };
+        const candidateAd = parseAddressDetails(addressSource, { allowWithUrl: true });
+        if (candidateAd && (candidateAd.address || (candidateAd.lat && candidateAd.lng))) {
+          const geocoded = await geocodeAddressDetails(candidateAd);
+          deliveryDetails = { ...geocoded, ...(candidateAd.mobile ? { mobile: candidateAd.mobile } : {}) };
+        } else {
+          deliveryDetails = { ...deliveryDetails, ...(resolvedAd || {}), unresolvableShortLink: true };
+        }
       }
     } catch (e) {}
   } else {
     // Plain-text address / GPS pin — the message itself is the source.
-    const parsedAddress = parseAddressDetails(addressSource);
+    const parsedAddress = parseAddressDetails(addressSource, { allowWithUrl: true }) || parseAddressDetails(addressSource);
     if (parsedAddress) {
       for (const [key, value] of Object.entries(parsedAddress)) {
         if (value !== null && value !== undefined && value !== '') deliveryDetails[key] = value;
@@ -10328,21 +10333,24 @@ async function handleSendToBoss(ctx) {
     );
   }
 
-  const explicitRecipientMobile = normalizeDeliveryContact(deliveryDetails.mobile);
+  const explicitRecipientMobile = normalizeDeliveryContact(
+    deliveryDetails.mobile ||
+    extractStandaloneMobileNumber(addressSource) ||
+    addressSource.match(/(?:(?:phone|mobile|contact|tel|call)[\s:.-]*)?(?:(?:\+?91[\s-]?)|(?:0[\s-]?))?([6-9]\d{9})\b/i)?.[1]
+  );
   if (!explicitRecipientMobile) {
     // SIMPLE MODE = ZERO TYPING. The Swiggy address share already carries the
     // receiver's number; if Swiggy omitted it we continue without a prompt and
-    // fall back to the saved contact of the Swiggy account placing the order.
+    // fall back to the saved contact of the user. Never substitute account owner's phone.
     if (simpleChatForUser(userId)) {
       const userLastPhone = getUserLastDeliveryPhone(userId);
       const savedMobile = userLastPhone || normalizeDeliveryContact(
         deliveryDetails.mobile ||
         deliveryDetails.phone ||
-        getDb().config?.accounts?.[getActiveOrderAccountKey()]?.phone ||
         ''
       );
       deliveryDetails.mobile = savedMobile || '';
-      deliveryDetails.mobileSource = userLastPhone ? 'USER_MEMORY' : (savedMobile ? 'ACCOUNT_FALLBACK' : 'MISSING');
+      deliveryDetails.mobileSource = userLastPhone ? 'USER_MEMORY' : (savedMobile ? 'SAVED_PHONE' : 'MISSING');
       updateDraft(userId, { addressDetails: deliveryDetails });
       draft = getDraft(userId);
     } else {
@@ -10446,14 +10454,16 @@ async function handleSendToBoss(ctx) {
   // Fallback: If addressDetails is missing, resolve directly from address text/link without clobbering
   if (!newOrder.addressDetails && (newOrder.addressOriginalText || newOrder.address)) {
     try {
-      // Prefer the address share link itself; never hand the whole pasted text to the resolver.
-      const addrLinkForOrder = extractAddressShareUrl(newOrder.addressOriginalText || newOrder.address);
-      const addrMeta = await resolveSwiggyLink(addrLinkForOrder || newOrder.addressOriginalText || newOrder.address);
+      const addrMeta = await resolveSwiggyLink(newOrder.addressOriginalText || newOrder.address);
       if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
         newOrder.addressDetails = addrMeta.addressDetails;
         if (addrMeta.addressDetails.address) newOrder.address = addrMeta.addressDetails.address;
       }
     } catch (e) {}
+  }
+  if (newOrder.addressDetails?.mobile) {
+    newOrder.recipientMobile = newOrder.addressDetails.mobile;
+    newOrder.deliveryPhone = newOrder.addressDetails.mobile;
   }
 
   // Loophole fix: block ₹0 empty orders (e.g. tracking link mis-parsed as cart)

@@ -1482,10 +1482,9 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   const addressShareUrl = extractAddressShareUrl(trimmed);
 
   // Pre-extract plain-text street address BEFORE `Promise.all` so links + geocoding run 100% concurrently!
-  // (Only for genuinely text-only messages — never when an address link is present.)
   const textWithoutUrlsEarly = stripSharedLinks(trimmed);
   const earlyPlainAd = addressShareUrl
-    ? null
+    ? (parseAddressDetails(textWithoutUrlsEarly, { allowWithUrl: true }) || parseAddressDetails(trimmed, { allowWithUrl: true }))
     : (allUrls.length === 0 && !isValidCartInput(trimmed) && isValidAddressInput(trimmed)
         ? parseAddressDetails(trimmed)
         : textWithoutUrlsEarly.length >= 12 && isValidAddressInput(textWithoutUrlsEarly)
@@ -1517,29 +1516,39 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
       (/(?:swiggy\.com|swig\.gy).*(?:address|shareaddress)/i.test(url));
 
     if (looksLikeAddressShare) {
-      // The address link is authoritative. `preGeocodedPlainAd` is always null here
-      // when a link is present, and text parsing is never used as a substitute.
       const ad = resolved?.addressDetails || null;
-      if (ad && !ad.unresolvableShortLink) {
+      if (ad && !ad.unresolvableShortLink && ad.address) {
         delete ad.id;
         // Never overwrite recipient name with sender's Telegram name — link's contact_name is authoritative (recipient = Ammi/Abbu)
         order.addressDetails = ad;
         order.address = ad.address || ad.city || url;
         order.addressLink = url;
       } else {
-        // Keep the link (never the surrounding chat text) and let the card ask for
-        // a fresh address/pin if the share link could not be resolved.
-        order.addressDetails = ad || null;
+        // Keep the link (never the surrounding chat text) for order.address, but retain preGeocodedPlainAd in addressDetails
+        order.addressDetails = ad || preGeocodedPlainAd || null;
+        if (preGeocodedPlainAd && order.addressDetails) {
+          if (!order.addressDetails.address && preGeocodedPlainAd.address) order.addressDetails.address = preGeocodedPlainAd.address;
+          if (!order.addressDetails.lat && preGeocodedPlainAd.lat) {
+            order.addressDetails.lat = preGeocodedPlainAd.lat;
+            order.addressDetails.lng = preGeocodedPlainAd.lng;
+          }
+        }
         order.address = url;
         order.addressLink = url;
       }
 
       // If mobile is not inside the onelink, extract recipient mobile from the message text
-      if (order.addressDetails && !order.addressDetails.mobile) {
-        const phoneMatch = trimmed.match(/(?:(?:phone|mobile|contact|tel|call)[\s:.-]*)?(?:(?:\+?91[\s-]?)|(?:0[\s-]?))?([6-9]\d{4}[\s-]?\d{5})\b/i);
-        if (phoneMatch) {
-          order.addressDetails.mobile = phoneMatch[1].replace(/\D/g, '');
-        }
+      const extractedMobile = normalizeRecipientMobile(
+        order.addressDetails?.mobile ||
+        preGeocodedPlainAd?.mobile ||
+        earlyPlainAd?.mobile ||
+        (trimmed.match(/(?:(?:phone|mobile|contact|tel|call)[\s:.-]*)?(?:(?:\+?91[\s-]?)|(?:0[\s-]?))?([6-9]\d{9})\b/i)?.[1])
+      );
+      if (extractedMobile) {
+        if (!order.addressDetails) order.addressDetails = {};
+        order.addressDetails.mobile = extractedMobile;
+        order.recipientMobile = extractedMobile;
+        order.deliveryPhone = extractedMobile;
       }
 
       order.addressOriginalText = order.address;

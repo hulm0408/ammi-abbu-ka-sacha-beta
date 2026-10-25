@@ -2457,7 +2457,7 @@ export function hasAddressShareUrl(text) {
 }
 
 // Cleanly extract structured delivery address from Swiggy native share messages, Swiggy World receipts, coordinates, or plain text
-export function parseAddressDetails(text) {
+export function parseAddressDetails(text, options = {}) {
   if (!text) return null;
   // Normalize markdown tel/url links like `[9823305540](tel:9823305540)` -> `9823305540` and HTML `&amp;` -> `&`
   const str = String(text)
@@ -2470,9 +2470,8 @@ export function parseAddressDetails(text) {
     return null;
   }
 
-  // URL-FIRST: an address share link is present -> the link is the only source of
-  // truth. Refuse to copy name / phone / area / PIN from whatever else is pasted.
-  if (hasAddressShareUrl(str)) {
+  // URL-FIRST: when called without allowWithUrl, an address share link means the link is the only source of truth.
+  if (!options?.allowWithUrl && hasAddressShareUrl(str)) {
     return null;
   }
 
@@ -2507,11 +2506,13 @@ export function parseAddressDetails(text) {
     .split(/\r?\n/)
     .filter(line => !/order\s*account/i.test(line))
     .join('\n');
-  const labeledPhoneMatch = phoneScope.match(/(?:📱\s*)?(?:phone|mobile|tel|contact|ph(?:one)?)\s*[:\-]?\s*(?:\+?91[\s-]*)?[6-9](?:[\s-]?\d){9}\b/i);
+  const labeledPhoneMatch = phoneScope.match(/(?:📱\s*)?(?:phone|mobile|tel|contact|ph(?:one)?|call|receiver|recipient)\s*[:\-]?\s*(?:\+?91[\s-]*)?([6-9](?:[\s-]?\d){9})\b/i) ||
+    str.match(/(?:phone|mobile|tel|contact|ph(?:one)?|call|receiver|recipient)\s*[:\-]?\s*(?:\+?91[\s-]*)?([6-9](?:[\s-]?\d){9})\b/i);
   const standalonePhoneLine = phoneScope.split(/\r?\n/).find(line =>
     /^\s*(?:\+?91[\s-]*)?[6-9](?:[\s-]?\d){9}\s*$/.test(line)
   );
-  const phoneValue = labeledPhoneMatch?.[0] || standalonePhoneLine || '';
+  const anyPhoneMatch = phoneScope.match(/\b(?:\+?91[\s-]*)?([6-9]\d{9})\b/);
+  const phoneValue = labeledPhoneMatch?.[1] || labeledPhoneMatch?.[0] || standalonePhoneLine || (anyPhoneMatch?.[1] && !searchScope.includes(`Latitude: ${anyPhoneMatch[1]}`) ? anyPhoneMatch[1] : '') || '';
   mobile = normalizeIndianMobile(phoneValue) || null;
 
   const latMatch = searchScope.match(/(?:🧭\s*Latitude|lat|latitude)[:\s]*(-?[0-9]{1,2}\.[0-9]{3,10})/i);
@@ -2792,6 +2793,38 @@ async function expandShortUrl(rawUrl) {
   return first || mobile || rawUrl;
 }
 
+export function extractDeepLinkFromReferrerOrUrl(targetUrl) {
+  if (!targetUrl) return null;
+  try {
+    const raw = String(targetUrl).trim();
+    const normalized = raw.startsWith('http') ? raw : 'https://dummy.com/' + raw.replace(/^[a-z]+:\/\//i, '');
+    const u = new URL(normalized);
+    const candidates = [
+      u.searchParams.get('referrer'),
+      u.searchParams.get('af_dp'),
+      u.searchParams.get('deep_link_value'),
+      u.searchParams.get('link'),
+      u.searchParams.get('url'),
+      raw
+    ];
+    for (const cand of candidates) {
+      if (!cand) continue;
+      let dec = cand;
+      try { dec = decodeURIComponent(dec); } catch {}
+      try { dec = decodeURIComponent(dec); } catch {}
+      const m = dec.match(/(?:https?:\/\/[^\s"'<>]*swiggy\.com)?\/ofo\/address\/[^\/\s?#]+\/[^\/\s?#&]+/i) ||
+                dec.match(/(?:https?:\/\/[^\s"'<>]*swiggy\.com)?\/gc\/[0-9]+\/[^\/\s?#]+-[0-9]+/i) ||
+                dec.match(/swiggy:\/\/[^\s"'<>]+/i);
+      if (m) {
+        return m[0].startsWith('http') || m[0].startsWith('swiggy://')
+          ? m[0]
+          : 'https://www.swiggy.com' + m[0];
+      }
+    }
+  } catch {}
+  return null;
+}
+
 async function followShortChain(startUrl, userAgent) {
   let current = startUrl;
   for (let hop = 0; hop < 4; hop++) {
@@ -2809,6 +2842,11 @@ async function followShortChain(startUrl, userAgent) {
       });
       const loc = res.headers.get('location');
       if (loc) {
+        const deepFromLoc = extractDeepLinkFromReferrerOrUrl(loc);
+        if (deepFromLoc) {
+          current = deepFromLoc;
+          break;
+        }
         current = loc.startsWith('http') || loc.startsWith('swiggy://') || loc.startsWith('intent://')
           ? loc
           : new URL(loc, current).toString();
@@ -2971,8 +3009,10 @@ export async function resolveSwiggyLink(input) {
   const addressShareUrl = extractAddressShareUrl(rawInput) || extractAddressShareUrl(resolved);
   const addressFromUrl = Boolean(addressShareUrl || ofoToken || ofoUser || mapCoords);
 
+  // Parse candidate structured text address with allowWithUrl: true
+  const candidateTextAddr = parseAddressDetails(rawInput, { allowWithUrl: true });
   // Text parsing is allowed ONLY when no address link is present.
-  let parsedAddr = addressFromUrl ? null : parseAddressDetails(rawInput);
+  let parsedAddr = addressFromUrl ? null : candidateTextAddr;
 
   const isCart = Boolean(
     groupCartId ||
@@ -2994,15 +3034,16 @@ export async function resolveSwiggyLink(input) {
     combinedForMatch.includes('maps.google') ||
     combinedForMatch.includes('google.com/maps') ||
     combinedForMatch.includes('goo.gl') ||
-    parsedAddr
+    parsedAddr ||
+    candidateTextAddr
   );
 
   // Resolve full address details — URL first, plain text only when no link exists.
   const reverseGeocodedDetails = async () => {
     const rev = await reverseGeocodeCoords(mapCoords.lat, mapCoords.lng);
     return {
-      name: ofoUser || '',
-      mobile: '',
+      name: ofoUser || candidateTextAddr?.name || '',
+      mobile: candidateTextAddr?.mobile || '',
       city: rev?.city || 'Delivery',
       area: rev?.area || '',
       landmark: rev?.landmark || '',
@@ -3012,13 +3053,13 @@ export async function resolveSwiggyLink(input) {
     };
   };
   const unresolvedLinkDetails = () => ({
-    name: ofoUser || '',
+    name: ofoUser || candidateTextAddr?.name || '',
     token: ofoToken || '',
     link: addressShareUrl || primaryUrl,
     unresolvableShortLink: true,
     unresolvedReason: getOfoResolutionFailureReason(primaryUrl) || getOfoResolutionFailureReason(addressShareUrl) || getOfoResolutionFailureReason(ofoToken) || '',
-    city: '',
-    mobile: '',
+    city: candidateTextAddr?.city || '',
+    mobile: candidateTextAddr?.mobile || '',
     address: '',
     lat: null,
     lng: null
@@ -3044,14 +3085,36 @@ export async function resolveSwiggyLink(input) {
       }
       if (socialAddr) {
         addressDetails = socialAddr;
+        if (!addressDetails.mobile && candidateTextAddr?.mobile) {
+          addressDetails.mobile = candidateTextAddr.mobile;
+        }
+        if (!addressDetails.name && candidateTextAddr?.name) {
+          addressDetails.name = candidateTextAddr.name;
+        }
+        if ((!addressDetails.address || addressDetails.address.length < 15) && candidateTextAddr?.address) {
+          addressDetails.address = candidateTextAddr.address;
+        }
+      } else if (candidateTextAddr && (candidateTextAddr.address || (candidateTextAddr.lat && candidateTextAddr.lng))) {
+        // RESCUE: Short link unexpanded or token expired, but message carries verified street address + recipient phone!
+        addressSource = 'TEXT_FALLBACK';
+        addressDetails = await geocodeAddressDetails(candidateTextAddr);
+        if (candidateTextAddr.mobile) addressDetails.mobile = candidateTextAddr.mobile;
+        if (candidateTextAddr.name) addressDetails.name = candidateTextAddr.name;
+        addressDetails.unresolvableShortLink = false;
+        addressDetails.link = addressShareUrl || primaryUrl;
       } else if (mapCoords) {
         addressDetails = await reverseGeocodedDetails();
       } else {
-        // Link could not be resolved (expired / not fetchable). Never substitute the
-        // surrounding chat text — flag the link so the caller can ask for a fresh one.
         addressSource = 'URL_UNRESOLVED';
         addressDetails = unresolvedLinkDetails();
       }
+    } else if (candidateTextAddr && (candidateTextAddr.address || (candidateTextAddr.lat && candidateTextAddr.lng))) {
+      addressSource = 'TEXT_FALLBACK';
+      addressDetails = await geocodeAddressDetails(candidateTextAddr);
+      if (candidateTextAddr.mobile) addressDetails.mobile = candidateTextAddr.mobile;
+      if (candidateTextAddr.name) addressDetails.name = candidateTextAddr.name;
+      addressDetails.unresolvableShortLink = false;
+      addressDetails.link = addressShareUrl || primaryUrl;
     } else if (mapCoords) {
       addressDetails = await reverseGeocodedDetails();
     } else {
@@ -7318,6 +7381,10 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         order.payableMismatchFlag = { locked, liveTotal, at: Date.now() };
       }
     }
+    const candidateRecipientPhone = normalizeIndianMobile(order?.addressDetails?.mobile || order?.recipientMobile || order?.deliveryPhone || order?.phone || '');
+    if (candidateRecipientPhone && order.addressDetails && !order.addressDetails.mobile) {
+      order.addressDetails.mobile = candidateRecipientPhone;
+    }
     const savedRes = await saveAddressToAccount(account, order.addressDetails, prefetchedAddrs || []);
     if (!savedRes?.addressId || !isUsableDeliveryAddress(savedRes.addressDetails) || !normalizeIndianMobile(savedRes.addressDetails.mobile)) {
       const err = new Error(savedRes?.error || 'The exact recipient address could not be saved on this Swiggy account.');
@@ -7377,12 +7444,12 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       const directSubItems = Array.isArray(order?.activeSubscriptionItems)
         ? order.activeSubscriptionItems
         : (Number(order?.swiggyOneMembershipFee || 0) > 0 ? [{ plan_id: '773', quantity: 1 }] : []);
-      const rawRecipientPhone = order?.addressDetails?.mobile || order?.recipientMobile || order?.phone || '';
+      const rawRecipientPhone = order?.addressDetails?.mobile || order?.recipientMobile || order?.deliveryPhone || order?.phone || '';
       const recipientPhone = normalizeIndianMobile(rawRecipientPhone);
       const recipientName = String(order?.addressDetails?.name || order?.recipientName || order?.name || 'Customer').trim();
       const accountPhone = normalizeIndianMobile(account?.phone || '');
       const isForOthers = Boolean(recipientPhone && (!accountPhone || recipientPhone !== accountPhone));
-      const orderComments = recipientPhone ? `Call ${recipientPhone} on arrival. Order for: ${recipientName}.` : '';
+      const orderComments = recipientPhone ? `Call ${recipientPhone} on arrival. Order for: ${recipientName}. Do not call account number.` : '';
       const deliveryInstructions = recipientPhone ? [
         {
           type: 'CALL_PHONE',
@@ -7400,11 +7467,12 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
           cartItems: buildSwiggyCartItemsPayload(order.items),
           mealItems: [],
           subscriptionItems: directSubItems,
-          ...(isForOthers ? {
+          ...(recipientPhone ? {
             is_order_for_someone_else: true,
             ordering_for_someone_else: true,
             order_for_others: true,
             alternate_mobile: recipientPhone,
+            alternate_phone: recipientPhone,
             order_comments: orderComments,
             delivery_instructions: deliveryInstructions,
             recipient_details: {
@@ -7532,7 +7600,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
           lng: String(lng),
           payment_cod_method: 'UPIIntent',
           order_comments: orderComments,
-          ...(isForOthers ? {
+          ...(recipientPhone ? {
             ordering_for_someone_else: true,
             is_order_for_someone_else: true,
             order_for_others: true,
@@ -7662,7 +7730,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         payment_cod_method: 'UPIIntent',
         order_comments: orderComments,
         force_validate_coupon: false,
-        ...(isForOthers ? {
+        ...(recipientPhone ? {
           ordering_for_someone_else: true,
           is_order_for_someone_else: true,
           order_for_others: true,
