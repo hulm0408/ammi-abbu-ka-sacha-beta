@@ -171,6 +171,8 @@ import {
   ensureOrderTracking,
   startOrderTrackingAuto,
   PAYMENT_TRACKING_DELAYS,
+  listActiveOrdersNeedingTracking,
+  refreshActiveOrdersTracking,
   stopOrderTrackingAuto,
   setOrderTrackingNotifier,
   setOrderMilestoneNotifier,
@@ -706,6 +708,9 @@ function getBossReplyKeyboard() {
     [
       { text: '▤ Order History' },
       { text: '× Cancelled Orders' }
+    ],
+    [
+      { text: '🔄 Active Orders Tracking' }
     ]
   ]).resize();
 }
@@ -11798,6 +11803,64 @@ async function handleAllOrdersDone(ctx) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// ACTIVE ORDERS -> OFO TRACKING LINK (read-only sweep)
+// ---------------------------------------------------------------------------
+// Chases the share/track link of every RUNNING order using the live route:
+//   order/trackV4 -> data.fyi_details[].value.cta_link ->
+//   swiggy://share?text=<https://www.swiggy.com/ofo/track/...>
+// Nothing here logs out, re-logs or "wipes" an ID: the scan runs read-only, so
+// ongoing orders and every logged-in account stay exactly as they are.
+async function runActiveOrdersTrackingSweep(ctx, { silent = false } = {}) {
+  const chatId = ctx.chat?.id || ctx.from?.id;
+  const pending = listActiveOrdersNeedingTracking();
+  if (pending.length === 0) {
+    if (!silent) await ctx.reply('✓ <b>Saare active orders ke tracking links already saved hain.</b>', { parse_mode: 'HTML' }).catch(() => {});
+    return { scanned: 0, found: 0, stillMissing: 0, results: [] };
+  }
+  const wait = silent
+    ? null
+    : await ctx.reply(
+      `◷ <i>${pending.length} active order(s) ke Swiggy OFO link check kar raha hoon… (koi ID logout/remove nahi hogi)</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => null);
+
+  const out = await refreshActiveOrdersTracking({ budgetMs: 15000, deep: true, concurrency: 6, limit: 12 });
+
+  if (wait) { try { await bot.telegram.deleteMessage(chatId, wait.message_id); } catch {} }
+  if (silent) return out;
+
+  const lines = [
+    `🔗 <b>Active orders — OFO link sweep</b>`,
+    '',
+    `▪ <b>Checked:</b> ${out.scanned}`,
+    `▪ <b>Link mila:</b> ${out.found}`,
+    `▪ <b>Abhi nahi mila:</b> ${out.stillMissing}`,
+    `▪ <b>IDs touched:</b> 0 — <i>koi logout / remove / session wipe nahi hua</i>`
+  ];
+  for (const row of out.results.slice(0, 8)) {
+    const short = row.url ? ` — <a href="${escapeHtml(row.url)}">open</a>` : '';
+    lines.push(`• <code>${escapeHtml(String(row.swiggyOrderId || row.orderId))}</code> — ${escapeHtml(row.status)}${short}`);
+  }
+  if (out.stillMissing > 0) {
+    lines.push('', '<i>Jo links nahi mile, unke orders Swiggy par abhi publish nahi hue. Auto-tracking background me chalta rahega — accounts ko chhua nahi jayega.</i>');
+  }
+  await ctx.reply(lines.join('\n'), {
+    parse_mode: 'HTML',
+    link_preview_options: { is_disabled: true },
+    ...Markup.inlineKeyboard([[Markup.button.callback('🔄 Dobara check', 'boss_active_tracking')]])
+  }).catch(() => {});
+  return out;
+}
+
+bot.action(['boss_active_tracking', 'user_active_tracking'], async (ctx) => {
+  await ctx.answerCbQuery('Active orders check kar raha hoon… ◷').catch(() => {});
+  await runActiveOrdersTrackingSweep(ctx);
+});
+bot.hears(['🔄 Active Orders Tracking', 'Active Orders Tracking', 'active orders tracking', '/active_tracking'], async (ctx) => {
+  await runActiveOrdersTrackingSweep(ctx);
+});
+
 bot.hears(['📦 Orders Done', 'Orders Done', 'orders done', 'orders_done', '/orders_done', '/ordersdone'], async (ctx) => {
   await handleAllOrdersDone(ctx);
 });
@@ -13279,6 +13342,8 @@ setOrderMilestoneNotifier(pushCustomerLiveDeliveryMilestone);
 
 // After a restart, resume tracking for recent confirmed orders that still have
 // no share link — "kal raat se tracking nahi mila" never needs a manual tap.
+let activeTrackingSweepTimer = null;
+
 function resumeAutoTrackingForRecentOrders() {
   try {
     const db = getDb();
@@ -13300,6 +13365,33 @@ function resumeAutoTrackingForRecentOrders() {
       startOrderTrackingAuto(order.id, { budgetMs: 12000, deep: false, initialDelayMs: 10_000 + index * 20_000 });
     });
     if (candidates.length) console.log(`↻ Auto-tracking resumed for ${candidates.length} recent order(s).`);
+
+    // Running orders (PENDING/ACCEPTED/bill/QR stages) also deserve their OFO
+    // link — but this sweep is READ-ONLY: no logout, no session wipe, no account
+    // removal. One pass after boot, then every 10 minutes while something is open.
+    const activePending = listActiveOrdersNeedingTracking(db);
+    if (activePending.length) {
+      setTimeout(() => {
+        refreshActiveOrdersTracking({ budgetMs: 12000, deep: false, concurrency: 4, limit: 8, maxAgeMs: 24 * 60 * 60 * 1000 })
+          .then((out) => console.log(`↻ Active-order tracking sweep: ${out.found}/${out.scanned} link(s) found (IDs untouched).`))
+          .catch((err) => console.warn('[ActiveTracking] boot sweep failed:', err?.message || err));
+      }, 45_000).unref?.();
+    }
+    if (!activeTrackingSweepTimer) {
+      const timer = setInterval(() => {
+        try {
+          if (wafPool.cooldownRemainingMs() > 5000) return;
+          if (listActiveOrdersNeedingTracking().length === 0) return;
+          refreshActiveOrdersTracking({ budgetMs: 12000, deep: false, concurrency: 4, limit: 8, maxAgeMs: 24 * 60 * 60 * 1000 })
+            .then((out) => {
+              if (out.found) console.log(`↻ Active-order tracking sweep: ${out.found}/${out.scanned} link(s) found (IDs untouched).`);
+            })
+            .catch(() => {});
+        } catch {}
+      }, 10 * 60 * 1000);
+      if (typeof timer.unref === 'function') timer.unref();
+      activeTrackingSweepTimer = timer;
+    }
 
     // Catch-up for the old notifier race: orders where Swiggy's genuine link
     // WAS persisted by the scan but the "Live Swiggy tracking ready" push was

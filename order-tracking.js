@@ -240,7 +240,9 @@ export async function ensureOrderTracking(orderRef, {
   // 27+ account vaults: concurrency 4 timed out after scanning only ~8 IDs
   // (live incident 2026-10-22 3:48 PM). 6 keeps full coverage inside budget.
   concurrency = 6,
-  getAccountsFn = null
+  getAccountsFn = null,
+  // Active-order sweeps pass readOnly so a scan can never demote ("wipe") an ID.
+  readOnly = false
 } = {}) {
   const db = getDb();
   const order = findOrderRecord(orderRef, db);
@@ -282,7 +284,8 @@ export async function ensureOrderTracking(orderRef, {
       preferredAccountKey: order.selectedAccount || '',
       budgetMs,
       deep,
-      concurrency
+      concurrency,
+      readOnly
     });
     const freshDb = getDb();
     let target = freshDb.orders?.[order.id] || null;
@@ -457,6 +460,114 @@ export function startOrderTrackingAuto(orderId, {
 
   schedule((effectiveDelays[0] ?? 0) + Math.max(0, Number(initialDelayMs) || 0));
   return state;
+}
+
+// ---------------------------------------------------------------------------
+// ACTIVE-ORDER TRACKING SWEEP  (“active order ka OFO link chahiye, par koi ID
+// logout/wipe na ho”)
+// ---------------------------------------------------------------------------
+// Uses the exact route confirmed from live traffic for every running order:
+//   GET /dapi/order/trackV4?order_id=<id>&type=full&version=V2
+//   data.fyi_details[0].value.cta_link
+//     = swiggy://share?text=<url-encoded https://www.swiggy.com/ofo/track/...>
+// `extractTrackingUrlFromSwiggyFyiDetails()` decodes that on the scan path.
+//
+// Contract:
+//   - READ-ONLY: no logout, no `sessionExpired` flip, no vault tombstones, no
+//     account reservation release. Finished orders and logged-in IDs stay as
+//     they are; we only add a tracking link to orders that lack one.
+//   - One pass, budgeted, so a slow ID cannot stall the whole sweep.
+export function listActiveOrdersNeedingTracking(db = null) {
+  const database = db || getDb();
+  const ACTIVE_STATUSES = new Set([
+    'PENDING', 'ACCEPTED', 'APPROVAL_PENDING', 'PAYMENT_PENDING',
+    'BILL_READY', 'QR_GENERATED', 'PAID_CONFIRMED', 'PROCESSING'
+  ]);
+  return Object.values(database?.orders || {})
+    .filter((order) => order && order.id)
+    .filter((order) => !['CANCELLED', 'REJECTED'].includes(String(order.status || '').toUpperCase()))
+    .filter((order) => !isCancelledOrRefusedStatus(order.liveOrderStatus))
+    .filter((order) => Boolean(orderSwiggyOrderId(order)))
+    .filter((order) => {
+      const status = String(order.status || '').toUpperCase();
+      // Live orders always qualify; a finished order only when its link is missing.
+      if (ACTIVE_STATUSES.has(status)) return !getStoredSwiggyTrackingUrl(order);
+      return !getStoredSwiggyTrackingUrl(order) && !isTerminalDeliveryStatus(order.liveOrderStatus);
+    })
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+}
+
+export async function refreshActiveOrdersTracking({
+  budgetMs = 15_000,
+  deep = true,
+  concurrency = 6,
+  limit = 12,
+  orderIds = null,
+  getAccountsFn = null,
+  // Background sweeps only chase fresh orders; an order stuck for days is left
+  // to the manual button so we never hammer Swiggy with the same scan forever.
+  maxAgeMs = null
+} = {}) {
+  const now = Date.now();
+  const candidates = listActiveOrdersNeedingTracking()
+    .filter((order) => {
+      if (!maxAgeMs) return true;
+      const born = new Date(order.createdAt || order.updatedAt || 0).getTime();
+      if (!Number.isFinite(born) || born <= 0) return true;
+      return (now - born) <= Number(maxAgeMs);
+    })
+    .slice(0, Math.max(1, Number(limit) || 12));
+  const wanted = Array.isArray(orderIds) && orderIds.length
+    ? candidates.filter((o) => orderIds.includes(String(o.id)))
+    : candidates;
+
+  const out = {
+    scanned: 0,
+    found: 0,
+    stillMissing: 0,
+    skippedNoId: 0,
+    results: [],
+    // Account state is intentionally untouched; this documents that promise.
+    sessionStateChanged: false
+  };
+
+  for (const order of wanted) {
+    if (!orderSwiggyOrderId(order)) { out.skippedNoId += 1; continue; }
+    if (getStoredSwiggyTrackingUrl(order)) continue;
+    out.scanned += 1;
+    let result = null;
+    try {
+      result = await ensureOrderTracking(order.id, {
+        budgetMs,
+        deep,
+        concurrency,
+        force: false,
+        readOnly: true,
+        getAccountsFn
+      });
+    } catch (err) {
+      console.warn('[ActiveTracking] scan failed:', err?.message || err);
+    }
+    const fresh = findOrderRecord(order.id);
+    const url = fresh ? getStoredSwiggyTrackingUrl(fresh) : '';
+    if (url) {
+      out.found += 1;
+      out.results.push({ orderId: order.id, status: 'FOUND', url, swiggyOrderId: orderSwiggyOrderId(order) });
+      // Notify the customer exactly like the normal path does (only once).
+      if (trackingNotifier) {
+        try { await trackingNotifier(fresh, { previousUrl: '', scan: result }); } catch {}
+      }
+    } else {
+      out.stillMissing += 1;
+      out.results.push({
+        orderId: order.id,
+        status: result?.status || 'NOT_FOUND',
+        swiggyOrderId: orderSwiggyOrderId(order)
+      });
+    }
+  }
+
+  return out;
 }
 
 /**
