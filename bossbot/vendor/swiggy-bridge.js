@@ -266,6 +266,10 @@ export const EVENT_OFFER_OPTIONS = {
 
 const offerClaimCache = new Map(); // `${accSig}:${offerValue}` -> { result, ts }
 const OFFER_CLAIM_TTL_MS = 30 * 60 * 1000;
+// A FAILED claim (WAF 403, timeout, no meta) used to be cached for the full 30
+// minutes, so "free cash / late night kabhi lagta hi nahi" until the TTL ran out.
+// Failures are now re-tried quickly instead of being remembered as truth.
+const OFFER_CLAIM_FAILURE_TTL_MS = 60 * 1000;
 
 let cachedEventCampaignMeta = null;
 let cachedEventCampaignMetaAt = 0;
@@ -378,7 +382,9 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
   const accSig = `${String(account.id || account.phone || account.customerId || account.token || (account.cookies || '').slice(0, 60))}:v${chosenVal}`;
   if (!force && !forcePatch && accSig && offerClaimCache.has(accSig)) {
     const prev = offerClaimCache.get(accSig);
-    if (Date.now() - prev.ts < OFFER_CLAIM_TTL_MS) return prev.result;
+    const ttl = prev?.result?.success ? OFFER_CLAIM_TTL_MS : OFFER_CLAIM_FAILURE_TTL_MS;
+    if (Date.now() - prev.ts < ttl) return prev.result;
+    offerClaimCache.delete(accSig);
   }
 
   let token = account.token || '';
@@ -714,7 +720,10 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
       lockedMap: claimOut.lockedMap,
       offerValue: claimOut.offerValue
     };
-    if (accSig) offerClaimCache.set(accSig, { result: claimOut, ts: Date.now() });
+    if (accSig) {
+      // Only a real claim is worth remembering; failures expire in 60s.
+      offerClaimCache.set(accSig, { result: claimOut, ts: Date.now() });
+    }
     return claimOut;
   } catch (err) {
     console.error('[EventsClaim] Request error:', err.message);
