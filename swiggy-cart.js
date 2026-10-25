@@ -3704,6 +3704,17 @@ export function hasValidTrackingForOrder(order) {
 export function getStoredSwiggyTrackingUrl(order) {
   if (!order || typeof order !== 'object') return '';
   const source = String(order?.trackingLinkSource || '').trim();
+  const hasApiField = Boolean(
+    order?.trackingUrl ||
+    order?.nativeShareUrl ||
+    order?.swiggyWebTrackUrl ||
+    order?.shareable_url
+  );
+  if (!source && !hasApiField) return '';
+
+  const effectiveSource = source || 'SWIGGY_API';
+  if (!['SWIGGY_API', 'BOSS_PROVIDED'].includes(effectiveSource)) return '';
+
   const candidate = String(
     order?.trackingLink ||
     order?.trackingUrl ||
@@ -3715,11 +3726,8 @@ export function getStoredSwiggyTrackingUrl(order) {
   ).trim();
   if (!candidate) return '';
 
-  const effectiveSource = source || 'SWIGGY_API';
-  if (!['SWIGGY_API', 'BOSS_PROVIDED'].includes(effectiveSource)) return '';
-
   if (!validateTrackingUrlForOrder(candidate, order, effectiveSource)) return '';
-  const allowShort = effectiveSource === 'SWIGGY_API' || effectiveSource === 'BOSS_PROVIDED';
+  const allowShort = effectiveSource === 'SWIGGY_API';
   const valid = isOfficialSwiggyTrackingUrl(candidate, { allowProviderShortLink: allowShort }) ? candidate : '';
   if (valid && !order.trackingLink) {
     order.trackingLink = valid;

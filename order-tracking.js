@@ -41,10 +41,16 @@ const autoTimers = new Map();
 export const DEFAULT_AUTO_DELAYS = [0, 15_000, 180_000, 300_000, 480_000, 900_000, 1_500_000, 2_400_000];
 
 let trackingNotifier = null;
+let milestoneNotifier = null;
 
-/** Register the Telegram notifier (index.js) so this module stays cycle-free. */
+/** Register the Telegram tracking notifier (index.js) so this module stays cycle-free. */
 export function setOrderTrackingNotifier(fn) {
   trackingNotifier = typeof fn === 'function' ? fn : null;
+}
+
+/** Register live delivery milestone notifier for customer chat streaming. */
+export function setOrderMilestoneNotifier(fn) {
+  milestoneNotifier = typeof fn === 'function' ? fn : null;
 }
 
 export function findOrderRecord(orderRef, db = null) {
@@ -122,6 +128,11 @@ export function isTerminalDeliveryStatus(value) {
 function applyScanToOrder(order, scan) {
   if (!order || !scan) return { changedTracking: false, previousUrl: getStoredSwiggyTrackingUrl(order) };
   const previousUrl = getStoredSwiggyTrackingUrl(order);
+  const previousStatus = String(order.liveOrderStatus || '');
+  const previousRiderName = String(order.deliveryBoyName || '');
+  const previousRiderPhone = String(order.deliveryBoyMobile || '');
+  const previousOtp = String(order.deliveryOtp || '');
+
   const candidates = [scan.trackingUrl, scan.nativeShareUrl, scan.swiggyWebTrackUrl]
     .map(value => String(value || '').trim())
     .filter(Boolean);
@@ -186,7 +197,24 @@ function applyScanToOrder(order, scan) {
   order.trackingLastScanAt = new Date().toISOString();
   order.trackingScanStatus = scan.status;
   order.trackingScannedAccounts = Number(scan.scanned) || 0;
-  return { changedTracking: Boolean(verifiedUrl && verifiedUrl !== previousUrl), previousUrl };
+
+  const statusChanged = Boolean(order.liveOrderStatus && order.liveOrderStatus !== previousStatus);
+  const riderChanged = Boolean(
+    (order.deliveryBoyName && order.deliveryBoyName !== previousRiderName) ||
+    (order.deliveryBoyMobile && order.deliveryBoyMobile !== previousRiderPhone)
+  );
+  const otpChanged = Boolean(order.deliveryOtp && order.deliveryOtp !== previousOtp);
+  const changedTracking = Boolean(verifiedUrl && verifiedUrl !== previousUrl);
+
+  return {
+    changedTracking,
+    previousUrl,
+    statusChanged,
+    riderChanged,
+    otpChanged,
+    previousStatus,
+    hasMilestoneUpdate: Boolean(changedTracking || statusChanged || riderChanged || otpChanged)
+  };
 }
 
 /**
@@ -270,7 +298,7 @@ export async function ensureOrderTracking(orderRef, {
       target = { ...order, isExternalOrder: true, isSwiggyIdLookup: true };
       freshDb.orders[target.id] = target;
     }
-    applyScanToOrder(target, scan);
+    const scanRes = applyScanToOrder(target, scan);
     saveDb(freshDb);
 
     // Keep the caller's in-memory object in sync (it is often the same object).
@@ -288,6 +316,26 @@ export async function ensureOrderTracking(orderRef, {
         await trackingNotifier(target, { previousUrl: existingUrl, scan });
       } catch (err) {
         console.warn('[order-tracking] notifier failed:', err?.message || err);
+      }
+    }
+
+    const hasMilestoneChange = Boolean(
+      scanRes.statusChanged ||
+      scanRes.riderChanged ||
+      scanRes.otpChanged
+    );
+    if (hasMilestoneChange && milestoneNotifier) {
+      try {
+        await milestoneNotifier(target, {
+          previousUrl: existingUrl,
+          scan,
+          statusChanged: Boolean(scanRes.statusChanged),
+          riderChanged: Boolean(scanRes.riderChanged),
+          otpChanged: Boolean(scanRes.otpChanged),
+          url: finalUrl
+        });
+      } catch (err) {
+        console.warn('[order-tracking] milestone notifier failed:', err?.message || err);
       }
     }
     return { ...scan, orderId: order.id, trackingUrl: finalUrl || scan.trackingUrl || '' };
@@ -316,14 +364,16 @@ export function startOrderTrackingAuto(orderId, {
   budgetMs = 15_000,
   deep = true,
   force = false,
-  initialDelayMs = 0
+  initialDelayMs = 0,
+  trackMilestones = false
 } = {}) {
   const key = String(orderId || '');
   if (!key) return null;
 
   const order = findOrderRecord(key);
   if (!order) return null;
-  if (getStoredSwiggyTrackingUrl(order)) return null;
+  const isMilestoneTracking = Boolean(trackMilestones || order.injectedSessionStatus === 'ACTIVE');
+  if (getStoredSwiggyTrackingUrl(order) && !isMilestoneTracking && !force) return null;
   if (!orderSwiggyOrderId(order)) return null;
   if (['CANCELLED', 'REJECTED'].includes(String(order.status || ''))) return null;
   // Cancelled/refused orders never get tracking retries.
@@ -331,7 +381,7 @@ export function startOrderTrackingAuto(orderId, {
   // Delivered orders STILL get 1 automatic extraction pass so their Swiggy link
   // is captured even after delivery, without spinning an endless retry ladder
   // once post-delivery scanning has already completed.
-  const isAlreadyDelivered = /delivered/i.test(String(order.liveOrderStatus || ''));
+  const isAlreadyDelivered = isTerminalDeliveryStatus(order.liveOrderStatus);
   if (isAlreadyDelivered && order.trackingLastScanAt && !force) return null;
   const effectiveDelays = isAlreadyDelivered ? [0] : delays;
 
@@ -362,7 +412,8 @@ export function startOrderTrackingAuto(orderId, {
     if (!fresh || ['CANCELLED', 'REJECTED'].includes(String(fresh.status || ''))) {
       return stopOrderTrackingAuto(key);
     }
-    if (getStoredSwiggyTrackingUrl(fresh)) {
+    const liveMilestones = Boolean(trackMilestones || fresh.injectedSessionStatus === 'ACTIVE');
+    if (getStoredSwiggyTrackingUrl(fresh) && !liveMilestones) {
       return stopOrderTrackingAuto(key);
     }
     if (isCancelledOrRefusedStatus(fresh.liveOrderStatus)) {
@@ -371,8 +422,8 @@ export function startOrderTrackingAuto(orderId, {
     state.attempts += 1;
     let result = null;
     try {
-      result = await ensureOrderTracking(key, { budgetMs, deep, force });
-      if (result?.trackingUrl) return stopOrderTrackingAuto(key);
+      result = await ensureOrderTracking(key, { budgetMs, deep, force: liveMilestones ? true : force });
+      if (result?.trackingUrl && !liveMilestones) return stopOrderTrackingAuto(key);
     } catch (err) {
       console.warn('[order-tracking] auto scan failed:', err?.message || err);
     }

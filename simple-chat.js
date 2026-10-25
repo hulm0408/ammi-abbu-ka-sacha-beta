@@ -194,18 +194,38 @@ export function buildSimpleOrderCard(order) {
     const trackingUrl = simpleTrackingUrl(order);
     const swiggyId = String(order?.swiggyOrderId || order?.pendingSwiggyOrderId || order?.id || '').trim();
     const otp = String(order?.deliveryOtp || '').trim();
+    const partnerName = String(order?.deliveryBoyName || '').trim();
+    const partnerPhone = String(order?.deliveryBoyMobile || '').trim();
+    const swiggyPhone = String(order?.orderAccount || order?.selectedAccountPhone || order?.injectedSession?.phone || '').trim();
+    const eta = String(order?.etaMinutes || '').trim();
+    const isDelivered = /delivered/i.test(String(order?.liveOrderStatus || ''));
+    const statusText = String(order?.liveOrderStatus || (isDelivered ? 'Delivered' : 'Order Confirmed')).trim();
+
     const lines = [
-      '✅ <b>Order confirmed</b>',
+      isDelivered ? '🍽 <b>Order Delivered! Enjoy your meal! 🎉</b>' : '✅ <b>Order confirmed</b> — Live Tracking',
       '',
       `▤ <b>${rest}</b>`,
       swiggyId ? `◉ <b>Swiggy ID:</b> <code>${esc(swiggyId)}</code>` : '',
-      order?.liveOrderStatus ? `◉ <b>Status:</b> ${esc(shortText(order.liveOrderStatus, 40))}` : '',
+      `◉ <b>Status:</b> <b>${esc(shortText(statusText, 45))}</b>`,
+      partnerName ? `🛵 <b>Delivery Partner:</b> ${esc(partnerName)}` : '',
+      partnerPhone ? `📞 <b>Call Partner:</b> <code>${esc(partnerPhone)}</code>` : '',
+      swiggyPhone ? `📱 <b>Swiggy Account:</b> <code>${esc(swiggyPhone)}</code>` : '',
       otp ? `🔢 <b>Delivery OTP:</b> <code>${esc(otp)}</code>` : '',
+      eta && !isDelivered ? `⏱ <b>Estimated Time:</b> ${esc(eta)} mins` : '',
+      order?.injectedSessionStatus === 'DELIVERED_RELEASED'
+        ? '🔒 <b>Session:</b> <i>Auto-logged out & returned to vault</i>'
+        : (order?.injectedSession ? '⚡ <b>Session:</b> <i>Injected & live tracking</i>' : ''),
       '',
-      trackingUrl
-        ? '<i>Swiggy live tracking link neeche hai 👇</i>'
-        : '<i>Swiggy link publish hote hi yahan aa jayega.</i>'
-    ].filter((line) => line !== null && line !== undefined);
+      isDelivered
+        ? '<i>Order deliver ho gaya hai. Swiggy session automatically logout hokar vault me export ho chuka hai.</i>'
+        : (trackingUrl
+            ? '<i>Swiggy live tracking link neeche hai 👇</i>'
+            : '<i>Swiggy link publish hote hi yahan aa jayega. Live updates yahan aate rahenge.</i>')
+    ].filter((line) => line !== null && line !== undefined && line !== '');
+
+    if (partnerPhone) {
+      rows.push([{ text: `📞 Call Partner: ${partnerPhone}`, callback_data: `user_call_partner_${order.id}` }]);
+    }
     if (trackingUrl) rows.push([{ text: '🛵 Track on Swiggy', url: trackingUrl, style: 'success' }]);
     rows.push([
       { text: '🔄 Refresh status', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
@@ -277,22 +297,49 @@ export function buildSimpleOrderCard(order) {
 // 3) TRACKING MESSAGE — delivered once, as its own bubble, the moment Swiggy
 //    publishes the real tracking link (works even if the QR message is gone).
 // ---------------------------------------------------------------------------
-export function buildSimpleTrackingMessage(order) {
+export function buildSimpleTrackingMessage(order, { milestoneUpdate = false } = {}) {
   const trackingUrl = simpleTrackingUrl(order);
   const rest = esc(shortText(restaurantName(order), 42));
   const swiggyId = String(order?.swiggyOrderId || order?.pendingSwiggyOrderId || order?.id || '').trim();
   const otp = String(order?.deliveryOtp || '').trim();
-  const text =
-    '🛵 <b>Tracking link aa gaya</b>\n\n' +
-    `▤ <b>${rest}</b>\n` +
-    (swiggyId ? `◉ <b>Order:</b> <code>${esc(swiggyId)}</code>\n` : '') +
-    (order?.liveOrderStatus ? `◉ <b>Status:</b> ${esc(shortText(order.liveOrderStatus, 40))}\n` : '') +
-    (otp ? `🔢 <b>Delivery OTP:</b> <code>${esc(otp)}</code>\n` : '') +
-    (trackingUrl ? '\n<a href="' + esc(trackingUrl) + '">' + esc(trackingUrl) + '</a>' : '');
+  const partnerName = String(order?.deliveryBoyName || '').trim();
+  const partnerPhone = String(order?.deliveryBoyMobile || '').trim();
+  const swiggyPhone = String(order?.orderAccount || order?.selectedAccountPhone || order?.injectedSession?.phone || '').trim();
+  const eta = String(order?.etaMinutes || '').trim();
+  const isDelivered = /delivered/i.test(String(order?.liveOrderStatus || ''));
+  const statusText = String(order?.liveOrderStatus || (isDelivered ? 'Delivered' : 'Order Confirmed')).trim();
+
+  let title = '🛵 <b>Tracking link aa gaya</b>';
+  if (isDelivered) {
+    title = '🍽 <b>Order Delivered Successfully! 🎉</b>';
+  } else if (milestoneUpdate) {
+    title = '🛵 <b>Live Delivery Update</b>';
+  }
+
+  const lines = [
+    title,
+    '',
+    `▤ <b>${rest}</b>`,
+    swiggyId ? `◉ <b>Order:</b> <code>${esc(swiggyId)}</code>` : '',
+    `◉ <b>Status:</b> <b>${esc(shortText(statusText, 45))}</b>`,
+    partnerName ? `🛵 <b>Delivery Partner:</b> ${esc(partnerName)}` : '',
+    partnerPhone ? `📞 <b>Call Partner:</b> <code>${esc(partnerPhone)}</code>` : '',
+    swiggyPhone ? `📱 <b>Swiggy Account:</b> <code>${esc(swiggyPhone)}</code>` : '',
+    otp ? `🔢 <b>Delivery OTP:</b> <code>${esc(otp)}</code>` : '',
+    eta && !isDelivered ? `⏱ <b>Estimated Time:</b> ${esc(eta)} mins` : '',
+    order?.injectedSessionStatus === 'DELIVERED_RELEASED'
+      ? '🔒 <b>Session:</b> <i>Auto-logged out & returned to vault</i>'
+      : (order?.injectedSession ? '⚡ <b>Session:</b> <i>Injected session active</i>' : ''),
+    trackingUrl ? '\n<a href="' + esc(trackingUrl) + '">' + esc(trackingUrl) + '</a>' : ''
+  ].filter((line) => line !== null && line !== undefined && line !== '');
+
   const rows = [];
+  if (partnerPhone) {
+    rows.push([{ text: `📞 Call Partner: ${partnerPhone}`, callback_data: `user_call_partner_${order.id}` }]);
+  }
   if (trackingUrl) rows.push([{ text: '🛵 Track on Swiggy', url: trackingUrl, style: 'success' }]);
   rows.push([{ text: '🏁 Finish', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder, style: 'primary' }]);
-  return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
+  return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
 }
 
 // ---------------------------------------------------------------------------

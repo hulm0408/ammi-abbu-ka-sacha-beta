@@ -45,6 +45,7 @@ import {
   isAccountLoggedInSession,
   findAccountKeyByPhone,
   cleanupDiskFilesForAccount,
+  syncAccountsJsonMirror,
 } from './store.js';
 import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
 import { isMenuText, isCommandText, looksLikePlainOrderId } from './menu-labels.js';
@@ -164,6 +165,7 @@ import {
   startOrderTrackingAuto,
   stopOrderTrackingAuto,
   setOrderTrackingNotifier,
+  setOrderMilestoneNotifier,
   orderPlacedFromPhone,
   isTerminalDeliveryStatus,
   isCancelledOrRefusedStatus,
@@ -866,14 +868,33 @@ export function formatUserOrderCard(order) {
     const otpLine = order.deliveryOtp
       ? `<b>Delivery OTP:</b> <code>${escapeHtml(String(order.deliveryOtp))}</code>`
       : '';
+    const partnerLine = order.deliveryBoyName
+      ? `<b>Delivery Partner:</b> ${escapeHtml(order.deliveryBoyName)}`
+      : '';
+    const partnerPhoneLine = order.deliveryBoyMobile
+      ? `<b>Call Partner:</b> <code>${escapeHtml(order.deliveryBoyMobile)}</code>`
+      : '';
+    const swiggyPhone = order.orderAccount || order.selectedAccountPhone || order.injectedSession?.phone || '';
+    const accountLine = swiggyPhone
+      ? `<b>Swiggy Account:</b> <code>${escapeHtml(swiggyPhone)}</code>`
+      : '';
+    const sessionLine = order.injectedSessionStatus === 'DELIVERED_RELEASED'
+      ? '<b>Session:</b> <i>Auto-logged out & returned to vault</i>'
+      : (order.injectedSession ? '<b>Session:</b> <i>Injected & live tracking</i>' : '');
+
     text += `${heading(`Order #${order.id} — Confirmed`)}\n\n` +
       formatUserOrderCardText(order, false) + '\n\n' +
       section('Order Status', [
         `<b>${escapeHtml(order.liveOrderStatus || 'Processing')}</b>`,
+        partnerLine,
+        partnerPhoneLine,
+        accountLine,
+        sessionLine,
         trackingLine,
         otpLine
       ].filter(Boolean).join('\n')) +
       `\n${field('Support', '@Its_life_001')}`;
+    if (order.deliveryBoyMobile) buttons.push([{ text: `📞 Call Partner: ${order.deliveryBoyMobile}`, callback_data: `user_call_partner_${order.id}` }]);
     if (officialTrackingUrl) buttons.push([{ text: '📍 Open Swiggy Tracking', url: officialTrackingUrl, style: 'success' }]);
     if (order.swiggyPaymentUrl) buttons.push([{ text: '💳 Pay via Swiggy', url: order.swiggyPaymentUrl, style: 'primary' }]);
     buttons.push([
@@ -1864,6 +1885,7 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
     if (Array.isArray(best.availableCoupons) && best.availableCoupons.length > 0) order.availableCoupons = best.availableCoupons;
     if (best.paymentUrl) order.swiggyPaymentUrl = best.paymentUrl;
     applyMaxOfferToOrder(order);
+    injectAccountSessionIntoOrder(order, best.winningKey);
 
     // Keep the order in Boss's approval queue: only the bill/offers were computed.
     order.status = statusBefore;
@@ -10470,6 +10492,9 @@ bot.action(/^simple_confirm_order_([A-Za-z0-9_-]+)$/, async (ctx) => {
     return ctx.answerCbQuery('This order is already closed.', { show_alert: true }).catch(() => {});
   }
 
+  // Inject session into customer order context on bill approval:
+  injectAccountSessionIntoOrder(order);
+
   if (!order.customerConsentGiven) {
     Object.assign(order, buildConsentPatch(order, userId));
     order.simpleChat = true;
@@ -10664,6 +10689,19 @@ bot.action('user_back_to_main', async (ctx) => {
   }
 });
 
+bot.action(/^user_call_partner_(.+)$/, async (ctx) => {
+  const orderId = ctx.match[1];
+  const db = getDb();
+  const order = lookupOrder(db, orderId);
+  if (!order) return ctx.answerCbQuery('Order not found.').catch(() => {});
+  const partnerName = order.deliveryBoyName || 'Delivery Partner';
+  const partnerPhone = order.deliveryBoyMobile || '';
+  if (!partnerPhone) {
+    return ctx.answerCbQuery('Partner contact number is not available yet.', { show_alert: true }).catch(() => {});
+  }
+  await ctx.answerCbQuery(`🛵 ${partnerName}\n📞 Call: ${partnerPhone}`, { show_alert: true }).catch(() => {});
+});
+
 bot.action(/^user_refresh_status_(.+)$/, async (ctx) => {
   const orderId = ctx.match[1];
   const db = getDb();
@@ -10671,6 +10709,15 @@ bot.action(/^user_refresh_status_(.+)$/, async (ctx) => {
 
   if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId)).catch(() => {}); }
   await ctx.answerCbQuery('Status Refreshed ↻').catch(() => {});
+
+  // If live order has a Swiggy order ID and is not terminal, trigger an active status update scan:
+  if (order.swiggyOrderId && !isTerminalDeliveryStatus(order.liveOrderStatus)) {
+    ensureOrderTracking(order.id, { budgetMs: 12000, deep: true, force: true }).then(() => {
+      const refreshed = getDb().orders?.[orderId];
+      if (refreshed) updateOrderCards(refreshed).catch(() => {});
+    }).catch(() => {});
+  }
+
   const card = customerOrderCard(order);
   try {
     await ctx.editMessageText(card.text, { parse_mode: 'HTML', ...card.keyboard });
@@ -11690,6 +11737,7 @@ async function approveUserOrderBillActionInner(uidStr, orderId) {
     order.billApprovedByUser = true;
     order.billApprovedAt = new Date().toISOString();
   }
+  injectAccountSessionIntoOrder(order);
   order.status = 'PAYMENT_PENDING';
   order.uxStage = 'SCREEN_04_PAYMENT_PENDING';
   saveDb(db);
@@ -11771,6 +11819,138 @@ async function rejectUserOrderBillAction(uidStr, orderId) {
   return { ok: true, message: 'Order returned to your Telegram order screen so you can edit the Cart or Address.' };
 }
 
+
+// ---------------------------------------------------------------------------
+// DELEGATED CUSTOMER SESSION & LIVE DELIVERY MILESTONE ENGINE
+// ---------------------------------------------------------------------------
+// When Abbu/Ammi (or any customer) approves the bill, the selected Swiggy
+// account JSON session is dedicated to their order context (`injectedSession`)
+// so orders don't burden a single central state. Live delivery milestones
+// (Heading to restaurant, Delivery partner name, Call partner, Swiggy order
+// account, OTP, ETA, Tracking link) are streamed directly to the customer in
+// Telegram. Once delivery is successful, the session is auto-logged out from
+// the order context and auto-exported back into Boss's central account vault.
+
+export function injectAccountSessionIntoOrder(order, preferredAccKey = null) {
+  if (!order) return null;
+  const db = getDb();
+  const accKey = preferredAccKey || order.selectedAccount || getActiveOrderAccountKey();
+  const acc = db.config?.accounts?.[accKey] || null;
+  const phone = String(acc?.phone || acc?.mobile || order.orderAccount || order.selectedAccountPhone || '').trim();
+  const name = String(acc?.name || order.selectedAccountName || 'Swiggy Account').trim();
+  const hasAuth = Boolean(acc && (acc.token || acc.tid || acc.cookies || acc._session_tid));
+
+  order.injectedSession = {
+    accountKey: accKey || (phone ? `acc_${phone}` : 'unknown'),
+    phone,
+    name,
+    hasAuth,
+    system: 'CUSTOMER_SESSION',
+    injectedAt: new Date().toISOString()
+  };
+  order.injectedSessionStatus = 'ACTIVE';
+
+  if (phone) {
+    if (!order.orderAccount) order.orderAccount = phone;
+    if (!order.selectedAccountPhone) order.selectedAccountPhone = phone;
+  }
+  if (accKey && !order.selectedAccount) {
+    order.selectedAccount = accKey;
+  }
+  return order.injectedSession;
+}
+
+export function releaseAndExportInjectedSessionOnDelivery(orderId) {
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  if (!order) return false;
+
+  const accKey = order.selectedAccount || order.injectedSession?.accountKey;
+  order.injectedSessionStatus = 'DELIVERED_RELEASED';
+  order.injectedSessionReleasedAt = new Date().toISOString();
+
+  if (accKey) {
+    try { releaseSwiggyAccountReservation(accKey, order.id); } catch {}
+    const acc = db.config?.accounts?.[accKey];
+    if (acc) {
+      acc.totalOrdersCount = (Number(acc.totalOrdersCount) || 0) + 1;
+      acc.lastOrderTime = new Date().toISOString();
+      acc.isZeroOrderAccount = false;
+      db.config.accounts[accKey] = acc;
+    }
+  }
+
+  saveDb(db);
+  try {
+    syncAccountsJsonMirror(db);
+  } catch (err) {
+    console.warn('[SessionExport] syncAccountsJsonMirror failed:', err?.message || err);
+  }
+  return true;
+}
+
+const customerMilestoneInFlight = new Set();
+
+export async function pushCustomerLiveDeliveryMilestone(order, { scan = null, force = false } = {}) {
+  const orderId = String(order?.id || '');
+  if (!orderId) return false;
+  if (customerMilestoneInFlight.has(orderId)) return false;
+  customerMilestoneInFlight.add(orderId);
+
+  try {
+    const db = getDb();
+    const fresh = db.orders?.[orderId] || order;
+    if (['CANCELLED', 'REJECTED'].includes(String(fresh.status || ''))) return false;
+
+    const isDelivered = /delivered/i.test(String(fresh.liveOrderStatus || ''));
+    if (isDelivered && fresh.injectedSessionStatus === 'ACTIVE') {
+      releaseAndExportInjectedSessionOnDelivery(orderId);
+      fresh.injectedSessionStatus = 'DELIVERED_RELEASED';
+    }
+
+    const chatId = String(
+      fresh.userChatId ||
+      (isBoss(Number(fresh.userId || 0)) ? fresh.fwdSenderUserId : fresh.userId) ||
+      fresh.fwdSenderUserId ||
+      ''
+    ).trim();
+
+    if (!chatId || isBoss(Number(chatId))) return false;
+
+    const milestoneSnapshot = [
+      fresh.liveOrderStatus || '',
+      fresh.deliveryBoyName || '',
+      fresh.deliveryBoyMobile || '',
+      fresh.deliveryOtp || '',
+      getStoredSwiggyTrackingUrl(fresh) || '',
+      fresh.injectedSessionStatus || ''
+    ].join('|');
+
+    if (!force && fresh.customerLastMilestoneSent === milestoneSnapshot) {
+      return false;
+    }
+
+    const msg = buildSimpleTrackingMessage(fresh, { milestoneUpdate: true });
+    await bot.telegram.sendMessage(chatId, msg.text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...msg.keyboard
+    });
+
+    const afterDb = getDb();
+    if (afterDb.orders?.[orderId]) {
+      afterDb.orders[orderId].customerLastMilestoneSent = milestoneSnapshot;
+      afterDb.orders[orderId].customerLastMilestoneSentAt = new Date().toISOString();
+      saveDb(afterDb);
+    }
+    return true;
+  } catch (err) {
+    console.warn('[CustomerMilestone] Push failed:', err?.message || err);
+    return false;
+  } finally {
+    customerMilestoneInFlight.delete(orderId);
+  }
+}
 
 // Helper: auto-edit the customer payment message in-place to inject tracking link/OTP after Swiggy payment (user request: payment message edit hokar usme link ajaye)
 // SIMPLE MODE TRACKING: the customer always gets ONE chat bubble with the real
@@ -12005,8 +12185,9 @@ async function checkOrderPaidStatusOnly(orderId) {
 
   // Auto-edit the customer's payment QR message in-place to inject tracking link/OTP (Swiggy payment hote hi edit)
   try { await tryEditCustomerPaymentMessageWithTracking(order); } catch {}
-  // Simple chat: also drop ONE clean tracking bubble with a tap-to-track button.
+  // Simple chat: also drop clean tracking bubble with a tap-to-track button.
   try { await sendSimpleTrackingOnce(order); } catch {}
+  try { await pushCustomerLiveDeliveryMilestone(order, { force: true }); } catch {}
 
   const firstBossChatId = db.config?.bossIds?.[0] || Number(process.env.BOSS_ID || 0);
   await sendOrderDeliveryInfoNotice(bot.telegram, firstBossChatId, order);
@@ -12016,9 +12197,9 @@ async function checkOrderPaidStatusOnly(orderId) {
     orderId: order.id,
     formatOrderBodyFn: formatUserOrderCardText
   });
-  // Payment is confirmed — fetch the real Swiggy share link automatically.
+  // Payment is confirmed — fetch the real Swiggy share link & live delivery milestones automatically.
   // No button, no manual "Extract Tracking Link" needed.
-  try { startOrderTrackingAuto(order.id, { budgetMs: 15000 }); } catch {}
+  try { startOrderTrackingAuto(order.id, { budgetMs: 15000, trackMilestones: true, force: true }); } catch {}
 
   const trackingLink = getStoredSwiggyTrackingUrl(order);
   return {
@@ -12547,6 +12728,17 @@ async function startBotWithRetry() {
 async function pushTrackingReadyNotice(order, { scan } = {}) {
   if (!order) return;
   const url = getStoredSwiggyTrackingUrl(order);
+
+  // Deliver customer live delivery milestone update (Heading to restaurant, Delivery partner name, Call partner, Swiggy order phone, OTP, Delivered):
+  try {
+    await pushCustomerLiveDeliveryMilestone(order, { scan });
+  } catch (e) {
+    console.warn('[pushCustomerLiveDeliveryMilestone] error:', e?.message || e);
+  }
+
+  // Update order cards in place so customer and boss card show latest status/rider/OTP:
+  try { await updateOrderCards(order); } catch {}
+
   if (!url) return;
   const db = getDb();
 
@@ -12630,6 +12822,7 @@ async function pushTrackingReadyNotice(order, { scan } = {}) {
 }
 
 setOrderTrackingNotifier(pushTrackingReadyNotice);
+setOrderMilestoneNotifier(pushCustomerLiveDeliveryMilestone);
 
 // After a restart, resume tracking for recent confirmed orders that still have
 // no share link — "kal raat se tracking nahi mila" never needs a manual tap.
