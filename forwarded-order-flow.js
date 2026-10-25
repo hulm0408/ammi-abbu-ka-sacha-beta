@@ -98,6 +98,7 @@ import {
   releaseSwiggyAccountReservation,
   applyLiveFreeCashRelock,
   applyLiveCouponToOrder,
+  adjustOrderItemQuantity,
   clearCouponTrialCache,
   invalidateAccountOrderProfileCache,
   getSwiggySessionAuth,
@@ -3341,6 +3342,41 @@ export function registerForwardedOrderHandlers(bot, {
 
   const money = (n) => `₹${Math.round(Number(n || 0) * 100) / 100}`;
 
+  // ---- USER CONTROLS (ON/OFF switches) --------------------------------------
+  // Every switch below is a real button and a real behaviour change: coupon
+  // engine, free-cash relock, Swiggy One auto-add and item offers can each be
+  // turned off by the BOSS or the CUSTOMER from the same panel.
+  const CONTROL_KEYS = ['coupon', 'freeCash', 'swiggyOne', 'itemOffers'];
+  const CONTROL_META = {
+    coupon: { on: '🎟 Coupon', off: '🎟 Coupon' },
+    freeCash: { on: '💸 Free cash', off: '💸 Free cash' },
+    swiggyOne: { on: '⭐ Swiggy One', off: '⭐ Swiggy One' },
+    itemOffers: { on: '🏷 Item offers', off: '🏷 Item offers' }
+  };
+  const orderControls = (order) => {
+    const raw = (order && typeof order.controls === 'object' && order.controls) ? order.controls : {};
+    const out = {};
+    for (const key of CONTROL_KEYS) out[key] = raw[key] !== false;
+    return out;
+  };
+  const controlStateLabel = (order, key) => {
+    const on = orderControls(order)[key];
+    return `${on ? '✅' : '⛔'} ${CONTROL_META[key].on}: ${on ? 'ON' : 'OFF'}`;
+  };
+  const buildControlRows = (order) => {
+    const id = order.id;
+    return [
+      [
+        Markup.button.callback(controlStateLabel(order, 'coupon'), `fwd_tgl_${id}_coupon`),
+        Markup.button.callback(controlStateLabel(order, 'freeCash'), `fwd_tgl_${id}_freeCash`)
+      ],
+      [
+        Markup.button.callback(controlStateLabel(order, 'swiggyOne'), `fwd_tgl_${id}_swiggyOne`),
+        Markup.button.callback(controlStateLabel(order, 'itemOffers'), `fwd_tgl_${id}_itemOffers`)
+      ]
+    ];
+  };
+
   const panelCouponList = (order) => {
     const list = Array.isArray(order?.availableCoupons) ? order.availableCoupons : [];
     const active = String(order?.couponCode || '').toUpperCase();
@@ -3369,15 +3405,18 @@ export function registerForwardedOrderHandlers(bot, {
     lines.push(`▪ <b>Payable:</b> <b>${money(order.finalPayable)}</b>`);
     if (order.selectedAccount) lines.push(`▪ <b>Swiggy ID:</b> <code>${escapeHtml(String(order.orderAccount || order.selectedAccount))}</code>`);
     if (order.address) lines.push(`▪ <b>Address:</b> ${escapeHtml(String(order.address).slice(0, 70))}`);
-    lines.push('', `<i>Har button turant kaam karta hai — bill dono (boss + customer) me update hota hai.</i>`);
+    const ctl = orderControls(order);
+    lines.push('', `⚙ <b>Switches:</b> Coupon ${ctl.coupon ? 'ON' : 'OFF'} · Free cash ${ctl.freeCash ? 'ON' : 'OFF'} · Swiggy One ${ctl.swiggyOne ? 'ON' : 'OFF'} · Item offers ${ctl.itemOffers ? 'ON' : 'OFF'}`);
+    lines.push(`<i>Har button turant kaam karta hai — bill dono (boss + customer) me update hota hai.</i>`);
     return lines;
   };
 
   const buildPanelKeyboard = (order) => {
     const id = order.id;
     return Markup.inlineKeyboard([
+      ...buildControlRows(order),
       [
-        Markup.button.callback('✎ Items Adjust', `fwd_panel_items_${id}`),
+        Markup.button.callback('✎ Items / Qty +−', `fwd_panel_items_${id}`),
         Markup.button.callback('🔗 Import Cart Link', `fwd_panel_import_${id}`)
       ],
       [
@@ -3497,34 +3536,162 @@ export function registerForwardedOrderHandlers(bot, {
     await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, fresh, freshDb, formatOrderBodyFn, { includeQrDelete: false }).catch(() => {});
   });
 
-  // ---- 1) ITEMS ADJUST -------------------------------------------------------
+  // ---- 1) ITEMS / QUANTITY (+ / − / remove) — real buttons -------------------
+  const buildItemQuantityView = (order) => {
+    const items = Array.isArray(order.items) ? order.items : [];
+    const lines = [`✎ <b>ITEMS / QUANTITY — #${escapeHtml(String(order.id))}</b>`, ''];
+    if (items.length === 0) {
+      lines.push('<i>Cart khaali hai — 🔗 Import Cart Link se cart laayein.</i>');
+    } else {
+      items.slice(0, 12).forEach((it, i) => {
+        const qty = Number(it.qty || it.quantity || 1);
+        lines.push(`${i + 1}. ${escapeHtml(String(it.name || it.itemId || 'Item'))} × <b>${qty}</b> — ${money(Number(it.price || 0) * qty)}`);
+      });
+      if (items.length > 12) lines.push(`<i>… +${items.length - 12} more (pehle 12 hi adjust ho sakte hain)</i>`);
+      lines.push('', `▪ <b>Items total:</b> ${money(order.itemTotal)}`);
+      lines.push(`▪ <b>Payable:</b> <b>${money(order.finalPayable)}</b>`);
+      lines.push('', '<i>➖ / ➕ seedha Swiggy cart me lagta hai. 0 par 🗑 item hat jayega. Naya QR dobara banega.</i>');
+    }
+    const rows = [];
+    items.slice(0, 12).forEach((it, i) => {
+      const label = String(it.name || it.itemId || 'Item').slice(0, 14);
+      const qty = Number(it.qty || it.quantity || 1);
+      rows.push([
+        Markup.button.callback(`➖ ${label}`, `fwd_qty_${order.id}_${i}_minus`),
+        Markup.button.callback(`${qty}×`, `fwd_panel_items_${order.id}`),
+        Markup.button.callback(`➕`, `fwd_qty_${order.id}_${i}_plus`)
+      ]);
+      rows.push([
+        Markup.button.callback(`🗑 Remove ${label}`, `fwd_qty_${order.id}_${i}_remove`)
+      ]);
+    });
+    rows.push([Markup.button.callback('🔗 Import Cart Link', `fwd_panel_import_${order.id}`)]);
+    rows.push([Markup.button.callback('↻ Cart Refresh', `fwd_panel_cartrefresh_${order.id}`)]);
+    rows.push([Markup.button.callback('‹ Panel', `fwd_panel_${order.id}`)]);
+    return { text: lines.join('\n'), keyboard: Markup.inlineKeyboard(rows) };
+  };
+
   bot.action(/^fwd_panel_items_([A-Za-z0-9_]+)$/, async (ctx) => {
     const order = loadOrderForPanel(ctx, ctx.match[1]);
     if (!order) return;
-    await ctx.answerCbQuery('✎ Items').catch(() => {});
-    const items = Array.isArray(order.items) ? order.items : [];
-    const lines = [`✎ <b>ITEMS ADJUST — #${escapeHtml(String(order.id))}</b>`, ''];
-    if (items.length === 0) {
-      lines.push('<i>Abhi koi item nahi mila.</i>');
-    } else {
-      items.slice(0, 14).forEach((it, i) => {
-        lines.push(`${i + 1}. ${escapeHtml(String(it.name || it.itemId || 'Item'))} × ${Number(it.qty || it.quantity || 1)} — ${money(it.price)}`);
-      });
-      if (items.length > 14) lines.push(`<i>… +${items.length - 14} more</i>`);
-    }
-    lines.push('');
-    lines.push('<b>Items badalne ke 2 tareeke:</b>');
-    lines.push('1) Swiggy app me cart edit karke <b>🔗 Import Cart Link</b> — naya cart link paste karein.');
-    lines.push('2) Ya isi cart ka link dobara import karke <b>↻ Cart Refresh</b> (Swiggy se latest items pull honge).');
-    await ctx.reply(lines.join('\n'), {
+    await ctx.answerCbQuery('✎ Items / Qty').catch(() => {});
+    const view = buildItemQuantityView(order);
+    await ctx.reply(view.text, {
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('🔗 Import Cart Link', `fwd_panel_import_${order.id}`)],
-        [Markup.button.callback('↻ Cart Refresh', `fwd_panel_cartrefresh_${order.id}`)],
-        [Markup.button.callback('‹ Panel', `fwd_panel_${order.id}`)]
-      ])
+      ...view.keyboard
     }).catch(() => {});
+  });
+
+  // ➕ / ➖ / 🗑 — one tap = one real Swiggy cart change.
+  bot.action(/^fwd_qty_([A-Za-z0-9_]+)_(\d{1,2})_(plus|minus|remove)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    const index = Number(ctx.match[2]);
+    const action = ctx.match[3];
+    if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
+      return ctx.answerCbQuery('Customer approval lock hai — pehle naya bill banayein.', { show_alert: true });
+    }
+    const { key: accKey, acc } = panelAccount(order);
+    if (!acc || !acc.isLoggedIn) {
+      return ctx.answerCbQuery('Koi logged-in Swiggy ID nahi — pehle ID select karein.', { show_alert: true });
+    }
+    const item = (order.items || [])[index];
+    if (!item) return ctx.answerCbQuery('Item cart me nahi mila (refresh karein).', { show_alert: true });
+    const itemName = String(item.name || item.itemId || 'Item').slice(0, 30);
+    await ctx.answerCbQuery(action === 'plus' ? `➕ ${itemName}` : action === 'minus' ? `➖ ${itemName}` : `🗑 ${itemName}`).catch(() => {});
+    const wait = await ctx.reply('◷ <i>Swiggy cart update…</i>', { parse_mode: 'HTML' }).catch(() => null);
+    try {
+      const before = JSON.stringify((order.items || []).map((it) => [it.name, it.qty || it.quantity]));
+      const res = await withSwiggyAccountLock(accKey, () => adjustOrderItemQuantity(acc, order, {
+        index,
+        delta: action === 'plus' ? 1 : action === 'minus' ? -1 : 0,
+        setQty: action === 'remove' ? 0 : null
+      }));
+      if (!res?.success) throw new Error(res?.error || 'Cart update fail');
+      upsertOrder(order.id, order);
+      if (wait) { try { await ctx.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {} }
+      const note = action === 'remove'
+        ? `🗑 <b>${escapeHtml(itemName)}</b> cart se hata diya — naya bill dono ko bhej diya.`
+        : (res.changed === false
+          ? `ℹ️ <b>${escapeHtml(itemName)}</b> ki quantity pehle se wahi hai.`
+          : `${action === 'plus' ? '➕' : '➖'} <b>${escapeHtml(itemName)}</b> → ab <b>${Number(res.quantity) || 0}×</b> — naya bill dono ko bhej diya.`);
+      console.log(`[PanelQty] ${order.id} ${itemName} ${action}: ${before} -> ${JSON.stringify((order.items || []).map((it) => [it.name, it.qty || it.quantity]))}`);
+      if (res.empty) {
+        // Empty cart = no bill to show. Keep COLLECTING and ask for a new cart.
+        order.cardStage = 'COLLECTING';
+        order.items = [];
+        upsertOrder(order.id, order);
+        const emptyNote = '🧹 <b>Cart khaali ho gaya</b> — 🔗 Import Cart Link se naya cart bhejein.';
+        await sendPanelToBoth(
+          ctx,
+          order,
+          panelSummaryLines(order).join('\n') + '\n\n' + emptyNote,
+          buildPanelKeyboard(order)
+        );
+        await ctx.reply(`${note}\n${emptyNote}`, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }).catch(() => {});
+        return;
+      }
+      const latest = await refreshBillAndNotifyBoth(ctx, order, note);
+      await sendPanelToBoth(ctx, latest, buildItemQuantityView(latest).text, buildItemQuantityView(latest).keyboard);
+    } catch (err) {
+      if (wait) { try { await ctx.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {} }
+      await ctx.reply(`❌ <b>Quantity change nahi hua:</b> ${escapeHtml(String(err?.message || err).slice(0, 180))}\n<i>Cart refresh karke dobara try karein.</i>`, { parse_mode: 'HTML' }).catch(() => {});
+    }
+  });
+
+  // ---- 1b) ON/OFF SWITCHES ---------------------------------------------------
+  bot.action(/^fwd_tgl_([A-Za-z0-9_]+)_(coupon|freeCash|swiggyOne|itemOffers)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    const key = ctx.match[2];
+    if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
+      return ctx.answerCbQuery('Customer approval lock hai — pehle naya bill banayein.', { show_alert: true });
+    }
+    const current = orderControls(order);
+    const nextValue = !current[key];
+    const label = CONTROL_META[key].on;
+    await ctx.answerCbQuery(`${nextValue ? '✅' : '⛔'} ${label} ${nextValue ? 'ON' : 'OFF'}`).catch(() => {});
+    order.controls = { ...current, [key]: nextValue };
+    const notes = [`${nextValue ? '✅' : '⛔'} <b>${label} ${nextValue ? 'ON' : 'OFF'}</b> — dono taraf lag gaya.`];
+
+    const { key: accKey, acc } = panelAccount(order);
+    try {
+      // Turning the coupon switch OFF must really remove the live coupon.
+      if (key === 'coupon' && !nextValue && order.couponCode && acc && acc.isLoggedIn) {
+        const removed = await withSwiggyAccountLock(accKey, () =>
+          applyLiveCouponToOrder(acc, order, 'REMOVE', { fastSingleEngine: false })
+        ).catch(() => null);
+        if (removed?.items?.length) {
+          Object.assign(order, {
+            couponCode: removed.couponCode || null,
+            discountAmount: Number(removed.discountAmount || 0),
+            finalPayable: Number(removed.finalPayable || order.finalPayable),
+            itemTotal: Number(removed.itemTotal || order.itemTotal),
+            campaignFreeCash: Number(removed.campaignFreeCash || 0),
+            walletSplitPayAmount: Number(removed.walletSplitPayAmount || 0)
+          });
+          notes.push('🎟 Live coupon hata diya gaya.');
+        } else {
+          notes.push('⚠️ Swiggy ne coupon remove confirm nahi kiya — bill refresh karke check karein.');
+        }
+      }
+      // Turning free cash OFF with money already applied: state it plainly.
+      if (key === 'freeCash' && !nextValue) {
+        notes.push('💸 Aage free-cash relock nahi hoga. Jo credit Swiggy ne already diya hai wo bill me wahi rahega.');
+      }
+      // Any switch change can move the total → old QR is stale.
+      order.pendingSwiggyUpiUri = '';
+      order.pendingSwiggyOrderId = '';
+      order.pendingSwiggyPaasId = '';
+      if (order.cardStage === 'QR_GENERATED') order.cardStage = 'BILL_READY';
+      upsertOrder(order.id, order);
+      const latest = await refreshBillAndNotifyBoth(ctx, order, notes.join('\n'));
+      await sendPanelToBoth(ctx, latest, panelSummaryLines(latest).join('\n'), buildPanelKeyboard(latest));
+    } catch (err) {
+      upsertOrder(order.id, order);
+      await ctx.reply(`⚠️ <b>Switch update:</b> ${escapeHtml(String(err?.message || err).slice(0, 160))}`, { parse_mode: 'HTML' }).catch(() => {});
+    }
   });
 
   // ---- 2) IMPORT CART LINK (text input) -------------------------------------

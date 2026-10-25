@@ -6014,6 +6014,11 @@ export async function reapplyWinningCouponAfterTrials({
 export async function syncGroupCartAndCheckoutForAccount(account, order, options = {}) {
   const { captureScreenshot = false, skipFreeCashRelock = false } = options;
   if (!account) return { success: false, error: 'No account provided' };
+  // USER CONTROLS (per order, set from the 🛠 panel buttons): coupon / free cash /
+  // Swiggy One / item offers can each be switched OFF by the boss OR the customer.
+  // Everything below is honest: an OFF switch means the bot really does not do it.
+  const userControls = (order && typeof order.controls === 'object' && order.controls) ? order.controls : {};
+  const controlOn = (key) => userControls[key] !== false;
 
   const cleanCookies = cleanSwiggyCookieString(account.cookies || '', account);
   if (!cleanCookies && !account.tid && !account.jwtTid && !account.token) {
@@ -6248,7 +6253,12 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       }
     }
 
-    const syncableItems = (order.items || []).filter(it => it.itemId || it.menu_item_id);
+    const syncableItems = (order.items || [])
+      .filter(it => it.itemId || it.menu_item_id)
+      // "Item offers OFF" → push the cart WITHOUT `offer_ids` so Swiggy really
+      // charges the plain menu price (an OFF switch that still applied offers
+      // would be a lie).
+      .map(it => (controlOn('itemOffers') ? it : { ...it, offer_ids: [], item_offer_cart_meta: '' }));
     // Do NOT skip cart update if incoming items carry `offer_ids` that weren't applied on `liveCart` yet!
     const incomingHasItemOffers = syncableItems.some(si => Array.isArray(si.offer_ids) && si.offer_ids.length > 0);
     const sameCartAlreadyLoaded = Boolean(
@@ -6326,6 +6336,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     // Whenever `deliveryFee > 0` on a `NOT_SUPER` account (e.g. `₹33.60–₹44.10` delivery fee), adds Swiggy One Lite (`plan_id: "773"` or dynamic v3 `plan_id`)
     // directly over pure Native Android HTTP (`~220ms`, `0` Chromium launches!) and strictly keeps it ONLY when `withSub.finalPayable < preOneTotal`!
     if (
+      controlOn('swiggyOne') &&
       restaurantId &&
       syncableItems.length > 0 &&
       liveCart &&
@@ -6572,7 +6583,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       return (candidate.totalSavings || 0) > (incumbent.totalSavings || 0);
     };
 
-    if (liveCart && liveCart.items?.length > 0 && (!restaurantId || String(liveCart.restaurantId) === String(restaurantId))) {
+    if (controlOn('coupon') && liveCart && liveCart.items?.length > 0 && (!restaurantId || String(liveCart.restaurantId) === String(restaurantId))) {
       let bestCartState = liveCart;
       let lastLiveCartState = liveCart;
       let bestCode = liveCart.couponCode || '';
@@ -6702,7 +6713,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       // Probe scans (BEST-account comparison) skip this: the winner applies it
       // once in `applyLiveFreeCashRelock`, so 3 parallel probes + waves never
       // fire extra cart pushes or extra offer claims.
-      if (!skipFreeCashRelock && freeCashNow === 0 && liveCart?.items?.length > 0 && restaurantId && targetAddressId) {
+      if (!skipFreeCashRelock && controlOn('freeCash') && freeCashNow === 0 && liveCart?.items?.length > 0 && restaurantId && targetAddressId) {
         // By now the wave-1 claim has almost always settled (it is cached for 30 min
         // after a success), so this await costs ~0ms; the 2000ms cap only protects a
         // genuinely cold claim from slowing the scan down.
@@ -6875,6 +6886,157 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
 // ---------------------------------------------------------------------------
 const swiggyAccountLocks = new Map();
 const heldAccountLocksAls = new AsyncLocalStorage();
+
+// ---------------------------------------------------------------------------
+// USER ITEM CONTROLS (➕ / ➖ / 🗑) — a real quantity change, pushed to Swiggy.
+// The boss AND the customer both get these buttons in the 🛠 Offer & Cash Panel.
+// Returns honest results: the order object is only mutated when Swiggy accepted
+// the change (a fake "2x kar diya" on screen would be worse than an error).
+// ---------------------------------------------------------------------------
+export async function adjustOrderItemQuantity(account, order, { index = -1, itemId = null, delta = 0, setQty = null } = {}) {
+  if (!account) return { success: false, code: 'NO_ACCOUNT', error: 'Koi logged-in Swiggy ID nahi.' };
+  if (!order) return { success: false, code: 'NO_ORDER', error: 'Order nahi mila.' };
+  const items = Array.isArray(order.items) ? order.items.map((it) => ({ ...it })) : [];
+  if (items.length === 0) {
+    return { success: false, code: 'EMPTY_CART', error: 'Cart khaali hai — pehle 🔗 Import Cart Link se cart laayein.' };
+  }
+  let idx = Number.isInteger(Number(index)) && Number(index) >= 0 && Number(index) < items.length ? Number(index) : -1;
+  if (idx < 0 && itemId) {
+    idx = items.findIndex((it) => String(it.itemId || it.menu_item_id || '') === String(itemId));
+  }
+  if (idx < 0) return { success: false, code: 'ITEM_NOT_FOUND', error: 'Ye item cart me nahi mila (cart refresh karein).' };
+
+  const target = items[idx];
+  const currentQty = Math.max(1, Number(target.qty || target.quantity || 1));
+  const wantedQty = (setQty !== null && setQty !== undefined && Number.isFinite(Number(setQty)))
+    ? Math.trunc(Number(setQty))
+    : currentQty + Math.trunc(Number(delta) || 0);
+  if (!Number.isFinite(wantedQty) || wantedQty < 0) {
+    return { success: false, code: 'BAD_QTY', error: 'Quantity galat hai.' };
+  }
+  if (wantedQty > 30) return { success: false, code: 'QTY_LIMIT', error: 'Ek item ki max quantity 30 hai.' };
+  if (wantedQty === currentQty) {
+    return { success: true, changed: false, quantity: currentQty, items: order.items, code: 'UNCHANGED' };
+  }
+
+  const nextItems = items.slice();
+  if (wantedQty === 0) {
+    nextItems.splice(idx, 1);
+  } else {
+    const unit = Number(target.price || 0);
+    nextItems[idx] = {
+      ...target,
+      qty: wantedQty,
+      quantity: wantedQty,
+      lineTotal: unit > 0 ? Math.round(unit * wantedQty * 100) / 100 : Number(target.lineTotal || 0)
+    };
+  }
+
+  const controls = (order && typeof order.controls === 'object' && order.controls) ? order.controls : {};
+  const lat = String(order.addressDetails?.lat || '');
+  const lng = String(order.addressDetails?.lng || '');
+
+  // Removing the last item = empty cart. Flush instead of pushing an empty list.
+  if (nextItems.length === 0) {
+    const flush = await swiggyCartFlush(account, { lat: lat || undefined, lng: lng || undefined }).catch(() => null);
+    if (!flush?.json || Number(flush.json.statusCode) !== 0) {
+      return { success: false, code: 'FLUSH_FAILED', error: 'Swiggy ne cart clear nahi kiya — dobara try karein.' };
+    }
+    Object.assign(order, {
+      items: [],
+      itemTotal: 0,
+      subtotal: 0,
+      finalPayable: 0,
+      couponCode: null,
+      discountAmount: 0,
+      campaignFreeCash: 0,
+      walletSplitPayAmount: 0,
+      availableCoupons: [],
+      pendingSwiggyUpiUri: '',
+      pendingSwiggyOrderId: '',
+      pendingSwiggyPaasId: '',
+      cardStage: 'COLLECTING'
+    });
+    return { success: true, changed: true, empty: true, quantity: 0, items: [], removedItem: String(target.name || target.itemId || '') };
+  }
+
+  const cartItems = buildSwiggyCartItemsPayload(
+    controls.itemOffers === false ? nextItems.map((it) => ({ ...it, offer_ids: [], item_offer_cart_meta: '' })) : nextItems
+  );
+  const updateRes = await swiggyCartUpdate(
+    account,
+    {
+      restaurantId: String(order.restaurantId || ''),
+      address_id: String(order.addressDetails?.id || ''),
+      couponCode: controls.coupon === false ? '' : String(order.couponCode || ''),
+      cartItems,
+      mealItems: [],
+      subscriptionItems: controls.swiggyOne === false
+        ? []
+        : (Array.isArray(order.activeSubscriptionItems) ? order.activeSubscriptionItems : [])
+    },
+    {
+      lat,
+      lng,
+      address: order.addressDetails?.address || order.address || '',
+      area: order.addressDetails?.area || '',
+      flushFirst: false,
+      timeoutMs: 12000
+    }
+  ).catch(() => null);
+
+  const statusCode = Number(updateRes?.json?.statusCode);
+  if (!updateRes?.json || statusCode !== 0) {
+    return {
+      success: false,
+      code: 'CART_UPDATE_FAILED',
+      error: String(updateRes?.json?.statusMessage || 'Swiggy ne cart update reject kiya').slice(0, 160)
+    };
+  }
+
+  const parsed = updateRes?.json?.data ? parseDapiCartPayload(updateRes.json.data) : null;
+  if (parsed && Array.isArray(parsed.items) && parsed.items.length > 0) {
+    Object.assign(order, {
+      items: parsed.items,
+      itemTotal: Number(parsed.itemTotal || 0) || order.itemTotal,
+      subtotal: Number(parsed.subtotal || 0) || order.subtotal,
+      finalPayable: Number(parsed.finalPayable || 0) || order.finalPayable,
+      couponCode: parsed.couponCode || (controls.coupon === false ? null : order.couponCode || null),
+      discountAmount: Number(parsed.discountAmount || 0),
+      campaignFreeCash: Number(parsed.campaignFreeCash || 0),
+      walletSplitPayAmount: Number(parsed.walletSplitPayAmount || 0),
+      deliveryFee: Number(parsed.deliveryFee || order.deliveryFee || 0),
+      taxesAndCharges: Number(parsed.taxesAndCharges || order.taxesAndCharges || 0),
+      cartUpdatedAt: new Date().toISOString()
+    });
+  } else {
+    // Swiggy accepted the update but returned no cart body — keep the local
+    // quantities so the bill is never blank, and flag it for the next refresh.
+    const localTotal = nextItems.reduce((sum, it) => sum + (Number(it.price || 0) * Number(it.qty || it.quantity || 1)), 0);
+    Object.assign(order, {
+      items: nextItems,
+      itemTotal: Math.round(localTotal * 100) / 100,
+      subtotal: Math.round(localTotal * 100) / 100,
+      pendingPriceRefresh: true,
+      cartUpdatedAt: new Date().toISOString()
+    });
+  }
+
+  // Any quantity change invalidates a QR that was built for the old price.
+  order.pendingSwiggyUpiUri = '';
+  order.pendingSwiggyOrderId = '';
+  order.pendingSwiggyPaasId = '';
+  if (order.cardStage === 'QR_GENERATED') order.cardStage = 'BILL_READY';
+
+  return {
+    success: true,
+    changed: true,
+    quantity: wantedQty,
+    itemName: String(target.name || target.itemId || ''),
+    removedItem: wantedQty === 0 ? String(target.name || target.itemId || '') : '',
+    items: order.items
+  };
+}
 
 export function resolveAccountLockId(accountOrKey) {
   if (!accountOrKey) return 'global_fallback';

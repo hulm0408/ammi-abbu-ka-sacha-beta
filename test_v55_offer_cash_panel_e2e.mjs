@@ -344,8 +344,8 @@ console.log('\n━━━ Scenario 5: item adjust view + wiring ━━━');
   seed();
   sent.length = 0;
   await click(`fwd_panel_items_${ORDER_ID}`, BOSS_ID);
-  const itemsMsg = findSent('ITEMS ADJUST');
-  check('items adjust lists the cart items', itemsMsg.length > 0 && /Hazelnut Missu/.test(itemsMsg[0].text));
+  const itemsMsg = findSent('ITEMS / QUANTITY');
+  check('items screen lists the cart items', itemsMsg.length > 0 && /Hazelnut Missu/.test(itemsMsg[0].text));
   check('items adjust offers import + refresh', hasButton(itemsMsg, `fwd_panel_import_${ORDER_ID}`) && hasButton(itemsMsg, `fwd_panel_cartrefresh_${ORDER_ID}`));
 
   const src = fs.readFileSync('./forwarded-order-flow.js', 'utf8');
