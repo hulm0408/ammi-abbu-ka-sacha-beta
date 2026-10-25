@@ -139,17 +139,25 @@ export function buildSimpleHomeScreen(draft = {}) {
       (cartItems.length ? ` (${cartItems.length} item${cartItems.length === 1 ? '' : 's'})` : '')
     : '—';
 
+  // A stored LINK is not a fetched ADDRESS. If Swiggy never opened it, the card
+  // must say so — otherwise the customer reads a green address and is then asked
+  // to "retry" when the order starts, which looks like the bot contradicting itself.
+  const addressUnresolved = Boolean(hasAddress && addressDetails.unresolvableShortLink);
   const addressValue = hasAddress
-    ? esc(shortText(addressDetails.address || addressDetails.city || 'Address link added', 34))
+    ? (addressUnresolved
+        ? '⚠️ link added — Swiggy se khul nahi paya'
+        : esc(shortText(addressDetails.address || addressDetails.city || 'Address link added', 34)))
     : '—';
 
   const missing = [];
   if (!hasCart) missing.push('🛒 Cart link');
   if (!hasAddress) missing.push('📍 Address link');
 
-  const hint = missing.length
-    ? `Ab ${missing.join(' + ')} bhejein — bas paste karna hai, kuch type nahi karna.`
-    : 'Dono links mil gaye — bill check shuru…';
+  const hint = addressUnresolved
+    ? 'Address link khul nahi paya — ↻ Retry karein, ya seedha address type kar dein.'
+    : (missing.length
+        ? `Ab ${missing.join(' + ')} bhejein — bas paste karna hai, kuch type nahi karna.`
+        : 'Dono links mil gaye — bill check shuru…');
 
   const text =
     '🍽 <b>Swiggy order</b>\n\n' +
@@ -160,7 +168,14 @@ export function buildSimpleHomeScreen(draft = {}) {
   const rows = [
     [{ text: '📋 Cart + Address link paste karein', callback_data: SIMPLE_CHAT_CALLBACKS.pasteLinks, style: 'success' }]
   ];
-  if (hasCart && hasAddress) {
+  if (addressUnresolved) {
+    // Fix it right here — the customer should never have to press Continue only
+    // to be bounced back with the same retry card.
+    rows.unshift([
+      { text: '↻ Retry address', callback_data: 'simple_retry_address', style: 'primary' },
+      { text: '✍️ Address type karein', callback_data: 'simple_type_address', style: 'primary' }
+    ]);
+  } else if (hasCart && hasAddress) {
     rows.unshift([{ text: '✅ Continue — check best price', callback_data: SIMPLE_CHAT_CALLBACKS.continueDraft, style: 'success' }]);
   }
   if (hasCart || hasAddress) {

@@ -170,6 +170,7 @@ import {
 import {
   ensureOrderTracking,
   startOrderTrackingAuto,
+  PAYMENT_TRACKING_DELAYS,
   stopOrderTrackingAuto,
   setOrderTrackingNotifier,
   setOrderMilestoneNotifier,
@@ -1272,6 +1273,10 @@ function getUserScreen(userId, user) {
   let addrLine = '🟠 <b>Address:</b> Link bhejein';
   if (hasAddr) {
     const ad = draft.addressDetails || {};
+    if (ad.unresolvableShortLink) {
+      // Honest label: the link is saved, but Swiggy never opened it.
+      addrLine = '⚠️ <b>Address:</b> link added — Swiggy se khul nahi paya (↻ Retry karein)';
+    }
     const addrUrl = draft.addressLink || (String(draft.address).startsWith('http') ? draft.address : '');
     const humanAddr = ad.address && !String(ad.address).startsWith('http')
       ? `${ad.address.slice(0, 45)}${ad.address.length > 45 ? '…' : ''}`
@@ -9780,6 +9785,7 @@ bot.on('text', async (ctx, next) => {
     let addedCart = false;
     let addedAddress = false;
     let hadFake = false;
+    let addressResolvedThisPaste = false;
 
     // A freshly pasted address link gets a fresh chance: forget any remembered
     // verdict for that token, otherwise an old "expired" would fire instantly
@@ -9833,6 +9839,29 @@ bot.on('text', async (ctx, next) => {
       const freshAddressDetails = { ...(geoAddr || {}) };
       delete freshAddressDetails.unresolvableShortLink;
       delete freshAddressDetails.unresolvedReason;
+
+      // Did we really GET an address, or did we only store the link? The card
+      // must not show a green "✓ Address" for a link Swiggy never opened — that
+      // is what made the customer say "address fetched, but it still asks retry".
+      const resolvedFromLink = Boolean(
+        addrMeta?.addressDetails &&
+        !addrMeta.addressDetails.unresolvableShortLink &&
+        (addrMeta.addressDetails.address || (addrMeta.addressDetails.lat && addrMeta.addressDetails.lng))
+      );
+      const resolvedTextAddress = Boolean(
+        geoAddr && (geoAddr.address?.length >= 8 || (geoAddr.lat && geoAddr.lng)) &&
+        !geoAddr.unresolvableShortLink
+      );
+      const addressIsResolved = resolvedFromLink || resolvedTextAddress;
+      addressResolvedThisPaste = addressIsResolved;
+      if (validAddrLink && !addressIsResolved) {
+        // Keep the link (Retry can retry it) but say honestly that it is not
+        // open yet, so the card never claims a fetched address it does not have.
+        freshAddressDetails.unresolvableShortLink = true;
+        freshAddressDetails.unresolvedReason =
+          getOfoResolutionFailureReason(validAddrLink) || 'UNEXPANDED';
+        freshAddressDetails.link = validAddrLink;
+      }
       // NEVER overwrite clean street address with bare JgkQ URL!
       updateDraft(userId, {
         address: geoAddr?.address || validAddrLink || `${geoAddr?.city || 'Delivery'} Address`,
@@ -9884,23 +9913,75 @@ bot.on('text', async (ctx, next) => {
     const savedNotice = addedCart && addedAddress
       ? '✓ Cart & Address saved'
       : (addedCart ? '✓ Cart link saved' : '✓ Address link saved');
+    const honestNotice = addedAddress && !addressResolvedThisPaste
+      ? '⚠️ Address link mila — Swiggy se khul nahi paya'
+      : savedNotice;
 
     // SIMPLE MODE: both links present -> go straight to the bill. The customer
     // confirms once on the bill card; nothing else is typed or opened.
+    // EXCEPTION: if the address link never opened, do NOT start the order just
+    // to fail and ask for a retry — say it right here with the fix buttons.
+    const addressUsable = Boolean(
+      curDraft.addressDetails &&
+      !curDraft.addressDetails.unresolvableShortLink &&
+      (String(curDraft.addressDetails.address || '').trim().length >= 8 ||
+        (curDraft.addressDetails.lat && curDraft.addressDetails.lng))
+    );
+    if (simpleChatForUser(userId) && curDraft.cart && curDraft.address && !addressUsable) {
+      await cleanupUserChat(ctx.telegram, ctx.chat?.id || userId, userId, {
+        deleteIncomingId: ctx.message?.message_id || null
+      }).catch(() => {});
+      const pasteFailure = getOfoResolutionFailureReason(curDraft.addressLink || curDraft.address || '');
+      if (pasteFailure === 'EXPIRED') {
+        // Swiggy really rejected this token — say so now (once), drop the dead
+        // link so Continue can never re-run it, and offer the two ways forward.
+        clearOfoResolutionFailures(curDraft.addressLink || '');
+        const keepTypedPaste = Boolean(curDraft.addressTyped && curDraft.address && !isLinkString(String(curDraft.address)));
+        updateDraft(userId, {
+          address: keepTypedPaste ? curDraft.address : null,
+          addressOriginalText: keepTypedPaste ? (curDraft.addressOriginalText || '') : '',
+          addressLink: null,
+          addressDetails: keepTypedPaste ? (curDraft.addressDetails || {}) : {},
+          addressTyped: keepTypedPaste
+        });
+        userWaitState[userId] = { action: 'waiting_address' };
+        return ctx.reply(
+          `🟠 <b>Address link expire ho gaya</b> — naya link bhejein, ya seedha address type kar dein 👇`,
+          {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([[
+              { text: '🟠 📍 Naya Address Link', callback_data: 'action_paste_address', style: 'danger' },
+              { text: '✍️ Address type karein', callback_data: 'simple_type_address', style: 'primary' }
+            ]])
+          }
+        );
+      }
+      return ctx.reply(
+        `⏳ <b>Address abhi khul nahi paya</b>\n\n` +
+        `<i>Link save hai — dobara paste karne ki zaroorat nahi. Neeche se retry karein, ya seedha address type kar dein.</i>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [{ text: '↻ Retry address', callback_data: 'simple_retry_address', style: 'primary' }],
+            [{ text: '✍️ Address type karein', callback_data: 'simple_type_address', style: 'primary' }]
+          ])
+        }
+      );
+    }
     if (simpleChatForUser(userId) && curDraft.cart && curDraft.address && !getActiveUserOrder(userId)) {
       await cleanupUserChat(ctx.telegram, ctx.chat?.id || userId, userId, {
         deleteIncomingId: ctx.message?.message_id || null
       }).catch(() => {});
       const started = await startSimpleOrderFromDraft(ctx, userId);
       if (!started) {
-        await renderUserCard(ctx, userId, { deleteIncoming: true, notice: savedNotice });
+        await renderUserCard(ctx, userId, { deleteIncoming: true, notice: honestNotice });
       }
       return;
     }
 
     // One card only: the pasted link message is deleted, card shows items +
     // address and Send to Beta becomes the single next action.
-    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: savedNotice });
+    await renderUserCard(ctx, userId, { deleteIncoming: true, notice: honestNotice });
     if (nextPrompt && !simpleChatForUser(userId)) await promptForLink(ctx, userId, nextPrompt);
     return;
   }
@@ -10278,23 +10359,24 @@ async function handleSendToBoss(ctx) {
     ? ''
     : (draft.addressLink || extractAddressShareUrl(addressSource) || (isAddressShareUrl(addressSource) ? addressSource : ''));
 
-  // We already hold a real, geocoded delivery address for this draft. A stored
-  // share link that we already know is dead must not be re-resolved just to say
-  // "expired" again — the customer's address is right there.
+  // We already hold a real delivery address for this draft (resolved when the
+  // link was pasted, or typed by the customer). Re-resolving the share link now
+  // only adds a second chance to fail — and that second failure is exactly the
+  // "address to aa gaya tha, phir bhi retry" bug. The stored address IS the truth.
   const draftAddressText = String(draft.addressDetails?.address || '').trim();
   const draftHasUsableAddress = Boolean(
-    draftAddressText && !isLinkString(draftAddressText) &&
-    (draftAddressText.length >= 8 || (draft.addressDetails?.lat && draft.addressDetails?.lng))
-  );
+    (draftAddressText && !isLinkString(draftAddressText) && draftAddressText.length >= 8) ||
+    (draft.addressDetails?.lat && draft.addressDetails?.lng)
+  ) && !draft.addressDetails?.unresolvableShortLink;
   if (addressLink && draftHasUsableAddress) {
-    const knownFailure = getOfoResolutionFailureReason(addressLink);
-    if (knownFailure) {
-      console.warn(`[AddressResolve] using stored address (known link failure=${knownFailure})`);
-      addressLink = '';
-    }
+    console.warn('[AddressResolve] using the already-fetched address (no link re-resolve)');
+    deliveryDetails = { ...(draft.addressDetails || {}) };
+    delete deliveryDetails.unresolvableShortLink;
+    delete deliveryDetails.unresolvedReason;
   }
+  const skipLinkResolution = Boolean(addressLink && draftHasUsableAddress);
 
-  if (addressLink) {
+  if (addressLink && !skipLinkResolution) {
     // URL-FIRST: try link first, but fall back to verified address text if link fails or is unexpanded
     try {
       const addrMeta = await resolveSwiggyLink(addressSource || addressLink);
@@ -10311,7 +10393,7 @@ async function handleSendToBoss(ctx) {
         }
       }
     } catch (e) {}
-  } else {
+  } else if (!addressLink) {
     // Plain-text address / GPS pin — the message itself is the source.
     const parsedAddress = parseAddressDetails(addressSource, { allowWithUrl: true }) || parseAddressDetails(addressSource);
     if (parsedAddress) {
@@ -10327,7 +10409,7 @@ async function handleSendToBoss(ctx) {
     (String(deliveryDetails.address || '').trim() && !/^https?:\/\//i.test(String(deliveryDetails.address || '').trim())) ||
     (deliveryDetails.lat && deliveryDetails.lng)
   );
-  if (addressLink && deliveryDetails.unresolvableShortLink && usableFallbackAddress) {
+  if (!skipLinkResolution && addressLink && deliveryDetails.unresolvableShortLink && usableFallbackAddress) {
     console.warn(`[AddressResolve] order=${userId} link unusable but address present — continuing`);
     delete deliveryDetails.unresolvableShortLink;
     delete deliveryDetails.unresolvedReason;
@@ -10335,7 +10417,7 @@ async function handleSendToBoss(ctx) {
     draft = getDraft(userId);
   }
 
-  if (addressLink && deliveryDetails.unresolvableShortLink) {
+  if (!skipLinkResolution && addressLink && deliveryDetails.unresolvableShortLink) {
     // Only claim "expired" when Swiggy itself rejected the token. An un-expanded
     // AppsFlyer short link, a timeout, a WAF block or a missing session are OUR
     // side, and the customer must always keep a way forward (retry / type address).
@@ -12481,7 +12563,7 @@ async function checkOrderPaidStatusOnly(orderId) {
           const firstBossChatId2 = getDb().config?.bossIds?.[0] || Number(process.env.BOSS_ID || 0);
           try { await sendOrderDeliveryInfoNotice(bot.telegram, firstBossChatId2, order); } catch {}
           try { startOrderDeliveryInfoPoller({ telegram: bot.telegram, chatId: firstBossChatId2, orderId: order.id, formatOrderBodyFn: formatUserOrderCardText }); } catch {}
-          try { startOrderTrackingAuto(order.id, { budgetMs: 12000 }); } catch {}
+          try { startOrderTrackingAuto(order.id, { budgetMs: 12000, force: true, delays: PAYMENT_TRACKING_DELAYS }); } catch {}
           const t2 = getStoredSwiggyTrackingUrl(order);
           return { paid: true, trackingLink: t2, deliveryOtp: order.deliveryOtp || '', message: t2 ? '✓ Payment verified via linked Swiggy account. Swiggy tracking is available.' : 'Payment verified successfully. Swiggy tracking is not available yet. I\'ll retry shortly.' };
         }
@@ -12532,8 +12614,10 @@ async function checkOrderPaidStatusOnly(orderId) {
     formatOrderBodyFn: formatUserOrderCardText
   });
   // Payment is confirmed — fetch the real Swiggy share link & live delivery milestones automatically.
-  // No button, no manual "Extract Tracking Link" needed.
-  try { startOrderTrackingAuto(order.id, { budgetMs: 15000, trackMilestones: true, force: true }); } catch {}
+  // No button, no manual "Extract Tracking Link" needed. PAYMENT profile: Swiggy
+  // often publishes the OFO link 10–120s after payment, so poll every 5–60s in
+  // that window instead of waiting for the 3-minute step of the default ladder.
+  try { startOrderTrackingAuto(order.id, { budgetMs: 15000, trackMilestones: true, force: true, delays: PAYMENT_TRACKING_DELAYS }); } catch {}
 
   const trackingLink = getStoredSwiggyTrackingUrl(order);
   return {
