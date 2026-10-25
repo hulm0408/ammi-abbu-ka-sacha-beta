@@ -1973,7 +1973,35 @@ export async function executeOrderBillSyncOnAccount({
 
   let syncRes = null;
   if (accKey === 'BEST') {
-    syncRes = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false, excludeAccountKeys });
+    // HARD DEADLINE: three parallel probes × waves × coupon trials must never
+    // stretch ID selection to minutes. 22s budget + a 28s backstop keeps the
+    // card coming back inside Telegraf's handler window.
+    const scanBudgetMs = Math.max(8_000, Number(process.env.ID_SELECT_BUDGET_MS) || 22_000);
+    let deadlineTimer = null;
+    syncRes = await Promise.race([
+      findBestMaxCouponAccountForOrder(order, {
+        captureScreenshot: false,
+        excludeAccountKeys,
+        maxScanBudgetMs: scanBudgetMs
+      }),
+      new Promise((resolve) => {
+        deadlineTimer = setTimeout(() => resolve(null), scanBudgetMs + 6_000);
+        if (typeof deadlineTimer.unref === 'function') deadlineTimer.unref();
+      })
+    ]).finally(() => { if (deadlineTimer) clearTimeout(deadlineTimer); });
+    if (!syncRes) {
+      // A timed-out search may have left reservations behind; free them so the
+      // very next tap can immediately try again.
+      try {
+        for (const key of Object.keys(getDb()?.config?.accounts || {})) {
+          releaseSwiggyAccountReservation(key, orderId);
+        }
+      } catch {}
+      const timeoutErr = new Error(`ID selection timed out after ${Math.round((scanBudgetMs + 6_000) / 1000)}s (Swiggy slow / WAF). Koi ID logout nahi hui — dobara tap karein.`);
+      timeoutErr.code = 'ID_SELECT_TIMEOUT';
+      timeoutErr.diag = { code: 'ID_SELECT_TIMEOUT', stage: 'PICK_BEST_ACCOUNT', budgetMs: scanBudgetMs };
+      throw timeoutErr;
+    }
     if (!syncRes?.success) {
       const err = new Error(syncRes?.error || 'Could not sync cart across logged-in accounts.');
       err.diag = { code: 'BEST_ACCOUNT_SYNC_FAILED', stage: 'PICK_BEST_ACCOUNT', comparison: syncRes?.accountComparison };
@@ -2172,7 +2200,23 @@ export async function executeRealQrGenerationForOrder({
   let realQr;
   try {
     // Per-account lock: 10 orders on 10 different Swiggy IDs generate ALL 10 QRs 100% simultaneously in parallel (~1.8s)!
-    realQr = await withSwiggyAccountLock(accKey, () => generator(acc, order));
+    // Hard deadline: a real QR takes ~2-8s; if Swiggy/Chromium stalls we fail with a
+    // clear reason instead of hanging the handler for minutes ("QR kaam nahi karta").
+    const qrBudgetMs = Math.max(15_000, Number(process.env.QR_GEN_BUDGET_MS) || 60_000);
+    let qrTimer = null;
+    realQr = await Promise.race([
+      withSwiggyAccountLock(accKey, () => generator(acc, order)),
+      new Promise((resolve) => {
+        qrTimer = setTimeout(() => resolve(null), qrBudgetMs);
+        if (typeof qrTimer.unref === 'function') qrTimer.unref();
+      })
+    ]).finally(() => { if (qrTimer) clearTimeout(qrTimer); });
+    if (!realQr) {
+      const qrTimeoutErr = new Error(`Payment QR ${Math.round(qrBudgetMs / 1000)}s me nahi bana (Swiggy slow/WAF). Payment verify mat karein — dobara tap karein.`);
+      qrTimeoutErr.code = 'QR_GENERATION_TIMEOUT';
+      qrTimeoutErr.diag = { code: 'QR_GENERATION_TIMEOUT', stage: 'GENERATE_REAL_SWIGGY_QR', budgetMs: qrBudgetMs };
+      throw qrTimeoutErr;
+    }
   } catch (qrErr) {
     const msg = String(qrErr?.message || '');
     const swMsg = String(qrErr?.diag?.swiggyMessage || '');
@@ -2876,32 +2920,52 @@ export function registerForwardedOrderHandlers(bot, {
     await ctx.answerCbQuery('🔄 Re-selecting best Swiggy ID in parallel...').catch(() => {});
     await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn, { includeQrDelete: true }).catch(() => {});
 
-    try {
-      await executeOrderBillSyncOnAccount({
-        telegram: ctx.telegram,
-        chatId: ctx.chat.id,
-        orderId,
-        accKey: 'BEST',
-        formatOrderBodyFn,
-        excludeAccountKeys: prevAccount ? [prevAccount] : []
-      });
-    } catch (syncErr) {
+    // FIRE-AND-FORGET: the heavy ID scan runs detached with its own deadline and
+    // error reporting. The handler returns instantly, so Telegraf can never kill a
+    // long scan with `Promise timed out after 240000 milliseconds` while the card
+    // stays on "selecting" — the result/error always lands as a card message.
+    void (async () => {
       try {
         await executeOrderBillSyncOnAccount({
           telegram: ctx.telegram,
           chatId: ctx.chat.id,
           orderId,
           accKey: 'BEST',
-          formatOrderBodyFn
+          formatOrderBodyFn,
+          excludeAccountKeys: prevAccount ? [prevAccount] : []
         });
-      } catch (err2) {
-        order.cardStage = 'COLLECTING';
-        order.accountSyncError = err2.message || syncErr.message;
-        upsertOrder(order.id, order);
-        await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
-        await ctx.reply(`⚠️ <b>ID Selection Issue:</b> ${escapeHtml(err2.message || syncErr.message)}\n\n<i>Swiggy account sync me issue aaya. Kripya ID check karein ya naya JSON session drop karein.</i>`, { parse_mode: 'HTML' }).catch(() => {});
+      } catch (syncErr) {
+        // A hard timeout already released reservations; retrying the SAME budget
+        // would just burn another 28s, so go straight to a retry card.
+        if (syncErr?.code === 'ID_SELECT_TIMEOUT') {
+          const fresh = getDb().orders?.[orderId] || order;
+          fresh.cardStage = 'COLLECTING';
+          fresh.accountSyncError = syncErr.message;
+          fresh.lastAccountError = syncErr.message;
+          upsertOrder(fresh.id, fresh);
+          await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, fresh, getDb(), formatOrderBodyFn).catch(() => {});
+          await ctx.reply(`⏱ <b>ID Selection slow tha</b> — ${escapeHtml(syncErr.message)}`, { parse_mode: 'HTML' }).catch(() => {});
+          return;
+        }
+        try {
+          await executeOrderBillSyncOnAccount({
+            telegram: ctx.telegram,
+            chatId: ctx.chat.id,
+            orderId,
+            accKey: 'BEST',
+            formatOrderBodyFn
+          });
+        } catch (err2) {
+          const fresh = getDb().orders?.[orderId] || order;
+          fresh.cardStage = 'COLLECTING';
+          fresh.accountSyncError = err2.message || syncErr.message;
+          fresh.lastAccountError = err2.message || syncErr.message;
+          upsertOrder(fresh.id, fresh);
+          await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, fresh, getDb(), formatOrderBodyFn).catch(() => {});
+          await ctx.reply(`⚠️ <b>ID Selection Issue:</b> ${escapeHtml(err2.message || syncErr.message)}\n\n<i>Swiggy account sync me issue aaya. Kripya ID check karein ya naya JSON session drop karein.</i>`, { parse_mode: 'HTML' }).catch(() => {});
+        }
       }
-    }
+    })();
   });
 
   // 3. Generate 100% REAL Swiggy Dynamic Merchant UPI QR (parallel across distinct Swiggy IDs!)
@@ -2919,33 +2983,39 @@ export function registerForwardedOrderHandlers(bot, {
     }
 
     await ctx.answerCbQuery('! Generating Official Swiggy Payment QR...');
-    try {
-      const tgAdapter = typeof ctx.telegram?.sendPhoto === 'function'
-        ? ctx.telegram
-        : {
-            ...ctx.telegram,
-            sendPhoto: (_cid, photo, extra) => ctx.replyWithPhoto(photo, extra)
-          };
-      await executeRealQrGenerationForOrder({
-        telegram: tgAdapter,
-        chatId: ctx.chat.id,
-        orderId,
-        formatOrderBodyFn,
-        customRealQrGenerator
-      });
-    } catch (err) {
-      const acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
-      await sendBossDiagnosticError(ctx, ctx.chat.id, err, {
-        stage: 'GENERATE_REAL_SWIGGY_QR',
-        orderId: order.id,
-        accountKey: order.selectedAccount,
-        accountPhone: acc?.phone || '',
-        senderName: order.fwdSenderName || order.userName,
-        isForwarded: !order.isDirectBossOrder,
-        cartLink: order.cart,
-        addressSummary: order.address
-      });
-    }
+    // Detached so a slow QR can never trip Telegraf's 240s handler watchdog: the
+    // QR (or a clear failure reason) always arrives as a normal message.
+    void (async () => {
+      try {
+        const tgAdapter = typeof ctx.telegram?.sendPhoto === 'function'
+          ? ctx.telegram
+          : {
+              ...ctx.telegram,
+              sendPhoto: (_cid, photo, extra) => ctx.replyWithPhoto(photo, extra)
+            };
+        await executeRealQrGenerationForOrder({
+          telegram: tgAdapter,
+          chatId: ctx.chat.id,
+          orderId,
+          formatOrderBodyFn,
+          customRealQrGenerator
+        });
+      } catch (err) {
+        const freshDb = getDb();
+        const freshOrder = freshDb.orders?.[orderId] || order;
+        const acc = freshOrder.selectedAccount ? freshDb.config?.accounts?.[freshOrder.selectedAccount] : null;
+        await sendBossDiagnosticError(ctx, ctx.chat.id, err, {
+          stage: 'GENERATE_REAL_SWIGGY_QR',
+          orderId: freshOrder.id,
+          accountKey: freshOrder.selectedAccount,
+          accountPhone: acc?.phone || '',
+          senderName: freshOrder.fwdSenderName || freshOrder.userName,
+          isForwarded: !freshOrder.isDirectBossOrder,
+          cartLink: freshOrder.cart,
+          addressSummary: freshOrder.address
+        });
+      }
+    })();
   });
 
   // 4. Verify REAL Payment on Swiggy -> Confirm Order -> Delete Old Card + QR -> Post Real Tracking Card!
@@ -2966,13 +3036,29 @@ export function registerForwardedOrderHandlers(bot, {
 
     try {
       const checker = customPaymentChecker || checkRealSwiggyPaymentAndExtractTracking;
-      const liveCheck = await checker(acc, order);
+      // Bounded verify: a slow Swiggy answer must report "still checking", never
+      // kill the handler with `Promise timed out after 240000 milliseconds`.
+      let verifyTimer = null;
+      const liveCheck = await Promise.race([
+        checker(acc, order),
+        new Promise((resolve) => {
+          verifyTimer = setTimeout(() => resolve({ paid: false, txnState: 'verify-timeout', gatewayFetchError: 'Swiggy verify timed out (75s)' }), 75_000);
+          if (typeof verifyTimer.unref === 'function') verifyTimer.unref();
+        })
+      ]).finally(() => { if (verifyTimer) clearTimeout(verifyTimer); });
 
       if (!liveCheck?.paid) {
         // Delay rescue: try All-IDs scan before declaring pending (user clicked I have paid)
         if (!getStoredSwiggyTrackingUrl(order)) {
           try {
-            const rescue = await extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts }).catch(() => null);
+            let rescueTimer = null;
+            const rescue = await Promise.race([
+              extractTrackingViaAllAccounts(order, { getAccountsFn: () => getDb().config.accounts }).catch(() => null),
+              new Promise((resolve) => {
+                rescueTimer = setTimeout(() => resolve(null), 45_000);
+                if (typeof rescueTimer.unref === 'function') rescueTimer.unref();
+              })
+            ]).finally(() => { if (rescueTimer) clearTimeout(rescueTimer); });
             if (rescue?.trackingUrl) {
               await ctx.answerCbQuery('✓ Payment verified via linked Swiggy account — injecting tracking into payment message...');
               // Build synthetic paid result from rescue

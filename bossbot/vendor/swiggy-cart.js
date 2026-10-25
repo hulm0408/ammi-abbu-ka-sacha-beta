@@ -5444,20 +5444,30 @@ export function formatSwiggyWorldCartReceipt(order, accountPhoneOrName = '') {
 // Live capture real Swiggy checkout & payment screen using account cookies
 export async function captureSwiggyPaymentScreenshot(cookies) {
   if (!cookies) return null;
+  // No local Chromium (normal Render container) => never even try: an unbounded
+  // `puppeteer.launch` was able to hold an ID lock and stall the next selection.
+  if (!CHROME_PATH) return null;
   let browser = null;
   try {
-    browser = await puppeteer.launch({
-      executablePath: CHROME_PATH,
-      headless: PUPPETEER_HEADLESS,
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--no-sandbox',
-        '--disable-gpu',
-        '--disable-dev-shm-usage',
-        '--no-first-run',
-        '--no-default-browser-check'
-      ]
-    });
+    let launchTimer = null;
+    browser = await Promise.race([
+      puppeteer.launch({
+        executablePath: CHROME_PATH,
+        headless: PUPPETEER_HEADLESS,
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--no-sandbox',
+          '--disable-gpu',
+          '--disable-dev-shm-usage',
+          '--no-first-run',
+          '--no-default-browser-check'
+        ]
+      }),
+      new Promise((_, reject) => {
+        launchTimer = setTimeout(() => reject(new Error('Chromium launch timed out (12s)')), 12_000);
+        if (typeof launchTimer.unref === 'function') launchTimer.unref();
+      })
+    ]).finally(() => { if (launchTimer) clearTimeout(launchTimer); });
     const page = await browser.newPage();
     await installAntiFnaStealthOnPage(page);
     await page.setViewport({ width: 1280, height: 900 });
@@ -5817,6 +5827,37 @@ export async function fetchSwiggyProfileFromCookies(cookiesOrAcc) {
 // 2) `callSwiggyFoodMcpTool('apply_food_coupon')` (`mcp.swiggy.com/food` internal VPC coupon engine + `swiggyCartGet` exact bill readout)
 // 3) `androidCheckoutCartCall('client/applycoupon')` (`chkout.swiggy.com/api/v2/cart/client/applycoupon`)
 // 4) Warm-WAF `/dapi/cart/applyCoupon` (ONLY when `cachedWafToken` is already warm -> `0` cold Chromium launches!)
+// Coupon trials mutate the live cart and cost 2-8s EACH. The list can hold 20+
+// codes, so an unbounded loop was the real reason "ID selection" took minutes.
+// A short negative cache stops re-proving the same dead code on every scan,
+// every wave and every order for the same account+restaurant.
+const couponTrialCache = new Map(); // `${accSig}|${restaurantId}|${CODE}` -> { ts, applied, discountAmount }
+const COUPON_TRIAL_CACHE_TTL_MS = 15 * 60 * 1000;
+const COUPON_TRIAL_CACHE_MAX = 800;
+
+function couponTrialAccSig(account) {
+  return String(account?.id || account?.phone || account?.customerId || (account?.cookies || '').slice(0, 40));
+}
+
+function readCouponTrialCache(account, restaurantId, code) {
+  const key = `${couponTrialAccSig(account)}|${String(restaurantId || '')}|${String(code || '').toUpperCase()}`;
+  const hit = couponTrialCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.ts > COUPON_TRIAL_CACHE_TTL_MS) { couponTrialCache.delete(key); return null; }
+  return hit;
+}
+
+function writeCouponTrialCache(account, restaurantId, code, value) {
+  const key = `${couponTrialAccSig(account)}|${String(restaurantId || '')}|${String(code || '').toUpperCase()}`;
+  if (couponTrialCache.size >= COUPON_TRIAL_CACHE_MAX) {
+    const oldest = couponTrialCache.keys().next().value;
+    if (oldest) couponTrialCache.delete(oldest);
+  }
+  couponTrialCache.set(key, { ts: Date.now(), ...value });
+}
+
+export function clearCouponTrialCache() { couponTrialCache.clear(); }
+
 export async function applyLiveCouponToOrder(account, order, couponCode, { fastSingleEngine = false } = {}) {
   if (!account || !order) return null;
   if (!isUsableDeliveryAddress(order.addressDetails) || !normalizeIndianMobile(order.addressDetails.mobile)) {
@@ -6013,10 +6054,13 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       return { fetchedAddrs, earlySaved, resolvedAddr };
     })();
 
+    // Keep the SAME claim promise: wave 1 only waits 450ms for it (so the cart is not
+    // delayed), and the free-cash step below can still await the real answer once.
+    const eventsClaimPromise = claimSwiggyBreakfastAndLateNightOffers(account).catch(() => null);
     const [auth, eventsClaimRes, cartMeta, addrBundle, inspectedInitialCart] = await Promise.all([
       getSwiggySessionAuth(account, false),
       Promise.race([
-        claimSwiggyBreakfastAndLateNightOffers(account).catch(() => null),
+        eventsClaimPromise,
         new Promise(r => setTimeout(r, 450))
       ]),
       order.cart && !alreadyHasResolvedCart
@@ -6536,14 +6580,42 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
 
       // Probe all live candidates, excluding MCP-marked ineligible codes unless they were explicitly requested or already active.
       const explicitlySelectedCodes = new Set([order.couponCode, bestCode].filter(Boolean).map(code => String(code).trim().toUpperCase()));
+      // FAST ID SELECTION: every trial is a live cart mutation (2-8s). Cap the
+      // attempts and the wall clock per account so one dead-coupon list can never
+      // stretch "ID selection" to minutes, and skip codes already proven dead for
+      // this account+restaurant in the last 15 minutes.
+      const couponTrialBudgetMs = Math.max(4_000, Math.min(Number(options.couponTrialBudgetMs) || 12_000, 25_000));
+      const maxCouponTrials = Math.max(1, Number(options.maxCouponTrials) || 6);
+      const couponTrialStartedAt = Date.now();
+      let couponTrialsDone = 0;
+      let couponTrialsSkipped = 0;
       const couponsToTest = availableCoupons.filter(c => !mcpIneligibleCodes.has(c.code) || explicitlySelectedCodes.has(c.code));
       for (const cand of couponsToTest) {
         if (cand.code === bestCode && bestCartState.discountAmount > 0) {
           validVerifiedCoupons.push({ ...cand, discountAmount: bestCartState.discountAmount, finalPayable: bestCartState.finalPayable });
           continue;
         }
+        const negativeHit = readCouponTrialCache(account, restaurantId, cand.code);
+        if (negativeHit && negativeHit.applied === false && !explicitlySelectedCodes.has(cand.code)) {
+          couponTrialsSkipped += 1;
+          continue;
+        }
+        if (couponTrialsDone >= maxCouponTrials || (Date.now() - couponTrialStartedAt) > couponTrialBudgetMs) {
+          couponTrialsSkipped += 1;
+          break;
+        }
+        couponTrialsDone += 1;
         appliedAnyTrial = true;
         const tested = await applyLiveCouponToOrder(account, order, cand.code, { fastSingleEngine: (cand.priority || 50) >= 35 });
+        const couponApplied = Boolean(
+          tested && tested.items?.length > 0 &&
+          String(tested.couponCode || '').toUpperCase() === String(cand.code).toUpperCase() &&
+          Number(tested.discountAmount || 0) > 0
+        );
+        writeCouponTrialCache(account, restaurantId, cand.code, {
+          applied: couponApplied,
+          discountAmount: couponApplied ? Number(tested.discountAmount || 0) : 0
+        });
         if (tested && tested.items?.length > 0) {
           lastLiveCartState = tested;
           if (tested.couponCode === cand.code && tested.discountAmount > 0) {
@@ -6559,6 +6631,10 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
             bestCode = tested.couponCode || cand.code;
           }
         }
+      }
+
+      if (couponTrialsSkipped > 0) {
+        console.log(`[CouponScan] ${account?.phone || account?.name || 'ID'}: ${couponTrialsDone} trial(s), ${couponTrialsSkipped} skipped (cache/budget) — fast selection.`);
       }
 
       validVerifiedCoupons.sort((a, b) => {
@@ -6612,6 +6688,62 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       // saving ~750ms here so cold-start `syncGroupCartAndCheckoutForAccount` always completes in ~4.2s (<6.5s budget)!
 
       liveCart = bestCartState;
+    }
+
+    // FREE CASH / LATE-NIGHT SELF-HEAL:
+    // Wave 1 only gives the Breakfast/Late-Night offer lock 450ms. When that answer
+    // lands late, Swiggy credits the free cash AFTER our cart was built, so the scan
+    // showed a bill with no free cash ("kabhi free cash nahi lagta"). If the claim
+    // really locked a live slot and `campaignFreeCash` is still 0, wait for the real
+    // answer (bounded) and re-push this ONE cart so Swiggy recomputes the total.
+    try {
+      const freeCashNow = Number(liveCart?.campaignFreeCash || 0);
+      if (freeCashNow === 0 && liveCart?.items?.length > 0 && restaurantId && targetAddressId) {
+        // By now the wave-1 claim has almost always settled (it is cached for 30 min
+        // after a success), so this await costs ~0ms; the 2000ms cap only protects a
+        // genuinely cold claim from slowing the scan down.
+        let claimTimer = null;
+        const claimAnswer = await Promise.race([
+          eventsClaimPromise,
+          new Promise((resolve) => {
+            claimTimer = setTimeout(() => resolve(null), 2000);
+            if (typeof claimTimer.unref === 'function') claimTimer.unref();
+          })
+        ]).finally(() => { if (claimTimer) clearTimeout(claimTimer); });
+
+        // Only redeemable while the slot is literally open (9PM-6AM / 7AM-11AM);
+        // a pre-booked future slot is credited later, so no re-push is wasted.
+        const slotLiveNow = Boolean(
+          claimAnswer?.breakfast?.slotState === 'ACTIVE_NOW' ||
+          claimAnswer?.lateNight?.slotState === 'ACTIVE_NOW'
+        );
+        if (claimAnswer?.success && slotLiveNow) {
+          const relock = await swiggyCartUpdate(
+            account,
+            {
+              restaurantId: String(restaurantId),
+              address_id: String(targetAddressId || ''),
+              couponCode: String(liveCart?.couponCode || order.couponCode || ''),
+              cartItems: buildSwiggyCartItemsPayload(syncableItems),
+              mealItems: [],
+              subscriptionItems: Array.isArray(order.activeSubscriptionItems) ? order.activeSubscriptionItems : []
+            },
+            { lat, lng, flushFirst: false, timeoutMs: 4500 }
+          ).catch(() => null);
+          const parsedRelock = relock?.json?.data ? parseDapiCartPayload(relock.json.data) : null;
+          if (parsedRelock?.items?.length > 0) {
+            const gainedFreeCash = Number(parsedRelock.campaignFreeCash || 0) > freeCashNow;
+            const cheaperNow = Number(parsedRelock.finalPayable || 0) > 0 &&
+              Number(parsedRelock.finalPayable || 0) < Number(liveCart.finalPayable || 0);
+            if (gainedFreeCash || cheaperNow) {
+              liveCart = parsedRelock;
+              console.log(`[FreeCash] ${account?.phone || account?.name || 'ID'}: ₹${Number(parsedRelock.campaignFreeCash || 0)} free cash applied after offer lock.`);
+            }
+          }
+        }
+      }
+    } catch (freeCashErr) {
+      console.warn('[FreeCash] Re-lock skipped:', freeCashErr?.message || freeCashErr);
     }
 
     // Step 6: Populate `order` cleanly with 100% genuine Swiggy numbers
@@ -6742,7 +6874,7 @@ export function resolveAccountLockId(accountOrKey) {
   return String(accountOrKey.id || accountOrKey.phone || accountOrKey.mobile || accountOrKey.tid || 'unknown_acc');
 }
 
-export async function withSwiggyAccountLock(accountOrKey, fn) {
+export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = 25_000 } = {}) {
   const lockId = resolveAccountLockId(accountOrKey);
   const heldSet = heldAccountLocksAls.getStore();
   if (heldSet && heldSet.has(lockId)) {
@@ -6754,7 +6886,29 @@ export async function withSwiggyAccountLock(accountOrKey, fn) {
   const tail = prev.then(() => next, () => next);
   swiggyAccountLocks.set(lockId, tail);
 
-  await prev.catch(() => {});
+  // A queued lock must never wait forever: one stuck cart/QR job used to block
+  // every later ID-selection for minutes ("5 minute" hangs, 240s Telegraf
+  // timeouts). Wait at most `maxWaitMs`, then fail fast with a clear code.
+  const waitLimit = Math.max(1000, Number(maxWaitMs) || 25_000);
+  let waitTimer = null;
+  const waited = await Promise.race([
+    prev.catch(() => {}).then(() => 'acquired'),
+    // NOTE: intentionally NOT unref'd — this guard must still fire when a queued
+    // lock is the only pending work in the process.
+    new Promise((resolve) => {
+      waitTimer = setTimeout(() => resolve('timeout'), waitLimit);
+    })
+  ]).finally(() => { if (waitTimer) clearTimeout(waitTimer); });
+
+  if (waited === 'timeout') {
+    if (swiggyAccountLocks.get(lockId) === tail) swiggyAccountLocks.delete(lockId);
+    release();
+    const err = new Error('Swiggy ID is busy on another job — is ID par abhi kaam chal raha hai. 20-25 second me dobara try karein.');
+    err.code = 'ACCOUNT_LOCK_TIMEOUT';
+    err.diag = { code: 'ACCOUNT_LOCK_TIMEOUT', stage: 'ACCOUNT_LOCK', waitedMs: waitLimit };
+    throw err;
+  }
+
   const nextHeld = new Set(heldSet || []);
   nextHeld.add(lockId);
   try {
@@ -7307,14 +7461,35 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
 
     // One account's unexpected exception must not abandon other in-flight probes or leave
     // a reservation/cart behind; settle each independently and keep trying free accounts.
+    // Per-probe hard cap: one stuck ID must never eat the whole scan budget for
+    // the other candidates (this is what made selection feel like "5 minutes").
+    const probeTimeoutMs = Math.max(6_000, Math.min(
+      Number(options.probeTimeoutMs) || 20_000,
+      Math.max(6_000, waveTimeBudgetMs)
+    ));
     const parallelProbes = await Promise.all(reservedBatch.map(async ({ key, acc, profile }) => {
       const probeOrder = JSON.parse(JSON.stringify(order));
       delete probeOrder.addressDetails?.id;
+      let probeTimer = null;
       try {
-        const res = await withSwiggyAccountLock(key, async () => {
-          const result = await syncGroupCartAndCheckoutForAccount(acc, probeOrder, { captureScreenshot: false });
-          return { key, acc, profile, res: result, probeOrder, preCart: null };
-        });
+        const res = await Promise.race([
+          withSwiggyAccountLock(key, async () => {
+            const result = await syncGroupCartAndCheckoutForAccount(acc, probeOrder, { captureScreenshot: false });
+            return { key, acc, profile, res: result, probeOrder, preCart: null };
+          }),
+          new Promise((resolve) => {
+            probeTimer = setTimeout(() => resolve({
+              key,
+              acc,
+              profile,
+              res: { success: false, code: 'PROBE_TIMEOUT', error: `Swiggy ID ${acc?.phone || key} probe timed out after ${Math.round(probeTimeoutMs / 1000)}s` },
+              probeOrder,
+              preCart: null,
+              timedOut: true
+            }), probeTimeoutMs);
+            if (typeof probeTimer.unref === 'function') probeTimer.unref();
+          })
+        ]).finally(() => { if (probeTimer) clearTimeout(probeTimer); });
         return res;
       } catch (error) {
         return {
