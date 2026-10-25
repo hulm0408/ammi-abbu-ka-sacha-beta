@@ -12239,11 +12239,29 @@ bot.action(/^user_paid_status_([A-Za-z0-9_-]+)$/, async (ctx) => {
   try {
     const ord = getDb().orders?.[orderId];
     const link = ord ? getStoredSwiggyTrackingUrl(ord) : '';
-    await ctx.reply(
-      `◉ ${escapeHtml(res.message)}` +
-      (link ? `\n\n🔗 <b>Tracking link:</b>\n<a href="${escapeHtml(link)}">${escapeHtml(link)}</a>` : ''),
-      { parse_mode: 'HTML' }
-    ).catch(() => {});
+    if (res.paid && !link && ord?.swiggyOrderId) {
+      try { startOrderTrackingAuto(orderId, { budgetMs: 15000, trackMilestones: true, force: true }); } catch {}
+      const swiggyId = ord.swiggyOrderId;
+      const st = ord.liveOrderStatus || 'Order Received!';
+      const rider = ord.deliveryBoyName ? `\n🛵 <b>Delivery Partner:</b> ${escapeHtml(ord.deliveryBoyName)}` : '';
+      const riderCall = ord.deliveryBoyMobile ? ` (📞 <code>${escapeHtml(ord.deliveryBoyMobile)}</code>)` : '';
+      const swiggyAcc = (ord.orderAccount || ord.selectedAccountPhone) ? `\n📱 <b>Swiggy Account:</b> <code>${escapeHtml(ord.orderAccount || ord.selectedAccountPhone)}</code>` : '';
+      const otp = ord.deliveryOtp ? `\n🔢 <b>Delivery OTP:</b> <code>${escapeHtml(ord.deliveryOtp)}</code>` : '';
+      const eta = ord.etaMinutes ? `\n⏱ <b>ETA:</b> ${escapeHtml(String(ord.etaMinutes))} min` : '';
+      await ctx.reply(
+        `✅ <b>Payment Verified — Swiggy ID:</b> <code>${escapeHtml(swiggyId)}</code>\n` +
+        `📦 <b>${escapeHtml(ord.restaurantName || 'Swiggy Order')}</b>\n` +
+        `📋 <b>Status:</b> ${escapeHtml(st)}${rider}${riderCall}${swiggyAcc}${otp}${eta}\n\n` +
+        `<i>⏳ Swiggy abhi restaurant se order prepare karwa raha hai. Jaise hi delivery partner assign hoga ya link aayegi, live tracking yahin auto-update ho jayegi!</i>`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    } else {
+      await ctx.reply(
+        `◉ ${escapeHtml(res.message)}` +
+        (link ? `\n\n🔗 <b>Tracking link:</b>\n<a href="${escapeHtml(link)}">${escapeHtml(link)}</a>` : ''),
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
   } catch {}
 });
 
