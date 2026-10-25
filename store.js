@@ -11,7 +11,12 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export const getDataDir = () => process.env.DATA_DIR || path.join(__dirname, 'data');
+// Use persistent disk on Render (/app/data), fallback to local ./data
+// Supports env override: DATA_DIR, DB_FILE for flexibility
+const isRender = process.env.RENDER === 'true' || process.env.RENDER_SERVICE_NAME;
+const DEFAULT_DATA_DIR = isRender ? '/app/data' : path.join(__dirname, 'data');
+
+export const getDataDir = () => process.env.DATA_DIR || DEFAULT_DATA_DIR;
 export const getDbFile = () => process.env.DB_FILE || path.join(getDataDir(), 'db.json');
 export const getAccountsJsonFile = () => process.env.ACCOUNTS_JSON_FILE || path.join(__dirname, 'accounts.json');
 
