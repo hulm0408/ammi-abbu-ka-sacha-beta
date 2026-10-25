@@ -97,6 +97,8 @@ import {
   getBusySwiggyAccountsMap,
   releaseSwiggyAccountReservation,
   applyLiveFreeCashRelock,
+  applyLiveCouponToOrder,
+  clearCouponTrialCache,
   invalidateAccountOrderProfileCache,
   getSwiggySessionAuth,
   swiggyCartFlush,
@@ -1305,6 +1307,11 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
       Markup.button.callback('▣ Re-Scan Max Offer', `fwd_rescan_max_${order.id}`),
       Markup.button.callback('🔄 Change Auto Selection', `fwd_change_auto_sel_${order.id}`)
     ]);
+    // ONE panel for every offer/cash/coupon/cart control — Boss AND customer see
+    // the same buttons (permission is checked in the handler).
+    rows.push([
+      Markup.button.callback('🛠 Offer & Cash Panel', `fwd_panel_${order.id}`)
+    ]);
     if (order.fwdSenderUserId && !order.isDirectBossOrder && !order.billApprovedByUser && !['APPROVAL_PENDING', 'PAYMENT_PENDING', 'COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status)) {
       rows.push([Markup.button.callback('↑ Send Bill Summary ›', `fwd_send_summary_${order.id}`)]);
     }
@@ -2164,6 +2171,18 @@ export async function executeOrderBillSyncOnAccount({
     }
     order.selectedAccount = accKey;
     order.orderAccount = acc.phone || accKey;
+  }
+
+  // Remember the coupons this scan actually found, so the Offer & Cash panel can
+  // show every offer as its own button (no re-scan needed to open the panel).
+  if (Array.isArray(syncRes?.availableCoupons) && syncRes.availableCoupons.length > 0) {
+    order.availableCoupons = syncRes.availableCoupons.slice(0, 14).map((c) => ({
+      code: String(c.code || '').toUpperCase(),
+      title: String(c.title || c.code || '').slice(0, 60),
+      description: String(c.description || '').slice(0, 80),
+      discountAmount: Number(c.discountAmount || 0),
+      finalPayable: c.finalPayable === null || c.finalPayable === undefined ? null : Number(c.finalPayable)
+    })).filter((c) => /^[A-Z0-9_-]{3,28}$/.test(c.code));
   }
 
   // Free cash / late-night second chance on the SELECTED ID (outside the ID-scan
@@ -3305,6 +3324,558 @@ export function registerForwardedOrderHandlers(bot, {
   });
 
   // 6. Force Re-Scan Max Coupon + Breakfast/Late Night Free Cash on Current Account
+  // ===========================================================================
+  // OFFER & CASH PANEL — one place for items, cart link, coupons, free cash.
+  // Boss AND the customer both get these buttons (permission checked inside).
+  // ===========================================================================
+  const panelWait = new Map(); // userId -> { orderId, kind }
+
+  const canManageOrder = (order, userId) => {
+    if (!order) return false;
+    const uid = String(userId || '');
+    if (isBoss(Number(userId))) return true;
+    return Boolean(uid) && [order.userId, order.fwdSenderUserId, order.userChatId]
+      .filter(Boolean)
+      .some((v) => String(v) === uid);
+  };
+
+  const money = (n) => `₹${Math.round(Number(n || 0) * 100) / 100}`;
+
+  const panelCouponList = (order) => {
+    const list = Array.isArray(order?.availableCoupons) ? order.availableCoupons : [];
+    const active = String(order?.couponCode || '').toUpperCase();
+    return [...list].sort((a, b) => {
+      if (a.code === active) return -1;
+      if (b.code === active) return 1;
+      const pa = Number.isFinite(Number(a.finalPayable)) ? Number(a.finalPayable) : Number(a.discountAmount || 0) * -1;
+      const pb = Number.isFinite(Number(b.finalPayable)) ? Number(b.finalPayable) : Number(b.discountAmount || 0) * -1;
+      return pa - pb;
+    });
+  };
+
+  const panelSummaryLines = (order) => {
+    const lines = [
+      `🛠 <b>OFFER & CASH PANEL</b>`,
+      `<b>#${escapeHtml(String(order.id))}</b>${order.swiggyOrderId ? ` · Swiggy <code>${escapeHtml(String(order.swiggyOrderId))}</code>` : ''}`,
+      ''
+    ];
+    lines.push(`▪ <b>Item total:</b> ${money(order.itemTotal || order.subtotal)}`);
+    if (order.couponCode) lines.push(`▪ <b>Coupon:</b> <code>${escapeHtml(String(order.couponCode))}</code> (−${money(order.discountAmount)})`);
+    else lines.push(`▪ <b>Coupon:</b> <i>koi nahi</i>`);
+    const freeCash = Number(order.campaignFreeCash || 0) + Number(order.walletSplitPayAmount || 0);
+    if (freeCash > 0) lines.push(`▪ <b>Free cash / wallet:</b> −${money(freeCash)}`);
+    else lines.push(`▪ <b>Free cash:</b> <i>abhi 0 — "Refresh Cash" dabaiye</i>`);
+    if (Number(order.freeCashBalance || 0) > 0) lines.push(`▪ <b>Wallet balance:</b> ${money(order.freeCashBalance)}`);
+    lines.push(`▪ <b>Payable:</b> <b>${money(order.finalPayable)}</b>`);
+    if (order.selectedAccount) lines.push(`▪ <b>Swiggy ID:</b> <code>${escapeHtml(String(order.orderAccount || order.selectedAccount))}</code>`);
+    if (order.address) lines.push(`▪ <b>Address:</b> ${escapeHtml(String(order.address).slice(0, 70))}`);
+    lines.push('', `<i>Har button turant kaam karta hai — bill dono (boss + customer) me update hota hai.</i>`);
+    return lines;
+  };
+
+  const buildPanelKeyboard = (order) => {
+    const id = order.id;
+    return Markup.inlineKeyboard([
+      [
+        Markup.button.callback('✎ Items Adjust', `fwd_panel_items_${id}`),
+        Markup.button.callback('🔗 Import Cart Link', `fwd_panel_import_${id}`)
+      ],
+      [
+        Markup.button.callback('🎟 Coupons / Change', `fwd_panel_coupons_${id}`),
+        Markup.button.callback('🔄 Refresh Cash', `fwd_panel_cash_${id}`)
+      ],
+      [
+        Markup.button.callback('🧹 Clear Cart', `fwd_panel_clear_${id}`),
+        Markup.button.callback('↻ Re-scan All Offers', `fwd_panel_rescan_${id}`)
+      ],
+      [Markup.button.callback('‹ Back to Bill', `fwd_panel_back_${id}`)]
+    ]);
+  };
+
+  // The panel is sent to BOTH parties (boss + customer) — "dono ko send".
+  const sendPanelToBoth = async (ctx, order, text, keyboard) => {
+    const chatIds = new Set();
+    const add = (v) => { if (v) chatIds.add(String(v)); };
+    add(ctx.chat?.id);
+    add(order.userChatId); add(order.userId); add(order.fwdSenderUserId); add(order.bossChatId);
+    const db = getDb();
+    for (const bossId of (Array.isArray(db.config?.bossIds) ? db.config.bossIds : [])) add(bossId);
+    let sent = 0;
+    for (const chatId of chatIds) {
+      try {
+        await ctx.telegram.sendMessage(chatId, text, {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+          ...keyboard
+        });
+        sent += 1;
+      } catch {}
+    }
+    return sent;
+  };
+
+  const replyPanel = async (ctx, order, extraLines = [], { edit = true } = {}) => {
+    const lines = panelSummaryLines(order).concat(extraLines.length ? ['', ...extraLines] : []);
+    const text = lines.join('\n');
+    const keyboard = buildPanelKeyboard(order);
+    if (edit) {
+      const ok = await ctx.editMessageText(text, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        ...keyboard
+      }).then(() => true).catch(() => false);
+      if (ok) return true;
+    }
+    await ctx.reply(text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...keyboard
+    }).catch(() => {});
+    return true;
+  };
+
+  // Re-price the order after a coupon/cash/cart change and push the new card to
+  // both parties (they both must see the same bill).
+  const refreshBillAndNotifyBoth = async (ctx, order, note = '') => {
+    const freshDb = getDb();
+    const fresh = freshDb.orders?.[order.id] || order;
+    fresh.cardStage = fresh.cardStage === 'QR_GENERATED' ? 'QR_GENERATED' : 'BILL_READY';
+    upsertOrder(fresh.id, fresh);
+    const latest = getDb().orders?.[fresh.id] || fresh;
+    const targets = new Set();
+    const add = (v) => { if (v) targets.add(String(v)); };
+    add(ctx.chat?.id); add(latest.userChatId); add(latest.userId); add(latest.fwdSenderUserId); add(latest.bossChatId);
+    for (const bossId of (Array.isArray(getDb().config?.bossIds) ? getDb().config.bossIds : [])) add(bossId);
+    for (const chatId of targets) {
+      await postOrReplaceForwardedCard(ctx.telegram, chatId, latest, getDb(), formatOrderBodyFn, { includeQrDelete: false }).catch(() => {});
+    }
+    if (note) {
+      await ctx.reply(note, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }).catch(() => {});
+    }
+    return latest;
+  };
+
+  const loadOrderForPanel = (ctx, orderId) => {
+    const db = getDb();
+    const order = lookupOrder(db, orderId);
+    if (!order) {
+      ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {});
+      return null;
+    }
+    if (!canManageOrder(order, ctx.from?.id)) {
+      ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+      return null;
+    }
+    return order;
+  };
+
+  const panelAccount = (order) => {
+    const db = getDb();
+    const key = order?.selectedAccount;
+    const acc = key ? db.config?.accounts?.[key] : null;
+    return { key, acc };
+  };
+
+  // NOTE: this generic pattern must NOT swallow the sub-actions
+  // (`fwd_panel_items_…`, `fwd_panel_cash_…`, …) — Telegraf runs only the first
+  // matching handler, so a bare `[A-Za-z0-9_]+` would shadow every one of them.
+  bot.action(/^fwd_panel_(?!items_|import_|cancelinput_|coupons_|cash_|clear_|rescan_|cartrefresh_|back_)([A-Za-z0-9_]+)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    await ctx.answerCbQuery('🛠 Offer & Cash panel').catch(() => {});
+    const sent = await sendPanelToBoth(ctx, order, panelSummaryLines(order).join('\n'), buildPanelKeyboard(order));
+    if (sent === 0) await replyPanel(ctx, order);
+  });
+
+  bot.action(/^fwd_panel_back_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    await ctx.answerCbQuery('‹ Bill').catch(() => {});
+    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+    const freshDb = getDb();
+    const fresh = freshDb.orders?.[order.id] || order;
+    await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, fresh, freshDb, formatOrderBodyFn, { includeQrDelete: false }).catch(() => {});
+  });
+
+  // ---- 1) ITEMS ADJUST -------------------------------------------------------
+  bot.action(/^fwd_panel_items_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    await ctx.answerCbQuery('✎ Items').catch(() => {});
+    const items = Array.isArray(order.items) ? order.items : [];
+    const lines = [`✎ <b>ITEMS ADJUST — #${escapeHtml(String(order.id))}</b>`, ''];
+    if (items.length === 0) {
+      lines.push('<i>Abhi koi item nahi mila.</i>');
+    } else {
+      items.slice(0, 14).forEach((it, i) => {
+        lines.push(`${i + 1}. ${escapeHtml(String(it.name || it.itemId || 'Item'))} × ${Number(it.qty || it.quantity || 1)} — ${money(it.price)}`);
+      });
+      if (items.length > 14) lines.push(`<i>… +${items.length - 14} more</i>`);
+    }
+    lines.push('');
+    lines.push('<b>Items badalne ke 2 tareeke:</b>');
+    lines.push('1) Swiggy app me cart edit karke <b>🔗 Import Cart Link</b> — naya cart link paste karein.');
+    lines.push('2) Ya isi cart ka link dobara import karke <b>↻ Cart Refresh</b> (Swiggy se latest items pull honge).');
+    await ctx.reply(lines.join('\n'), {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🔗 Import Cart Link', `fwd_panel_import_${order.id}`)],
+        [Markup.button.callback('↻ Cart Refresh', `fwd_panel_cartrefresh_${order.id}`)],
+        [Markup.button.callback('‹ Panel', `fwd_panel_${order.id}`)]
+      ])
+    }).catch(() => {});
+  });
+
+  // ---- 2) IMPORT CART LINK (text input) -------------------------------------
+  bot.action(/^fwd_panel_import_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    panelWait.set(String(ctx.from.id), { orderId: order.id, kind: 'cart' });
+    await ctx.answerCbQuery('🔗 Cart link bhejein').catch(() => {});
+    await ctx.reply(
+      `🔗 <b>Cart link import — #${escapeHtml(String(order.id))}</b>\n\n` +
+      `Swiggy app → cart → <b>Share</b> → link copy karke yahan paste karein.\n` +
+      `<i>(Ya poori cart text bhej dein — bot khud items nikaal lega.)</i>\n\n` +
+      `<i>Cancel: /cancel</i>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[Markup.button.callback('✕ Cancel', `fwd_panel_cancelinput_${order.id}`)]])
+      }
+    ).catch(() => {});
+  });
+
+  bot.action(/^fwd_panel_cancelinput_([A-Za-z0-9_]+)$/, async (ctx) => {
+    panelWait.delete(String(ctx.from.id));
+    await ctx.answerCbQuery('Cancelled').catch(() => {});
+    await ctx.editMessageText('✕ Cart import cancel ho gaya.').catch(() => {});
+  });
+
+  // Text listener: runs BEFORE the global menu/order dispatcher (registered
+  // earlier), and passes everything else straight through with next().
+  bot.on('text', async (ctx, next) => {
+    const uid = String(ctx.from?.id || '');
+    const wait = panelWait.get(uid);
+    if (!wait) return next();
+    const raw = String(ctx.message?.text || '').trim();
+    if (/^\/cancel$/i.test(raw)) {
+      panelWait.delete(uid);
+      return ctx.reply('✕ Cancelled.');
+    }
+    panelWait.delete(uid);
+
+    const db = getDb();
+    const order = db.orders?.[wait.orderId] || lookupOrder(db, wait.orderId);
+    if (!order) return next();
+    if (!canManageOrder(order, ctx.from?.id)) return next();
+
+    const { key: accKey, acc } = panelAccount(order);
+    if (!acc || (!acc.cookies && !acc.tid && !acc.token)) {
+      return ctx.reply('⚠️ Pehle koi logged-in Swiggy ID select karein (🔄 Change Auto Selection).');
+    }
+    if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
+      return ctx.reply('⚠️ Customer bill approval lock hai — pehle naya bill banayein.');
+    }
+
+    const isLink = /https?:\/\/|swiggy\.com|swig\.gy|onelink\.me/i.test(raw);
+    const looksLikeCartText = /items?\s*total|final bill|your cart|cart/i.test(raw);
+    if (!isLink && !looksLikeCartText) {
+      return ctx.reply(
+        '⚠️ Ye cart link ya cart text nahi lagta.\nSwiggy cart ka share link paste karein (https://www.swiggy.com/... ya r.swiggy.com/...).',
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    const statusMsg = await ctx.reply('◷ <i>Cart import + live bill bana raha hoon…</i>', { parse_mode: 'HTML' }).catch(() => null);
+    try {
+      if (isLink) {
+        order.cart = raw;
+        order.addressOriginalText = order.addressOriginalText || order.address || '';
+      } else {
+        // Raw Swiggy cart text: keep it as the source so the parser can read items.
+        order.cartText = raw;
+        order.cart = order.cart || '';
+      }
+      // A new cart means the old bill/coupon/QR is stale.
+      order.couponCode = null;
+      order.discountAmount = 0;
+      order.pendingSwiggyUpiUri = '';
+      order.pendingSwiggyOrderId = '';
+      order.cardStage = 'AUTO_SELECTING';
+      upsertOrder(order.id, order);
+      clearCouponTrialCache();
+
+      const fresh = getDb().orders?.[order.id] || order;
+      const res = await withSwiggyAccountLock(accKey, () => syncGroupCartAndCheckoutForAccount(acc, fresh, { captureScreenshot: false }));
+      if (!res?.success) throw new Error(res?.error || 'Cart import failed');
+      // IMPORTANT: persist the SAME object the sync wrote to. `getDb()` re-reads
+      // the db file, so taking the order from a second `getDb()` here would save
+      // a copy without the freshly synced items/bill (cart looked empty).
+      const saved = fresh;
+      saved.availableCoupons = (res.availableCoupons || []).slice(0, 14).map((c) => ({
+        code: String(c.code || '').toUpperCase(),
+        title: String(c.title || c.code || '').slice(0, 60),
+        description: String(c.description || '').slice(0, 80),
+        discountAmount: Number(c.discountAmount || 0),
+        finalPayable: c.finalPayable === null || c.finalPayable === undefined ? null : Number(c.finalPayable)
+      }));
+      saved.cardStage = 'BILL_READY';
+      upsertOrder(saved.id, saved);
+      if (statusMsg) { try { await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch {} }
+      const latest = await refreshBillAndNotifyBoth(ctx, saved);
+      await replyPanel(ctx, latest, [`✓ <b>Naya cart import ho gaya</b> — bill dono ko bhej diya.`], { edit: false });
+    } catch (err) {
+      if (statusMsg) { try { await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch {} }
+      await ctx.reply(`❌ <b>Cart import fail:</b> ${escapeHtml(String(err?.message || err).slice(0, 200))}`, { parse_mode: 'HTML' }).catch(() => {});
+    }
+  });
+
+  // ---- 3) COUPONS: har offer ka apna button --------------------------------
+  bot.action(/^fwd_panel_coupons_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    await ctx.answerCbQuery('🎟 Coupons').catch(() => {});
+    const coupons = panelCouponList(order);
+    const active = String(order.couponCode || '').toUpperCase();
+    const lines = [`🎟 <b>COUPONS — #${escapeHtml(String(order.id))}</b>`, ''];
+    if (coupons.length === 0) {
+      lines.push('<i>Is scan me koi coupon list nahi mili.</i>');
+      lines.push('↻ <b>Re-scan All Offers</b> dabaiye — Swiggy se taaza coupons aayenge.');
+    } else {
+      lines.push(`<i>${coupons.length} offer mile. Jo lagana hai uspar tap karein:</i>`);
+      coupons.slice(0, 10).forEach((c) => {
+        const tag = c.code === active ? ' ✓ (laga hua)' : '';
+        const amt = Number(c.discountAmount || 0) > 0 ? ` −${money(c.discountAmount)}` : '';
+        lines.push(`• <code>${escapeHtml(c.code)}</code>${amt}${tag}`);
+      });
+    }
+    lines.push('', `<i>Coupon badalne par bill turant re-price hoga (dono ko naya card).</i>`);
+    const rows = coupons.slice(0, 10).map((c) => {
+      const amt = Number(c.discountAmount || 0) > 0 ? ` −${money(c.discountAmount)}` : '';
+      return [Markup.button.callback(`${c.code === active ? '✓ ' : '🎟 '}${c.code}${amt}`, `fwd_cpn_${order.id}_${c.code}`)];
+    });
+    if (order.couponCode) rows.push([Markup.button.callback('✕ Coupon hatao', `fwd_cpn_${order.id}_REMOVE`)]);
+    rows.push([Markup.button.callback('↻ Naye coupons dhundo', `fwd_panel_rescan_${order.id}`)]);
+    rows.push([Markup.button.callback('‹ Panel', `fwd_panel_${order.id}`)]);
+    const sent = await sendPanelToBoth(ctx, order, lines.join('\n'), Markup.inlineKeyboard(rows));
+    if (sent === 0) {
+      await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard(rows) }).catch(() => {});
+    }
+  });
+
+  bot.action(/^fwd_cpn_([A-Za-z0-9_]+)_([A-Z0-9_-]{3,28}|REMOVE)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    const code = String(ctx.match[2] || '').toUpperCase();
+    if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
+      return ctx.answerCbQuery('Customer approval lock hai — pehle naya bill banayein.', { show_alert: true });
+    }
+    const { key: accKey, acc } = panelAccount(order);
+    if (!acc || !acc.isLoggedIn) {
+      return ctx.answerCbQuery('Koi logged-in Swiggy ID nahi — pehle ID select karein.', { show_alert: true });
+    }
+    await ctx.answerCbQuery(code === 'REMOVE' ? 'Coupon hata raha hoon…' : `Coupon ${code} laga raha hoon…`).catch(() => {});
+    try {
+      const parsed = await withSwiggyAccountLock(accKey, () =>
+        applyLiveCouponToOrder(acc, order, code === 'REMOVE' ? 'REMOVE' : code, { fastSingleEngine: false })
+      );
+      if (!parsed || !parsed.items?.length) throw new Error('Swiggy ne cart return nahi kiya');
+      if (code !== 'REMOVE' && (String(parsed.couponCode || '').toUpperCase() !== code || Number(parsed.discountAmount || 0) <= 0)) {
+        throw new Error(`Swiggy ne ${code} accept nahi kiya (is cart/ID par eligible nahi)`);
+      }
+      Object.assign(order, {
+        couponCode: parsed.couponCode || null,
+        discountAmount: Number(parsed.discountAmount || 0),
+        finalPayable: Number(parsed.finalPayable || order.finalPayable),
+        itemTotal: Number(parsed.itemTotal || order.itemTotal),
+        totalSavings: Number(parsed.totalSavings || order.totalSavings),
+        campaignFreeCash: Number(parsed.campaignFreeCash || 0),
+        walletSplitPayAmount: Number(parsed.walletSplitPayAmount || 0)
+      });
+      upsertOrder(order.id, order);
+      // Any old QR belongs to the previous price — never let them pay the stale one.
+      if (order.pendingSwiggyUpiUri || order.pendingSwiggyOrderId) {
+        order.pendingSwiggyUpiUri = '';
+        order.pendingSwiggyOrderId = '';
+        order.pendingSwiggyPaasId = '';
+        order.cardStage = 'BILL_READY';
+        upsertOrder(order.id, order);
+      }
+      const latest = await refreshBillAndNotifyBoth(
+        ctx,
+        order,
+        code === 'REMOVE'
+          ? '✓ Coupon hata diya — naya bill dono ko bhej diya.'
+          : `✓ Coupon <code>${escapeHtml(code)}</code> lag gaya (−${money(order.discountAmount)}) — naya bill dono ko bhej diya.`
+      );
+      await replyPanel(ctx, latest, [`✓ Coupon <b>${escapeHtml(code === 'REMOVE' ? 'removed' : code)}</b> applied.`], { edit: false });
+    } catch (err) {
+      await ctx.reply(`❌ <b>Coupon ${escapeHtml(code)} nahi laga:</b> ${escapeHtml(String(err?.message || err).slice(0, 180))}`, { parse_mode: 'HTML' }).catch(() => {});
+    }
+  });
+
+  // ---- 4) REFRESH CASH / FREE CASH -----------------------------------------
+  bot.action(/^fwd_panel_cash_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    const { key: accKey, acc } = panelAccount(order);
+    if (!acc || !acc.isLoggedIn) {
+      return ctx.answerCbQuery('Koi logged-in Swiggy ID nahi.', { show_alert: true });
+    }
+    await ctx.answerCbQuery('🔄 Free cash refresh…').catch(() => {});
+    const wait = await ctx.reply('◷ <i>Late-night / breakfast free cash claim + bill refresh…</i>', { parse_mode: 'HTML' }).catch(() => null);
+    try {
+      const { claimSwiggyBreakfastAndLateNightOffers } = await import('./swiggy-bridge.js');
+      const claim = await claimSwiggyBreakfastAndLateNightOffers(acc, { force: true }).catch(() => null);
+      const relock = await withSwiggyAccountLock(accKey, () => applyLiveFreeCashRelock(acc, order, { claimWaitMs: 4000 })).catch(() => null);
+      // A cheap re-read makes sure the totals on screen match Swiggy exactly.
+      const res = await withSwiggyAccountLock(accKey, () => syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false })).catch(() => null);
+      if (res?.success) {
+        Object.assign(order, {
+          itemTotal: Number(res.cartData?.itemTotal ?? (order.itemTotal || 0)),
+          subtotal: Number(res.cartData?.subtotal ?? (order.subtotal || 0)),
+          couponCode: res.cartData?.couponCode || order.couponCode || null,
+          discountAmount: Number(res.cartData?.discountAmount || 0),
+          campaignFreeCash: Number(res.cartData?.campaignFreeCash || 0),
+          walletSplitPayAmount: Number(res.cartData?.walletSplitPayAmount || 0),
+          freeCashApplied: Number(res.cartData?.freeCashApplied || 0),
+          freeCashBalance: Number(res.cartData?.freeCashBalance || 0),
+          finalPayable: Number(res.cartData?.finalPayable || order.finalPayable),
+          totalSavings: Number(res.cartData?.totalSavings || order.totalSavings)
+        });
+        if (Array.isArray(res.availableCoupons) && res.availableCoupons.length) {
+          order.availableCoupons = res.availableCoupons.slice(0, 14).map((c) => ({
+            code: String(c.code || '').toUpperCase(),
+            title: String(c.title || c.code || '').slice(0, 60),
+            description: String(c.description || '').slice(0, 80),
+            discountAmount: Number(c.discountAmount || 0),
+            finalPayable: c.finalPayable === null || c.finalPayable === undefined ? null : Number(c.finalPayable)
+          }));
+        }
+      }
+      upsertOrder(order.id, order);
+      if (wait) { try { await ctx.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {} }
+
+      const fc = Number(order.campaignFreeCash || 0) + Number(order.walletSplitPayAmount || 0);
+      const bf = claim?.breakfast?.slotState || '?';
+      const ln = claim?.lateNight?.slotState || '?';
+      const stateLine =
+        fc > 0
+          ? `✓ <b>Free cash lag gaya: −${money(fc)}</b>`
+          : `⚠️ <b>Free cash abhi 0</b> — ${escapeHtml(relock?.note || relock?.reason || 'Swiggy ne is cart par credit nahi diya')}`;
+      const lines = [
+        `🔄 <b>CASH REFRESH — #${escapeHtml(String(order.id))}</b>`,
+        '',
+        `▪ Breakfast offer: <code>${escapeHtml(bf)}</code>`,
+        `▪ Late-night offer: <code>${escapeHtml(ln)}</code>`,
+        `▪ ${stateLine}`,
+        `▪ Coupon: ${order.couponCode ? `<code>${escapeHtml(String(order.couponCode))}</code> (−${money(order.discountAmount)})` : '<i>none</i>'}`,
+        `▪ <b>Naya payable: ${money(order.finalPayable)}</b>`
+      ];
+      const latest = await refreshBillAndNotifyBoth(ctx, order);
+      await sendPanelToBoth(ctx, latest, lines.join('\n'), buildPanelKeyboard(latest));
+    } catch (err) {
+      if (wait) { try { await ctx.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {} }
+      await ctx.reply(`❌ <b>Cash refresh fail:</b> ${escapeHtml(String(err?.message || err).slice(0, 180))}`, { parse_mode: 'HTML' }).catch(() => {});
+    }
+  });
+
+  // ---- 5) CLEAR CART --------------------------------------------------------
+  bot.action(/^fwd_panel_clear_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    const { key: accKey, acc } = panelAccount(order);
+    if (!acc || !acc.isLoggedIn) return ctx.answerCbQuery('Koi logged-in Swiggy ID nahi.', { show_alert: true });
+    await ctx.answerCbQuery('🧹 Cart clear…').catch(() => {});
+    try {
+      await withSwiggyAccountLock(accKey, () => swiggyCartFlush(acc)).catch(() => null);
+      order.items = [];
+      order.cart = '';
+      order.cartText = '';
+      order.couponCode = null;
+      order.discountAmount = 0;
+      order.campaignFreeCash = 0;
+      order.walletSplitPayAmount = 0;
+      order.finalPayable = 0;
+      order.itemTotal = 0;
+      order.availableCoupons = [];
+      order.pendingSwiggyUpiUri = '';
+      order.pendingSwiggyOrderId = '';
+      order.pendingSwiggyPaasId = '';
+      order.cardStage = 'COLLECTING';
+      upsertOrder(order.id, order);
+      panelWait.set(String(ctx.from.id), { orderId: order.id, kind: 'cart' });
+      await ctx.reply(
+        `🧹 <b>Cart clear ho gaya — #${escapeHtml(String(order.id))}</b>\n\n` +
+        `Ab Swiggy app se naya cart banakar uska <b>share link</b> yahan paste karein.\n` +
+        `<i>Items aur bill turant refresh ho jayenge, dono ko card chala jayega.</i>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([[Markup.button.callback('✕ Cancel', `fwd_panel_cancelinput_${order.id}`)]])
+        }
+      ).catch(() => {});
+    } catch (err) {
+      await ctx.reply(`❌ <b>Clear cart fail:</b> ${escapeHtml(String(err?.message || err).slice(0, 160))}`, { parse_mode: 'HTML' }).catch(() => {});
+    }
+  });
+
+  // ---- 6) CART REFRESH / RE-SCAN ALL OFFERS --------------------------------
+  const runPanelRescan = async (ctx, order, { keepCoupon = false } = {}) => {
+    const { key: accKey, acc } = panelAccount(order);
+    if (!acc || !acc.isLoggedIn) return ctx.answerCbQuery('Koi logged-in Swiggy ID nahi.', { show_alert: true });
+    const wait = await ctx.reply('↻ <i>Swiggy se taaza offers + free cash…</i>', { parse_mode: 'HTML' }).catch(() => null);
+    try {
+      clearCouponTrialCache();
+      const { claimSwiggyBreakfastAndLateNightOffers } = await import('./swiggy-bridge.js');
+      await claimSwiggyBreakfastAndLateNightOffers(acc, { force: true }).catch(() => null);
+      if (!keepCoupon) order.couponCode = null;
+      const res = await withSwiggyAccountLock(accKey, () => syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false }));
+      if (!res?.success) throw new Error(res?.error || 'Re-scan failed');
+      Object.assign(order, {
+        itemTotal: Number(res.cartData?.itemTotal ?? (order.itemTotal || 0)),
+        subtotal: Number(res.cartData?.subtotal ?? (order.subtotal || 0)),
+        couponCode: res.cartData?.couponCode || order.couponCode || null,
+        discountAmount: Number(res.cartData?.discountAmount || 0),
+        campaignFreeCash: Number(res.cartData?.campaignFreeCash || 0),
+        walletSplitPayAmount: Number(res.cartData?.walletSplitPayAmount || 0),
+        freeCashApplied: Number(res.cartData?.freeCashApplied || 0),
+        finalPayable: Number(res.cartData?.finalPayable || order.finalPayable),
+        totalSavings: Number(res.cartData?.totalSavings || order.totalSavings)
+      });
+      order.availableCoupons = (res.availableCoupons || []).slice(0, 14).map((c) => ({
+        code: String(c.code || '').toUpperCase(),
+        title: String(c.title || c.code || '').slice(0, 60),
+        description: String(c.description || '').slice(0, 80),
+        discountAmount: Number(c.discountAmount || 0),
+        finalPayable: c.finalPayable === null || c.finalPayable === undefined ? null : Number(c.finalPayable)
+      }));
+      order.cardStage = order.cardStage === 'QR_GENERATED' ? 'BILL_READY' : order.cardStage;
+      order.pendingSwiggyUpiUri = '';
+      order.pendingSwiggyOrderId = '';
+      upsertOrder(order.id, order);
+      if (wait) { try { await ctx.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {} }
+      const latest = await refreshBillAndNotifyBoth(ctx, order);
+      await replyPanel(ctx, latest, [`✓ Re-scan ho gaya — ${Array.isArray(latest.availableCoupons) ? latest.availableCoupons.length : 0} offer mile.`], { edit: false });
+    } catch (err) {
+      if (wait) { try { await ctx.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {} }
+      await ctx.reply(`❌ <b>Re-scan fail:</b> ${escapeHtml(String(err?.message || err).slice(0, 180))}`, { parse_mode: 'HTML' }).catch(() => {});
+    }
+  };
+
+  bot.action(/^fwd_panel_rescan_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    await ctx.answerCbQuery('↻ Re-scan all offers…').catch(() => {});
+    await runPanelRescan(ctx, order);
+  });
+
+  bot.action(/^fwd_panel_cartrefresh_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const order = loadOrderForPanel(ctx, ctx.match[1]);
+    if (!order) return;
+    await ctx.answerCbQuery('↻ Cart refresh…').catch(() => {});
+    await runPanelRescan(ctx, order, { keepCoupon: true });
+  });
+
   bot.action(/^fwd_rescan_max_([A-Za-z0-9_]+)$/, async (ctx) => {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];

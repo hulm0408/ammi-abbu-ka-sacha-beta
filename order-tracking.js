@@ -242,7 +242,14 @@ export async function ensureOrderTracking(orderRef, {
   concurrency = 6,
   getAccountsFn = null,
   // Active-order sweeps pass readOnly so a scan can never demote ("wipe") an ID.
-  readOnly = false
+  readOnly = false,
+  // The user pasted this order id and asked for it RIGHT NOW. A WAF cooldown
+  // that was set by background sweeps must not silently answer "not found" to
+  // a human who is waiting — one user-initiated attempt always goes through.
+  ignoreWafCooldown = false,
+  // Stale `sessionExpired` / `isLoggedOut` flags are hints, not facts: a
+  // user-initiated lookup asks every ID that still holds credentials.
+  includeStaleFlags = false
 } = {}) {
   const db = getDb();
   const order = findOrderRecord(orderRef, db);
@@ -271,7 +278,7 @@ export async function ensureOrderTracking(orderRef, {
   // bursts — hammering is exactly what keeps the block alive. Cooldown is
   // 3/5/10 min (escalating); scans resume automatically when it clears.
   const wafCooldownMs = wafPool.cooldownRemainingMs();
-  if (wafCooldownMs > 0) {
+  if (wafCooldownMs > 0 && !ignoreWafCooldown) {
     return { status: 'WAF_COOLDOWN', hasOrder: false, trackingUrl: '', scanned: 0, cooldownMs: wafCooldownMs };
   }
 
@@ -285,7 +292,8 @@ export async function ensureOrderTracking(orderRef, {
       budgetMs,
       deep,
       concurrency,
-      readOnly
+      readOnly,
+      includeStaleFlags
     });
     const freshDb = getDb();
     let target = freshDb.orders?.[order.id] || null;

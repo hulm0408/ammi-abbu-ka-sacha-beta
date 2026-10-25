@@ -8764,7 +8764,14 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
   fetchTimeoutMs = 6000,
   // READ-ONLY: used when we are only chasing a tracking link for an order that
   // is already running. A tracking sweep must never demote / "wipe" an ID.
-  readOnly = false
+  readOnly = false,
+  // A user pasted this order id themselves. `sessionExpired` / `isLoggedOut`
+  // are only HINTS from an older call — a stale flag must never stop us from
+  // asking Swiggy (that was the real "order kisi bhi ID se nahi mila" bug).
+  includeStaleFlags = false,
+  // Extra `order/all` pages to walk when the id is not on page 1 (delivered /
+  // older orders live deeper in the same list the Swiggy app shows).
+  extraListPages = 2
 } = {}) {
   const startedAt = Date.now();
   const targetId = normalizeSwiggyOrderId(swiggyOrderId);
@@ -8772,8 +8779,9 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
     return { status: 'NO_SWIGGY_ID', hasOrder: false, trackingUrl: '', scanned: 0, elapsedMs: 0, failures: [] };
   }
   const accountsMap = resolveTrackingAccountsMap(getAccountsFn);
+  const hasCreds = (acc) => Boolean(acc && (acc.cookies || acc.tid || acc.jwtTid || acc.token || acc.auth_token || acc.access_token));
   const entries = Object.entries(accountsMap)
-    .filter(([, acc]) => acc && !acc.isLoggedOut && !acc.sessionExpired && (acc.isLoggedIn || acc.cookies || acc.tid || acc.token))
+    .filter(([, acc]) => hasCreds(acc) && (includeStaleFlags || (!acc.isLoggedOut && !acc.sessionExpired)))
     .sort(([k1], [k2]) => {
       if (preferredAccountKey && k1 === preferredAccountKey) return -1;
       if (preferredAccountKey && k2 === preferredAccountKey) return 1;
@@ -8944,7 +8952,24 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
         okScannedKeys.add(key);
       }
       if (customerId) accountCustomerIds.set(key, customerId);
-      const match = list.find(o => String(o?.order_id || '') === targetId) || null;
+      let match = list.find(o => String(o?.order_id || '') === targetId) || null;
+      // Older / delivered orders live BEYOND page 1 of `order/all`. Walk a couple
+      // more pages (same list the Swiggy app paginates) before saying NOT_FOUND,
+      // otherwise a perfectly real order id "kisi bhi ID par nahi mila".
+      if (!match && deep && remaining() > 1200) {
+        const lastPage = 1 + Math.min(3, Math.max(0, Number(extraListPages) || 0));
+        for (let pg = 2; pg <= lastPage; pg++) {
+          if (remaining() <= 900) break;
+          const pageRes = await dapiFetch(acc, `order/all?page=${pg}`, { timeoutMs: callTimeout() }).catch(() => null);
+          if (!pageRes || pageRes.status !== 200 || Number(pageRes.json?.statusCode) !== 0) break;
+          const pageList = Array.isArray(pageRes.json?.data?.orders) ? pageRes.json.data.orders : [];
+          if (pageList.length === 0) break;
+          okScannedKeys.add(key);
+          match = pageList.find(o => String(o?.order_id || '') === targetId) || null;
+          if (match) break;
+          if (pageList.length < 10) break;
+        }
+      }
       if (!match) return;
       const hit = await inspectOrder(key, acc, match, customerId);
       if (hit.trackingUrl && !best) best = hit;
@@ -9006,7 +9031,7 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
 }
 
 // Dedicated All-IDs tracking extractor — bounded scan across every logged-in Swiggy ID
-export async function extractTrackingViaAllAccounts(order, { getAccountsFn = null, budgetMs = 18000, deep = true } = {}) {
+export async function extractTrackingViaAllAccounts(order, { getAccountsFn = null, budgetMs = 18000, deep = true, includeStaleFlags = true } = {}) {
   if (!order) return null;
   const targetOrderId = normalizeSwiggyOrderId(order.swiggyOrderId) || normalizeSwiggyOrderId(order.pendingSwiggyOrderId);
   if (!targetOrderId) return null;
@@ -9016,7 +9041,10 @@ export async function extractTrackingViaAllAccounts(order, { getAccountsFn = nul
     preferredAccountKey: order.selectedAccount || '',
     budgetMs,
     deep,
-    concurrency: 4
+    concurrency: 4,
+    // "WO KISI BHI ID SE ORDER NIKAAL SAKTA HAI TO TU KIU NAHI" — every ID that
+    // still holds credentials is asked; stale flags never exclude one.
+    includeStaleFlags
   }).catch(() => null);
 
   if (!scan?.hasOrder) return null;
