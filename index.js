@@ -119,6 +119,7 @@ import {
   generateRealSwiggyMerchantUpiQr,
   checkRealSwiggyPaymentAndExtractTracking,
   extractTrackingViaAllAccounts,
+  fetchSwiggyTrackingLinkFast,
   releaseSwiggyAccountReservation,
   startWafKeepWarmLoop,
   notePublicServiceOrigin,
@@ -9530,7 +9531,42 @@ bot.on('text', async (ctx, next) => {
       // IMPORTANT: pass the order OBJECT. Passing `order.id` for a pasted Swiggy
       // id made `findOrderRecord()` return null, so the scan was skipped
       // entirely ("Scanned: 0 IDs") instead of searching all logged-in IDs.
-      const result = await ensureOrderTracking(order, { force: true, budgetMs: 20000, deep: true });
+      // INSTANT TRY FIRST: the exact call the Swiggy app makes for this order —
+      // `trackV4` -> `fyi_details[].value.cta_link` on the likely account. A
+      // pasted Swiggy id usually answers here in ~300ms, so the link comes back
+      // immediately instead of after a 29-ID scan.
+      let instantUrl = '';
+      if (isNumericSwiggyId) {
+        const accMap = db2.config?.accounts || {};
+        const likelyKeys = [order.selectedAccount, ...Object.keys(accMap)].filter(Boolean)
+          .filter((k, i, arr) => arr.indexOf(k) === i)
+          .filter((k) => accMap[k] && accMap[k].isLoggedIn && !accMap[k].isLoggedOut && (accMap[k].cookies || accMap[k].tid || accMap[k].token));
+        for (const key of likelyKeys.slice(0, 3)) {
+          try {
+            const fast = await fetchSwiggyTrackingLinkFast(accMap[key], q, { budgetMs: 2500, attempts: 1 });
+            if (fast?.url) {
+              instantUrl = fast.url;
+              order.selectedAccount = order.selectedAccount || key;
+              order.orderAccount = order.orderAccount || (accMap[key].phone || key);
+              console.log(`[Tracking] Instant link for pasted id ${q} from ${key}`);
+              break;
+            }
+          } catch {}
+        }
+      }
+      if (instantUrl) {
+        order.trackingLink = instantUrl;
+        order.trackingLinkSource = 'SWIGGY_API';
+        order.swiggyOrderId = order.swiggyOrderId || q;
+        order.trackingFoundAt = new Date().toISOString();
+        const quickDb = getDb();
+        quickDb.orders[order.id] = { ...(quickDb.orders[order.id] || {}), ...order };
+        saveDb(quickDb);
+      }
+
+      const result = instantUrl
+        ? { status: 'TRACKING_FOUND', hasOrder: true, scanned: 1 }
+        : await ensureOrderTracking(order, { force: true, budgetMs: 20000, deep: true });
       if (statusMsg) { try { await bot.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch {} }
 
       if (result?.status === 'WAF_COOLDOWN') {

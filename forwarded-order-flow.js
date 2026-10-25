@@ -87,6 +87,7 @@ import {
   findBestMaxCouponAccountForOrder,
   generateRealSwiggyMerchantUpiQr,
   checkRealSwiggyPaymentAndExtractTracking,
+  fetchSwiggyTrackingLinkFast,
   extractTrackingViaAllAccounts,
   extractSwiggyProvidedTrackingUrl,
   extractSwiggyDeliveryOtp,
@@ -1207,7 +1208,7 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
       `${senderLine}\n\n` +
       `▣ <b>${escapeHtml(order.restaurantName || 'Swiggy Order')}</b>` +
       `${statusLine}${etaLine}${riderLine}\n` +
-      `<i>Swiggy has not shared a tracking link yet. The bot will send it when available.</i>` +
+      `<i>Swiggy ka tracking link aa raha hai — yehi card update hoga jaise hi Swiggy publish karega (aam taur par kuch second).</i>` +
       `${deliveryOtpLine}\n\n` +
       `<b>Payment is final. Only tracking will be retried.</b>\n` +
       `<i>No replacement payment QR will be created.</i>`;
@@ -1647,6 +1648,111 @@ export async function ingestForwardedContentIntoOrder(order, { rawText = '', loc
   return { updatedCart, updatedAddress };
 }
 
+// ---------------------------------------------------------------------------
+// INSTANT LINK WATCHER
+// ---------------------------------------------------------------------------
+// Swiggy publishes the share link a moment AFTER the payment settles. Instead of
+// waiting for the slow tracking ladder (0s -> 15s -> 180s...), this watches the
+// order every few seconds and, the second the link exists, writes it into the
+// SAME card the user is already looking at. That is the "unka bot turant
+// publish karta hai" behaviour, without spamming: one order, one ID, few calls.
+const _instantLinkWatchers = new Map(); // orderId -> timer
+
+export function stopInstantTrackingWatcher(orderId) {
+  const timer = _instantLinkWatchers.get(String(orderId));
+  if (timer) {
+    clearTimeout(timer);
+    _instantLinkWatchers.delete(String(orderId));
+  }
+}
+
+export function watchInstantTrackingLink({
+  telegram,
+  chatId,
+  orderId,
+  formatOrderBodyFn,
+  fastUntilMs = 90_000,
+  maxWaitMs = 12 * 60 * 1000
+} = {}) {
+  const key = String(orderId || '');
+  if (!key) return;
+  stopInstantTrackingWatcher(key);
+  const startedAt = Date.now();
+
+  const tick = async () => {
+    _instantLinkWatchers.delete(key);
+    const db = getDb();
+    const order = db.orders?.[key];
+    if (!order) return;
+    if (getStoredSwiggyTrackingUrl(order)) return; // already there — nothing to do
+    const swiggyOrderId = String(order.swiggyOrderId || order.pendingSwiggyOrderId || '');
+    const acc = order.selectedAccount ? db.config?.accounts?.[order.selectedAccount] : null;
+    const elapsed = Date.now() - startedAt;
+    if (elapsed > maxWaitMs) return;
+
+    let url = '';
+    if (acc && swiggyOrderId) {
+      try {
+        const fast = await fetchSwiggyTrackingLinkFast(acc, swiggyOrderId, {
+          budgetMs: elapsed < fastUntilMs ? 3500 : 6000,
+          attempts: elapsed < fastUntilMs ? 2 : 1
+        });
+        url = fast?.url || '';
+      } catch {}
+    }
+    // Selected ID has nothing after ~20s? The order may sit on a different vault
+    // ID, so try a couple more (one cheap call each) — still far cheaper than the
+    // full all-account scan.
+    if (!url && swiggyOrderId && elapsed > 20_000) {
+      const accounts = Object.entries(db.config?.accounts || {})
+        .filter(([k, a]) => a && a.isLoggedIn && !a.isLoggedOut && k !== order.selectedAccount && (a.cookies || a.tid || a.token))
+        .slice(0, 3);
+      for (const [, otherAcc] of accounts) {
+        try {
+          const hit = await fetchSwiggyTrackingLinkFast(otherAcc, swiggyOrderId, { budgetMs: 2500, attempts: 1 });
+          if (hit?.url) { url = hit.url; break; }
+        } catch {}
+      }
+    }
+
+    if (url) {
+      const fresh = getDb();
+      const freshOrder = fresh.orders?.[key];
+      if (freshOrder) {
+        freshOrder.trackingLink = url;
+        freshOrder.trackingLinkSource = 'SWIGGY_API';
+        freshOrder.shareTrackUrl = '';
+        freshOrder.trackingFoundAt = new Date().toISOString();
+        if (!freshOrder.swiggyOrderId) freshOrder.swiggyOrderId = swiggyOrderId;
+        upsertOrder(key, freshOrder);
+        console.log(`[Tracking] Instant link found ${Math.round(elapsed / 1000)}s after payment: ${swiggyOrderId}`);
+        try {
+          await postOrReplaceForwardedCard(telegram, chatId, freshOrder, getDb(), formatOrderBodyFn);
+        } catch {}
+        try {
+          await tryEditForwardedPaymentMessageWithTracking(telegram, chatId, freshOrder);
+        } catch {}
+        try {
+          await sendOrderDeliveryInfoNotice(telegram, chatId, freshOrder);
+        } catch {}
+      }
+      return;
+    }
+
+    // Fast window first (every 3s for 90s), then a slow tail that still beats
+    // the default 180s ladder.
+    const nextDelay = elapsed < fastUntilMs ? 3000 : 20_000;
+    const timer = setTimeout(tick, nextDelay);
+    if (typeof timer.unref === 'function') timer.unref();
+    _instantLinkWatchers.set(key, timer);
+  };
+
+  const firstDelay = 2000;
+  const timer = setTimeout(tick, firstDelay);
+  if (typeof timer.unref === 'function') timer.unref();
+  _instantLinkWatchers.set(key, timer);
+}
+
 export async function finalizePaidOrderCard({
   telegram,
   chatId,
@@ -1696,7 +1802,27 @@ export async function finalizePaidOrderCard({
   order.deliveryOtp = livePaidResult.deliveryOtp || order.deliveryOtp || '';
   if (livePaidResult.restaurantName) order.restaurantName = livePaidResult.restaurantName;
 
-  const providerTrackingCandidate = livePaidResult.nativeShareUrl || livePaidResult.swiggyWebTrackUrl || '';
+  // INSTANT LINK: before the paid card goes out, ask Swiggy directly the same way
+  // the app does (`trackV4` -> `fyi_details[].value.cta_link`). A few fast
+  // retries cover the 1-2s publish lag, so the very first card already carries
+  // the link instead of "tracking link not shared yet".
+  let instantTrackingUrl = '';
+  let instantTrackingOrderId = '';
+  if (order.selectedAccount) {
+    const instantAcc = getDb().config?.accounts?.[order.selectedAccount];
+    instantTrackingOrderId = String(livePaidResult.swiggyOrderId || order.pendingSwiggyOrderId || order.swiggyOrderId || '');
+    if (instantAcc && instantTrackingOrderId) {
+      try {
+        const fast = await fetchSwiggyTrackingLinkFast(instantAcc, instantTrackingOrderId, { budgetMs: 4500, attempts: 3 });
+        instantTrackingUrl = fast?.url || '';
+        if (instantTrackingUrl) console.log(`[Tracking] Instant link at payment confirm: ${instantTrackingOrderId}`);
+      } catch (fastErr) {
+        console.warn('[Tracking] Instant link fetch failed:', fastErr?.message || fastErr);
+      }
+    }
+  }
+
+  const providerTrackingCandidate = instantTrackingUrl || livePaidResult.nativeShareUrl || livePaidResult.swiggyWebTrackUrl || '';
   const providerTrackingUrl = providerTrackingCandidate
     ? getStoredSwiggyTrackingUrl({ trackingLink: providerTrackingCandidate, trackingLinkSource: 'SWIGGY_API' })
     : '';
@@ -1734,6 +1860,13 @@ export async function finalizePaidOrderCard({
   // Order confirmed → the bot fetches the genuine Swiggy share link itself and
   // pushes it to the Boss dashboard + customer as soon as Swiggy publishes it.
   try { startOrderTrackingAuto(order.id, { budgetMs: 15000 }); } catch {}
+  // …and this watches the first ~90 seconds closely, so the link appears in the
+  // very card the user is staring at (instead of 3 minutes later).
+  if (!getStoredSwiggyTrackingUrl(order)) {
+    try {
+      watchInstantTrackingLink({ telegram, chatId, orderId: order.id, formatOrderBodyFn });
+    } catch {}
+  }
   return sent;
 }
 

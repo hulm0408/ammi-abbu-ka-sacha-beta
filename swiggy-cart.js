@@ -9042,6 +9042,68 @@ export async function extractTrackingViaAllAccounts(order, { getAccountsFn = nul
   };
 }
 
+// ---------------------------------------------------------------------------
+// INSTANT TRACKING LINK (payment ke turant baad)
+// ---------------------------------------------------------------------------
+// Other bots publish the share link the same second payment succeeds because
+// they do exactly one thing: call `order/trackV4` and read
+// `data.fyi_details[].value.cta_link`. Ours went through the long account scan,
+// so the paid card often said "Swiggy has not shared a tracking link yet".
+// This is the short, direct version:
+//   * both header strategies (web `_session_tid` AND native Android token),
+//   * `trackV4` first (the field Swiggy actually fills), then `order/details`,
+//   * a few fast retries, because Swiggy publishes the link a second or two
+//     after the payment settles.
+export async function fetchSwiggyTrackingLinkFast(account, orderId, {
+  budgetMs = 6000,
+  attempts = 3,
+  customerId = ''
+} = {}) {
+  const cleanId = normalizeSwiggyOrderId(orderId) || String(orderId || '').trim();
+  const out = { url: '', payload: null, attempts: 0, tried: [] };
+  if (!account || !cleanId) return out;
+
+  const cid = String(customerId || account.customerId || account.userId || '');
+  const cidParam = cid ? `&customer_id=${encodeURIComponent(cid)}` : '';
+  const startedAt = Date.now();
+  const rounds = Math.max(1, Math.min(Number(attempts) || 3, 6));
+
+  for (let round = 0; round < rounds; round++) {
+    if (round > 0) {
+      const wait = Math.min(1200 * round, 2500);
+      if (Date.now() - startedAt + wait > budgetMs) break;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+    out.attempts += 1;
+
+    const routes = [
+      { route: `order/trackV4?order_id=${encodeURIComponent(cleanId)}&type=full&version=V2${cidParam}`, opts: { useMobileWebUa: true, timeoutMs: 3500 } },
+      { route: `order/trackV4?order_id=${encodeURIComponent(cleanId)}&type=full&version=V2${cidParam}`, opts: { timeoutMs: 3500 } },
+      { route: `order/details?order_id=${encodeURIComponent(cleanId)}&type=full&version=V2`, opts: { useMobileWebUa: true, timeoutMs: 3000 } }
+    ];
+
+    for (const { route, opts } of routes) {
+      const res = await dapiFetch(account, route, opts).catch(() => null);
+      const body = res?.json?.data ?? res?.json;
+      if (!body || typeof body !== 'object') continue;
+      const nested = body?.orders?.[0] || body?.order || body;
+      const returnedId = String(nested?.order_id || nested?.orderId || '');
+      if (returnedId && returnedId !== cleanId) continue;
+
+      // The exact field the live app fills: data.fyi_details[0].value.cta_link
+      const fromFyi = extractTrackingUrlFromSwiggyFyiDetails(body, res?.json);
+      const url = fromFyi || extractOrderShareUrlDeep(body, res?.json) || '';
+      if (url) {
+        out.url = url;
+        out.payload = body;
+        return out;
+      }
+      out.tried.push(route.split('?')[0]);
+    }
+  }
+  return out;
+}
+
 export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, maybeOrder) {
   const isWrapped = accountOrOpts && typeof accountOrOpts === 'object' && ('account' in accountOrOpts) && !maybeOrder;
   const account = isWrapped ? accountOrOpts.account : accountOrOpts;
