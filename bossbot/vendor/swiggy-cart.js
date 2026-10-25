@@ -728,6 +728,8 @@ export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = fals
       if (chkRes?.statusCode === 999 || chkRes?.statusCode === 401 || webExpiredMsg) {
         return {
           sessionExpired: true,
+          // Swiggy itself answered "unauthorized / logged out" -> real expiry.
+          hardExpired: true,
           statusMessage: chkRes?.statusMessage || webExpiredMsg || 'Session expired',
           cleanCookies,
           cm
@@ -737,7 +739,7 @@ export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = fals
       console.warn('[SwiggyAuth] Android auth fallback warning:', e.message);
     }
   } else if (webExpiredMsg) {
-    return { sessionExpired: true, statusMessage: webExpiredMsg, cleanCookies, cm };
+    return { sessionExpired: true, hardExpired: true, statusMessage: webExpiredMsg, cleanCookies, cm };
   }
 
   // Fallback decode from existing JWT if network timed out transiently
@@ -750,8 +752,16 @@ export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = fals
     ? String(claims.user_id)
     : (!isExpiredByClaim ? (acc?.customerId || null) : null);
   const isSessionExpired = Boolean(!fallbackUid || isExpiredByClaim || webExpiredMsg);
+  // This branch is only reached after the live calls failed. A timeout, a WAF
+  // challenge or an HTML page means "we could not verify", NOT "the customer is
+  // logged out". Only a JWT that is past its own exp (with no _session_tid) is
+  // treated as real expiry; everything else is transient so callers can keep
+  // the ID logged in instead of silently wiping it from the vault.
+  const hardExpired = Boolean(isExpiredByClaim && !webExpiredMsg);
   return {
     sessionExpired: isSessionExpired,
+    hardExpired,
+    transient: !hardExpired,
     statusMessage: isExpiredByClaim ? 'JWT token expired' : (webExpiredMsg || (isSessionExpired ? 'Session expired' : '')),
     cleanCookies,
     cm,
@@ -6900,9 +6910,10 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
       preferredOfferValue: Number(acc.preferredOfferValue || 1),
       walletBalance: 0
     };
-    // Only cache `valid: false` when Swiggy explicitly confirmed session expiry;
-    // never lock out valid accounts for 60s due to transient network/WAF glitches!
-    if (auth?.sessionExpired === true) {
+    // Only cache `valid: false` and demote the stored session when Swiggy
+    // explicitly confirmed expiry. A timeout / WAF page / HTML challenge must
+    // never wipe a perfectly logged-in ID from the vault.
+    if (auth?.sessionExpired === true && auth.hardExpired === true) {
       accountOrderProfileCache.set(sig, { ts: Date.now(), profile: invalidProfile });
       acc.sessionExpired = true;
       acc.isLoggedIn = false;
@@ -8420,7 +8431,10 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
   budgetMs = 20000,
   concurrency = 6,
   deep = true,
-  fetchTimeoutMs = 6000
+  fetchTimeoutMs = 6000,
+  // READ-ONLY: used when we are only chasing a tracking link for an order that
+  // is already running. A tracking sweep must never demote / "wipe" an ID.
+  readOnly = false
 } = {}) {
   const startedAt = Date.now();
   const targetId = normalizeSwiggyOrderId(swiggyOrderId);
@@ -8561,17 +8575,29 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
         null
       );
       if (auth && auth.sessionExpired) {
-        acc.sessionExpired = true;
-        acc.isLoggedIn = false;
-        try {
-          const liveDb = getDb();
-          if (liveDb?.config?.accounts?.[key]) {
-            liveDb.config.accounts[key].sessionExpired = true;
-            liveDb.config.accounts[key].isLoggedIn = false;
-            saveDb(liveDb);
-          }
-        } catch {}
-        recordScanFailure(failures, failedKeys, key, acc, 'SESSION_EXPIRED', String(auth.statusMessage || '') + tidExpHint);
+        // NEVER wipe an ID on a transient failure. Only Swiggy's own
+        // "unauthorized / logged out" answer (hardExpired) may demote it, and a
+        // read-only sweep (active-order tracking) never writes session state.
+        const hardExpiry = auth.hardExpired === true;
+        if (hardExpiry && !readOnly) {
+          acc.sessionExpired = true;
+          acc.isLoggedIn = false;
+          try {
+            const liveDb = getDb();
+            if (liveDb?.config?.accounts?.[key]) {
+              liveDb.config.accounts[key].sessionExpired = true;
+              liveDb.config.accounts[key].isLoggedIn = false;
+              saveDb(liveDb);
+            }
+          } catch {}
+        } else if (!hardExpiry) {
+          console.warn(`[TrackScan] ${key} unverifiable (${auth.statusMessage || 'network/WAF'}) — session kept`);
+        }
+        recordScanFailure(
+          failures, failedKeys, key, acc,
+          hardExpiry ? 'SESSION_EXPIRED' : 'SESSION_UNVERIFIED',
+          `${String(auth.statusMessage || '')}${hardExpiry ? '' : ' (session kept — transient)'}${tidExpHint}`
+        );
         return;
       }
       if (auth && Array.isArray(auth.orders)) {
