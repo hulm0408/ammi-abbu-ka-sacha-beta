@@ -1,6 +1,6 @@
 // ===== 🤖 LOCAL AUTOPILOT — 5 Parallel Chromium, Fully Automatic =====
 //
-// ONE BUTTON → 5 Chromium windows → Firebase pool → Auto OTP → Fresh sessions → JSON to TG
+// ONE BUTTON → 5 Chromium windows → Firebase → Auto OTP → Fresh Sessions → JSON to TG
 //
 // Usage:
 //   npm run local:autopilot -- --count=5 --bot-token=TOKEN --chat-id=CHAT_ID
@@ -27,7 +27,7 @@ const __dirname = path.dirname(__filename);
 
 // ---- Import existing bot modules ----
 import { listPoolNumbers, waitForOtpCode, snapshotSeenOtpState, markPoolNumberStatus, isFirebaseConfigured } from './firebase-numbers.js';
-import { processSingleNumber, freshEntriesFrom, preferOnline, getPremiumLedger, markLedger } from './number-pipeline.js';
+import { freshEntriesFrom, preferOnline, getPremiumLedger, markLedger } from './number-pipeline.js';
 import { getDb, saveDb, findAccountKeyByPhone, deleteAccount, syncCloudVaultNow } from './store.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 
@@ -112,6 +112,20 @@ async function sendDocumentToTelegram(filePath, caption) {
   try { await fetch(url, { method: 'POST', body: formData }); } catch (e) { console.error('TG doc error:', e.message); }
 }
 
+// ---- Cookie string parser ----
+function parseCookieString(cookieStr) {
+  const cookies = [];
+  for (const part of cookieStr.split(';')) {
+    const trimmed = part.trim();
+    if (!trimmed || !trimmed.includes('=')) continue;
+    const eq = trimmed.indexOf('=');
+    const name = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    cookies.push({ name, value, domain: '.swiggy.com', path: '/' });
+  }
+  return cookies;
+}
+
 // ---- Chrome launcher with anti-detection ----
 async function launchChrome(profileDir, index) {
   fs.mkdirSync(profileDir, { recursive: true });
@@ -142,6 +156,22 @@ async function launchChrome(profileDir, index) {
     Object.defineProperty(navigator, 'languages', { get: () => ['en-IN', 'en-US', 'en'] });
   });
   return { browser, page };
+}
+
+// ---- Navigate page to Swiggy and inject cookies ----
+async function navigateToSwiggy(page, url, cookieStr) {
+  try {
+    if (cookieStr) {
+      const cookies = parseCookieString(cookieStr);
+      await page.setCookie(...cookies);
+    }
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    await new Promise(r => setTimeout(r, 2000)); // Let page settle
+    return true;
+  } catch (e) {
+    console.error(`Navigation failed: ${e.message}`);
+    return false;
+  }
 }
 
 // ---- Session extraction ----
@@ -185,7 +215,18 @@ async function saveAndSendSession(sessionData, index, total) {
   return jsonFile;
 }
 
-// ---- Single number processor (uses existing pipeline but with visible browser) ----
+// ---- Sync bridge session cookies to our visible page ----
+async function syncBridgeCookiesToPage(page, userId) {
+  // The bridge stores session in activeSessions map - we need to import it
+  // For now, we'll navigate to Swiggy and the cookies will be picked up from profile
+  // since we use the same userDataDir
+  try {
+    await page.goto('https://www.swiggy.com/', { waitUntil: 'networkidle2', timeout: 15000 });
+    await new Promise(r => setTimeout(r, 1000));
+  } catch {}
+}
+
+// ---- Single number processor ----
 async function processNumberAutomatic(entry, laneIndex, totalLanes, report) {
   const phone = entry.phone;
   const userId = `autopilot_lane_${laneIndex}`;
@@ -202,14 +243,9 @@ async function processNumberAutomatic(entry, laneIndex, totalLanes, report) {
     // Launch browser for this lane
     ({ browser, page } = await launchChrome(profileDir, laneIndex));
     
-    // Inject bridge's request functions to use this browser
-    // We'll use the existing swiggy-bridge but override the browser launch
-    
-    await say(`🚀 <b>Lane ${laneIndex}</b> started for <code>${phone}</code>`);
-    
-    // Use the existing number-pipeline but with our browser
-    // We need to adapt processSingleNumber to use our page
-    // For simplicity, we'll call the bridge functions directly
+    // Navigate to Swiggy immediately so user sees it working
+    await page.goto('https://www.swiggy.com/signin', { waitUntil: 'networkidle2', timeout: 30000 });
+    await say(`🚀 <b>Lane ${laneIndex}</b> started for <code>${phone}</code> — Swiggy loaded`);
     
     // Import bridge functions
     const { 
@@ -219,9 +255,6 @@ async function processNumberAutomatic(entry, laneIndex, totalLanes, report) {
       verifyAndDeleteSwiggyAccountViaBridge,
       signupSwiggyViaBridge 
     } = await import('./swiggy-bridge.js');
-    
-    // Override active session with our browser
-    // The bridge uses activeSessions map - we'll inject our session
     
     // Step 1: Send OTP
     await say(`📤 Sending OTP to Swiggy...`);
@@ -234,6 +267,9 @@ async function processNumberAutomatic(entry, laneIndex, totalLanes, report) {
     const isNew = Boolean(otpReq.isNewUser);
     await say(isNew ? `🆕 <b>New number</b> — will register` : `♻️ <b>Existing number</b> — will delete & fresh`);
     
+    // Navigate to OTP page
+    await navigateToSwiggy(page, 'https://www.swiggy.com/signin?otp=true', '');
+    
     // Step 2: Wait for OTP from Firebase
     const deviceIds = entry.deviceId ? [entry.deviceId] : null;
     const seen1 = await snapshotSeenOtpState(phone, { deviceIds });
@@ -244,11 +280,24 @@ async function processNumberAutomatic(entry, laneIndex, totalLanes, report) {
     
     await say(`✅ OTP received: <code>${otpResult.code}</code>`);
     
+    // Show OTP on page (visual feedback)
+    await page.evaluate((code) => {
+      const el = document.createElement('div');
+      el.style = 'position:fixed;top:20px;right:20px;background:#4CAF50;color:white;padding:15px 20px;border-radius:8px;z-index:9999;font-size:18px;font-weight:bold;font-family:monospace;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
+      el.innerText = `OTP: ${code}`;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 10000);
+    }, otpResult.code);
+    
     // Step 3: Verify OTP
     let verifyResult = await verifySwiggyOtpViaBridge(userId, otpResult.code);
     if (!verifyResult?.success) throw new Error(`Verify failed: ${verifyResult?.message}`);
     
     syncCloudVaultNow(getDb()).catch(() => {});
+    
+    // Navigate to home to show logged-in state
+    await navigateToSwiggy(page, 'https://www.swiggy.com/', '');
+    await say(`✅ Logged in! Navigating to home...`);
     
     // Step 4: If new number → DONE
     if (isNew) {
@@ -262,6 +311,8 @@ async function processNumberAutomatic(entry, laneIndex, totalLanes, report) {
     
     // Step 5: Existing number → Delete Account
     await say(`🗑️ Deleting existing account...`);
+    await navigateToSwiggy(page, 'https://www.swiggy.com/my-account', '');
+    
     const seen2 = await snapshotSeenOtpState(phone, { deviceIds });
     const delReq = await requestSwiggyDeleteOtpViaBridge(userId, phone, verifyResult.accountKey, verifyResult.name || null);
     if (!delReq?.success) {
@@ -273,6 +324,17 @@ async function processNumberAutomatic(entry, laneIndex, totalLanes, report) {
     const delOtp = await waitForOtpCode(phone, { ...OTP_CFG, excludeIds: seen2, deviceIds });
     if (!delOtp?.code) throw new Error(`Delete OTP not received`);
     
+    await say(`✅ Delete OTP received: <code>${delOtp.code}</code>`);
+    
+    // Show delete OTP on page
+    await page.evaluate((code) => {
+      const el = document.createElement('div');
+      el.style = 'position:fixed;top:20px;right:20px;background:#f44336;color:white;padding:15px 20px;border-radius:8px;z-index:9999;font-size:18px;font-weight:bold;font-family:monospace;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
+      el.innerText = `DELETE OTP: ${code}`;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 10000);
+    }, delOtp.code);
+    
     const delRes = await verifyAndDeleteSwiggyAccountViaBridge(userId, delOtp.code, verifyResult.accountKey);
     if (!delRes?.success) throw new Error(`Delete verify failed: ${delRes?.message}`);
     
@@ -283,6 +345,8 @@ async function processNumberAutomatic(entry, laneIndex, totalLanes, report) {
     
     // Step 6: Fresh registration with same number
     await say(`🆕 Fresh registration...`);
+    await navigateToSwiggy(page, 'https://www.swiggy.com/signin', '');
+    
     const seen3 = await snapshotSeenOtpState(phone, { deviceIds });
     const freshOtpReq = await requestSwiggyOtpViaBridge(userId, phone, '', null);
     if (!freshOtpReq?.success) throw new Error(`Fresh OTP send failed: ${freshOtpReq?.message}`);
@@ -290,11 +354,25 @@ async function processNumberAutomatic(entry, laneIndex, totalLanes, report) {
     const freshOtp = await waitForOtpCode(phone, { ...OTP_CFG, excludeIds: seen3, deviceIds });
     if (!freshOtp?.code) throw new Error(`Fresh OTP not received`);
     
+    await say(`✅ Fresh OTP received: <code>${freshOtp.code}</code>`);
+    
+    await page.evaluate((code) => {
+      const el = document.createElement('div');
+      el.style = 'position:fixed;top:20px;right:20px;background:#2196F3;color:white;padding:15px 20px;border-radius:8px;z-index:9999;font-size:18px;font-weight:bold;font-family:monospace;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
+      el.innerText = `FRESH OTP: ${code}`;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 10000);
+    }, freshOtp.code);
+    
     const freshVerify = await verifySwiggyOtpViaBridge(userId, freshOtp.code);
     if (!freshVerify?.success) throw new Error(`Fresh verify failed: ${freshVerify?.message}`);
     
     markLedger(phone, 'success', { accountKey: freshVerify.accountKey, kind: 'after-delete' });
     await markPoolNumberStatus(entry, 'used');
+    
+    // Navigate to home to show fresh account
+    await navigateToSwiggy(page, 'https://www.swiggy.com/', '');
+    await say(`✅ Fresh account ready!`);
     
     const sessionData = await extractSessionData(page, phone);
     sessionData.kind = 'fresh_after_delete';
@@ -305,8 +383,19 @@ async function processNumberAutomatic(entry, laneIndex, totalLanes, report) {
   } catch (err) {
     console.error(`  [Lane ${laneIndex}] Error:`, err.message);
     await say(`❌ <b>Failed:</b> ${err.message.slice(0, 200)}`);
+    // Show error on page
+    try {
+      await page.evaluate((msg) => {
+        const el = document.createElement('div');
+        el.style = 'position:fixed;top:20px;right:20px;background:#ff9800;color:white;padding:15px 20px;border-radius:8px;z-index:9999;font-size:14px;font-family:monospace;box-shadow:0 4px 12px rgba(0,0,0,0.3);max-width:400px';
+        el.innerText = `ERROR: ${msg}`;
+        document.body.appendChild(el);
+      }, err.message.slice(0, 200));
+    } catch {}
     return { ok: false, phone, error: err.message };
   } finally {
+    // Keep browser open for 10s so user can see final state
+    await new Promise(r => setTimeout(r, 10000));
     if (browser) {
       try { await browser.close(); } catch {}
     }
