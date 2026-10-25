@@ -95,6 +95,7 @@ import {
   withSwiggyAccountLock,
   getBusySwiggyAccountsMap,
   releaseSwiggyAccountReservation,
+  applyLiveFreeCashRelock,
   invalidateAccountOrderProfileCache,
   getSwiggySessionAuth,
   swiggyCartFlush,
@@ -2030,6 +2031,23 @@ export async function executeOrderBillSyncOnAccount({
     }
     order.selectedAccount = accKey;
     order.orderAccount = acc.phone || accKey;
+  }
+
+  // Free cash / late-night second chance on the SELECTED ID (outside the ID-scan
+  // deadline, so it can never turn a good scan into a timeout). Bounded to 10s.
+  if (order.selectedAccount && getDb().config?.accounts?.[order.selectedAccount]) {
+    let freeCashTimer = null;
+    try {
+      const freeCashOut = await Promise.race([
+        applyLiveFreeCashRelock(getDb().config.accounts[order.selectedAccount], order),
+        new Promise((resolve) => { freeCashTimer = setTimeout(() => resolve(null), 10_000); })
+      ]);
+      if (freeCashOut?.reason) console.log(`[FreeCash] ${order.orderAccount || order.selectedAccount}: ${freeCashOut.reason}`);
+    } catch (freeCashErr) {
+      console.warn('[FreeCash] relock skipped:', freeCashErr?.message || freeCashErr);
+    } finally {
+      if (freeCashTimer) clearTimeout(freeCashTimer);
+    }
   }
 
   order.status = 'ACCEPTED';

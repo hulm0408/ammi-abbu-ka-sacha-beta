@@ -261,10 +261,13 @@ console.log('\n━━━ Scenario 3: BEST pick & QR generation have hard deadlin
 console.log('\n━━━ Scenario 4: free cash / late-night claim failures are not sticky ━━━');
 {
   const bridgeSrc = fs.readFileSync('./swiggy-bridge.js', 'utf8');
-  check('a failure TTL is defined separately from the 30 min success TTL',
-    /OFFER_CLAIM_FAILURE_TTL_MS\s*=\s*60 \* 1000/.test(bridgeSrc) && /OFFER_CLAIM_TTL_MS = 30 \* 60 \* 1000/.test(bridgeSrc));
-  check('the cache lookup uses the short TTL for failures',
-    /prev\?\.result\?\.success \? OFFER_CLAIM_TTL_MS : OFFER_CLAIM_FAILURE_TTL_MS/.test(bridgeSrc));
+  check('a short failure TTL exists next to the 30 min success TTL',
+    /OFFER_CLAIM_FAILURE_TTL_MS\s*=\s*3 \* 60 \* 1000/.test(bridgeSrc) && /OFFER_CLAIM_TTL_MS = 30 \* 60 \* 1000/.test(bridgeSrc));
+  check('Swiggy 403/429 gets a LONGER back-off so we stop hammering',
+    /OFFER_CLAIM_RATELIMIT_TTL_MS\s*=\s*10 \* 60 \* 1000/.test(bridgeSrc)
+    && /rateLimited \? OFFER_CLAIM_RATELIMIT_TTL_MS : OFFER_CLAIM_FAILURE_TTL_MS/.test(bridgeSrc));
+  check('concurrent callers share ONE in-flight claim (no request storm)',
+    /offerClaimInflight/.test(bridgeSrc) && /if \(inflight\) return inflight;/.test(bridgeSrc));
   check('an expired failure entry is dropped so the next call really retries',
     /if \(Date\.now\(\) - prev\.ts < ttl\) return prev\.result;\s*\n\s*offerClaimCache\.delete\(accSig\);/.test(bridgeSrc));
 
@@ -276,6 +279,56 @@ console.log('\n━━━ Scenario 4: free cash / late-night claim failures are n
   // Behavioural: a claim result that failed must come back quickly on retry.
   const srcSuccessCache = bridgeSrc.includes('offerClaimCache.set(accSig');
   check('claim results are still cached on success', srcSuccessCache);
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 6: offer claims are single-flight and back off on 403/429
+// (the real reason late-night free cash stopped applying after a retry storm)
+// ---------------------------------------------------------------------------
+console.log('\n━━━ Scenario 6: claim storm protection (single-flight + 403 back-off) ━━━');
+{
+  const jwt = (() => {
+    const h = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    const p = Buffer.from(JSON.stringify({ sub: '303', exp: Math.floor(Date.now() / 1000) + 86400 })).toString('base64url');
+    return `${h}.${p}.sig`;
+  })();
+
+  let notifyCalls = 0;
+  globalThis.fetch = async (u) => {
+    const url = String(u);
+    if (url.includes('events.swiggy.com/api/notify')) {
+      notifyCalls += 1;
+      return jsonRes(403, { message: 'Forbidden' }, url);
+    }
+    if (url.includes('events.swiggy.com')) return jsonRes(403, {}, url);
+    if (url.includes('chkout.swiggy.com')) return jsonRes(200, { statusCode: 0, tid: jwt }, url);
+    return jsonRes(200, { statusCode: 0, data: {} }, url);
+  };
+
+  try {
+    const acc = {
+      id: 'fc_storm_acc', phone: '9333344455', customerId: '303',
+      cookies: `_session_tid=fcstorm; tid=${jwt}`, tid: jwt, token: jwt, isLoggedIn: true
+    };
+
+    const [a, b] = await Promise.all([
+      bridge.claimSwiggyBreakfastAndLateNightOffers(acc, { quickLockOnly: true }),
+      bridge.claimSwiggyBreakfastAndLateNightOffers(acc, { quickLockOnly: true })
+    ]);
+
+    check('two simultaneous probes share ONE claim (no duplicate HTTP storm)', a === b);
+    // 4 campaigns (2 days x BF/LN) x 3 attempts (GET, retry GET, POST) = 12 — the
+    // point is that two callers did NOT double it (24 would mean a storm).
+    check(`the shared claim made a bounded number of notify calls (${notifyCalls})`, notifyCalls > 0 && notifyCalls <= 12, String(notifyCalls));
+    check('a Swiggy 403/429 is reported as rateLimited for back-off', a?.rateLimited === true, JSON.stringify({ bf: a?.breakfast?.statusCode, ln: a?.lateNight?.statusCode }));
+
+    const callsBefore = notifyCalls;
+    const third = await bridge.claimSwiggyBreakfastAndLateNightOffers(acc, { quickLockOnly: true });
+    check('a repeat call inside the back-off window makes ZERO new requests', notifyCalls === callsBefore, `${callsBefore} -> ${notifyCalls}`);
+    check('the back-off answer is the same rate-limited verdict', third?.rateLimited === true);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 }
 
 // ---------------------------------------------------------------------------

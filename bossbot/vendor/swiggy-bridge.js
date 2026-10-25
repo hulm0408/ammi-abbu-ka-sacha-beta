@@ -266,10 +266,15 @@ export const EVENT_OFFER_OPTIONS = {
 
 const offerClaimCache = new Map(); // `${accSig}:${offerValue}` -> { result, ts }
 const OFFER_CLAIM_TTL_MS = 30 * 60 * 1000;
-// A FAILED claim (WAF 403, timeout, no meta) used to be cached for the full 30
-// minutes, so "free cash / late night kabhi lagta hi nahi" until the TTL ran out.
-// Failures are now re-tried quickly instead of being remembered as truth.
-const OFFER_CLAIM_FAILURE_TTL_MS = 60 * 1000;
+// A FAILED claim used to be cached for the full 30 minutes, so free cash could
+// stay off for half an hour. Retrying instantly is equally wrong though: every
+// cart scan (3 probes x several waves) would fire the same claim again, hammer
+// `events.swiggy.com` into a CloudFront 403 and free cash would stop working
+// altogether. So: short retry for a plain failure, long back-off when Swiggy
+// itself said 403/429, and all concurrent callers share ONE in-flight request.
+const OFFER_CLAIM_FAILURE_TTL_MS = 3 * 60 * 1000;
+const OFFER_CLAIM_RATELIMIT_TTL_MS = 10 * 60 * 1000;
+const offerClaimInflight = new Map(); // accSig -> promise (single-flight)
 
 let cachedEventCampaignMeta = null;
 let cachedEventCampaignMetaAt = 0;
@@ -373,8 +378,30 @@ function resolveCampaignWindowInfo(boundaries, prefix, defaultDay = 15, isLateNi
   };
 }
 
-export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = false, offerValue = null, forcePatch = false, quickLockOnly = false } = {}) {
+export async function claimSwiggyBreakfastAndLateNightOffers(account, opts = {}) {
   if (!account) return { success: false, reason: 'No account provided' };
+  const { force = false, forcePatch = false, offerValue = null } = opts;
+  const chosenVal = [1, 2, 3, 4].includes(Number(offerValue || account.preferredOfferValue))
+    ? Number(offerValue || account.preferredOfferValue)
+    : 1;
+  const accSig = `${String(account.id || account.phone || account.customerId || account.token || (account.cookies || '').slice(0, 60))}:v${chosenVal}`;
+
+  if (!force && !forcePatch) {
+    // Single-flight: 3 parallel probes asking at the same moment share one call.
+    const inflight = offerClaimInflight.get(accSig);
+    if (inflight) return inflight;
+  }
+
+  const pending = _claimSwiggyOffersUncached(account, opts);
+  offerClaimInflight.set(accSig, pending);
+  try {
+    return await pending;
+  } finally {
+    if (offerClaimInflight.get(accSig) === pending) offerClaimInflight.delete(accSig);
+  }
+}
+
+async function _claimSwiggyOffersUncached(account, { force = false, offerValue = null, forcePatch = false, quickLockOnly = false } = {}) {
   const chosenVal = [1, 2, 3, 4].includes(Number(offerValue || account.preferredOfferValue))
     ? Number(offerValue || account.preferredOfferValue)
     : 1;
@@ -382,7 +409,9 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
   const accSig = `${String(account.id || account.phone || account.customerId || account.token || (account.cookies || '').slice(0, 60))}:v${chosenVal}`;
   if (!force && !forcePatch && accSig && offerClaimCache.has(accSig)) {
     const prev = offerClaimCache.get(accSig);
-    const ttl = prev?.result?.success ? OFFER_CLAIM_TTL_MS : OFFER_CLAIM_FAILURE_TTL_MS;
+    const ttl = prev?.result?.success
+      ? OFFER_CLAIM_TTL_MS
+      : (prev?.result?.rateLimited ? OFFER_CLAIM_RATELIMIT_TTL_MS : OFFER_CLAIM_FAILURE_TTL_MS);
     if (Date.now() - prev.ts < ttl) return prev.result;
     offerClaimCache.delete(accSig);
   }
@@ -686,6 +715,9 @@ export async function claimSwiggyBreakfastAndLateNightOffers(account, { force = 
       offerLabel: chosenMeta.shortLabel,
       lockedMap: prevLockedMap,
       sessionExpired: !bfOk && !lnOk && (resBf.status === 401 || resLn.status === 401 || liveSessionDead),
+      // Swiggy's own throttle answer — remembered longer so we STOP retrying and
+      // let the limit cool down instead of making it worse.
+      rateLimited: [403, 429].includes(Number(resBf.status)) || [403, 429].includes(Number(resLn.status)),
       breakfast: {
         name: 'Breakfast Morning (7AM–11AM)',
         campaign: bfWin.todayCampaign,

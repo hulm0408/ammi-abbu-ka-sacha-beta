@@ -5833,7 +5833,7 @@ export async function fetchSwiggyProfileFromCookies(cookiesOrAcc) {
 // A short negative cache stops re-proving the same dead code on every scan,
 // every wave and every order for the same account+restaurant.
 const couponTrialCache = new Map(); // `${accSig}|${restaurantId}|${CODE}` -> { ts, applied, discountAmount }
-const COUPON_TRIAL_CACHE_TTL_MS = 15 * 60 * 1000;
+const COUPON_TRIAL_CACHE_TTL_MS = 5 * 60 * 1000;
 const COUPON_TRIAL_CACHE_MAX = 800;
 
 function couponTrialAccSig(account) {
@@ -6012,7 +6012,7 @@ export async function reapplyWinningCouponAfterTrials({
 //      strictly keeping whichever achieves MAXIMUM SAVINGS & MINIMUM `Final Total` (`order_total`)!
 // ---------------------------------------------------------------------------
 export async function syncGroupCartAndCheckoutForAccount(account, order, options = {}) {
-  const { captureScreenshot = false } = options;
+  const { captureScreenshot = false, skipFreeCashRelock = false } = options;
   if (!account) return { success: false, error: 'No account provided' };
 
   const cleanCookies = cleanSwiggyCookieString(account.cookies || '', account);
@@ -6699,7 +6699,10 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     // answer (bounded) and re-push this ONE cart so Swiggy recomputes the total.
     try {
       const freeCashNow = Number(liveCart?.campaignFreeCash || 0);
-      if (freeCashNow === 0 && liveCart?.items?.length > 0 && restaurantId && targetAddressId) {
+      // Probe scans (BEST-account comparison) skip this: the winner applies it
+      // once in `applyLiveFreeCashRelock`, so 3 parallel probes + waves never
+      // fire extra cart pushes or extra offer claims.
+      if (!skipFreeCashRelock && freeCashNow === 0 && liveCart?.items?.length > 0 && restaurantId && targetAddressId) {
         // By now the wave-1 claim has almost always settled (it is cached for 30 min
         // after a success), so this await costs ~0ms; the 2000ms cap only protects a
         // genuinely cold claim from slowing the scan down.
@@ -6741,6 +6744,10 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
               console.log(`[FreeCash] ${account?.phone || account?.name || 'ID'}: ₹${Number(parsedRelock.campaignFreeCash || 0)} free cash applied after offer lock.`);
             }
           }
+        }
+        // Still nothing? Put the real reason on the card instead of silence.
+        if (Number(liveCart?.campaignFreeCash || 0) === 0 && !order.offerDiagnostics) {
+          order.offerDiagnostics = describeFreeCashGap(order, claimAnswer);
         }
       }
     } catch (freeCashErr) {
@@ -7237,6 +7244,151 @@ function scoreAccountOfferPotential(profile, estSubtotal = 250) {
 // 3. Evaluates candidate accounts IN PARALLEL, picks the #1 MAXIMUM OFFER / LOWEST `Final Total` ID,
 //    flushes & releases non-winners immediately, and wakes waiting orders in 0.01ms!
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// FREE CASH / LATE-NIGHT: apply it on the WINNING account, exactly once.
+// ---------------------------------------------------------------------------
+// Why this exists: the Breakfast/Late-Night offer lock must land BEFORE Swiggy
+// builds the cart, otherwise the free cash is missing from the bill for that
+// scan. Wave 1 only waits 450ms for it (so ID selection stays fast), so the
+// winner gets a second chance here:
+//   1. read the live cart once (cheap GET) — Swiggy often credits it on read;
+//   2. if the slot is open right now and the read still shows nothing, push the
+//      same cart once so Swiggy recomputes the total with the free cash.
+// Probes never do this (see `skipFreeCashRelock`), so there is no request storm
+// and no extra latency in the ID comparison.
+// Honest, human explanation for "free cash nahi laga" — shown on the bill card.
+// Never claims a discount that does not exist; just says WHY it is missing.
+function describeFreeCashGap(order, claimAnswer) {
+  const itemTotal = Number(order?.itemTotal || order?.subtotal || 0);
+  const rupee = (n) => `₹${Math.round(Number(n) || 0)}`;
+  if (!claimAnswer) {
+    return 'Free cash offer lock ka jawab nahi aaya (network/WAF) — dobara "Re-Scan Offers" karein.';
+  }
+  if (claimAnswer.sessionExpired) {
+    return 'Is Swiggy ID ka session expire lag raha hai — free cash lock nahi ho paya. Accounts me re-login karein.';
+  }
+  if (claimAnswer.rateLimited) {
+    return 'Swiggy ne offer lock par throttle (403/429) diya — 10 minute baad khud retry hoga.';
+  }
+  const bf = claimAnswer.breakfast || {};
+  const ln = claimAnswer.lateNight || {};
+  const live = [bf, ln].filter((x) => x.slotState === 'ACTIVE_NOW');
+  if (live.length > 0) {
+    const offer = live[0];
+    return `${offer.name || 'Offer'} live hai par Swiggy ne is cart par ${rupee(0)} credit kiya (item total ${rupee(itemTotal)} — offer ka minimum cart value check karein).`;
+  }
+  const locked = [bf, ln].find((x) => x.slotState === 'LOCKED_FOR_TODAY');
+  if (locked) {
+    return `${locked.name || 'Offer'} pre-booked hai — free cash ${locked.name && /Night/i.test(locked.name) ? 'aaj raat 9:00 PM' : 'aaj 7:00 AM'} se bill par lagega.`;
+  }
+  const missed = [bf, ln].find((x) => x.slotState === 'CUTOFF_PASSED_LOCKED_NEXT_14D');
+  if (missed) {
+    return `Aaj ka cutoff nikal gaya — next 14 din pre-locked hain, aaj free cash nahi milega.`;
+  }
+  return `Free cash abhi apply nahi hua (${claimAnswer.breakfast?.message || claimAnswer.lateNight?.message || 'Swiggy ne credit nahi diya'}).`;
+}
+
+export async function applyLiveFreeCashRelock(account, order, { claimWaitMs = 2500 } = {}) {
+  const out = { applied: false, via: '', reason: '', claimState: '' };
+  if (!account || !order) { out.reason = 'no-account'; return out; }
+  const alreadyIn = Number(order.campaignFreeCash || 0) + Number(order.freeCashApplied || 0);
+  if (alreadyIn > 0) { out.reason = 'already-present'; return out; }
+  const addressId = String(order.addressDetails?.id || '');
+  const items = Array.isArray(order.items) ? order.items.filter((it) => it.itemId || it.menu_item_id) : [];
+  if (!addressId || !order.restaurantId || items.length === 0) { out.reason = 'cart-incomplete'; return out; }
+
+  const lat = String(order.addressDetails?.lat || '');
+  const lng = String(order.addressDetails?.lng || '');
+
+  // 1) Ask the (single-flight) claim where we actually stand.
+  let claimAnswer = null;
+  let claimTimer = null;
+  try {
+    claimAnswer = await Promise.race([
+      claimSwiggyBreakfastAndLateNightOffers(account).catch(() => null),
+      new Promise((resolve) => { claimTimer = setTimeout(() => resolve(null), claimWaitMs); })
+    ]);
+  } finally {
+    if (claimTimer) clearTimeout(claimTimer);
+  }
+
+  if (claimAnswer) {
+    order.eventsClaimSummary = {
+      offerLabel: claimAnswer.offerLabel || '₹50 Free Cash (>₹199)',
+      breakfastState: claimAnswer.breakfast?.slotState || '',
+      breakfastMsg: claimAnswer.breakfast?.message || '',
+      lateNightState: claimAnswer.lateNight?.slotState || '',
+      lateNightMsg: claimAnswer.lateNight?.message || ''
+    };
+    out.claimState = `bf=${claimAnswer.breakfast?.slotState || '?'},ln=${claimAnswer.lateNight?.slotState || '?'}`;
+  }
+
+  const adopt = (parsed, via) => {
+    if (!parsed || !parsed.items?.length) return false;
+    const gained = Number(parsed.campaignFreeCash || 0) + Number(parsed.freeCashApplied || 0) > alreadyIn;
+    const cheaper = Number(parsed.finalPayable || 0) > 0 &&
+      Number(parsed.finalPayable || 0) < Number(order.finalPayable || 0);
+    if (!gained && !cheaper) return false;
+    order.campaignFreeCash = Number(parsed.campaignFreeCash || 0);
+    order.freeCashApplied = Number(parsed.freeCashApplied || 0);
+    order.walletSplitPayAmount = Number(parsed.walletSplitPayAmount || 0);
+    order.freeCashBalance = Number(parsed.freeCashBalance || 0);
+    order.finalPayable = Number(parsed.finalPayable || order.finalPayable);
+    order.totalSavings = Number(parsed.totalSavings || order.totalSavings);
+    if (parsed.couponCode) {
+      order.couponCode = parsed.couponCode;
+      order.discountAmount = Number(parsed.discountAmount || order.discountAmount || 0);
+    }
+    out.applied = true;
+    out.via = via;
+    console.log(`[FreeCash] ${account?.phone || account?.name || 'ID'}: ₹${order.campaignFreeCash} free cash applied via ${via} (${out.claimState}).`);
+    return true;
+  };
+
+  // 2) Cheap read first — no cart mutation.
+  try {
+    const read = await swiggyCartGet(account, { lat, lng, timeoutMs: 3500 }).catch(() => null);
+    const parsedRead = read?.json?.data ? parseDapiCartPayload(read.json.data) : null;
+    if (adopt(parsedRead, 'cart-refresh')) return out;
+  } catch {}
+
+  // 3) Only while the redeem window is literally open does a re-push help.
+  const slotLiveNow = claimAnswer?.breakfast?.slotState === 'ACTIVE_NOW'
+    || claimAnswer?.lateNight?.slotState === 'ACTIVE_NOW';
+  if (!slotLiveNow) {
+    out.reason = claimAnswer
+      ? `slot-not-open (${out.claimState})`
+      : 'claim-unavailable';
+    out.note = describeFreeCashGap(order, claimAnswer);
+    if (!order.offerDiagnostics) order.offerDiagnostics = out.note;
+    return out;
+  }
+
+  try {
+    const relock = await swiggyCartUpdate(
+      account,
+      {
+        restaurantId: String(order.restaurantId),
+        address_id: addressId,
+        couponCode: String(order.couponCode || ''),
+        cartItems: buildSwiggyCartItemsPayload(items),
+        mealItems: [],
+        subscriptionItems: Array.isArray(order.activeSubscriptionItems) ? order.activeSubscriptionItems : []
+      },
+      { lat, lng, flushFirst: false, timeoutMs: 4500 }
+    ).catch(() => null);
+    const parsedRelock = relock?.json?.data ? parseDapiCartPayload(relock.json.data) : null;
+    if (adopt(parsedRelock, 'cart-relock')) return out;
+    out.reason = `push-returned-no-free-cash (${out.claimState})`;
+    out.note = describeFreeCashGap(order, claimAnswer);
+    if (!order.offerDiagnostics) order.offerDiagnostics = out.note;
+    console.warn(`[FreeCash] ${account?.phone || account?.name || 'ID'}: re-push did not add free cash (${out.claimState}).`);
+  } catch (err) {
+    out.reason = `push-error: ${err?.message || err}`;
+  }
+  return out;
+}
+
 export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   const {
     captureScreenshot = false,
@@ -7475,7 +7627,10 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
       try {
         const res = await Promise.race([
           withSwiggyAccountLock(key, async () => {
-            const result = await syncGroupCartAndCheckoutForAccount(acc, probeOrder, { captureScreenshot: false });
+            const result = await syncGroupCartAndCheckoutForAccount(acc, probeOrder, {
+              captureScreenshot: false,
+              skipFreeCashRelock: true
+            });
             return { key, acc, profile, res: result, probeOrder, preCart: null };
           }),
           new Promise((resolve) => {
