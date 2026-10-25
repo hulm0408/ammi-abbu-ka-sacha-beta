@@ -739,7 +739,9 @@ async function launchStealthSwiggyBrowser() {
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
-      ...(IS_LINUX ? ['--single-process', '--no-zygote'] : []),
+      '--disable-breakpad',
+      '--disable-crash-reporter',
+      '--mute-audio',
       '--window-size=1366,768',
       '--lang=en-IN,en-US,en'
     ]
