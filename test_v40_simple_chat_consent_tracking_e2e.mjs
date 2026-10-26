@@ -355,6 +355,8 @@ console.log('\n--- Scenario 8: consent + ready bill -> QR without a second tap -
   const { autoApproveConsentedSimpleOrder } = await import('./index.js');
   const CONSENTED_ID = 'SIMPLE9002';
   mutateDb((d) => {
+    // v60: QR sirf ek real (non-placeholder) UPI se banta hai.
+    d.config.bossUpiId = 'ammi.family@okaxis';
     d.orders[CONSENTED_ID] = {
       id: CONSENTED_ID,
       userId: CUSTOMER,

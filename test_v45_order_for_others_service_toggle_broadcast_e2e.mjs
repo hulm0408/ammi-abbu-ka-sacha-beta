@@ -130,7 +130,7 @@ globalThis.fetch = async (url, opts = {}) => {
           app_redirection_info: {
             upiRedirect: {
               upiIntentRedirect: {
-                upiIntentUrl: 'upi://pay?pa=swiggy@icici&pn=SWIGGY&am=150.00'
+                upiIntentUrl: 'upi://pay?pa=upiswiggy@icici&pn=SWIGGY&am=150.00&cu=INR&tr=V45TXN'
               }
             }
           }

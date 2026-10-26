@@ -120,6 +120,8 @@ console.log('\n--- Scenario 5: double tap on approve creates ONE payment QR ---'
   const ORDER_ID = 'V41_DOUBLE_TAP';
   mutateDb((d) => {
     d.config.accounts = {};
+    // v60: a QR needs a real (non-placeholder) collection UPI.
+    d.config.bossUpiId = 'ammi.family@okaxis';
     d.orders = {
       [ORDER_ID]: {
         id: ORDER_ID,

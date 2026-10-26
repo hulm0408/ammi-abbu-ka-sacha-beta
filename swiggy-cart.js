@@ -5,6 +5,7 @@ import fs from 'fs';
 import puppeteer from 'puppeteer-core';
 import QRCode from 'qrcode';
 import { getDb, saveDb, updateAccount, syncAccountsJsonMirror } from './store.js';
+import { shouldReusePendingQr, validateUpiIntentForQr } from './payment-qr-guard.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken } from './swiggy-bridge.js';
@@ -8179,9 +8180,10 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     throw err;
   }
 
+  const QR_REUSE_MAX_AGE_MS = 90 * 1000;
   const recentPendingQr = Boolean(
     order.pendingSwiggyUpiUri?.startsWith('upi://') && order.pendingSwiggyOrderId &&
-    order.pendingQrCreatedAt && (Date.now() - Number(order.pendingQrCreatedAt)) < 4 * 60 * 1000
+    order.pendingQrCreatedAt && (Date.now() - Number(order.pendingQrCreatedAt)) < QR_REUSE_MAX_AGE_MS
   );
   const pendingAddressMatches = Boolean(
     order.pendingQrAddressId && String(order.pendingQrAddressId) === String(order.addressDetails.id || '') &&
@@ -8197,12 +8199,22 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     throw err;
   }
 
-  // CONTRACT RULE (Screen 04 & 07): Idempotent Single QR — reuse active unexpired QR without re-placing order (= ZERO duplicate SMS!)
+  // CONTRACT RULE (Screen 04 & 07): Idempotent Single QR — reuse ONLY a fresh,
+  // provably-valid QR (90s), never one that already came back as "invalid" and
+  // never after the Boss asked for a new one. The old 4-minute blind reuse was
+  // why "new QR" showed the exact same (dead) QR again.
+  const reuseDecision = shouldReusePendingQr(order, {
+    now: Date.now(),
+    maxAgeMs: QR_REUSE_MAX_AGE_MS,
+    accountPhone: account?.phone || '',
+    forceNew: forceNewQr
+  });
   if (
     globalThis.fetch === __bootNetworkFetchRef &&
     !forceNewQr &&
     order &&
     pendingAddressMatches &&
+    reuseDecision.reuse &&
     typeof order.pendingSwiggyUpiUri === 'string' &&
     order.pendingSwiggyUpiUri.startsWith('upi://') &&
     order.pendingSwiggyOrderId &&
@@ -8210,7 +8222,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     (!order.finalPayable || Number(order.pendingQrAmount || order.amount) === Number(order.finalPayable)) &&
     (!order.orderAccount || !account?.phone || String(order.orderAccount) === String(account.phone)) &&
     order.pendingQrCreatedAt &&
-    (Date.now() - Number(order.pendingQrCreatedAt)) < 4 * 60 * 1000
+    (Date.now() - Number(order.pendingQrCreatedAt)) < QR_REUSE_MAX_AGE_MS
   ) {
     return {
       upiIntentUrl: order.pendingSwiggyUpiUri,
@@ -8739,7 +8751,13 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
           ? Math.max(0, Math.round((rawPlacedTotal - splitPayUsed) * 100) / 100)
           : rawPlacedTotal);
 
-    if (!placeRes.ok || json?.statusCode !== 0 || !upiIntentUrl || !upiIntentUrl.startsWith('upi://')) {
+    // A QR is only usable if the intent itself is well-formed (real VPA + amount).
+    // Otherwise the customer scans it and sees "invalid" — stop here instead.
+    const intentCheck = upiIntentUrl
+      ? validateUpiIntentForQr(upiIntentUrl, { amount: liveOrderTotal, requireAmount: false })
+      : { valid: false, problems: ['upi intent missing'] };
+
+    if (!placeRes.ok || json?.statusCode !== 0 || !upiIntentUrl || !upiIntentUrl.startsWith('upi://') || !intentCheck.valid) {
       const err = new Error(
         `Swiggy payment gateway rejected QR creation: HTTP ${placeRes.status}, statusCode=${json?.statusCode}, msg="${json?.statusMessage || 'Unknown'}"`
       );
@@ -8752,8 +8770,13 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         cartId,
         addressId,
         cartTotal: cm.order_total,
+        intentProblems: intentCheck.problems || [],
         rawSnippet: rawText.slice(0, 500)
       };
+      if (!intentCheck.valid) {
+        err.diag.code = 'SWIGGY_UPI_INTENT_INVALID';
+        err.diag.stage = 'POST_PAYMENTS_ORDER_PLACE';
+      }
       throw err;
     }
 

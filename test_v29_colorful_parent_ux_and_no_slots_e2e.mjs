@@ -353,7 +353,7 @@ console.log('\n--- Scenario 4: zero slot blocking even when slotsLeft === 0 ---'
     status: 'APPROVAL_PENDING',
     cardStage: 'BILL_READY',
     paymentStatus: 'UNPAID',
-    pendingSwiggyUpiUri: 'upi://pay?pa=swiggy@icici&pn=Swiggy&am=210.00&tr=V29TR',
+    pendingSwiggyUpiUri: 'upi://pay?pa=upiswiggy@icici&pn=Swiggy&am=210.00&cu=INR&tr=V29TR',
     createdAt: new Date().toISOString(),
     bossMessageIds: {}
   };

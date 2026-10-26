@@ -11,6 +11,7 @@ function _isLazyRateLimited(userId, maxPerWindow = 5, windowMs = 60_000) {
   if (rec.count >= maxPerWindow) return true; rec.count += 1; return false;
 }
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
+import { validateUpiIntentForQr, describeQrRef, shouldReusePendingQr } from './payment-qr-guard.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
@@ -2379,7 +2380,10 @@ export async function executeRealQrGenerationForOrder({
   chatId,
   orderId,
   formatOrderBodyFn,
-  customRealQrGenerator = null
+  customRealQrGenerator = null,
+  // Boss/customer ne "Regenerate" dabaya => Swiggy se NAYA QR (naya tr), cached
+  // wala nahi. Yahi wajah thi ki "new QR" par wahi purana QR aata tha.
+  forceNewQr = false
 }) {
   const db = getDb();
   let order = lookupOrder(db, orderId);
@@ -2410,6 +2414,13 @@ export async function executeRealQrGenerationForOrder({
   }
 
   const generator = customRealQrGenerator || generateRealSwiggyMerchantUpiQr;
+  // The real generator takes the WRAPPED form so `forceNewQr` actually reaches
+  // Swiggy (a third positional arg would be silently ignored → same QR again).
+  const runGenerator = (accArg, orderArg, force = false) => (
+    customRealQrGenerator
+      ? customRealQrGenerator(accArg, orderArg)
+      : generateRealSwiggyMerchantUpiQr({ account: accArg, order: orderArg, forceNewQr: force })
+  );
   let realQr;
   try {
     // Per-account lock: 10 orders on 10 different Swiggy IDs generate ALL 10 QRs 100% simultaneously in parallel (~1.8s)!
@@ -2418,7 +2429,7 @@ export async function executeRealQrGenerationForOrder({
     const qrBudgetMs = Math.max(15_000, Number(process.env.QR_GEN_BUDGET_MS) || 60_000);
     let qrTimer = null;
     realQr = await Promise.race([
-      withSwiggyAccountLock(accKey, () => generator(acc, order)),
+      withSwiggyAccountLock(accKey, () => runGenerator(acc, order, forceNewQr)),
       new Promise((resolve) => {
         qrTimer = setTimeout(() => resolve(null), qrBudgetMs);
         if (typeof qrTimer.unref === 'function') qrTimer.unref();
@@ -2455,14 +2466,35 @@ export async function executeRealQrGenerationForOrder({
     acc = getDb().config?.accounts?.[accKey] || backupPick.winningAccount;
     order.selectedAccount = accKey;
     order.orderAccount = acc?.phone || accKey;
-    realQr = await withSwiggyAccountLock(accKey, () => generator(acc, order));
+    realQr = await withSwiggyAccountLock(accKey, () => runGenerator(acc, order, true));
   }
   const payable = Number(realQr.amount || order.finalPayable || 0);
   if (payable > 0) order.finalPayable = payable;
 
+  // NEVER show a QR that a UPI app will reject. If the intent itself is
+  // malformed (placeholder VPA / amount mismatch / broken encoding), fail with
+  // the exact reason instead of sending a scannable-looking "invalid" QR.
+  const intentGate = validateUpiIntentForQr(realQr.upiIntentUrl, { amount: payable, requireAmount: false });
+  if (!intentGate.valid) {
+    const badQrErr = new Error(
+      `Swiggy ka payment QR valid nahi hai — ${intentGate.problems.join('; ')}. Customer ko bheja nahi gaya.`
+    );
+    badQrErr.diag = {
+      code: 'QR_INTENT_INVALID',
+      stage: 'GENERATE_REAL_SWIGGY_QR',
+      problems: intentGate.problems,
+      accountPhone: acc?.phone || accKey
+    };
+    throw badQrErr;
+  }
+
   order.pendingSwiggyUpiUri = realQr.upiIntentUrl;
   order.realUpiIntentUri = realQr.upiIntentUrl;
   order.qrGeneratedAt = new Date().toISOString();
+  // Regeneration counter: card par "QR #2" dikhta hai, aur reuse planner ise
+  // dekh kar purana QR dobara nahi bhejta.
+  order.qrVersion = forceNewQr ? (Number(order.qrVersion || 1) + 1) : Number(order.qrVersion || 1);
+  if (forceNewQr) order.qrRegenerateCount = Number(order.qrRegenerateCount || 0) + 1;
   order.pendingSwiggyOrderId = String(realQr.swiggyOrderId || '');
   order.pendingSwiggyPaasId = String(realQr.paymentTxnId || '');
   order.pendingQrAddressId = String(order.addressDetails?.id || '');
@@ -2497,11 +2529,13 @@ export async function executeRealQrGenerationForOrder({
     throw new Error('Telegram instance does not implement sendPhoto.');
   }
   const rawQrCaption =
-    `□ <b>OFFICIAL SWIGGY DYNAMIC PAYMENT QR (#${escapeHtml(order.id)})</b>\n` +
+    `□ <b>OFFICIAL SWIGGY DYNAMIC PAYMENT QR (#${escapeHtml(order.id)})</b>` +
+    `${Number(order.qrVersion || 1) > 1 ? ` · <b>QR #${Number(order.qrVersion)}</b> (naya)` : ''}\n` +
     `◉ <b>Order For:</b> ${senderTag}\n` +
     `▤ <b>Restaurant:</b> ${restTag}\n` +
     `₹ <b>Exact Swiggy Amount:</b> ₹${payable}\n` +
     `# <b>Swiggy Checkout Order ID:</b> <code>${escapeHtml(order.pendingSwiggyOrderId)}</code>\n` +
+    (describeQrRef(realQr.upiIntentUrl).ref ? `⌗ <b>QR Ref:</b> <code>${describeQrRef(realQr.upiIntentUrl).ref}</code>\n` : '') +
     `☎ <b>Swiggy Account:</b> <code>${escapeHtml(truncateDisplayField(acc.phone || order.selectedAccount, 40))}</code>\n\n` +
     `<i>✓ 100% Real Swiggy Merchant Dynamic QR — Pay from GPay / PhonePe / Paytm to place order directly on Swiggy! Auto-detecting payment every 5s...</i>`;
   const qrSent = await sendPhotoFn(
@@ -3464,7 +3498,10 @@ export function registerForwardedOrderHandlers(bot, {
           chatId: ctx.chat.id,
           orderId,
           formatOrderBodyFn,
-          customRealQrGenerator
+          customRealQrGenerator,
+          // "↻ Regenerate Swiggy QR" = genuinely new QR. Without this the cached
+          // QR came back byte-identical ("same QR, same problem").
+          forceNewQr: order.cardStage === 'QR_GENERATED' || Boolean(order.pendingSwiggyUpiUri) || Boolean(order.qrInvalidatedAt)
         });
       } catch (err) {
         const freshDb = getDb();
