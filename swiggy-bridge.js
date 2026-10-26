@@ -858,9 +858,12 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
           note: `${label}: Swiggy ne save nahi kiya (read-back: not subscribed)`
         };
       }
+      // ₹50 free cash = option 1. Koi doosra reward (₹150/₹175 coupon) "claimed"
+      // NAHI hai — pehle yahan jhootha ✓ jata tha.
       if (Number(verifyOut.value) && Number(verifyOut.value) !== chosenVal) {
         return {
-          ok: true,
+          ok: false,
+          wrongReward: true,
           stateJson: verifyOut,
           note: `${label}: Swiggy par option ${verifyOut.value} (${(EVENT_OFFER_OPTIONS[Number(verifyOut.value)] || {}).shortLabel || ''}) save hai, ₹50 free cash nahi`
         };
@@ -934,7 +937,7 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
         upcomingCampaigns: bfWin.upcomingDays,
         slotState: bfDesc.state,
         verified: Boolean(bfVerify?.ok && bfVerify?.shouldNotify && Number(bfVerify?.value) === chosenVal),
-        status: bfFinalOk ? 'CLAIMED' : 'FAILED',
+        status: bfFinalOk ? 'CLAIMED' : (bfApplied.wrongReward ? 'WRONG_REWARD' : 'FAILED'),
         statusCode: resBf.status,
         discount: chosenMeta.shortLabel,
         offerValue: Number(bfStatusNow?.value || chosenVal),
@@ -950,7 +953,7 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
         upcomingCampaigns: lnWin.upcomingDays,
         slotState: lnDesc.state,
         verified: Boolean(lnVerify?.ok && lnVerify?.shouldNotify && Number(lnVerify?.value) === chosenVal),
-        status: lnFinalOk ? 'CLAIMED' : 'FAILED',
+        status: lnFinalOk ? 'CLAIMED' : (lnApplied.wrongReward ? 'WRONG_REWARD' : 'FAILED'),
         statusCode: resLn.status,
         discount: chosenMeta.shortLabel,
         offerValue: Number(lnStatusNow?.value || chosenVal),

@@ -97,6 +97,7 @@ import {
   fourOfferStatusBlock,
   fourOfferStatusLines,
   fourOfferScoreLine,
+  OFFER_TRACKS,
   portableSessionJsonText,
   buildPortableSessionJson
 } from './account-views.js';
@@ -3015,18 +3016,21 @@ async function processAccountEntrySequentially(ctx, entry, { index = 1, total = 
 
   const savedKey = result.account || result.key || accKey;
 
-  // Pre-claim Breakfast & Late Night ₹50 offers
+  // CHAAR offer (Morning / Night / Extra ₹50 / Weekend) — ek hi engine, honest
+  // read-back. Pehle yahan purana 2-offer `quickLockOnly` path chalta tha jo
+  // HTTP 200 ko ✓ maan leta tha (isi liye "offer claimed" dikhta tha par ₹50
+  // lagta nahi tha).
   let offersResult = null;
   try {
     offersResult = await Promise.race([
-      claimSwiggyBreakfastAndLateNightOffers({
+      autoActivateEventOffers({
         id: savedKey,
         phone: cleanPhone,
         token: liveToken || liveTid,
         tid: liveTid,
         cookies: finalCookieStr
-      }, { quickLockOnly: true, offerValue: 1, forcePatch: true }),
-      new Promise(resolve => setTimeout(() => resolve(null), 2500))
+      }, { force: false, offerValue: 1 }),
+      new Promise(resolve => setTimeout(() => resolve(null), 12000))
     ]);
   } catch {}
 
@@ -7631,7 +7635,7 @@ const bulkAccountDocCollector = createBulkDocumentBatchCollector({
     const ab = await res.arrayBuffer();
     return Buffer.from(ab);
   },
-  onBatchComplete: async ({ lastCtx, statusMsg, rawEntries = [] }) => {
+  onBatchComplete: async ({ lastCtx, statusMsg, rawEntries = [], filesCount = 0, dlErrors = [], result }) => {
     if (statusMsg?.message_id) {
       try { await bot.telegram.deleteMessage(lastCtx.chat.id, statusMsg.message_id); } catch (e) {}
     }
@@ -7682,15 +7686,27 @@ const bulkAccountDocCollector = createBulkDocumentBatchCollector({
         const a = liveDb.config?.accounts?.[k];
         if (!a) return `${i + 1}. × <code>${k}</code> — save fail`;
         const act = a.offerAutoActivation || {};
-        const bf = act.breakfast?.status === 'CLAIMED' ? '✓' : '✕';
-        const ln = act.lateNight?.status === 'CLAIMED' ? '✓' : '✕';
-        return `${i + 1}. 🟢 <code>${a.phone || k}</code> · ${truthLine(a)} · ₹50 on ₹199 → BF ${bf} / LN ${ln}`;
+        // Chaaron offer ka sach: ✓ = ₹50 free cash read-back se verify hua,
+        // ⏳ = pre-lock, 🟡 = Swiggy ne doosra reward rakha, ✕ = nahi hua.
+        const mark = (st) => {
+          const v = String(st || '').toUpperCase();
+          if (v === 'CLAIMED' || v === 'ALREADY_CLAIMED') return '✓';
+          if (v === 'PRE_LOCKED') return '⏳';
+          if (v === 'WRONG_REWARD' || v === 'CLAIMED_OTHER_VALUE') return '🟡';
+          return '✕';
+        };
+        const cells = OFFER_TRACKS.map((t) => `${t.emoji || ''}${mark(act[t.key]?.status)}`).join(' ');
+        const claimedN = OFFER_TRACKS.filter((t) => ['CLAIMED', 'ALREADY_CLAIMED'].includes(String(act[t.key]?.status || '').toUpperCase())).length;
+        return `${i + 1}. 🟢 <code>${a.phone || k}</code> · ${truthLine(a)} · ₹50×4 → ${cells} (${claimedN}/4)`;
       }).join('\n');
       await lastCtx.reply(
         `<blockquote>✓ <b>ALL FILE ACCOUNTS PROCESSED ONE BY ONE</b></blockquote>\n\n` +
-        `Total Files/Accounts: <b>${accountsToProcess.length}</b>\n` +
+        `▤ Files received: <b>${filesCount || (rawEntries || []).length}</b>` +
+        ` · Valid accounts: <b>${accountsToProcess.length}</b>` +
+        (dlErrors.length ? ` · File fail: <b>${dlErrors.length}</b>` : '') + `\n` +
         `● Logged In & Ready: <b>${successCount}</b>\n` +
-        (expiredCount > 0 ? `× Expired: <b>${expiredCount}</b>\n\n` : '\n') +
+        (expiredCount > 0 ? `× Expired: <b>${expiredCount}</b>\n` : '') +
+        (dlErrors.length ? `× <b>File errors:</b> ${dlErrors.slice(0, 6).map((e) => `<code>${escapeHtml(String(e.fileName || 'file'))}</code>`).join(', ')}${dlErrors.length > 6 ? '…' : ''}\n\n` : '\n') +
         (lines ? `${lines}\n\n` : '') +
         `<i>Order count sirf LIVE Swiggy check se — file ka likha count nahi maana jata.</i>\n` +
         `<i>Har account par tap karke poora JSON + Copy button milega.</i>`,
@@ -7773,7 +7789,15 @@ bot.on('document', async (ctx) => {
 
       // Clear any stale login/OTP wait state automatically when Boss sends account JSON files!
       if (state) delete userWaitState[userId];
-      await bulkAccountDocCollector.enqueue(String(ctx.chat.id), ctx, {
+      // ⚠️ YAHAN AWAIT MAT KARO. Pehle `await enqueue(...)` tha, matlab yeh
+      // handler poore batch (verify + cards + claims, minute tak) tak chalta
+      // rehta tha. Update dispatcher ek waqt me sirf UPDATE_CONCURRENCY (6)
+      // updates chalata hai — isliye 6 file ke baad baaki files ka handler shuru
+      // hi nahi hota tha aur batch sirf 6 files ka ban jata tha ("jitni bhi file
+      // bhejo, 6 hi upload hoti dikhti thi"). Ab handler turant return karta
+      // hai, saari files ek hi bucket me jaati hain, aur summary
+      // `onBatchComplete` bhejta hai.
+      void bulkAccountDocCollector.enqueue(String(ctx.chat.id), ctx, {
         ctx,
         fileId: doc.file_id,
         fileName: doc.file_name

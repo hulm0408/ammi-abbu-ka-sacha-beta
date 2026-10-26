@@ -187,7 +187,9 @@ console.log('\n=== 6. Import: 5 files → every ID claimed with option 1, file c
 
   check('5 accounts saved', res.savedAccounts.length === 5, String(res.savedAccounts.length));
   check('claim called for EVERY saved account', claimCalls.length === 5, String(claimCalls.length));
-  check('claim always forced', claimCalls.every((c) => c.opts?.force === true));
+  // force:false — engine pehle GET se state padhta hai, isliye already-laga offer
+  // par koi write nahi jata (double claim band) par galat reward PATCH se theek hota hai.
+  check('claim honest mode (force:false, read-back verified)', claimCalls.every((c) => c.opts?.force === false && Number(c.opts?.offerValue) === 1));
   check('claim always option 1 (₹50 on ₹199)', claimCalls.every((c) => c.opts?.offerValue === 1), JSON.stringify(claimCalls.map((c) => c.opts?.offerValue)));
 
   const db = store.getDb();
@@ -271,7 +273,7 @@ console.log('\n=== 9. index.js wiring: compact list, detail, live check, copy JS
   check('send json handler registered', /bot\.action\(\/\^acc_send_json_\(\.\+\)\$\/,/.test(src));
   check('send all json handler registered', /bot\.action\('boss_send_all_json',/.test(src));
   check('import chaaron offers claim karta hai offerValue 1 par', /autoActivateEventOffers\(accTarget, \{ force: false, offerValue: 1 \}\)/.test(src));
-  check('pre-claim also pins offerValue 1', /quickLockOnly: true, offerValue: 1, forcePatch: true/.test(src));
+  check('pre-claim chaaron offer engine se (quickLock nahi)', /autoActivateEventOffers\(\{\s*\n?\s*id: savedKey/.test(src) && !/quickLockOnly: true, offerValue: 1, forcePatch: true/.test(src));
   check('zero-order gate removed from auto-claim', !/if \(accTarget\.isZeroOrderAccount \|\| accTarget\.totalOrdersCount === 0\) \{\s*\n\s*try \{\s*\n\s*const claimOut = await claimSwiggyBreakfastAndLateNightOffers/.test(src));
   check('login-time live check requires ordersVerifiedLive', /orderHistory\.ordersVerifiedLive === true/.test(src));
   check('bulk summary reports LIVE truth per account', /Order count sirf LIVE Swiggy check se/.test(src));

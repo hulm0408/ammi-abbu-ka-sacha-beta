@@ -168,16 +168,17 @@ console.log('\n=== 4. Jhooti id se claim nahi hota — asli reason milta hai ===
   check('dusri baar bhi NO_CAMPAIGN_ID', again.offers.extra50.state === 'NO_CAMPAIGN_ID');
 }
 
-console.log('\n=== 5. Campaign apna option force kare to bhi claim = CLAIMED ===');
+console.log('\n=== 5. Campaign apna option force kare to ₹50 CLAIMED nahi (sach) ===');
 {
   offers.resetEventOfferMetaCache();
   offers.resetFixedCampaignCache();
-  const mock = makeSwiggy({ forceValue: 3 }); // Swiggy ne option 3 hi lagaya
+  const mock = makeSwiggy({ forceValue: 3 }); // Swiggy ne option 3 (coupon) hi lagaya
   const out = await offers.activateAllEventOffers(ACC1, { fetchImpl: mock.fetchImpl, force: true });
-  check('Extra ₹50 phir bhi claim hua', out.offers.extra50.status === 'CLAIMED', JSON.stringify({ s: out.offers.extra50.status, m: out.offers.extra50.message }));
-  check('state CLAIMED_OTHER_VALUE (jhootha "save nahi hua" nahi)', out.offers.extra50.state === 'CLAIMED_OTHER_VALUE', out.offers.extra50.state);
-  check('message me asli option bataya', /option 3/.test(out.offers.extra50.message), out.offers.extra50.message);
-  check('verified true (read-back)', out.offers.extra50.verified === true);
+  // ₹50 free cash = option 1. Coupon save hona "claimed" NAHI hai (yahi jhooth tha).
+  check('Extra ₹50 par jhootha CLAIMED nahi', out.offers.extra50.status === 'WRONG_REWARD', JSON.stringify({ s: out.offers.extra50.status, m: out.offers.extra50.message }));
+  check('state WRONG_REWARD', out.offers.extra50.state === 'WRONG_REWARD', out.offers.extra50.state);
+  check('reason me ₹50 free cash nahi mila likha hai', /₹50 free cash \(option 1\) nahi mila/.test(String(out.offers.extra50.message)), out.offers.extra50.message);
+  check('verified false (option 1 save nahi hua)', out.offers.extra50.verified === false);
 }
 
 console.log('\n=== 6. Doctor bhi ab Extra ₹50 / Weekend ka id jaanta hai ===');

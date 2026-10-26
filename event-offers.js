@@ -524,16 +524,19 @@ async function claimFixedOfferViaLadder(offer, {
 
   rememberFixedCampaignId(offer.key, '', { source: 'CANDIDATE_FAILED', tried, nowMs });
   const idList = candidates.slice(0, 5).join(', ');
+  const wrongReward = tried.find((t) => t.phase === 'write' && t.state === 'WRONG_REWARD');
   return {
-    campaignId: '',
-    metaSource: 'CANDIDATE_FAILED',
+    campaignId: wrongReward?.id || '',
+    metaSource: wrongReward ? 'WRONG_REWARD' : 'CANDIDATE_FAILED',
     tried,
     results: [{
-      campaignId: '',
-      state: 'NO_CAMPAIGN_ID',
+      campaignId: wrongReward?.id || '',
+      state: wrongReward ? 'WRONG_REWARD' : 'NO_CAMPAIGN_ID',
       verified: false,
       writes: 0,
-      reason: `Swiggy ne ${offer.name} ka campaign id nahi bataya — ${Math.min(writes, MAX_LADDER_WRITES)} candidate likh kar dekhe (${idList}), koi verify nahi hua`
+      reason: wrongReward
+        ? `${offer.name}: Swiggy ne campaign ${wrongReward.id} par doosra reward save rakha hai — ₹50 free cash (option 1) nahi mila`
+        : `Swiggy ne ${offer.name} ka campaign id nahi bataya — ${Math.min(writes, MAX_LADDER_WRITES)} candidate likh kar dekhe (${idList}), koi verify nahi hua`
     }]
   };
 }
@@ -751,27 +754,52 @@ export async function ensureCampaignClaim(account, {
       return { campaignId, state: 'WRITE_FAILED', writes: 0, verified: false, reason: String(err?.message || err).slice(0, 120) };
     }
 
-    const after = await readCampaignState(campaignId, { headers: hdr, fetchImpl });
-    // Claim hua ya nahi = `shouldNotify`. Value 1 par atakna galat tha: kuch
-    // campaigns sirf apne options dete hain — tab bhi offer LAG jata hai, isliye
-    // use CLAIMED_OTHER_VALUE kaha jata hai (jhootha "save nahi hua" nahi).
-    const claimedAny = after.ok && after.shouldNotify === true;
-    const ok = claimedAny && after.value === value;
+    let after = await readCampaignState(campaignId, { headers: hdr, fetchImpl });
+    let claimedAny = after.ok && after.shouldNotify === true;
+    let ok = claimedAny && after.value === value;
+
+    // ── REWARD LOCK: "claimed" ka matlab ₹50 free cash (option 1) hi hai ─────
+    // Swiggy kabhi shouldNotify:true rakhta hai par doosra reward (option 2/3/4)
+    // save kar deta hai. Woh ₹50 free cash NAHI hai. Pehle hum use bhi
+    // "CLAIMED" bol dete the — isi liye card me "offer claimed" dikhta tha par
+    // asli ₹50 nahi lagta tha. Ab: ek baar PATCH se option 1 force karte hain
+    // aur dobara read-back; phir bhi na bade to saaf WRONG_REWARD.
+    if (claimedAny && !ok) {
+      try {
+        await fetchImpl(EVENTS_API, {
+          method: 'PATCH',
+          headers: { ...hdr, ...(referer ? { Referer: referer } : {}) },
+          body: JSON.stringify({ campaign: campaignId, value }),
+          signal: AbortSignal.timeout(6500)
+        });
+      } catch { /* read-back hi sach batayega */ }
+      after = await readCampaignState(campaignId, { headers: hdr, fetchImpl });
+      claimedAny = after.ok && after.shouldNotify === true;
+      ok = claimedAny && after.value === value;
+    }
     // Write accept hua par state save nahi — agar window ABHI band hai to yeh
     // normal pre-book hai (Swiggy band slot par shouldNotify:false hi rakhta
     // hai). Use PRE_LOCKED maano: 6h tak dobara write nahi.
     const preLocked = !claimedAny && after.ok && Number(writeRes.status) >= 200 && Number(writeRes.status) < 300 && windowOpen === false;
-    const state = ok ? 'CLAIMED' : claimedAny ? 'CLAIMED_OTHER_VALUE' : preLocked ? 'PRE_LOCKED' : (after.ok ? 'WRITE_NOT_SAVED' : 'READBACK_FAILED');
+    const state = ok
+      ? 'CLAIMED'
+      : claimedAny
+        ? 'WRONG_REWARD'
+        : preLocked
+          ? 'PRE_LOCKED'
+          : (after.ok ? 'WRITE_NOT_SAVED' : 'READBACK_FAILED');
     // PRE_LOCKED me humne jo value bheji wahi yaad rakhte hain (read-back 0
     // dikhata hai kyunki window band hai) — warna har call dobara likhega.
-    ledgerSet(accSig, campaignId, ok ? value : (preLocked ? value : after.value), claimedAny, state);
+    ledgerSet(accSig, campaignId, ok ? value : (preLocked ? value : after.value), ok, state);
     return {
       campaignId,
       method,
       writes: 1,
       state,
-      verified: claimedAny,
+      // `verified` = ASLI ₹50 free cash (option ${value}) server par save hai.
+      verified: ok,
       valueMatched: ok,
+      savedValue: Number(after.value || 0),
       preLocked,
       httpStatus: Number(writeRes.status || 0),
       value: after.value,
@@ -780,7 +808,7 @@ export async function ensureCampaignClaim(account, {
       reason: ok
         ? `claim ho gaya (read-back: option ${after.value})`
         : claimedAny
-          ? `claim ho gaya par Swiggy ne option ${after.value} lagaya (1 nahi) — read-back verified`
+          ? `Swiggy ne option ${after.value} (${(EVENT_OFFER_OPTIONS[after.value] || {}).shortLabel || 'doosra reward'}) save rakha hai — ₹50 free cash (option 1) nahi mila, dobara PATCH ke baad bhi nahi`
           : preLocked
           ? 'pre-lock ho gaya (window abhi band hai, Swiggy slot khulne par laga dega)'
           : after.ok
@@ -890,6 +918,30 @@ export async function activateAllEventOffers(account, {
           continue;
         }
 
+        if (ladderState === 'WRONG_REWARD' && ladder.campaignId) {
+          // Id mil gayi, offer bhi "save" hua — par ₹50 free cash nahi. Sach bolo.
+          failed += 1;
+          offers[offerKey] = {
+            key: offerKey,
+            bossLabel: offer.bossLabel,
+            name: offer.name,
+            url: offer.url,
+            campaign: ladder.campaignId,
+            ids: [ladder.campaignId],
+            metaSource: ladder.metaSource,
+            status: 'WRONG_REWARD',
+            state: 'WRONG_REWARD',
+            verified: false,
+            alreadyActive: false,
+            writes: 0,
+            campaignUrl: offer.url,
+            discount: (EVENT_OFFER_OPTIONS[offerValue] || EVENT_OFFER_OPTIONS[1]).shortLabel,
+            message: primary?.reason || '',
+            results: ladder.results,
+            tried: ladder.tried
+          };
+          continue;
+        }
         ladderFailure = ladder;
         source = ladder.metaSource;
       }
@@ -934,6 +986,8 @@ export async function activateAllEventOffers(account, {
       const anyClaimed = results.some((r) => r.state === 'CLAIMED' || r.verified);
       const allVerified = results.every((r) => r.verified);
       const anyPreLocked = results.some((r) => r.state === 'PRE_LOCKED');
+      // Swiggy ne offer save kiya par ₹50 (option 1) nahi — yeh CLAIMED nahi hai.
+      const anyWrongReward = results.some((r) => r.state === 'WRONG_REWARD');
       if (primary?.state === 'ALREADY_ACTIVE' || primary?.state === 'ALREADY_VERIFIED') already += 1;
       else if (primary?.verified) claimed += 1;
       else if (primary?.state === 'PRE_LOCKED') preLocked += 1;
@@ -946,10 +1000,19 @@ export async function activateAllEventOffers(account, {
         campaign: primary?.campaignId || '',
         ids,
         metaSource: source,
-        status: allVerified ? 'CLAIMED' : (anyClaimed ? 'PARTIAL' : (anyPreLocked && !failed ? 'PRE_LOCKED' : 'FAILED')),
+        status: allVerified
+          ? 'CLAIMED'
+          : anyClaimed
+            ? 'PARTIAL'
+            : anyWrongReward
+              ? 'WRONG_REWARD'
+              : (anyPreLocked ? 'PRE_LOCKED' : 'FAILED'),
         state: primary?.state || 'UNKNOWN',
         preLocked: anyPreLocked,
+        wrongReward: anyWrongReward,
         verified: Boolean(primary?.verified),
+        valueMatched: Boolean(primary?.valueMatched),
+        savedValue: Number(primary?.savedValue || primary?.value || 0),
         alreadyActive: primary?.state === 'ALREADY_ACTIVE' || primary?.state === 'ALREADY_VERIFIED',
         writes: results.reduce((n, r) => n + Number(r.writes || 0), 0),
         campaignUrl: offer.url,
