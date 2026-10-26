@@ -218,7 +218,7 @@ export function accountDetailText({ acc, key, activeKey = '', orderLines = [] } 
   return { text: lines.join('\n'), json, truth, claim };
 }
 
-function escapeLight(value) {
+export function escapeLight(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

@@ -25,7 +25,10 @@ const defaultData = {
     totalSlots: 9,
     slotsLeft: 5,
     bossIds: [6484999726],
-    bossUpiId: 'swiggy@icici',
+    // No hard-coded payment VPA: `swiggy@icici` is NOT a real account (Swiggy's
+    // merchant handle is `upiswiggy@icici`), so every QR built from it scanned as
+    // INVALID. Boss must set his own with /setupi before a personal QR is used.
+    bossUpiId: '',
     familyMembers: {},
     accounts: {},
     deletedAccounts: {}
@@ -690,6 +693,11 @@ export function getDb() {
     }
     if (!data.config.deletedAccounts) {
       data.config.deletedAccounts = {};
+    }
+    // A stored placeholder from older versions is not a real payment handle —
+    // drop it so no QR is ever built from it again.
+    if (data.config.bossUpiId && /^swiggy[a-z0-9.\-_]*@/i.test(String(data.config.bossUpiId).trim())) {
+      data.config.bossUpiId = '';
     }
     if (!data.sessionVault) {
       data.sessionVault = {};

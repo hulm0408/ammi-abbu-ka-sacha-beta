@@ -65,6 +65,15 @@ import {
   buildPortableAccountMessages,
 } from './account-vault-intake.js';
 import {
+  validateUpiIntentForQr,
+  buildFallbackUpiIntent,
+  isPlaceholderUpiId,
+  isValidUpiVpa,
+  shouldReusePendingQr,
+  describeQrRef,
+  parseUpiIntent
+} from './payment-qr-guard.js';
+import {
   autoExportAccountAfterDelivery,
   planDeliveryExport,
   isOrderDelivered,
@@ -1534,8 +1543,21 @@ async function sendPaymentQrToUser(order) {
   if (!order.genuineQrBuffer && !order.customQrFileId && (order.finalPayable || order.subtotal)) {
     const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
     const db = getDb();
-    const bossUpi = db.config?.bossUpiId || 'swiggy@icici';
-    const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(bossUpi)}&pn=SWIGGY&mc=5812&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`);
+    const qrAmount = Number(order.finalPayable || order.subtotal || 0);
+    // Placeholder UPI (`swiggy@icici`) se QR kabhi nahi — wo scan par invalid hota hai.
+    const fallbackIntent = buildFallbackUpiIntent({
+      upiId: db.config?.bossUpiId,
+      amount: qrAmount,
+      orderId: order.id,
+      payeeName: 'SWIGGY'
+    });
+    if (!fallbackIntent.ok) {
+      console.warn(`[sendPaymentQrToUser] No valid UPI for QR (#${order.id}): ${fallbackIntent.reason}`);
+      order.qrBlockedReason = fallbackIntent.reason;
+      saveDb(db);
+      return;
+    }
+    const upiUri = sanitizeUpiUriForQr(fallbackIntent.uri);
     try {
       // Try ultra premium holographic card first (alag type ka card), fallback to classic
       let generatedBuf = null;
@@ -1586,7 +1608,16 @@ async function sendPaymentQrToUser(order) {
       order.qrDelivered = true;
       saveDb(getDb());
       // Direct SMS to registered mobile with payment link (rare bot feature)
-      sendPaymentLinkSms(order, order.swiggyPaymentUrl || `upi://pay?pa=${encodeURIComponent(getDb().config?.bossUpiId || 'swiggy@icici')}&pn=SWIGGY&mc=5812&am=${order.finalPayable || 0}&cu=INR&tn=Swiggy_Order_${order.id}`).catch(()=>{});
+      {
+        const smsIntent = buildFallbackUpiIntent({
+          upiId: getDb().config?.bossUpiId,
+          amount: Number(order.finalPayable || 0),
+          orderId: order.id,
+          payeeName: 'SWIGGY'
+        });
+        const smsTarget = order.swiggyPaymentUrl || (smsIntent.ok ? smsIntent.uri : '');
+        if (smsTarget) sendPaymentLinkSms(order, smsTarget).catch(() => {});
+      }
       return;
     } catch (e) {
       console.error(`Failed to send custom QR photo: ${e.message}`);
@@ -2470,14 +2501,44 @@ bot.command('setupi', async (ctx) => {
   const parts = ctx.message.text.trim().split(/\s+/);
   if (parts.length < 2) {
     const db = getDb();
-    const cur = db.config?.bossUpiId || 'swiggy@icici';
+    const cur = String(db.config?.bossUpiId || '').trim() || '(set nahi hai)';
     return ctx.reply(`₹ Current Payment UPI ID: <code>${cur}</code>\n\nChange with: <code>/setupi yourname@upi</code>`, { parse_mode: 'HTML' });
   }
   const newUpi = parts[1].trim();
+  // A QR built from a placeholder/invalid VPA always scans as "invalid".
+  if (isPlaceholderUpiId(newUpi)) {
+    return ctx.reply(
+      `× <b>Ye UPI ID use nahi ho sakti:</b> <code>${escapeHtml(newUpi)}</code>\n` +
+      `<i>Ye Swiggy ka / placeholder ID hai — is QR par payment kabhi nahi aayega (scan par &quot;invalid&quot;).</i>\n\n` +
+      `Apni asli UPI bhejein, jaise <code>yourname@okaxis</code> ya <code>yourname@ybl</code>:\n<code>/setupi yourname@okaxis</code>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+  }
+  if (!isValidUpiVpa(newUpi)) {
+    return ctx.reply(`× <b>UPI ID ka format galat hai:</b> <code>${escapeHtml(newUpi)}</code>\nSahi format: <code>name@bank</code> (jaise <code>rahul@okaxis</code>)`, { parse_mode: 'HTML' }).catch(() => {});
+  }
   const db = getDb();
   db.config.bossUpiId = newUpi;
   saveDb(db);
-  await ctx.reply(`✓ <b>Payment UPI ID updated to:</b> <code>${newUpi}</code>\nAb se generated QR par payment seedha is ID par aayega!`, { parse_mode: 'HTML' });
+  await ctx.reply(`✓ <b>Payment UPI ID updated to:</b> <code>${escapeHtml(newUpi)}</code>\nAb se generated QR par payment seedha is ID par aayega!`, { parse_mode: 'HTML' });
+});
+
+// Tap-to-set UPI (Boss ko "QR blocked" alert me milta hai)
+bot.action('boss_set_payment_upi', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  const cur = String(getDb().config?.bossUpiId || '').trim();
+  userWaitState[ctx.from.id] = { action: 'waiting_boss_upi' };
+  await ctx.reply(
+    `₹ <b>Payment UPI ID set karein</b>\n\n` +
+    `▪ Abhi: ${cur ? `<code>${escapeHtml(cur)}</code>` : '<i>set nahi hai</i>'}\n\n` +
+    `Apni asli UPI bhejein (jaise <code>name@okaxis</code> / <code>name@ybl</code>).\n` +
+    `<i>Placeholder / Swiggy ke merchant ID reject ho jayenge — unse bana QR scan par invalid hota hai.</i>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [[{ text: 'Cancel', callback_data: 'boss_panel_home', style: 'primary' }]] }
+    }
+  ).catch(() => {});
 });
 
 // ================= BOSS SERVICE ON / OFF TOGGLE & BROADCAST =================
@@ -2612,7 +2673,7 @@ bot.action('boss_prompt_set_upi', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[ctx.from.id] = { action: 'waiting_set_upi' };
   const db = getDb();
-  const cur = db.config?.bossUpiId || 'swiggy@icici';
+  const cur = String(db.config?.bossUpiId || '').trim() || '(set nahi hai)';
   await ctx.reply(
     `₹ <b>Enter your UPI ID (VPA):</b>\n\nCurrent: <code>${cur}</code>\n\n<i>Chat me apna UPI ID likh kar bhejein (jaise 9876543210@paytm ya yourname@okhdfcbank):</i>`,
     {
@@ -3990,8 +4051,13 @@ bot.action(/^boss_select_acc_(.+)$/, async (ctx) => {
 
       // Generate authentic personalized QR Card with customer's name embedded in the center of the QR
       const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
-      const bossUpi = db.config?.bossUpiId || 'swiggy@icici';
-      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(bossUpi)}&pn=SWIGGY&mc=5812&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`);
+      const adminFallback = buildFallbackUpiIntent({
+        upiId: db.config?.bossUpiId,
+        amount: Number(order.finalPayable || order.subtotal || 0),
+        orderId: order.id,
+        payeeName: 'SWIGGY'
+      });
+      const upiUri = adminFallback.ok ? sanitizeUpiUriForQr(adminFallback.uri) : '';
 
       let finalQrBuffer = result.qrBuffer;
       try {
@@ -4099,8 +4165,13 @@ bot.action(/^boss_auto_max_coupon_(.+)$/, async (ctx) => {
       applyMaxOfferToOrder(order);
 
       const custDisplayName = order.userName || 'Customer';
-      const bossUpi = db.config?.bossUpiId || 'swiggy@icici';
-      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(bossUpi)}&pn=SWIGGY&mc=5812&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`);
+      const adminFallback2 = buildFallbackUpiIntent({
+        upiId: db.config?.bossUpiId,
+        amount: Number(order.finalPayable || order.subtotal || 0),
+        orderId: order.id,
+        payeeName: 'SWIGGY'
+      });
+      const upiUri = adminFallback2.ok ? sanitizeUpiUriForQr(adminFallback2.uri) : '';
 
       let finalQrBuffer = best.qrBuffer;
       try {
@@ -4395,8 +4466,13 @@ bot.action(/^boss_send_qr_to_user_(.+)$/, async (ctx) => {
     try {
       if (!order.genuineQrBuffer) {
         const custDisplayName = order.userName || (order.userRole === 'Abbu' ? 'Abbu' : order.userRole === 'Ammi' ? 'Ammi' : 'Customer');
-        const bossUpi = db.config?.bossUpiId || 'swiggy@icici';
-        const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(bossUpi)}&pn=SWIGGY&mc=5812&am=${order.finalPayable || order.subtotal || 0}&cu=INR&tn=Swiggy_Order_${order.id}`);
+        const sendQrFallback = buildFallbackUpiIntent({
+          upiId: db.config?.bossUpiId,
+          amount: Number(order.finalPayable || order.subtotal || 0),
+          orderId: order.id,
+          payeeName: 'SWIGGY'
+        });
+        const upiUri = sendQrFallback.ok ? sanitizeUpiUriForQr(sendQrFallback.uri) : '';
         order.genuineQrBuffer = await generatePersonalizedQrCard({
           customerName: custDisplayName,
           restaurantName: order.restaurantName || 'Swiggy Food Order',
@@ -6036,10 +6112,27 @@ bot.action(/^user_accept_amount_(.+)$/, async (ctx) => {
 
   await ctx.answerCbQuery('Amount Accepted! Generating UPI QR... ₹').catch(() => {});
 
-  // Generate guaranteed-scannable high-clarity UPI QR Code automatically using bot's configured UPI ID
-  const upiId = db.config?.bossUpiId || 'swiggy@icici';
+  // QR only from a REAL configured UPI — a placeholder VPA scans as "invalid".
   const amt = order.finalPayable || 57;
-  const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(upiId)}&pn=SWIGGY&mc=5812&am=${amt}&cu=INR&tn=Swiggy_Order_${order.id}`);
+  const acceptIntent = buildFallbackUpiIntent({
+    upiId: db.config?.bossUpiId,
+    amount: Number(amt),
+    orderId: order.id,
+    payeeName: 'SWIGGY'
+  });
+  if (!acceptIntent.ok) {
+    return ctx.reply(
+      `⚠️ <b>QR nahi bhej sakta — payment UPI set nahi hai.</b>\n` +
+      `▪ <b>Reason:</b> ${escapeHtml(acceptIntent.reason)}\n\n` +
+      `Apni UPI set karein: <code>/setupi yourname@okaxis</code>\n` +
+      `<i>Placeholder UPI ka QR scan par hamesha invalid aata hai.</i>`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [[{ text: '₹ Set Payment UPI', callback_data: 'boss_set_payment_upi', style: 'primary' }]] }
+      }
+    ).catch(() => {});
+  }
+  const upiUri = sanitizeUpiUriForQr(acceptIntent.uri);
   let qrBuf = null;
   try {
     qrBuf = await generateNamedUpiQrPngBuffer({
@@ -6102,7 +6195,13 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery('Generating genuine payment QR... !').catch(() => {});
 
   const payable = order.finalPayable || order.subtotal || 0;
-  const upiId = db.config?.bossUpiId || 'swiggy@icici';
+  const qrIntent = buildFallbackUpiIntent({
+    upiId: db.config?.bossUpiId,
+    amount: Number(payable),
+    orderId: order.id || orderId,
+    payeeName: 'SWIGGY'
+  });
+  const upiId = qrIntent.ok ? qrIntent.upiId : '';
   const payeeName = 'SWIGGY';
 
   const userButtons = [
@@ -6165,8 +6264,21 @@ bot.action(/^boss_generate_qr_(.+)$/, async (ctx) => {
     }
   } else {
     // Case 2: Instant High-Resolution Guaranteed-Scannable UPI QR (< 100ms, safe with giant names!)
+    if (!qrIntent.ok) {
+      // No placeholder QR, ever — it scans as "invalid".
+      await ctx.reply(
+        `⚠️ <b>QR nahi bana — payment UPI valid set nahi hai.</b>\n` +
+        `▪ <b>Reason:</b> ${escapeHtml(qrIntent.reason)}\n\n` +
+        `Set karein: <code>/setupi yourname@okaxis</code>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: [[{ text: '₹ Set Payment UPI', callback_data: 'boss_set_payment_upi', style: 'primary' }]] }
+        }
+      ).catch(() => {});
+      return;
+    }
     try {
-      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(upiId)}&pn=SWIGGY&mc=5812&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`);
+      const upiUri = sanitizeUpiUriForQr(qrIntent.uri);
       const qrBuffer = await generateNamedUpiQrPngBuffer({
         upiUri,
         senderName: order.userName || payeeName,
@@ -6257,9 +6369,21 @@ bot.action(/^boss_get_qr_(.+)$/, async (ctx) => {
     });
   } else {
     try {
-      const upiId = db.config?.bossUpiId || 'swiggy@icici';
+      const qrReqIntent = buildFallbackUpiIntent({
+        upiId: db.config?.bossUpiId,
+        amount: Number(payable),
+        orderId,
+        payeeName: 'SWIGGY'
+      });
+      if (!qrReqIntent.ok) {
+        return ctx.reply(
+          `⚠️ <b>QR nahi bana — payment UPI valid set nahi hai.</b>\n▪ <b>Reason:</b> ${escapeHtml(qrReqIntent.reason)}\n\nSet karein: <code>/setupi yourname@okaxis</code>`,
+          { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '₹ Set Payment UPI', callback_data: 'boss_set_payment_upi', style: 'primary' }]] } }
+        ).catch(() => {});
+      }
+      const upiId = qrReqIntent.upiId;
       const payeeName = 'SWIGGY';
-      const upiUri = sanitizeUpiUriForQr(`upi://pay?pa=${encodeURIComponent(upiId)}&pn=SWIGGY&mc=5812&am=${payable}&cu=INR&tn=Swiggy_Order_${orderId}`);
+      const upiUri = sanitizeUpiUriForQr(qrReqIntent.uri);
       const qrBuffer = await generateNamedUpiQrPngBuffer({
         upiUri,
         senderName: order.userName || payeeName,
@@ -6595,7 +6719,34 @@ bot.action(/^user_resend_qr_(.+)$/, async (ctx) => {
     return ctx.answerCbQuery('No payment QR is available for a closed order.', { show_alert: true }).catch(() => {});
   }
   await ctx.answerCbQuery('Resending payment details...').catch(() => {});
-  await sendPaymentQrToUser(order);
+  // Same rule: only a still-valid QR is resent; otherwise a fresh one is made.
+  const legacyReuse = shouldReusePendingQr(order, { accountPhone: order.orderAccount || '' });
+  if (legacyReuse.reuse || order.customQrFileId) {
+    await sendPaymentQrToUser(order);
+    return;
+  }
+  {
+    const markDb = getDb();
+    if (markDb.orders?.[order.id]) {
+      markDb.orders[order.id].qrInvalidatedAt = new Date().toISOString();
+      markDb.orders[order.id].qrInvalidReason = legacyReuse.reason;
+      saveDb(markDb);
+    }
+  }
+  try {
+    await executeRealQrGenerationForOrder({
+      telegram: bot.telegram,
+      chatId: String(ctx.from.id),
+      orderId: order.id,
+      formatOrderBodyFn: formatUserOrderCardText,
+      forceNewQr: true
+    });
+  } catch (error) {
+    await ctx.reply(
+      `× <b>Naya QR nahi ban paya:</b> ${escapeHtml(error.message)}\n<i>Purana QR dobara nahi bheja gaya — wo valid nahi tha.</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+  }
 });
 
 bot.action(/^boss_confirm_paid_(.+)$/, async (ctx) => {
@@ -8107,7 +8258,7 @@ bot.hears(['▤ Order History', 'Order History', 'order history'], async (ctx) =
 bot.hears(['Set UPI ID', '● Set UPI ID'], async (ctx) => {
   if (isBoss(ctx.from.id)) {
     userWaitState[ctx.from.id] = { action: 'waiting_set_upi' };
-    const cur = getDb().config?.bossUpiId || 'swiggy@icici';
+    const cur = String(getDb().config?.bossUpiId || '').trim() || '(set nahi hai)';
     await ctx.reply(
       `₹ <b>Set Boss Payment UPI ID:</b>\nCurrent: <code>${cur}</code>`,
       {
@@ -8608,6 +8759,30 @@ bot.on('text', async (ctx, next) => {
   }
 
   // 0: Check if Boss is typing a new account name
+  // Boss apna asli payment UPI set kar raha hai (invalid/placeholder reject).
+  if (state && state.action === 'waiting_boss_upi') {
+    delete userWaitState[userId];
+    const candidate = String(rawText || '').trim().split(/\s+/)[0] || '';
+    if (isPlaceholderUpiId(candidate)) {
+      return ctx.reply(
+        `× <code>${escapeHtml(candidate)}</code> placeholder/Swiggy ID hai — isse bana QR scan par <b>invalid</b> aata hai.\n` +
+        `Apni asli UPI bhejein: <code>/setupi yourname@okaxis</code>`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
+    if (!isValidUpiVpa(candidate)) {
+      return ctx.reply(`× <code>${escapeHtml(candidate)}</code> valid UPI ID nahi hai. Format: <code>name@bank</code>`, { parse_mode: 'HTML' }).catch(() => {});
+    }
+    const upiDb = getDb();
+    upiDb.config.bossUpiId = candidate;
+    saveDb(upiDb);
+    return ctx.reply(
+      `✓ <b>Payment UPI set:</b> <code>${escapeHtml(candidate)}</code>\n` +
+      `<i>Ab jab Swiggy payment intent nahi degA tab bhi valid QR banega — placeholder se nahi.</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+  }
+
   if (state && state.action === 'waiting_new_acc_name') {
     const curDb = getDb();
     const accountsObj = curDb.config?.accounts || {};
@@ -10304,11 +10479,11 @@ bot.command(['setupi', 'set_upi'], async (ctx) => {
     return ctx.reply(`✓ <b>Payment UPI ID saved:</b> <code>${upi}</code>\nAb se sabhi payment QR is UPI ID par generate honge!`, { parse_mode: 'HTML' });
   }
   userWaitState[ctx.from.id] = { action: 'waiting_set_upi' };
-  const currentUpi = getDb().config?.bossUpiId || 'swiggy@icici';
+  const currentUpi = String(getDb().config?.bossUpiId || '').trim() || '(set nahi hai)';
   await ctx.reply(
     `₹ <b>Set Boss Payment UPI ID:</b>\n\n` +
     `Current UPI ID: <code>${escapeHtml(currentUpi)}</code>\n\n` +
-    `Apna UPI ID reply karein (e.g. <code>swiggy@icici</code> ya <code>name@okaxis</code>):`,
+    `Apna UPI ID reply karein (e.g. <code>name@okaxis</code> ya <code>name@ybl</code> — placeholder ID nahi chalegi):`,
     {
       parse_mode: 'HTML',
       reply_markup: { force_reply: true, input_field_placeholder: 'Enter UPI ID...' }
@@ -12282,16 +12457,35 @@ export async function sendApprovedOrderPaymentToUser(uidStr, order, { force = fa
   const amount = Number(order.finalPayable || order.finalTotal || 0);
   const restaurant = escapeHtml(order.restaurantName || 'Swiggy Order');
 
-  // If Swiggy did not return a UPI intent or an order-specific payment URL, fall back to
-  // the configured collection UPI so the customer always gets a scannable PERSONALISED QR (name + amount).
+  // NEVER build a QR from a placeholder VPA. `swiggy@icici` (the old default) is
+  // not a real account, so every such QR scanned as INVALID — and, being
+  // deterministic, it looked like "wahi QR phir se". A fallback QR is only made
+  // when the Boss has set a genuinely valid UPI id and Swiggy gave nothing.
   let usingFallbackUpi = false;
+  let qrBlockedReason = '';
   if (!upiUri && !specificPaymentUrl && amount > 0) {
-    const fallbackUpiId = String(getDb().config?.bossUpiId || 'swiggy@icici').trim();
-    upiUri = sanitizeUpiUriForQr(
-      `upi://pay?pa=${encodeURIComponent(fallbackUpiId)}&pn=SWIGGY&mc=5812` +
-      `&am=${amount}&cu=INR&tn=${encodeURIComponent(`Swiggy Order ${order.id}`)}`
-    );
-    usingFallbackUpi = true;
+    const fb = buildFallbackUpiIntent({
+      upiId: getDb().config?.bossUpiId,
+      amount,
+      orderId: order.id,
+      payeeName: 'SWIGGY'
+    });
+    if (fb.ok) {
+      upiUri = sanitizeUpiUriForQr(fb.uri);
+      usingFallbackUpi = true;
+    } else {
+      qrBlockedReason = fb.reason;
+    }
+  }
+  // Final gate for EVERY QR (Swiggy ka ho ya fallback): invalid QR kabhi nahi.
+  if (upiUri) {
+    const gate = validateUpiIntentForQr(upiUri, { amount });
+    if (!gate.valid) {
+      console.warn(`[PaymentQR] Blocked invalid QR for #${order.id}: ${gate.problems.join(' | ')}`);
+      qrBlockedReason = gate.problems.join('; ');
+      upiUri = '';
+      usingFallbackUpi = false;
+    }
   }
 
   // Simple chat mode keeps the payment bubble to the bare minimum: pay + "I have paid".
@@ -12387,12 +12581,38 @@ export async function sendApprovedOrderPaymentToUser(uidStr, order, { force = fa
     return true;
   }
 
+  // No Swiggy intent, no real payment link, and no valid UPI configured:
+  // send an HONEST message instead of an unscannable "invalid" QR.
   await bot.telegram.sendMessage(
     targetUserId,
     `✓ <b>Bill approved for order #${escapeHtml(order.id)}.</b>\n\n` +
+    (qrBlockedReason
+      ? `⚠️ <b>QR abhi nahi bheja gaya:</b> ${escapeHtml(qrBlockedReason)}\n` +
+        `<i>Fake/placeholder UPI ka QR bhejne se scan par &quot;invalid&quot; hi aata hai — isliye bot ne roka.</i>\n\n`
+      : '') +
     `Swiggy has not returned a payment QR or official payment link yet. Do not pay using another QR or link; the official payment details will be sent here when available.`,
     { parse_mode: 'HTML' }
-  );
+  ).catch(() => {});
+
+  // Boss ko turant batao — warna customer ko invalid QR jaata rahega.
+  try {
+    const bossIds = getDb().config?.bossIds || [];
+    if (qrBlockedReason) {
+      for (const bossId of bossIds) {
+        await bot.telegram.sendMessage(
+          bossId,
+          `⚠️ <b>Payment QR blocked — Order #${escapeHtml(order.id)}</b>\n` +
+          `▪ <b>Reason:</b> ${escapeHtml(qrBlockedReason)}\n` +
+          `▪ <b>Amount:</b> ₹${amount}\n\n` +
+          `<i>Swiggy ne payment intent nahi diya aur bot ka UPI valid set nahi hai. Apna UPI set karein: <code>/setupi yourname@upi</code></i>`,
+          {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: [[{ text: '₹ Set Payment UPI', callback_data: 'boss_set_payment_upi', style: 'primary' }]] }
+          }
+        ).catch(() => {});
+      }
+    }
+  } catch { /* boss notice is best-effort */ }
   return false;
 }
 
@@ -13065,11 +13285,54 @@ bot.action(/^user_resend_approved_qr_([A-Za-z0-9_-]+)$/, async (ctx) => {
   if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status) || !order.billApprovedByUser) {
     return ctx.answerCbQuery('No unpaid approved payment QR is available.', { show_alert: true }).catch(() => {});
   }
-  await ctx.answerCbQuery('Resending the same Swiggy payment request; no new QR/order will be created.').catch(() => {});
+  // "Resend QR" jab customer ne kaha QR invalid hai: purana (dead) QR dobara
+  // nahi — naya Swiggy QR banega (naya reference), warna same QR hi aata rehta.
+  const reuse = shouldReusePendingQr(order, { accountPhone: order.orderAccount || '' });
+  if (reuse.reuse) {
+    await ctx.answerCbQuery('Wahi QR dobara bhej raha hoon (abhi bhi valid hai).').catch(() => {});
+    try {
+      await sendApprovedOrderPaymentToUser(String(ctx.from.id), order, { force: true });
+    } catch (error) {
+      await ctx.reply(`! ${escapeHtml(`Could not resend the existing Swiggy payment details: ${error.message}`)}`).catch(() => {});
+    }
+    return;
+  }
+
+  await ctx.answerCbQuery('Naya Swiggy QR bana raha hoon (purana valid nahi tha)…').catch(() => {});
+  {
+    const markDb = getDb();
+    if (markDb.orders?.[order.id]) {
+      markDb.orders[order.id].qrInvalidatedAt = new Date().toISOString();
+      markDb.orders[order.id].qrInvalidReason = reuse.reason;
+      saveDb(markDb);
+    }
+  }
   try {
-    await sendApprovedOrderPaymentToUser(String(ctx.from.id), order, { force: true });
+    await executeRealQrGenerationForOrder({
+      telegram: bot.telegram,
+      chatId: String(ctx.from.id),
+      orderId: order.id,
+      formatOrderBodyFn: formatUserOrderCardText,
+      forceNewQr: true
+    });
+    const fresh = getDb().orders?.[order.id] || order;
+    const bossIds = getDb().config?.bossIds || [];
+    for (const bossId of bossIds) {
+      await bot.telegram.sendMessage(
+        bossId,
+        `↻ <b>Naya QR bheja gaya — Order #${escapeHtml(order.id)}</b>\n` +
+        `▪ <b>Purana QR valid nahi tha:</b> ${escapeHtml(reuse.reason)}\n` +
+        `▪ <b>Naya QR:</b> #${Number(fresh.qrVersion || 2)}${describeQrRef(fresh).ref ? ` (ref ${describeQrRef(fresh).ref})` : ''}\n` +
+        `▪ <b>Amount:</b> ₹${Number(fresh.finalPayable || 0)}`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
   } catch (error) {
-    await ctx.reply(`! ${escapeHtml(`Could not resend the existing Swiggy payment details: ${error.message}`)}`).catch(() => {});
+    await ctx.reply(
+      `× <b>Naya QR nahi ban paya:</b> ${escapeHtml(error.message)}\n` +
+      `<i>Purana QR dobara nahi bheja gaya — wo invalid tha.</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
   }
 });
 

@@ -188,7 +188,8 @@ console.log('\n--- Scenario 2: approve -> payment QR/link to the customer ---');
   const db = getDb();
   const slotsBefore = Number(db.config.slotsLeft || 0);
   const order = db.orders.V18_A;
-  order.realUpiIntentUri = 'upi://pay?pa=swiggy@axis&am=73&tn=V18_A';
+  // Real Swiggy merchant VPA (v60: `swiggy@*` is a placeholder that scans invalid)
+  order.realUpiIntentUri = 'upi://pay?pa=upiswiggy@icici&pn=SWIGGY&am=73&cu=INR&tn=V18_A';
   order.swiggyPaymentUrl = 'https://www.swiggy.com/payment/V18_A';
   saveDb(db);
 
