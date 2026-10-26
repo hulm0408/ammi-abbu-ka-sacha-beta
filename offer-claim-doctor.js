@@ -16,10 +16,14 @@
  * bajaye ₹50 free cash nahi), cutoff miss, ya slot band.
  */
 import { getDb, saveDb } from './store.js';
+import { EVENT_OFFER_LINKS, EVENT_OFFERS, extractCampaignInfoFromHtml } from './event-offers.js';
 
 export const OFFER_CAMPAIGN_URLS = {
   breakfast: 'https://events.swiggy.com/book-your-offer?utm_source=app&utm_medium=share',
-  lateNight: 'https://events.swiggy.com/pick-your-late-night-offer?utm_source=app&utm_medium=share'
+  lateNight: 'https://events.swiggy.com/pick-your-late-night-offer?utm_source=app&utm_medium=share',
+  // 26-10-2026: do naye links — Extra ₹50 + Weekend (har JSON import par activate).
+  extra50: EVENT_OFFER_LINKS.extra50,
+  weekend: EVENT_OFFER_LINKS.weekend
 };
 
 export const OFFER_OPTIONS = {
@@ -32,8 +36,16 @@ export const OFFER_OPTIONS = {
 export const PREFERRED_OFFER_VALUE = 1;
 const EVENTS_API = 'https://events.swiggy.com/api/notify';
 
+/** Doctor chaaron offers dekhta hai (boss: "SAARE OFFER"). */
+export const OFFER_TRACK_KEYS = ['lateNight', 'breakfast', 'extra50', 'weekend'];
+
 // Same live-page defaults as swiggy-bridge.js (test asserts they stay in sync).
-const DEFAULT_META = { bfPrefix: 'byo-bf-v10-', lnPrefix: 'byo-ln-v5-', bfBoundaries: [], lnBoundaries: [] };
+const DEFAULT_META = {
+  bfPrefix: 'byo-bf-v10-', lnPrefix: 'byo-ln-v5-',
+  bfBoundaries: [], lnBoundaries: [],
+  // Fixed (day-number ke bina) campaigns: Extra ₹50 + Weekend.
+  x50Campaign: '', wkndCampaign: '', x50Source: 'NONE', wkndSource: 'NONE'
+};
 
 function decodeJwtExp(jwt) {
   try {
@@ -49,7 +61,10 @@ function decodeJwtExp(jwt) {
 /** Track config: LN redeem 21:00–06:00 (next-day), BF redeem 07:00–11:00. */
 const TRACKS = {
   breakfast: { key: 'breakfast', label: 'Breakfast', isLateNight: false, cutoffH: 18, slotOpenH: 20, slotCloseH: 24 },
-  lateNight: { key: 'lateNight', label: 'Late Night', isLateNight: true, cutoffH: 7.5, slotOpenH: 10, slotCloseH: 19 }
+  lateNight: { key: 'lateNight', label: 'Late Night', isLateNight: true, cutoffH: 7.5, slotOpenH: 10, slotCloseH: 19 },
+  // Fixed campaigns: koi day number / slot nahi — page ki di hui campaign id.
+  extra50: { key: 'extra50', label: 'Extra ₹50', fixed: true, metaField: 'x50Campaign', sourceField: 'x50Source' },
+  weekend: { key: 'weekend', label: 'Weekend', fixed: true, metaField: 'wkndCampaign', sourceField: 'wkndSource' }
 };
 
 /**
@@ -83,12 +98,30 @@ export async function loadOfferCampaignMeta({ force = false, fetchImpl = globalT
     const [bfHtml, lnHtml] = await Promise.all([bfRes.text(), lnRes.text()]);
     const bf = parsePage(bfHtml, DEFAULT_META.bfPrefix);
     const ln = parsePage(lnHtml, DEFAULT_META.lnPrefix);
+    // Extra ₹50 + Weekend bhi page se (unka day number nahi hota).
+    const fixedMeta = async (offerKey) => {
+      const offer = EVENT_OFFERS.find((o) => o.key === offerKey);
+      if (!offer) return { campaign: '', source: 'NONE' };
+      try {
+        const res = await fetchImpl(offer.url, { signal: AbortSignal.timeout(6000) });
+        const html = await res.text();
+        const info = extractCampaignInfoFromHtml(html, offer);
+        return { campaign: info.fixedCampaignId || info.prefix || '', source: info.source || 'NONE' };
+      } catch (err) {
+        return { campaign: '', source: 'PAGE_FAILED', error: String(err?.message || err).slice(0, 80) };
+      }
+    };
+    const [x50, wknd] = await Promise.all([fixedMeta('extra50'), fixedMeta('weekend')]);
     _metaCache = {
       ...DEFAULT_META,
       bfPrefix: bf.prefix,
       lnPrefix: ln.prefix,
       bfBoundaries: bf.boundaries,
       lnBoundaries: ln.boundaries,
+      x50Campaign: x50.campaign,
+      wkndCampaign: wknd.campaign,
+      x50Source: x50.source,
+      wkndSource: wknd.source,
       metaSource: 'LIVE_PAGE',
       loadedAt: new Date().toISOString()
     };
@@ -127,6 +160,49 @@ function windowFor(boundary, track) {
  */
 export function resolveTrackCampaigns(meta, trackKey, nowMs = Date.now()) {
   const track = TRACKS[trackKey];
+  if (!track) return { key: trackKey, label: trackKey, primary: null, rows: [], inferred: false };
+  // Fixed campaign (Extra ₹50 / Weekend): day number nahi, page ki id hi asli hai.
+  if (track.fixed) {
+    const campaign = String(meta?.[track.metaField] || '');
+    const source = String(meta?.[track.sourceField] || 'NONE');
+    if (!campaign) {
+      return {
+        key: trackKey,
+        label: track.label,
+        prefix: '',
+        metaSource: meta?.metaSource || 'DEFAULT',
+        boundariesCount: 0,
+        inferred: false,
+        fixed: true,
+        primary: null,
+        rows: [],
+        reason: 'offer page se campaign id nahi mili'
+      };
+    }
+    const row = {
+      campaign,
+      day: null,
+      slotLiveNow: true,
+      cutoffPassed: false,
+      slotOpensInMs: 0,
+      inferred: false,
+      fixed: true,
+      metaSource: source,
+      state: 'BOOKABLE_NOW'
+    };
+    return {
+      key: trackKey,
+      label: track.label,
+      prefix: '',
+      metaSource: meta?.metaSource || 'DEFAULT',
+      boundariesCount: 0,
+      inferred: false,
+      fixed: true,
+      campaignIdSource: source,
+      primary: row,
+      rows: [row]
+    };
+  }
   const boundaries = (trackKey === 'breakfast' ? meta?.bfBoundaries : meta?.lnBoundaries) || [];
   const prefix = trackKey === 'breakfast' ? meta?.bfPrefix : meta?.lnPrefix;
   const wins = boundaries.map((b) => windowFor(b, track)).filter(Boolean);
@@ -344,14 +420,14 @@ export async function diagnoseAccountOffers(account, {
   const rows = [];
   const verdict = [];
 
-  for (const trackKey of ['breakfast', 'lateNight']) {
+  for (const trackKey of OFFER_TRACK_KEYS) {
     const track = resolveTrackCampaigns(resolvedMeta, trackKey, nowMs);
     const probes = [];
     for (const w of track.rows) {
       const probe = await probeCampaign(acc, w.campaign, {
         creds,
         fetchImpl,
-        referer: trackKey === 'breakfast' ? OFFER_CAMPAIGN_URLS.breakfast : OFFER_CAMPAIGN_URLS.lateNight
+        referer: OFFER_CAMPAIGN_URLS[trackKey] || ''
       });
       const row = { track: trackKey, campaign: w.campaign, day: w.day, window: w, probe };
       probes.push(row);
@@ -382,6 +458,9 @@ export async function diagnoseAccountOffers(account, {
     } else if (valuePrimary !== PREFERRED_OFFER_VALUE) {
       state = 'WRONG_REWARD';
       reason = `${primaryRow.campaign} me reward option ${valuePrimary} (${OFFER_OPTIONS[valuePrimary]?.shortLabel || 'unknown'}) save hai, ₹50 free cash nahi — "Fix" se option 1 ho jayega.`;
+    } else if (track.fixed) {
+      state = valuePrimary === PREFERRED_OFFER_VALUE ? 'LIVE_NOW' : 'BOOKED';
+      reason = `${primaryRow.campaign} par ₹50 free cash (option ${valuePrimary}) ${valuePrimary === PREFERRED_OFFER_VALUE ? 'active hai' : 'save hai — option 1 par set karein'}.`;
     } else if (liveRow && valueLive === PREFERRED_OFFER_VALUE && liveRow.window.slotLiveNow) {
       state = 'LIVE_NOW';
       reason = `Slot abhi khula hai (${liveRow.campaign}) aur ₹50 free cash booked hai — cart me ₹199+ par turant lagna chahiye.`;
@@ -403,6 +482,12 @@ export async function diagnoseAccountOffers(account, {
     verdict.push(`${track.label}: ${state} — ${reason}`);
   }
 
+  for (const k of ['extra50', 'weekend']) {
+    const t = tracks[k];
+    if (t && t.rows.length === 0) {
+      verdict.push(`${t.label}: campaign id nahi mila — "${OFFER_CAMPAIGN_URLS[k]}" ek baar khol kar claim karein, phir Doctor dobara chalayein.`);
+    }
+  }
   if (tracks.lateNight?.inferred || tracks.breakfast?.inferred) {
     verdict.push('Note: offer page se campaign list nahi mili — campaign id day-number se anumaan hai (probe fir bhi asli hai).');
   }
@@ -466,10 +551,10 @@ export async function fixAccountOffers(account, {
   const before = await diagnoseAccountOffers(acc, { key, nowMs, fetchImpl, meta: resolvedMeta });
   const changes = [];
 
-  for (const trackKey of ['breakfast', 'lateNight']) {
+  for (const trackKey of OFFER_TRACK_KEYS) {
     const track = before.tracks?.[trackKey];
     if (!track) continue;
-    const referer = trackKey === 'breakfast' ? OFFER_CAMPAIGN_URLS.breakfast : OFFER_CAMPAIGN_URLS.lateNight;
+    const referer = OFFER_CAMPAIGN_URLS[trackKey] || '';
     for (const row of (track.rows || []).slice(0, 2)) {
       const campaign = row.campaign;
       const probe = row.probe || {};
@@ -528,7 +613,7 @@ export function formatOfferDoctorReport(report, { accountLabel = '', escapeHtml 
   const lines = [`🎁 <b>OFFER DOCTOR — ${esc(accountLabel || report.key || 'Account')}</b>`, ''];
   lines.push(`◈ Campaign source: <b>${esc(report.metaSource)}</b> · auth: ${report.auth?.hasToken ? 'token ✓' : 'token ✕'} / ${report.auth?.hasTid ? 'tid ✓' : 'tid ✕'}`);
   lines.push('');
-  for (const key of ['breakfast', 'lateNight']) {
+  for (const key of OFFER_TRACK_KEYS) {
     const t = report.tracks?.[key];
     if (!t) continue;
     const icon = t.state === 'LIVE_NOW' || t.state === 'BOOKED' ? '🟢' : (t.state === 'WRONG_REWARD' ? '🟡' : '🔴');
@@ -575,6 +660,8 @@ export async function runOfferDoctorForAccount(key, opts = {}) {
     at: new Date().toISOString(),
     breakfast: report.tracks?.breakfast?.state || report.before?.tracks?.breakfast?.state || '',
     lateNight: report.tracks?.lateNight?.state || report.before?.tracks?.lateNight?.state || '',
+    extra50: report.tracks?.extra50?.state || report.before?.tracks?.extra50?.state || '',
+    weekend: report.tracks?.weekend?.state || report.before?.tracks?.weekend?.state || '',
     verdict: (report.verdict || []).slice(0, 4),
     fixed: Boolean(opts.fix)
   });

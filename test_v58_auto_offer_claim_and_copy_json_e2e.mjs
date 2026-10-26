@@ -118,7 +118,8 @@ console.log('\n=== 4. Compact list line + expanded detail with Copy JSON at bott
   check('active account starred', /★/.test(rows[0]), rows[0]);
   check('LIVE 0 orders row shows 0 ord', /0 ord/.test(rows[0]), rows[0]);
   check('unverified row shows ord ? (never 0)', /ord \?/.test(rows[1]), rows[1]);
-  check('claimed row shows ₹50 ✓', /₹50 ✓/.test(rows[0]), rows[0]);
+  // Ab chaar offer ka sach dikhta hai: 2 lage to "2/4", chaar lage tabhi ✓.
+  check('claimed row shows honest offer count (2/4)', /₹50 2\/4/.test(rows[0]), rows[0]);
   check('new row shows ₹50 new', /₹50 new/.test(rows[1]), rows[1]);
   check('phone masked', /95809•17901/.test(rows[0]), rows[0]);
 
@@ -145,7 +146,8 @@ console.log('\n=== 5. Auto-activate: BOTH links, ALWAYS option 1 ===');
   check('EVENT_OFFER_OPTIONS[1] is the ₹50 Free Cash (>₹199) option', /₹50/.test(opt1) && /199/.test(opt1), JSON.stringify(bridge.EVENT_OFFER_OPTIONS[1]));
 
   const src = fs.readFileSync('./swiggy-bridge.js', 'utf8');
-  check('autoActivate forces forcePatch', /claimSwiggyBreakfastAndLateNightOffers\(account, \{\s*\n?\s*force,\s*\n?\s*forcePatch: true,\s*\n?\s*offerValue: PREFERRED_EVENT_OFFER_VALUE/.test(src));
+  // autoActivate ab chaar-offer engine ko call karta hai (dono raaste ek hi ledger).
+  check('autoActivate chaar-offer engine se claim karta hai', /activateAllEventOffers\(account, \{ force, offerValue, fetchImpl, skipIfRunInFlight \}\)/.test(src));
   check('autoActivate pins offerValue: PREFERRED_EVENT_OFFER_VALUE', src.includes('offerValue: PREFERRED_EVENT_OFFER_VALUE'));
   check('campaign fetch uses exported URLs', src.includes('fetch(EVENT_CAMPAIGN_URLS.breakfast') && src.includes('fetch(EVENT_CAMPAIGN_URLS.lateNight'));
 }

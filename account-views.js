@@ -20,8 +20,19 @@ export const PREFERRED_OFFER_VALUE = 1;
 
 export const OFFER_CAMPAIGN_URLS = {
   breakfast: 'https://events.swiggy.com/book-your-offer?utm_source=app&utm_medium=share',
-  lateNight: 'https://events.swiggy.com/pick-your-late-night-offer?utm_source=app&utm_medium=share'
+  lateNight: 'https://events.swiggy.com/pick-your-late-night-offer?utm_source=app&utm_medium=share',
+  // 26-10-2026: boss ne do aur link diye — dono har JSON import par activate hote hain.
+  extra50: 'https://events.swiggy.com/pick-your-offer?utm_source=app&utm_medium=share',
+  weekend: 'https://events.swiggy.com/byo-weekend?utm_source=app&utm_medium=share'
 };
+
+/** Chaaron offers ka order + boss ke naam (UI me isi order me dikhte hain). */
+export const OFFER_TRACKS = [
+  { key: 'lateNight', bossLabel: 'Morning Link', label: 'Late night (9PM–6AM)' },
+  { key: 'breakfast', bossLabel: 'Night Link', label: 'Breakfast (7AM–11AM)' },
+  { key: 'extra50', bossLabel: 'Extra ₹50', label: 'Extra ₹50 offer' },
+  { key: 'weekend', bossLabel: 'Weekend', label: 'Weekend offer' }
+];
 
 export function maskPhone(phone) {
   const digits = String(phone || '').replace(/\D/g, '').slice(-10);
@@ -116,6 +127,15 @@ export function offerClaimTruth(acc) {
       return { status: 'NEW', claimed: false, label: 'NEW — abhi claim nahi hua', at: '' };
     }
     const state = String(rec.status || '').toUpperCase();
+    if (state === 'PRE_LOCKED' || rec.preLocked === true) {
+      return {
+        status: 'PRE_LOCKED',
+        claimed: false,
+        preLocked: true,
+        label: '⏳ Pre-locked (slot khulne par apne aap lagega)',
+        at: activation?.at || ''
+      };
+    }
     const claimed = state === 'CLAIMED' || state === 'ALREADY_CLAIMED' || Boolean(rec.claimed === true);
     if (claimed) {
       return {
@@ -137,12 +157,20 @@ export function offerClaimTruth(acc) {
 
   const breakfast = describe('breakfast');
   const lateNight = describe('lateNight');
+  const extra50 = describe('extra50');
+  const weekend = describe('weekend');
   const both = breakfast.claimed && lateNight.claimed;
+  const allFour = both && extra50.claimed && weekend.claimed;
   return {
     breakfast,
     lateNight,
+    extra50,
+    weekend,
     both,
-    isNew: !pick('breakfast') && !pick('lateNight'),
+    allFour,
+    claimedCount: [breakfast, lateNight, extra50, weekend].filter((x) => x.claimed).length,
+    preLockedCount: [breakfast, lateNight, extra50, weekend].filter((x) => x.preLocked).length,
+    isNew: !pick('breakfast') && !pick('lateNight') && !pick('extra50') && !pick('weekend'),
     offerLabel: activation?.label || stored?.offerLabel || PREFERRED_OFFER_LABEL,
     offerValue: Number(activation?.offerValue || stored?.offerValue || PREFERRED_OFFER_VALUE),
     autoActivatedAt: activation?.at || '',
@@ -171,7 +199,12 @@ export function compactAccountLine(acc, key, { activeKey = '', index = 1 } = {})
     ? (truth.totalOrders === 0 ? '0 ord' : `${truth.totalOrders} ord`)
     : 'ord ?';
   const claim = offerClaimTruth(src);
-  const claimBit = claim.both ? '₹50 ✓' : (claim.isNew ? '₹50 new' : '₹50 ✕');
+  // Chaaron offers ka sach: 4/4 par hi "✓", warna kitne lage (jhooth nahi).
+  const claimBit = claim.allFour
+    ? '₹50 ✓ 4/4'
+    : claim.isNew
+      ? '₹50 new'
+      : `₹50 ${claim.claimedCount}/4${claim.preLockedCount ? ' ⏳' : ''}`;
   const name = String(src.name || '').trim();
   const expiredBit = src.sessionExpired ? ' · ⚠️ session expired' : '';
   const suspendBit = suspended ? ` · ⛔ suspended` : '';
@@ -221,10 +254,13 @@ export function accountDetailText({ acc, key, activeKey = '', orderLines = [] } 
     `🎁 <b>Offers (${escapeLight(claim.offerLabel)}):</b>`,
     `   ▪ Breakfast: ${claim.breakfast.label}`,
     `   ▪ Late night: ${claim.lateNight.label}`,
-    `   ▪ Account: <b>${claim.both ? 'ALREADY CLAIMED' : (claim.isNew ? 'NEW (claim pending)' : 'PARTIAL')}</b>`,
+    `   ▪ Extra ₹50: ${claim.extra50?.label || 'NEW — abhi claim nahi hua'}`,
+    `   ▪ Weekend: ${claim.weekend?.label || 'NEW — abhi claim nahi hua'}`,
+    `   ▪ Account: <b>${claim.allFour ? 'ALL 4 CLAIMED' : (claim.both ? 'ALREADY CLAIMED' : (claim.isNew ? 'NEW (claim pending)' : 'PARTIAL'))}</b>`,
     claim.autoActivatedAt ? `   ▪ Auto-activated: ${escapeLight(claim.autoActivatedAt.slice(0, 19).replace('T', ' '))}` : '',
     src.offerDoctor
       ? `   ▪ 🎁 Doctor: LN <b>${escapeLight(String(src.offerDoctor.lateNight || '?'))}</b> · BF <b>${escapeLight(String(src.offerDoctor.breakfast || '?'))}</b>` +
+        ` · ₹50 <b>${escapeLight(String(src.offerDoctor.extra50 || '?'))}</b> · WKND <b>${escapeLight(String(src.offerDoctor.weekend || '?'))}</b>` +
         (Array.isArray(src.offerDoctor.verdict) && src.offerDoctor.verdict[0] ? `\n     <i>${escapeLight(String(src.offerDoctor.verdict[0]).slice(0, 110))}</i>` : '')
       : '',
     ...(orderLines.length ? ['', `▤ <b>Previous orders:</b>`, ...orderLines] : []),
