@@ -544,6 +544,11 @@ async function claimFixedOfferViaLadder(offer, {
 const ledger = new Map();       // `${accSig}|${campaignId}` -> { value, at, verified, state }
 export const claimLedger = ledger;
 const LEDGER_TTL_MS = 6 * 60 * 60 * 1000;
+// PRE_LOCKED = write accept hua par window band tha. Yeh SIRF "dobara write na
+// karo" ke liye hai — 6 ghante tak ise sach nahi maana ja sakta, warna slot
+// khulne par bhi offer lagta hi nahi (cart me free cash nahi aata → QR bina
+// offer ka banta tha). Isliye 45 min baad dobara live check hota hai.
+const PRE_LOCK_TTL_MS = 45 * 60 * 1000;
 const accountRuns = new Map();  // accSig -> promise (ek waqt me ek run)
 
 function accountSignature(account) {
@@ -580,7 +585,13 @@ function ledgerSet(accSig, campaignId, value, verified, state = '') {
 export function recentCampaignClaim(account, campaignId, nowMs = Date.now()) {
   const rec = ledgerGet(accountSignature(account), campaignId);
   if (!rec) return null;
-  return { ...rec, ageMs: Math.max(0, nowMs - rec.at) };
+  const ageMs = Math.max(0, nowMs - rec.at);
+  return {
+    ...rec,
+    ageMs,
+    // Purana pre-lock bharosemand nahi — dobara live check hona chahiye.
+    stalePreLock: rec.state === 'PRE_LOCKED' && ageMs > PRE_LOCK_TTL_MS
+  };
 }
 
 /** Legacy path write ke baad ledger me note karta hai (same key, same TTL). */
@@ -678,7 +689,11 @@ export async function ensureCampaignClaim(account, {
     // hi "2 times claim" banata tha.
     return { campaignId, state: 'ALREADY_VERIFIED', writes: 0, verified: true, cached: true, reason: 'pehle se locked (read-back verified)' };
   }
-  if (cached && cached.state === 'PRE_LOCKED' && cached.value === value) {
+  const preLockFresh = cached && cached.state === 'PRE_LOCKED'
+    && cached.value === value
+    && (Date.now() - cached.at) < PRE_LOCK_TTL_MS
+    && windowOpen !== true; // window khul gaya → dobara live check
+  if (preLockFresh) {
     // Window band tha, hum pehle hi likh chuke hain. `force` par bhi dobara
     // nahi likhenge — yahi boss ki shikayat ("2 times claim") thi.
     return { campaignId, state: 'PRE_LOCKED', writes: 0, verified: false, cached: true, reason: 'pre-lock pehle ho chuka (window band) — dobara nahi likhenge' };
