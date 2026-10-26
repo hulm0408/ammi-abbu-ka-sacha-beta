@@ -4451,8 +4451,9 @@ export function registerForwardedOrderHandlers(bot, {
     await ctx.answerCbQuery('🔄 Free cash refresh…').catch(() => {});
     const wait = await ctx.reply('◷ <i>Late-night / breakfast free cash claim + bill refresh…</i>', { parse_mode: 'HTML' }).catch(() => null);
     try {
-      const { claimSwiggyBreakfastAndLateNightOffers } = await import('./swiggy-bridge.js');
-      const claim = await claimSwiggyBreakfastAndLateNightOffers(acc, { force: true }).catch(() => null);
+      // Chaaron offers ek hi engine se (double claim band: shared ledger + single-flight).
+      const { autoActivateEventOffers } = await import('./swiggy-bridge.js');
+      const claim = await autoActivateEventOffers(acc, { force: false, skipIfRunInFlight: true }).catch(() => null);
       const relock = await withSwiggyAccountLock(accKey, () => applyLiveFreeCashRelock(acc, order, { claimWaitMs: 4000 })).catch(() => null);
       // A cheap re-read makes sure the totals on screen match Swiggy exactly.
       const res = await withSwiggyAccountLock(accKey, () => syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false })).catch(() => null);
@@ -4552,8 +4553,9 @@ export function registerForwardedOrderHandlers(bot, {
     const wait = await ctx.reply('↻ <i>Swiggy se taaza offers + free cash…</i>', { parse_mode: 'HTML' }).catch(() => null);
     try {
       clearCouponTrialCache();
-      const { claimSwiggyBreakfastAndLateNightOffers } = await import('./swiggy-bridge.js');
-      await claimSwiggyBreakfastAndLateNightOffers(acc, { force: true }).catch(() => null);
+      // Chaaron offers ek hi engine se (double claim band).
+      const { autoActivateEventOffers } = await import('./swiggy-bridge.js');
+      await autoActivateEventOffers(acc, { force: false, skipIfRunInFlight: true }).catch(() => null);
       if (!keepCoupon) order.couponCode = null;
       const res = await withSwiggyAccountLock(accKey, () => syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false }));
       if (!res?.success) throw new Error(res?.error || 'Re-scan failed');
@@ -4621,8 +4623,9 @@ export function registerForwardedOrderHandlers(bot, {
     }
     await ctx.answerCbQuery('▣ Re-claiming Free Cash & testing all Max Coupons...').catch(() => {});
     try {
-      const { claimSwiggyBreakfastAndLateNightOffers } = await import('./swiggy-bridge.js');
-      await claimSwiggyBreakfastAndLateNightOffers(acc, { force: true }).catch(() => null);
+      // Chaaron offers ek hi engine se (double claim band).
+      const { autoActivateEventOffers } = await import('./swiggy-bridge.js');
+      await autoActivateEventOffers(acc, { force: false, skipIfRunInFlight: true }).catch(() => null);
       order.couponCode = null;
       await withSwiggyAccountLock(accKey, async () => {
         const res = await syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false });

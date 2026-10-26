@@ -260,6 +260,8 @@ export function checkLoggedInFromCookies(input) {
 // The two offer links the Boss imports for: Breakfast (6AM–11AM slot, redeem
 // 7–11AM) and Dinner/Late-Night (9PM–11PM slot, redeem 9PM–6AM). Every JSON
 // import auto-locks BOTH, always with reward option #1 = "₹50 off on ₹199".
+import { activateAllEventOffers, recentCampaignClaim, noteCampaignClaim, EVENT_OFFER_LINKS, EVENT_OFFER_KEYS } from './event-offers.js';
+
 export const EVENT_CAMPAIGN_URLS = {
   breakfast: 'https://events.swiggy.com/book-your-offer?utm_source=app&utm_medium=share',
   lateNight: 'https://events.swiggy.com/pick-your-late-night-offer?utm_source=app&utm_medium=share'
@@ -379,7 +381,8 @@ function resolveCampaignWindowInfo(boundaries, prefix, defaultDay = 15, isLateNi
     maxDay,
     todayCampaign: `${prefix}${currentDay}`,
     upcomingDays: Array.from(
-      { length: Math.min(2, Math.max(1, maxDay - currentDay + 1)) },
+      // 14-din tak pre-book (boss: "saare offer pehle se lock"), writes 5-5 ke batch me.
+      { length: Math.min(14, Math.max(1, maxDay - currentDay + 1)) },
       (_, idx) => `${prefix}${currentDay + idx}`
     ),
     cutoffMs,
@@ -397,7 +400,20 @@ function resolveCampaignWindowInfo(boundaries, prefix, defaultDay = 15, isLateNi
  *   { ok, success, bothClaimed, offerValue, label, alreadyClaimed,
  *     breakfast: { status, alreadyActive, message }, lateNight: { ... }, at }
  */
-export async function autoActivateEventOffers(account, { force = true } = {}) {
+/**
+ * CHAAR offer links auto-activate (boss: "JAB BHI FILE BHEJU SAARE OFFER
+ * ACTIVATE HONE CHAHIYE"):
+ *   1. pick-your-late-night-offer   (Late Night / boss ka "Morning Link")
+ *   2. book-your-offer              (Breakfast  / boss ka "Night Link")
+ *   3. pick-your-offer              (Extra ₹50)
+ *   4. byo-weekend                  (Weekend)
+ *
+ * Har offer ka campaign id live page se nikalta hai, state pehle GET se padhi
+ * jaati hai (already sahi = koi write nahi → double claim nahi), aur likhne ke
+ * baad read-back se verify hota hai. Purane callers `breakfast`/`lateNight`
+ * shape hi padhte hain — woh isi result me maujood hai.
+ */
+export async function autoActivateEventOffers(account, { force = true, offerValue = PREFERRED_EVENT_OFFER_VALUE, fetchImpl = globalThis.fetch, skipIfRunInFlight = false } = {}) {
   if (!account) {
     return { ok: false, success: false, bothClaimed: false, reason: 'No account provided', offerValue: PREFERRED_EVENT_OFFER_VALUE, label: PREFERRED_EVENT_OFFER_LABEL };
   }
@@ -405,12 +421,9 @@ export async function autoActivateEventOffers(account, { force = true } = {}) {
   let raw = null;
   try {
     account.preferredOfferValue = PREFERRED_EVENT_OFFER_VALUE;
-    raw = await claimSwiggyBreakfastAndLateNightOffers(account, {
-      force,
-      forcePatch: true,
-      offerValue: PREFERRED_EVENT_OFFER_VALUE
-    });
+    raw = await activateAllEventOffers(account, { force, offerValue, fetchImpl, skipIfRunInFlight });
   } catch (err) {
+    const failedSlot = { status: 'FAILED', message: String(err?.message || err).slice(0, 120) };
     return {
       ok: false,
       success: false,
@@ -418,43 +431,74 @@ export async function autoActivateEventOffers(account, { force = true } = {}) {
       reason: String(err?.message || err).slice(0, 160),
       offerValue: PREFERRED_EVENT_OFFER_VALUE,
       label: PREFERRED_EVENT_OFFER_LABEL,
-      breakfast: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) },
-      lateNight: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) },
+      breakfast: failedSlot,
+      lateNight: failedSlot,
+      extra50: failedSlot,
+      weekend: failedSlot,
+      offers: null,
+      campaigns: { ...EVENT_CAMPAIGN_URLS },
+      links: EVENT_OFFER_LINKS,
       at
     };
   }
 
   const slot = (rec) => {
-    if (!rec) return { status: 'FAILED', message: 'No answer from Swiggy' };
-    const claimed = String(rec.status || '').toUpperCase() === 'CLAIMED';
+    if (!rec) return { status: 'FAILED', message: 'Swiggy se koi jawab nahi aaya' };
+    const claimed = ['CLAIMED', 'PARTIAL'].includes(String(rec.status || '').toUpperCase());
     return {
       status: claimed ? 'CLAIMED' : 'FAILED',
+      verified: Boolean(rec.verified),
       alreadyActive: Boolean(rec.alreadyActive),
-      message: String(rec.message || rec.rawMessage || '').slice(0, 140),
-      slotState: rec.slotState || '',
-      discount: PREFERRED_EVENT_OFFER_LABEL,
-      campaignUrl: rec.campaignUrl || '',
+      message: String(rec.message || '').slice(0, 160),
+      slotState: rec.state || '',
+      discount: rec.discount || PREFERRED_EVENT_OFFER_LABEL,
+      campaignUrl: rec.campaignUrl || rec.url || '',
       campaign: rec.campaign || '',
+      ids: Array.isArray(rec.ids) ? rec.ids : [],
+      metaSource: rec.metaSource || '',
+      writes: Number(rec.writes || 0),
       claimedAt: claimed ? at : ''
     };
   };
 
-  const breakfast = slot(raw?.breakfast);
-  const lateNight = slot(raw?.lateNight);
+  const breakfast = slot(raw?.offers?.breakfast);
+  const lateNight = slot(raw?.offers?.lateNight);
+  const extra50 = slot(raw?.offers?.extra50);
+  const weekend = slot(raw?.offers?.weekend);
+  const allFour = [breakfast, lateNight, extra50, weekend];
+  const claimedCount = allFour.filter((x) => x.status === 'CLAIMED').length;
+
   return {
-    ok: Boolean(raw?.success),
-    success: Boolean(raw?.success),
-    bothClaimed: Boolean(raw?.bothClaimed),
-    alreadyClaimed: Boolean(breakfast.alreadyActive && lateNight.alreadyActive),
+    ok: claimedCount > 0,
+    success: claimedCount === 4,
+    allFourClaimed: claimedCount === 4,
+    claimedCount,
+    bothClaimed: breakfast.status === 'CLAIMED' && lateNight.status === 'CLAIMED',
+    alreadyClaimed: allFour.every((x) => x.alreadyActive),
     offerValue: PREFERRED_EVENT_OFFER_VALUE,
     label: PREFERRED_EVENT_OFFER_LABEL,
-    sessionExpired: Boolean(raw?.sessionExpired),
-    rateLimited: Boolean(raw?.rateLimited),
+    sessionExpired: allFour.some((x) => /session|401|re-login/i.test(String(x.message || ''))),
+    rateLimited: allFour.some((x) => /403|429|throttle/i.test(String(x.message || ''))),
     breakfast,
     lateNight,
-    offers: raw?.offers || null,
-    lockedMap: raw?.lockedMap || null,
+    extra50,
+    weekend,
+    // Purane callers `offers.bothClaimed` padhte the — shape bani rahe, par
+    // value asli sach se (4-offer engine) aati hai.
+    offers: raw?.offers
+      ? {
+          ...raw.offers,
+          bothClaimed: breakfast.status === 'CLAIMED' && lateNight.status === 'CLAIMED',
+          allFourClaimed: claimedCount === 4,
+          claimedCount
+        }
+      : null,
+    summary: raw?.summary || null,
+    lockerSummary: raw?.summary || null,
+    lockedMap: raw?.offers?.lockedMap || null,
     campaigns: { ...EVENT_CAMPAIGN_URLS },
+    links: EVENT_OFFER_LINKS,
+    offerKeys: EVENT_OFFER_KEYS,
     at
   };
 }
@@ -609,6 +653,31 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
       : {};
 
     const syncSingleCampaign = async (campaignId, referer) => {
+      // Shared ledger (event-offers.js): chahe claim naye engine se hua ho ya
+      // purane raaste se, kuch hi der me wahi campaign dobara NAHI likhi jati.
+      const recent = recentCampaignClaim(account, campaignId);
+      if (recent) {
+        if (recent.verified && recent.value === chosenVal) {
+          prevLockedMap[campaignId] = chosenVal;
+          return {
+            res: { ok: true, status: 200, statusText: 'Ledger: already claimed' },
+            json: { message: 'Already active' },
+            statusJson: { shouldNotify: true, value: recent.value, timestamp: new Date(recent.at).toISOString() },
+            alreadyActive: true,
+            fromLedger: true
+          };
+        }
+        if (recent.state === 'PRE_LOCKED' && recent.value === chosenVal) {
+          return {
+            res: { ok: true, status: 200, statusText: 'Ledger: pre-locked' },
+            json: { message: 'Pre-locked earlier' },
+            statusJson: { shouldNotify: false, value: recent.value, timestamp: new Date(recent.at).toISOString() },
+            alreadyActive: false,
+            preLocked: true,
+            fromLedger: true
+          };
+        }
+      }
       for (let tryIdx = 0; tryIdx < 2; tryIdx++) {
         if (tryIdx > 0) await new Promise(r => setTimeout(r, 4000));
 
@@ -677,6 +746,7 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
 
         if (writeRes.ok || alreadyMsg) {
           prevLockedMap[campaignId] = chosenVal;
+          noteCampaignClaim(account, campaignId, { value: chosenVal, verified: Boolean(writeRes.ok), state: writeRes.ok ? 'CLAIMED' : 'WRITE_ACCEPTED' });
         }
         return {
           res: writeRes,

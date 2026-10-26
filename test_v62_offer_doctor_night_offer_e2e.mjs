@@ -264,8 +264,12 @@ console.log('\n=== 4. Asli claim path: read-back ke bina "CLAIMED" nahi ===');
   const auto = await bridge.autoActivateEventOffers(
     { id: 'acc_claim_d', phone: '9000007777', token: 'tok', tid: jwt(FUTURE) }, { force: true }
   );
-  check('autoActivateEventOffers success + label', auto.success === true && /₹50/.test(auto.label));
-  check('auto wrapper offers record deta hai', auto.offers?.bothClaimed === true);
+  // success = CHAARON lage. Fake server sirf 2 offer page deta hai, isliye
+  // success false — par Morning + Night ka sach true hona chahiye (jhooth nahi).
+  check('auto wrapper honest success flag (2/4 par false)', auto.success === false && auto.claimedCount === 2, JSON.stringify({ s: auto.success, n: auto.claimedCount }));
+  check('auto wrapper label ₹50-on-₹199 hi rakhta hai', /₹50/.test(auto.label), auto.label);
+  check('auto wrapper bothClaimed + chaar slots deta hai', auto.offers?.bothClaimed === true && Boolean(auto.offers?.extra50) && Boolean(auto.offers?.weekend));
+  check('jo offer nahi mila uska asli reason hai', /campaign id nahi mili/.test(String(auto.offers?.extra50?.message || '')), String(auto.offers?.extra50?.message));
 }
 
 console.log('\n=== 4b. Auto-heal: cart use hone par ID ka offer khud theek ===');

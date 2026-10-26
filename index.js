@@ -11,6 +11,10 @@ import {
 import http from 'http';
 import { Telegraf, Markup } from 'telegraf';
 import { logThrottled, startMemoryGuard, perfSnapshot } from './perf-guard.js';
+import { EVENT_OFFER_LINKS, activateAllEventOffers } from './event-offers.js';
+
+// Boss ke chaar offer links — panel/card me seedha button (koi link chhupa na rahe).
+const OFFER_LINK_URLS = EVENT_OFFER_LINKS;
 import dotenv from 'dotenv';
 import QRCode from 'qrcode';
 import {
@@ -97,7 +101,7 @@ import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { scanFailuresLine } from './scan-diagnostics.js';
 import * as wafPool from './waf-pool.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
-import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
+import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, autoActivateEventOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
   getOrderCurrentTopic,
   buildTopicNavKeyboardRows,
@@ -3662,6 +3666,11 @@ async function sendOfferDoctorCard(ctx, key, { fix = false, edit = false } = {})
     [Markup.button.callback('🔧 Fix ₹50 ab (read-back)', `boss_offer_fix_${key}`)],
     [Markup.button.callback('⟳ Doctor dobara chalao', `boss_offer_doctor_${key}`)],
     [Markup.button.callback('▣ Claim ₹50 Offers', `boss_retry_claim_${key}`)],
+    // CHAAR offer links — boss ne diye: Morning / Night / Extra ₹50 / Weekend
+    [Markup.button.url('🌙 Morning Link', OFFER_LINK_URLS.lateNight)],
+    [Markup.button.url('☀ Night Link', OFFER_LINK_URLS.breakfast)],
+    [Markup.button.url('💸 Extra ₹50 Link', OFFER_LINK_URLS.extra50)],
+    [Markup.button.url('🎉 Weekend Link', OFFER_LINK_URLS.weekend)],
     [Markup.button.callback('◉ Account card', `boss_acc_detail_${key}`)]
   ];
   if (edit) {
@@ -13945,14 +13954,18 @@ function startAutoEventOffersPrebookLoop() {
         const chunk = entries.slice(b, b + CLAIM_BATCH_SIZE);
         await Promise.all(
           chunk.map(async ([, acc]) => {
-            const out = await claimSwiggyBreakfastAndLateNightOffers(acc, {
+            // Chaaron offers (Late Night, Breakfast, Extra ₹50, Weekend) —
+            // pehle sirf do claim hote the.
+            const out = await autoActivateEventOffers(acc, {
               force: true,
               offerValue: acc.preferredOfferValue || 1
             }).catch(() => null);
             if (out) {
-              acc.offers = out;
+              acc.offers = out.offers || out;
               acc.hasBreakfast = Boolean(out.breakfast?.status === 'CLAIMED');
               acc.hasLateNight = Boolean(out.lateNight?.status === 'CLAIMED');
+              acc.hasExtra50 = Boolean(out.extra50?.status === 'CLAIMED');
+              acc.hasWeekend = Boolean(out.weekend?.status === 'CLAIMED');
             }
           })
         );

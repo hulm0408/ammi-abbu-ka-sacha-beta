@@ -51,7 +51,8 @@ const TESTS = [
   "test_v61_account_suspension_failover_fast_id_e2e.mjs",
   "test_v62_offer_doctor_night_offer_e2e.mjs",
   "test_v63_no_loop_place_truth_amount_lock_e2e.mjs",
-  "test_v64_perf_optimization_e2e.mjs"
+  "test_v64_perf_optimization_e2e.mjs",
+  "test_v65_four_offers_every_import_e2e.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];
