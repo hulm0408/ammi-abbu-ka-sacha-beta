@@ -42,6 +42,7 @@ try {
       isLoggedIn: true,
       totalOrdersCount: 0,
       cachedTotalOrdersCount: 0,
+      ordersVerifiedLive: true, // v58 rule: only a LIVE-verified count is displayed
       isZeroOrderAccount: true,
       cookies: '_session_tid=fake1; token=tok1;'
     },
@@ -52,6 +53,7 @@ try {
       isLoggedIn: true,
       totalOrdersCount: 4,
       cachedTotalOrdersCount: 4,
+      ordersVerifiedLive: true, // v58 rule: only a LIVE-verified count is displayed
       isZeroOrderAccount: false,
       cookies: '_session_tid=fake2; token=tok2;'
     },
@@ -63,6 +65,7 @@ try {
       sessionExpired: true,
       totalOrdersCount: 1,
       cachedTotalOrdersCount: 1,
+      ordersVerifiedLive: true,
       isZeroOrderAccount: false,
       cookies: '_session_tid=fake3; token=tok3;'
     }
@@ -83,9 +86,9 @@ try {
   await showFamilyAccounts(mockCtxFamily);
 
   ok(familyReplyText.includes('Fresh Zero User'), 'Fresh Zero User listed in showFamilyAccounts');
-  ok(familyReplyText.includes('★ 0 Orders (Fresh 0-Order ID)'), '★ 0 Orders badge rendered for 0-order account');
-  ok(familyReplyText.includes('● 4 Orders'), '● 4 Orders rendered for veteran account');
-  ok(familyReplyText.includes('⚠️ Session Expired'), 'Expired account renders ⚠️ Session Expired');
+  ok(/· 0 ord ·/.test(familyReplyText), '0 ord badge rendered for LIVE-verified 0-order account');
+  ok(/· 4 ord ·/.test(familyReplyText), '4 ord badge rendered for LIVE-verified veteran account');
+  ok(familyReplyText.includes('⚠️ session expired'), 'Expired account renders ⚠️ session expired');
 
   // Verify button badges in inline keyboard
   const allButtons = familyKeyboard.flat();
@@ -93,8 +96,8 @@ try {
   const usedBtn = allButtons.find(b => b.callback_data === 'acc_view_detail_acc_2220002222');
   const expBtn = allButtons.find(b => b.callback_data === 'acc_view_detail_acc_3330003333');
 
-  ok(Boolean(zeroBtn) && zeroBtn.text.includes('[0 ord]'), 'Zero-order button shows [0 ord] badge');
-  ok(Boolean(usedBtn) && usedBtn.text.includes('[4 ord]'), 'Used account button shows [4 ord] badge');
+  ok(Boolean(zeroBtn) && zeroBtn.text.includes('[0 ord✓]'), 'Zero-order button shows [0 ord✓] LIVE badge');
+  ok(Boolean(usedBtn) && usedBtn.text.includes('[4 ord✓]'), 'Used account button shows [4 ord✓] LIVE badge');
   ok(Boolean(expBtn) && expBtn.text.includes('⚠️'), 'Expired button shows ⚠️ alert icon');
 
   console.log('\n--- 2. Account Details Screen (acc_view_detail_) Formatting & Buttons ---');

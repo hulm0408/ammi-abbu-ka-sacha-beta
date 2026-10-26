@@ -16,8 +16,14 @@ import {
 } from './swiggy-cart.js';
 import {
   claimSwiggyBreakfastAndLateNightOffers,
+  autoActivateEventOffers,
   decodeJwtPayload
 } from './swiggy-bridge.js';
+import {
+  buildPortableSessionJson,
+  stripUntrustedOrderClaims,
+  detectedFileOrderClaims
+} from './account-views.js';
 import { extractSessionFilesFromZipBuffer } from './vault-sync.js';
 import { section, sub, table } from './rich-text.js';
 
@@ -121,9 +127,14 @@ export async function ingestAndPersistRawAccountTexts(
   const {
     verifyFn = verifySwiggySessionLive,
     orderProfileFn = inspectAccountOrderHistoryAndOffers,
-    claimOffersFn = claimSwiggyBreakfastAndLateNightOffers,
+    claimOffersFn = autoActivateEventOffers,
     syncVaultFn = syncCloudVaultNow,
-    concurrency = 8
+    concurrency = 8,
+    // Every import auto-activates BOTH offer links on EVERY ID (not just fresh
+    // ones). Claims are awaited (batches of 2) so the reply can state the real
+    // outcome instead of a hopeful "sab claim ho gaya".
+    waitForClaims = true,
+    claimConcurrency = 2
   } = options;
   const candidatePayloads = [];
   const parseErrors = [];
@@ -152,9 +163,14 @@ export async function ingestAndPersistRawAccountTexts(
           entry.name = fileName.replace(/\.(json|txt|cookies?)$/i, '');
         }
       }
-      const norm = normalizeSwiggySessionPayload(entry);
+      const rawNorm = normalizeSwiggySessionPayload(entry);
+      // A `.json` file that says "order count 0" is NOT evidence. Drop every
+      // count field before anything else looks at it; only the live Swiggy
+      // check below may decide 0-Order vs used.
+      const fileOrderClaims = detectedFileOrderClaims(entry).concat(detectedFileOrderClaims(rawNorm));
+      const norm = rawNorm ? stripUntrustedOrderClaims(rawNorm) : null;
       if (norm && (norm.cookies || norm.tid || norm.token)) {
-        candidatePayloads.push({ fileName, rawEntry: entry, norm });
+        candidatePayloads.push({ fileName, rawEntry: entry, norm, fileOrderClaims });
       } else {
         parseErrors.push({ fileName, reason: 'Missing Swiggy cookies / token fields' });
       }
@@ -221,8 +237,11 @@ export async function ingestAndPersistRawAccountTexts(
       token: live?.token || norm.token || '',
       deviceId: norm.deviceId || '',
       cookies: live?.cookies || norm.cookies || '',
-      isLoggedIn: true
+      isLoggedIn: true,
+      // Always the ₹50-on-₹199 reward (option #1 of the 4 Swiggy shows).
+      preferredOfferValue: 1
     };
+    const ignoredFileCounts = Array.isArray(cand.fileOrderClaims) ? cand.fileOrderClaims : [];
 
     // Quick order-history check so Vault immediately knows `0-Order` (`isZeroOrderAccount`) vs `Used`!
     try {
@@ -238,7 +257,21 @@ export async function ingestAndPersistRawAccountTexts(
         mergedPayload.totalOrdersCount = orderCount;
         mergedPayload.cachedTotalOrdersCount = orderCount;
         mergedPayload.ordersVerifiedLive = true;
+        mergedPayload.orderCountSource = 'LIVE';
         mergedPayload.isZeroOrderAccount = (orderCount === 0);
+        mergedPayload.liveActiveOrdersCount = Number(prof?.liveActiveOrdersCount || 0);
+        mergedPayload.orderTruthCheckedAt = new Date().toISOString();
+        delete mergedPayload.orderCountUnverified;
+      } else {
+        // Live check could not answer -> say so, never fall back to the file.
+        mergedPayload.ordersVerifiedLive = false;
+        mergedPayload.orderCountSource = 'UNVERIFIED';
+        mergedPayload.orderCountUnverified = true;
+        delete mergedPayload.totalOrdersCount;
+        delete mergedPayload.isZeroOrderAccount;
+      }
+      if (ignoredFileCounts.length > 0) {
+        mergedPayload.ignoredFileOrderClaims = ignoredFileCounts;
       }
     } catch {}
 
@@ -263,51 +296,142 @@ export async function ingestAndPersistRawAccountTexts(
       isZeroOrderAccount: r.isZeroOrderAccount
     }));
 
+    // `importSessionJson` only persists white-listed fields, so stamp the honest
+    // order-truth / offer metadata onto each saved account right here.
+    {
+      const dbNow = getDb();
+      const byKey = new Map();
+      for (const payload of acceptedPayloads) {
+        const pKey = payload.phone ? `acc_${String(payload.phone).replace(/\D/g, '').slice(-10)}` : '';
+        if (pKey) byKey.set(pKey, payload);
+      }
+      for (const item of savedAccounts) {
+        const acc = dbNow.config?.accounts?.[item.key];
+        if (!acc) continue;
+        const payload = byKey.get(item.key) || null;
+        acc.preferredOfferValue = 1;
+        if (payload?.ordersVerifiedLive === true && typeof payload.totalOrdersCount === 'number') {
+          acc.totalOrdersCount = payload.totalOrdersCount;
+          acc.cachedTotalOrdersCount = payload.totalOrdersCount;
+          acc.ordersVerifiedLive = true;
+          acc.orderCountSource = 'LIVE';
+          acc.isZeroOrderAccount = payload.totalOrdersCount === 0;
+          acc.liveActiveOrdersCount = Number(payload.liveActiveOrdersCount || 0);
+          acc.orderTruthCheckedAt = payload.orderTruthCheckedAt || new Date().toISOString();
+        } else {
+          acc.ordersVerifiedLive = false;
+          acc.orderCountSource = 'UNVERIFIED';
+          acc.orderCountUnverified = true;
+          delete acc.totalOrdersCount;
+          delete acc.cachedTotalOrdersCount;
+          delete acc.isZeroOrderAccount;
+        }
+        if (Array.isArray(payload?.ignoredFileOrderClaims) && payload.ignoredFileOrderClaims.length) {
+          acc.ignoredFileOrderClaims = payload.ignoredFileOrderClaims.slice(0, 10);
+        }
+        item.account = acc;
+        item.totalOrdersCount = acc.totalOrdersCount;
+        item.isZeroOrderAccount = acc.isZeroOrderAccount;
+        item.ordersVerifiedLive = acc.ordersVerifiedLive;
+        item.ignoredFileOrderClaims = acc.ignoredFileOrderClaims || [];
+      }
+      saveDb(dbNow);
+    }
+
     // Immediately flush to persistent Cloud Vault (`bot-vault` branch) so Render restarts NEVER lose any file!
     await Promise.resolve(syncVaultFn(getDb())).catch(() => {});
 
-    // Trigger immediate evaluation & pre-fetch of Breakfast + Late Night offers in gentle batches (2 at a time)!
-    (async () => {
-      const targets = savedAccounts.slice(0, 25);
-      const BATCH_SZ = 2;
-      for (let i = 0; i < targets.length; i += BATCH_SZ) {
-        const chunk = targets.slice(i, i + BATCH_SZ);
+    // AUTO-ACTIVATE both offer links on EVERY imported ID (Breakfast + Dinner
+    // Late Night), always reward option #1 = "₹50 off on ₹199".
+    const runOfferActivation = async () => {
+      const targets = savedAccounts.slice(0, 40);
+      for (let i = 0; i < targets.length; i += claimConcurrency) {
+        const chunk = targets.slice(i, i + claimConcurrency);
         await Promise.allSettled(
           chunk.map(async ({ account, key }) => {
             try {
-              const claimOut = await claimOffersFn(account, {
-                force: true,
-                offerValue: account.preferredOfferValue || 1
-              });
+              const claimOut = await claimOffersFn(account, { force: true, offerValue: 1 });
               const freshDb = getDb();
               const target = freshDb.config?.accounts?.[key] || account;
-              if (target && claimOut) {
-                target.offers = claimOut.offers || claimOut;
-                target.hasBreakfast = Boolean(claimOut.breakfast?.status === 'CLAIMED');
-                target.hasLateNight = Boolean(claimOut.lateNight?.status === 'CLAIMED');
-                let possibleDiscounts = (target.isZeroOrderAccount || target.totalOrdersCount === 0) ? 1 : 0;
-                if (target.hasBreakfast) possibleDiscounts += 1;
-                if (target.hasLateNight) possibleDiscounts += 1;
-                if (target.preferredOfferValue > 0) possibleDiscounts += 1;
-                target.possibleDiscountsCount = possibleDiscounts;
-                saveDb(freshDb);
+              if (!target || !claimOut) return;
+              target.offers = claimOut.offers || claimOut;
+              target.preferredOfferValue = 1;
+              target.hasBreakfast = Boolean(claimOut.breakfast?.status === 'CLAIMED');
+              target.hasLateNight = Boolean(claimOut.lateNight?.status === 'CLAIMED');
+              target.offerAutoActivation = {
+                offerValue: 1,
+                label: claimOut.label || '₹50 off on ₹199',
+                at: claimOut.at || new Date().toISOString(),
+                source: 'JSON_IMPORT',
+                bothClaimed: Boolean(claimOut.bothClaimed),
+                breakfast: claimOut.breakfast || null,
+                lateNight: claimOut.lateNight || null
+              };
+              let possibleDiscounts = (target.isZeroOrderAccount || target.totalOrdersCount === 0) ? 1 : 0;
+              if (target.hasBreakfast) possibleDiscounts += 1;
+              if (target.hasLateNight) possibleDiscounts += 1;
+              if (target.preferredOfferValue > 0) possibleDiscounts += 1;
+              target.possibleDiscountsCount = possibleDiscounts;
+              saveDb(freshDb);
+              const saved = savedAccounts.find((x) => x.key === key);
+              if (saved) {
+                saved.offerAutoActivation = target.offerAutoActivation;
+                saved.hasBreakfast = target.hasBreakfast;
+                saved.hasLateNight = target.hasLateNight;
+                saved.account = target;
               }
-            } catch {}
+            } catch (err) {
+              const saved = savedAccounts.find((x) => x.key === key);
+              if (saved) {
+                saved.offerAutoActivation = {
+                  offerValue: 1,
+                  label: '₹50 off on ₹199',
+                  at: new Date().toISOString(),
+                  source: 'JSON_IMPORT',
+                  bothClaimed: false,
+                  breakfast: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) },
+                  lateNight: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) }
+                };
+              }
+            }
           })
         );
-        if (i + BATCH_SZ < targets.length) {
+        if (i + claimConcurrency < targets.length) {
           await new Promise(r => setTimeout(r, 350));
         }
       }
-    })().catch(() => {});
+    };
+
+    if (waitForClaims) {
+      await runOfferActivation().catch(() => {});
+    } else {
+      runOfferActivation().catch(() => {});
+    }
+
+    // Persist again so the claim results + live order truth are in the cloud vault.
+    await Promise.resolve(syncVaultFn(getDb())).catch(() => {});
   }
 
   const allVaultActive = Object.values(getDb().config?.accounts || {}).filter(a => a?.isLoggedIn);
-  const zeroOrderCount = savedAccounts.filter(s => s.isZeroOrderAccount || s.totalOrdersCount === 0).length;
+  const zeroOrderCount = savedAccounts.filter(s => s.ordersVerifiedLive !== false && (s.isZeroOrderAccount || s.totalOrdersCount === 0)).length;
   const usedAccountCount = savedAccounts.length - zeroOrderCount;
+
+  // The portable 7-field JSON ({name, customerId, mobile, token, tid, sid,
+  // deviceId}) for each imported ID — this is what the Boss copies out.
+  const liveDb = getDb();
+  const portableAccounts = savedAccounts.map((item) => {
+    const acc = liveDb.config?.accounts?.[item.key] || item.account || {};
+    return {
+      key: item.key,
+      phone: String(acc.phone || acc.mobile || '').slice(-10),
+      name: acc.name || item.key,
+      json: buildPortableSessionJson(acc, item.key)
+    };
+  });
 
   return {
     savedAccounts,
+    portableAccounts,
     zeroOrderCount,
     usedAccountCount,
     expiredList,
@@ -347,10 +471,14 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
   const previewLines = savedAccounts.slice(0, 18).map((item, idx) => {
     const acc = item.account || {};
     const label = acc.phone || acc.name || item.key;
-    const tag = (item.isZeroOrderAccount || item.totalOrdersCount === 0)
-      ? '+ 0-Order'
-      : (typeof item.totalOrdersCount === 'number' ? `▣ ${item.totalOrdersCount} Orders` : '● Ready');
-    return `${idx + 1}. ✓ <code>${label}</code> (${tag})`;
+    // Only a LIVE-verified count is printed; an unverified one says so.
+    const tag = acc.ordersVerifiedLive === true
+      ? (Number(acc.totalOrdersCount) === 0 ? '★ 0 orders (live)' : `▣ ${Number(acc.totalOrdersCount)} orders (live)`)
+      : '⚠️ orders live-check pending';
+    const act = item.offerAutoActivation || acc.offerAutoActivation || null;
+    const bf = act?.breakfast?.status === 'CLAIMED' ? '✓' : '✕';
+    const ln = act?.lateNight?.status === 'CLAIMED' ? '✓' : '✕';
+    return `${idx + 1}. ✓ <code>${label}</code> (${tag}) · ₹50 on ₹199 → BF ${bf} / LN ${ln}`;
   }).join('\n');
   const moreNote = savedAccounts.length > 18
     ? `\n<i>...aur ${savedAccounts.length - 18} accounts bhi Vault me save ho gaye!</i>`
@@ -376,6 +504,11 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
     ['☁️ Total Active Ready', `${totalVaultActiveCount} (${totalVaultZeroOrderCount} Zero-Order)`],
   ];
 
+  const ignoredCounts = savedAccounts.filter((i) => Array.isArray(i.ignoredFileOrderClaims) && i.ignoredFileOrderClaims.length).length;
+  const ignoredNote = ignoredCounts > 0
+    ? `\n\n<i>⚠️ ${ignoredCounts} file(s) me likha order count ignore kiya gaya — count sirf live Swiggy check se aata hai.</i>`
+    : '';
+
   return (
     section(`✓ ${savedAccounts.length} Swiggy Account(s) Permanently Saved to Vault!`, [
       table(summaryTable),
@@ -384,9 +517,41 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
       moreNote,
       skippedNote,
       shortNote,
+      ignoredNote,
     ].filter(Boolean).join('\n')) +
     `\n\n${sub('› Ab jab bhi Cart + Address aayega, bot bina OTP maange apne aap Best 0-Order + Max Offer account select karke bill nikal dega!')}`
   );
+}
+
+/**
+ * One message per imported account with the exact 7-field JSON the Boss copies
+ * out: { name, customerId, mobile, token, tid, sid, deviceId }.
+ * Returned as plain data so the caller decides how to send it.
+ */
+export function buildPortableAccountMessages(result) {
+  const list = Array.isArray(result?.portableAccounts) ? result.portableAccounts : [];
+  return list.map((item) => {
+    const saved = (result.savedAccounts || []).find((s) => s.key === item.key) || {};
+    const acc = saved.account || {};
+    const act = saved.offerAutoActivation || acc.offerAutoActivation || null;
+    const bf = act?.breakfast?.status === 'CLAIMED';
+    const ln = act?.lateNight?.status === 'CLAIMED';
+    const orders = acc.ordersVerifiedLive === true
+      ? (Number(acc.totalOrdersCount) === 0 ? '★ 0 orders (LIVE check)' : `● ${Number(acc.totalOrdersCount)} orders (LIVE check)`)
+      : '⚠️ order count live-check pending';
+    const claimState = (bf && ln) ? 'ALREADY CLAIMED (both offers)' : (act ? 'NEW / PARTIAL — retry claim' : 'NEW — claim pending');
+    return {
+      key: item.key,
+      phone: item.phone,
+      fileName: `${item.key}.json`,
+      jsonText: JSON.stringify(item.json, null, 2),
+      caption:
+        `▤ <b>${String(item.name || item.key)}</b> · <code>${String(item.phone || '')}</code>\n` +
+        `📦 ${orders}\n` +
+        `🎁 ₹50 off on ₹199 → Breakfast ${bf ? '✓' : '✕'} · Late night ${ln ? '✓' : '✕'}\n` +
+        `◈ ${claimState}`
+    };
+  });
 }
 
 /**
