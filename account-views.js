@@ -223,6 +223,10 @@ export function accountDetailText({ acc, key, activeKey = '', orderLines = [] } 
     `   ▪ Late night: ${claim.lateNight.label}`,
     `   ▪ Account: <b>${claim.both ? 'ALREADY CLAIMED' : (claim.isNew ? 'NEW (claim pending)' : 'PARTIAL')}</b>`,
     claim.autoActivatedAt ? `   ▪ Auto-activated: ${escapeLight(claim.autoActivatedAt.slice(0, 19).replace('T', ' '))}` : '',
+    src.offerDoctor
+      ? `   ▪ 🎁 Doctor: LN <b>${escapeLight(String(src.offerDoctor.lateNight || '?'))}</b> · BF <b>${escapeLight(String(src.offerDoctor.breakfast || '?'))}</b>` +
+        (Array.isArray(src.offerDoctor.verdict) && src.offerDoctor.verdict[0] ? `\n     <i>${escapeLight(String(src.offerDoctor.verdict[0]).slice(0, 110))}</i>` : '')
+      : '',
     ...(orderLines.length ? ['', `▤ <b>Previous orders:</b>`, ...orderLines] : []),
     '',
     `▤ <b>Session JSON (7 fields):</b>`,

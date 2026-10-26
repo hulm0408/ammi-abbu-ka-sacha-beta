@@ -74,6 +74,7 @@ import {
   parseUpiIntent
 } from './payment-qr-guard.js';
 import { isAccountSuspended, markAccountHealthy, markAccountSuspended, describeSuspendedAccount, suspendedAccountsSummary, classifySwiggyAccountFailure } from './account-health.js';
+import { diagnoseAccountOffers, fixAccountOffers, formatOfferDoctorReport, runOfferDoctorForAccount, OFFER_OPTIONS as DOCTOR_OFFER_OPTIONS } from './offer-claim-doctor.js';
 import {
   autoExportAccountAfterDelivery,
   planDeliveryExport,
@@ -3259,6 +3260,10 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     { text: '▣ Claim ₹50 Offers', callback_data: `boss_retry_claim_${targetAcc}`, style: 'success' },
     { text: '₹ Claim Free Cash', callback_data: `boss_check_fc_${targetAcc}`, style: 'success' }
   ]);
+  keyboardButtons.push([
+    { text: '🎁 Night Offer Doctor', callback_data: `boss_offer_doctor_${targetAcc}`, style: 'primary' },
+    { text: '🔧 Fix ₹50 ab', callback_data: `boss_offer_fix_${targetAcc}`, style: 'success' }
+  ]);
 
   keyboardButtons.push([
     { text: 'Export JSON File', callback_data: `boss_export_single_${targetAcc}`, style: 'primary' },
@@ -3618,6 +3623,93 @@ bot.action(/^boss_retry_acc_(.+)$/, async (ctx) => {
   ).catch(() => {});
 });
 
+// ============================================================================
+// 🎁 OFFER DOCTOR — per-ID truth: kaunsa campaign, kaunsa reward, HTTP kya,
+// aur slot abhi khula hai ya nahi. "Likh diya" kabhi success nahi kaha jata;
+// sirf GET read-back (`shouldNotify` + `value`) sach hai.
+// ============================================================================
+async function sendOfferDoctorCard(ctx, key, { fix = false, edit = false } = {}) {
+  const acc = getDb().config?.accounts?.[key];
+  if (!acc) return ctx.reply('Account not found.');
+  const label = `${acc.name || key} (${acc.phone || 'no phone'})`;
+  let report = null;
+  try {
+    report = await runOfferDoctorForAccount(key, { fix });
+  } catch (err) {
+    report = { ok: false, verdict: [`Doctor fail: ${String(err?.message || err).slice(0, 150)}`] };
+  }
+  const text = formatOfferDoctorReport(report?.ok === false && report?.before ? report.before : report, {
+    accountLabel: label,
+    escapeHtml: (v) => escapeHtml(String(v ?? ''))
+  }) + (fix && report?.changes?.length
+    ? '\n\n<b>🔧 Fix result (read-back verified):</b>\n' + report.changes
+      .map((c) => `${c.verified ? '✅' : '❌'} <code>${escapeHtml(c.campaign)}</code> — ${escapeHtml(c.verified ? '₹50 free cash saved' : (c.reason || 'not saved'))}`)
+      .join('\n')
+    : '') +
+    (fix && report?.verifiedAny
+      ? '\n\n<i>Ab cart me ₹199+ ka order rakhein — cash khud lagega. Cart dobara scan karne par amount update ho jayega.</i>'
+      : '');
+
+  const buttons = [
+    [Markup.button.callback('🔧 Fix ₹50 ab (read-back)', `boss_offer_fix_${key}`)],
+    [Markup.button.callback('⟳ Doctor dobara chalao', `boss_offer_doctor_${key}`)],
+    [Markup.button.callback('▣ Claim ₹50 Offers', `boss_retry_claim_${key}`)],
+    [Markup.button.callback('◉ Account card', `boss_acc_detail_${key}`)]
+  ];
+  if (edit) {
+    return ctx.editMessageText(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) }).catch(() =>
+      ctx.reply(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) })
+    );
+  }
+  return ctx.reply(text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard(buttons) });
+}
+
+bot.action(/^boss_offer_doctor_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+  const key = ctx.match[1];
+  await ctx.answerCbQuery('🎁 Swiggy se asli state padh raha hoon...').catch(() => {});
+  const wait = await ctx.reply('🎁 <i>Offer Doctor: har campaign ki live state (GET /api/notify) padh raha hoon…</i>', { parse_mode: 'HTML' }).catch(() => null);
+  await sendOfferDoctorCard(ctx, key, { fix: false });
+  if (wait?.message_id) { try { await bot.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {} }
+});
+
+bot.action(/^boss_offer_fix_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+  const key = ctx.match[1];
+  await ctx.answerCbQuery('🔧 ₹50 free cash book kar raha hoon…').catch(() => {});
+  const wait = await ctx.reply('🔧 <i>Option 1 (₹50 free cash) likh raha hoon, phir server se read-back verify karunga…</i>', { parse_mode: 'HTML' }).catch(() => null);
+  await sendOfferDoctorCard(ctx, key, { fix: true });
+  if (wait?.message_id) { try { await bot.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {} }
+});
+
+// /offers — saare IDs ka ek saath doctor (Boss: "mera ID kaam nahi kar raha")
+bot.command(['offers', 'offercheck', 'nightoffer'], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.reply('Sirf Boss ke liye.');
+  const db = getDb();
+  const keys = Object.keys(db.config?.accounts || {}).filter((k) => {
+    const a = db.config.accounts[k];
+    return a && !isAccountSuspended(a);
+  });
+  if (keys.length === 0) return ctx.reply('Vault me koi ID nahi — pehle JSON import karein.');
+  const wait = await ctx.reply(`🎁 <i>${keys.length} ID ka offer state padh raha hoon (late-night + breakfast)…</i>`, { parse_mode: 'HTML' }).catch(() => null);
+  const lines = ['🎁 <b>OFFER DOCTOR — SAB ID</b>', ''];
+  const buttons = [];
+  for (const key of keys.slice(0, 12)) {
+    const acc = db.config.accounts[key];
+    const rep = await runOfferDoctorForAccount(key, {}).catch(() => null);
+    const ln = rep?.tracks?.lateNight;
+    const bf = rep?.tracks?.breakfast;
+    const icon = (t) => (t?.state === 'LIVE_NOW' || t?.state === 'BOOKED' ? '🟢' : (t?.state === 'WRONG_REWARD' ? '🟡' : '🔴'));
+    lines.push(`${icon(ln)} <code>${escapeHtml(String(acc.phone || key).replace(/^acc_/, ''))}</code> — LN: <b>${escapeHtml(ln?.state || '?')}</b> · BF: <b>${escapeHtml(bf?.state || '?')}</b>`);
+    if (ln && ln.state !== 'BOOKED' && ln.state !== 'LIVE_NOW') lines.push(`   <i>${escapeHtml(String(ln.reason || '').slice(0, 110))}</i>`);
+    buttons.push([Markup.button.callback(`🔧 Fix ${String(acc.phone || key).replace(/^acc_/, '')}`, `boss_offer_fix_${key}`)]);
+  }
+  buttons.push([Markup.button.callback('◉ Accounts', 'boss_view_accounts')]);
+  const text = lines.join('\n');
+  if (wait?.message_id) { try { await bot.telegram.deleteMessage(ctx.chat.id, wait.message_id); } catch {} }
+  await ctx.reply(text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...Markup.inlineKeyboard(buttons) });
+});
+
 // Action: Retry offer claims
 bot.action(/^boss_retry_claim_(.+)$/, async (ctx) => {
   const accKey = ctx.match[1];
@@ -3636,6 +3728,28 @@ bot.action(/^boss_retry_claim_(.+)$/, async (ctx) => {
   acc.hasLateNight = Boolean(claimRes.lateNight?.status === 'CLAIMED');
   saveDb(db);
   try { await bot.telegram.deleteMessage(ctx.chat.id, retryWait.message_id); } catch (e) {}
+
+  // Offer laga ya nahi — likhne ke baad READ-BACK truth. Fail hone par chup
+  // mat raho: doctor chala kar asli reason (value drift / 403 / cutoff) dikhao.
+  if (!(acc.hasBreakfast && acc.hasLateNight)) {
+    const doctor = await runOfferDoctorForAccount(accKey, {}).catch(() => null);
+    if (doctor?.ok) {
+      await ctx.reply(
+        formatOfferDoctorReport(doctor, {
+          accountLabel: `${acc.name || accKey} (${acc.phone || ''})`,
+          escapeHtml: (v) => escapeHtml(String(v ?? ''))
+        }),
+        {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🔧 Fix ₹50 ab (read-back)', `boss_offer_fix_${accKey}`)],
+            [Markup.button.callback('◉ Account card', `boss_acc_detail_${accKey}`)]
+          ])
+        }
+      ).catch(() => {});
+    }
+  }
 
   await sendAccountLoginAndOffersCard(ctx, {
     accountKey: accKey,
@@ -11647,6 +11761,12 @@ bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
     buttons.push([
       { text: '⟳ Live Check Orders', callback_data: `acc_live_orders_${key}`, style: 'primary' },
       { text: '▣ Claim ₹50 Offers', callback_data: `boss_retry_claim_${key}`, style: 'success' },
+    ]);
+    // 🎁 OFFER DOCTOR — "dusre ID par night offer lag raha, mere par nahi" ka
+    // seedha jawab: har campaign ki ASLI server state + one-tap fix.
+    buttons.push([
+      { text: '🎁 Night Offer Doctor', callback_data: `boss_offer_doctor_${key}`, style: 'primary' },
+      { text: '🔧 Fix ₹50 ab', callback_data: `boss_offer_fix_${key}`, style: 'success' }
     ]);
     buttons.push([
       { text: '₹ Claim Free Cash', callback_data: `boss_check_fc_${key}`, style: 'success' }
