@@ -85,6 +85,9 @@ import {
   geocodeAddressDetails,
   syncGroupCartAndCheckoutForAccount,
   findBestMaxCouponAccountForOrder,
+  describeAccountRotation,
+  pickNextRotationAccount,
+  rotationSummary,
   generateRealSwiggyMerchantUpiQr,
   checkRealSwiggyPaymentAndExtractTracking,
   fetchSwiggyTrackingLinkFast,
@@ -1143,6 +1146,24 @@ export function getActiveQrOrdersWaitingForPayment(db) {
     .sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
 }
 
+// Honest one-liner about ID rotation ("is order par kitni ID use ho chuki,
+// agli fresh ID kaun si hai"). Never throws — a card must always render.
+function buildRotationLine(order) {
+  try {
+    const s = rotationSummary(order);
+    if (!s || !s.total) return '';
+    const current = order?.selectedAccount
+      ? `<code>${escapeHtml(String(order.orderAccount || order.selectedAccount))}</code>`
+      : '<i>koi nahi</i>';
+    const nextBit = s.nextPhone && String(s.nextPhone) !== String(order?.orderAccount || '')
+      ? ` · agla: <code>${escapeHtml(String(s.nextPhone))}</code>`
+      : '';
+    return `\n⚡ <b>ID:</b> ${current} · fresh ${s.remaining}/${s.total}${nextBit}`;
+  } catch {
+    return '';
+  }
+}
+
 export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
   const senderLine = buildSenderHeaderLine(order);
   const hasAddress = Boolean(order.address) && hasVerifiedDeliveryLocation(order);
@@ -1273,7 +1294,7 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     const text =
       `▤ <b>ORDER BILL READY (#${escapeHtml(order.id)})</b>\n` +
       `${senderLine}\n\n` +
-      `${bodyHtml}${offerStrip}${qrStatusNote}${lazyHint}`;
+      `${bodyHtml}${offerStrip}${buildRotationLine(order)}${qrStatusNote}${lazyHint}`;
 
     const readyForQrCount = getBillReadyOrdersWaitingForQr(db).length;
     const activeQrCount = getActiveQrOrdersWaitingForPayment(db).length;
@@ -1304,6 +1325,12 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
         )
       ]);
     }
+    // INSTANT ID ROTATION: one tap = next unused ID, no offer scan (each account
+    // has the same offers), so the bill comes back immediately.
+    rows.push([
+      Markup.button.callback('⚡ Next ID (instant)', `fwd_next_acc_${order.id}`),
+      Markup.button.callback('👤 Choose ID', `fwd_pick_acc_${order.id}`)
+    ]);
     rows.push([
       Markup.button.callback('▣ Re-Scan Max Offer', `fwd_rescan_max_${order.id}`),
       Markup.button.callback('🔄 Change Auto Selection', `fwd_change_auto_sel_${order.id}`)
@@ -1363,11 +1390,14 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
       `${senderLine}\n\n` +
       `⌖ <b>Address:</b> ${summarizeAddressPreview(order)}\n` +
       `▤ <b>Cart:</b> ${summarizeCartPreview(order)}\n\n` +
-      `<i>› Finding free 0-Order Swiggy ID + applying Maximum Coupon, Item Offers, Free Cash &amp; Free Delivery in parallel...</i>${errNotice}`;
+      (order.accountSwitchReason === 'next_id' || order.accountSwitchReason === 'manual_pick' || order.accountSwitchReason === 'auto_retry'
+        ? `<i>⚡ Instant ID switch → <code>${escapeHtml(String(order.orderAccount || order.selectedAccount || ''))}</code> · offer scan skip (sab ID par same offers), bill turant ban raha hai…</i>${errNotice}`
+        : `<i>› Finding free 0-Order Swiggy ID + applying Maximum Coupon, Item Offers, Free Cash &amp; Free Delivery in parallel...</i>${errNotice}`);
     return {
       text,
       keyboard: Markup.inlineKeyboard([
         [Markup.button.callback(order.accountSyncError || order.lastAccountError ? '🔄 Retry Auto Selection' : '🔄 Change Auto Selection', `fwd_change_auto_sel_${order.id}`)],
+        [Markup.button.callback('⚡ Next ID (instant)', `fwd_next_acc_${order.id}`), Markup.button.callback('👤 Choose ID', `fwd_pick_acc_${order.id}`)],
         [cancelBtn]
       ])
     };
@@ -2104,7 +2134,11 @@ export async function executeOrderBillSyncOnAccount({
   orderId,
   accKey,
   formatOrderBodyFn,
-  excludeAccountKeys = []
+  excludeAccountKeys = [],
+  // INSTANT switch (⚡ Next ID / 👤 Choose ID): the picked ID builds the bill
+  // straight away — no coupon/MCP/offer wave, no Swiggy One auto-add, no
+  // free-cash relock. Every account carries the same offers, so nothing is lost.
+  skipAutoOffers = false
 }) {
   const db = getDb();
   let order = lookupOrder(db, orderId);
@@ -2162,7 +2196,7 @@ export async function executeOrderBillSyncOnAccount({
       if (order.addressDetails?.id && order.selectedAccount && order.selectedAccount !== accKey) {
         delete order.addressDetails.id;
       }
-      const r = await syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false });
+      const r = await syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false, skipAutoOffers });
       return r;
     });
     if (!syncRes?.success) {
@@ -2188,7 +2222,7 @@ export async function executeOrderBillSyncOnAccount({
 
   // Free cash / late-night second chance on the SELECTED ID (outside the ID-scan
   // deadline, so it can never turn a good scan into a timeout). Bounded to 10s.
-  if (order.selectedAccount && getDb().config?.accounts?.[order.selectedAccount]) {
+  if (!skipAutoOffers && order.selectedAccount && getDb().config?.accounts?.[order.selectedAccount]) {
     let freeCashTimer = null;
     try {
       const freeCashOut = await Promise.race([
@@ -2202,6 +2236,14 @@ export async function executeOrderBillSyncOnAccount({
       if (freeCashTimer) clearTimeout(freeCashTimer);
     }
   }
+
+  // ROTATION MEMORY: an ID is selected ONCE per order. The next ⚡ Next ID tap
+  // therefore always lands on a different account.
+  if (order.selectedAccount) {
+    order.usedAccountKeys = [...new Set([...(Array.isArray(order.usedAccountKeys) ? order.usedAccountKeys : []), String(order.selectedAccount)])];
+  }
+  order.lastAccountPickedAt = new Date().toISOString();
+  order.fastAccountSwitch = skipAutoOffers ? true : Boolean(order.fastAccountSwitch);
 
   order.status = 'ACCEPTED';
   order.cardStage = 'BILL_READY';
@@ -3062,6 +3104,257 @@ export function registerForwardedOrderHandlers(bot, {
     }
   });
 
+  // ===========================================================================
+  // INSTANT ID ROTATION — "ek account ek baar hi select hoga, refresh dabao to
+  // turant dusra". Boss aur customer dono ke paas yeh buttons hote hain.
+  //   1. Selection is LOCAL (vault read) → instant, no offer scan.
+  //   2. An ID already picked for this order is never picked again.
+  //   3. If the new ID fails to build the bill, the next fresh ID is tried
+  //      automatically (no extra taps needed).
+  // ===========================================================================
+  const rotationStatusIcon = (status) => ({
+    FREE: '🟢', MAYBE_USED: '🟡', BUSY: '🟠', USED: '🔵', OFFLINE: '⚪'
+  }[status] || '⚪');
+
+  const rotationRowsText = (order) => {
+    const summary = rotationSummary(order);
+    if (summary.total === 0) return { summary, line: '⚪ Vault me koi Swiggy ID nahi.' };
+    const usedLine = summary.used > 0
+      ? ` · is order par ${summary.used} ID use ho chuki`
+      : '';
+    const current = order.selectedAccount
+      ? `<code>${escapeHtml(String(order.orderAccount || order.selectedAccount))}</code>`
+      : '<i>koi nahi</i>';
+    const line = `⚡ <b>ID rotation:</b> ${current}${usedLine} · bachi hui fresh ID: <b>${summary.remaining}</b>/${summary.total}`;
+    return { summary, line };
+  };
+
+  const canManageAccountChoice = (order, userId) => {
+    if (!order) return false;
+    if (isBoss(Number(userId))) return true;
+    const uid = String(userId || '');
+    return Boolean(uid) && [order.userId, order.fwdSenderUserId, order.userChatId]
+      .filter(Boolean)
+      .some((v) => String(v) === uid);
+  };
+
+  // One rotation attempt: mark the new ID, push the (fast) bill, report honestly.
+  const runInstantAccountSwitch = async (ctx, orderId, { forcedKey = null, reason = 'next' } = {}) => {
+    const db = getDb();
+    const order = lookupOrder(db, orderId);
+    if (!order) return { success: false, error: 'Order not found' };
+
+    let target = null;
+    if (forcedKey) {
+      const row = describeAccountRotation(order).find((r) => String(r.key) === String(forcedKey));
+      if (!row) return { success: false, error: 'Ye ID vault me nahi mila' };
+      if (row.status === 'OFFLINE') return { success: false, error: `${row.phone} logged out hai — pehle login karein` };
+      target = { key: row.key, phone: row.phone, warning: row.status === 'BUSY' ? `⚠️ ${row.phone} dusre live order me hai` : '' };
+    } else {
+      const pick = pickNextRotationAccount(order);
+      if (!pick?.success) return { success: false, error: pick?.error || 'Koi fresh ID nahi mili' };
+      target = { key: pick.key, phone: pick.phone, warning: pick.warning || '' };
+    }
+
+    const prevKey = order.selectedAccount ? String(order.selectedAccount) : '';
+    if (prevKey && prevKey !== target.key) releaseSwiggyAccountReservation(prevKey, order.id);
+    order.usedAccountKeys = [...new Set([...(Array.isArray(order.usedAccountKeys) ? order.usedAccountKeys : []), prevKey].filter(Boolean))];
+    order.selectedAccount = target.key;
+    order.orderAccount = target.phone;
+    order.accountPickerKeys = undefined;
+    order.cardStage = 'AUTO_SELECTING';
+    order.accountSyncError = '';
+    order.lastAccountError = '';
+    order.accountSwitchReason = reason;
+    order.accountSelectedAt = new Date().toISOString();
+    order.pendingSwiggyUpiUri = '';
+    order.pendingSwiggyOrderId = '';
+    order.pendingSwiggyPaasId = '';
+    upsertOrder(order.id, order);
+
+    // Card updates IMMEDIATELY (before any network call) — the switch is instant.
+    await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn, { includeQrDelete: true }).catch(() => {});
+
+    try {
+      await executeOrderBillSyncOnAccount({
+        telegram: ctx.telegram,
+        chatId: ctx.chat.id,
+        orderId: order.id,
+        accKey: target.key,
+        formatOrderBodyFn,
+        skipAutoOffers: true
+      });
+      return { success: true, key: target.key, phone: target.phone, warning: target.warning };
+    } catch (err) {
+      // This ID did not work → it is already marked used, so the automatic retry
+      // lands on the NEXT fresh ID (never the same one twice).
+      const failedDb = getDb();
+      const failed = failedDb.orders?.[order.id];
+      if (failed) {
+        failed.cardStage = 'NEED_ACCOUNT';
+        failed.accountSyncError = String(err?.message || err).slice(0, 220);
+        failed.lastAccountError = failed.accountSyncError;
+        failed.lastFailedAccount = target.key;
+        upsertOrder(failed.id, failed);
+      }
+      return { success: false, error: String(err?.message || err), key: target.key, phone: target.phone };
+    }
+  };
+
+  bot.action(/^fwd_next_acc_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const orderId = ctx.match[1];
+    const order = lookupOrder(getDb(), orderId);
+    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    if (!canManageAccountChoice(order, ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true });
+    if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
+      return ctx.answerCbQuery('Bill approval lock hai — pehle naya bill banayein.', { show_alert: true });
+    }
+    if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(String(order.status))) {
+      return ctx.answerCbQuery('Ye order band ho chuka hai.', { show_alert: true });
+    }
+
+    const preview = pickNextRotationAccount(order);
+    if (!preview?.success) {
+      return ctx.answerCbQuery(preview?.error || 'Koi fresh ID nahi mili', { show_alert: true });
+    }
+    await ctx.answerCbQuery(`⚡ ${preview.phone}`).catch(() => {});
+
+    // Detached: the card already shows the new ID; the bill lands right after.
+    void (async () => {
+      const attempts = [];
+      let current = preview;
+      for (let i = 0; i < 3 && current?.success; i++) {
+        const out = await runInstantAccountSwitch(ctx, orderId, { forcedKey: current.key, reason: i === 0 ? 'next_id' : 'auto_retry' });
+        attempts.push({ phone: current.phone, ok: out.success, error: out.error || '' });
+        if (out.success) {
+          await ctx.reply(
+            `⚡ <b>ID switch ho gayi: ${escapeHtml(String(current.phone))}</b>\n` +
+            `<i>Offer scan skip (har ID par same offers) — bill turant bana.</i>` +
+            (out.warning ? `\n${escapeHtml(out.warning)}` : ''),
+            { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }
+          ).catch(() => {});
+          return;
+        }
+        const freshDb = getDb();
+        const freshOrder = freshDb.orders?.[orderId];
+        current = freshOrder ? pickNextRotationAccount(freshOrder) : null;
+      }
+
+      const tried = attempts.map((a) => `${a.phone}${a.ok ? ' ✓' : ' ✕'}`).join(', ');
+      const lastErr = attempts[attempts.length - 1]?.error || 'ID sync fail';
+      const finalDb = getDb();
+      const finalOrder = finalDb.orders?.[orderId];
+      if (finalOrder) {
+        finalOrder.cardStage = 'NEED_ACCOUNT';
+        finalOrder.accountSyncError = `${lastErr} (tried: ${tried})`;
+        finalOrder.lastAccountError = finalOrder.accountSyncError;
+        upsertOrder(finalOrder.id, finalOrder);
+        await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, finalOrder, getDb(), formatOrderBodyFn).catch(() => {});
+      }
+      await ctx.reply(
+        `⚠️ <b>ID switch fail:</b> ${escapeHtml(String(lastErr).slice(0, 200))}\n` +
+        `<i>Tried: ${escapeHtml(tried)}</i>\n<i>👤 Choose ID se manually pick karein, ya naya account login karein.</i>`,
+        { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }
+      ).catch(() => {});
+    })();
+  });
+
+  // Manual picker — every account is a button with an honest status.
+  bot.action(/^fwd_pick_acc_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const orderId = ctx.match[1];
+    const order = lookupOrder(getDb(), orderId);
+    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    if (!canManageAccountChoice(order, ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true });
+    await ctx.answerCbQuery('👤 ID chunein').catch(() => {});
+
+    const rows = describeAccountRotation(order);
+    const pickable = rows.filter((r) => r.status !== 'OFFLINE').slice(0, 20);
+    // Remember the exact order the buttons were rendered in, so a tap always
+    // resolves to the ID the user actually saw.
+    const liveDb = getDb();
+    const liveOrder = liveDb.orders?.[orderId];
+    if (liveOrder) {
+      liveOrder.accountPickerKeys = pickable.map((r) => r.key);
+      upsertOrder(liveOrder.id, liveOrder);
+    }
+
+    const lines = [
+      `👤 <b>ID CHOOSE — #${escapeHtml(String(orderId))}</b>`,
+      ``,
+      `🟢 free · 🟡 shayad order chal raha · 🟠 dusre order me · 🔵 is order par use ho chuki`,
+      ``
+    ];
+    if (pickable.length === 0) {
+      lines.push('<i>Koi usable ID nahi — pehle account login karein.</i>');
+    } else {
+      pickable.slice(0, 12).forEach((r, i) => {
+        lines.push(`${rotationStatusIcon(r.status)} ${i + 1}. <code>${escapeHtml(r.phone)}</code>${r.name ? ` · ${escapeHtml(r.name)}` : ''} — <i>${escapeHtml(r.reason)}</i>`);
+      });
+      lines.push('', '<i>Tap = turant usi ID par bill (offer scan skip).</i>');
+    }
+
+    const buttons = pickable.slice(0, 12).map((r, i) => ([
+      Markup.button.callback(
+        `${rotationStatusIcon(r.status)} ${r.phone}${r.selected ? ' ✓' : ''}`,
+        `fwd_set_acc_${orderId}_${i}`
+      )
+    ]));
+    buttons.push([Markup.button.callback('⚡ Next fresh ID', `fwd_next_acc_${orderId}`)]);
+    buttons.push([Markup.button.callback('♻ Reset rotation', `fwd_reset_rot_${orderId}`)]);
+    buttons.push([Markup.button.callback('‹ Back to Bill', `fwd_panel_back_${orderId}`)]);
+
+    await ctx.reply(lines.join('\n'), {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...Markup.inlineKeyboard(buttons)
+    }).catch(() => {});
+  });
+
+  bot.action(/^fwd_set_acc_([A-Za-z0-9_]+)_(\d{1,2})$/, async (ctx) => {
+    const orderId = ctx.match[1];
+    const idx = Number(ctx.match[2]);
+    const order = lookupOrder(getDb(), orderId);
+    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    if (!canManageAccountChoice(order, ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true });
+    if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
+      return ctx.answerCbQuery('Bill approval lock hai — pehle naya bill banayein.', { show_alert: true });
+    }
+    const keys = Array.isArray(order.accountPickerKeys) ? order.accountPickerKeys : [];
+    const targetKey = keys[idx];
+    if (!targetKey) {
+      return ctx.answerCbQuery('Picker purana ho gaya — 👤 Choose ID dobara kholein.', { show_alert: true });
+    }
+    await ctx.answerCbQuery('⚡ Select kar raha hoon…').catch(() => {});
+    void (async () => {
+      const out = await runInstantAccountSwitch(ctx, orderId, { forcedKey: targetKey, reason: 'manual_pick' });
+      if (out.success) {
+        await ctx.reply(
+          `✅ <b>ID set: ${escapeHtml(String(out.phone))}</b> — bill turant bana (offer scan skip).` +
+          (out.warning ? `\n${escapeHtml(out.warning)}` : ''),
+          { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }
+        ).catch(() => {});
+      } else {
+        await ctx.reply(`⚠️ <b>${escapeHtml(String(out.phone || targetKey))} par bill nahi bana:</b> ${escapeHtml(String(out.error || 'unknown').slice(0, 200))}`,
+          { parse_mode: 'HTML' }).catch(() => {});
+      }
+    })();
+  });
+
+  bot.action(/^fwd_reset_rot_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const orderId = ctx.match[1];
+    const order = lookupOrder(getDb(), orderId);
+    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    if (!canManageAccountChoice(order, ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true });
+    const db2 = getDb();
+    const fresh = db2.orders?.[orderId];
+    if (fresh) {
+      fresh.usedAccountKeys = [];
+      upsertOrder(fresh.id, fresh);
+    }
+    await ctx.answerCbQuery('♻ Rotation reset').catch(() => {});
+    await ctx.reply('♻ <b>Rotation reset</b> — saare ID dobara available hain (agli tap naya ID chunegi).', { parse_mode: 'HTML' }).catch(() => {});
+  });
+
   // 2. Change Auto-Selected Swiggy Account before payment (Auto-cycles to next best ID with ZERO manual picker!)
   bot.action(/^(?:fwd_change_auto_sel|fwd_rechoose_acc)_([A-Za-z0-9_]+)$/, async (ctx) => {
     const orderId = ctx.match[1];
@@ -3083,6 +3376,8 @@ export function registerForwardedOrderHandlers(bot, {
     const prevAccount = order.selectedAccount;
     if (prevAccount) {
       releaseSwiggyAccountReservation(prevAccount, orderId);
+      // Rotation memory: the ID we just left is never picked again for this order.
+      order.usedAccountKeys = [...new Set([...(Array.isArray(order.usedAccountKeys) ? order.usedAccountKeys : []), String(prevAccount)])];
     }
     order.selectedAccount = null;
     order.cardStage = 'AUTO_SELECTING';
@@ -3426,6 +3721,10 @@ export function registerForwardedOrderHandlers(bot, {
       [
         Markup.button.callback('🧹 Clear Cart', `fwd_panel_clear_${id}`),
         Markup.button.callback('↻ Re-scan All Offers', `fwd_panel_rescan_${id}`)
+      ],
+      [
+        Markup.button.callback('⚡ Next ID (instant)', `fwd_next_acc_${id}`),
+        Markup.button.callback('👤 Choose ID', `fwd_pick_acc_${id}`)
       ],
       [Markup.button.callback('‹ Back to Bill', `fwd_panel_back_${id}`)]
     ]);

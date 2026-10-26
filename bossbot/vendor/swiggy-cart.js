@@ -6012,6 +6012,11 @@ export async function reapplyWinningCouponAfterTrials({
 // ---------------------------------------------------------------------------
 export async function syncGroupCartAndCheckoutForAccount(account, order, options = {}) {
   const { captureScreenshot = false, skipFreeCashRelock = false } = options;
+  // INSTANT ID SWITCH (⚡ Next ID / 👤 Choose ID): every account carries the same
+  // offers, so the whole offer-discovery wave (MCP coupons, offers/payment,
+  // coupon trials, Swiggy One auto-add, free-cash relock) is skipped — the cart
+  // is built straight away (~1-2s instead of 20s).
+  const skipAutoOffers = options.skipAutoOffers === true;
   if (!account) return { success: false, error: 'No account provided' };
   // USER CONTROLS (per order, set from the 🛠 panel buttons): coupon / free cash /
   // Swiggy One / item offers can each be switched OFF by the boss OR the customer.
@@ -6336,6 +6341,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     // directly over pure Native Android HTTP (`~220ms`, `0` Chromium launches!) and strictly keeps it ONLY when `withSub.finalPayable < preOneTotal`!
     if (
       controlOn('swiggyOne') &&
+      !skipAutoOffers &&
       restaurantId &&
       syncableItems.length > 0 &&
       liveCart &&
@@ -6427,26 +6433,26 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     );
 
     const [mcpCouponsResp, mcpCartResp, offersPayResp, offersRestResp] = await Promise.all([
-      restaurantId && targetAddressId
+      !skipAutoOffers && restaurantId && targetAddressId
         ? callSwiggyFoodMcpTool(account, 'fetch_food_coupons', {
             restaurantId: String(restaurantId),
             addressId: String(targetAddressId)
           }, 1750).catch(() => null)
         : Promise.resolve(null),
-      targetAddressId
+      !skipAutoOffers && targetAddressId
         ? callSwiggyFoodMcpTool(account, 'get_food_cart', {
             addressId: String(targetAddressId),
             ...(order.restaurantName ? { restaurantName: String(order.restaurantName) } : {})
           }, 1750).catch(() => null)
         : Promise.resolve(null),
-      restaurantId
+      !skipAutoOffers && restaurantId
         ? dapiFetch(
             account,
             `offers/payment?lat=${lat}&lng=${lng}&restaurantId=${restaurantId}&cart_value=${estCartVal}&restaurant_id=${restaurantId}&sourcePage=cart&source_page=cart&page_type=PAYMENT_OFFERS_PAGE`,
             { lat, lng, timeoutMs: 2100 }
           ).catch(() => ({ json: null }))
         : Promise.resolve({ json: null }),
-      restaurantId
+      !skipAutoOffers && restaurantId
         ? dapiFetch(account, `offers/restaurant?lat=${lat}&lng=${lng}&restaurantId=${restaurantId}`, { lat, lng, timeoutMs: 2000 }).catch(() => ({ json: null }))
         : Promise.resolve({ json: null })
     ]);
@@ -6582,7 +6588,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       return (candidate.totalSavings || 0) > (incumbent.totalSavings || 0);
     };
 
-    if (controlOn('coupon') && liveCart && liveCart.items?.length > 0 && (!restaurantId || String(liveCart.restaurantId) === String(restaurantId))) {
+    if (!skipAutoOffers && controlOn('coupon') && liveCart && liveCart.items?.length > 0 && (!restaurantId || String(liveCart.restaurantId) === String(restaurantId))) {
       let bestCartState = liveCart;
       let lastLiveCartState = liveCart;
       let bestCode = liveCart.couponCode || '';
@@ -6712,7 +6718,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       // Probe scans (BEST-account comparison) skip this: the winner applies it
       // once in `applyLiveFreeCashRelock`, so 3 parallel probes + waves never
       // fire extra cart pushes or extra offer claims.
-      if (!skipFreeCashRelock && controlOn('freeCash') && freeCashNow === 0 && liveCart?.items?.length > 0 && restaurantId && targetAddressId) {
+      if (!skipFreeCashRelock && !skipAutoOffers && controlOn('freeCash') && freeCashNow === 0 && liveCart?.items?.length > 0 && restaurantId && targetAddressId) {
         // By now the wave-1 claim has almost always settled (it is cached for 30 min
         // after a success), so this await costs ~0ms; the 2000ms cap only protects a
         // genuinely cold claim from slowing the scan down.
@@ -7034,6 +7040,143 @@ export async function adjustOrderItemQuantity(account, order, { index = -1, item
     itemName: String(target.name || target.itemId || ''),
     removedItem: wantedQty === 0 ? String(target.name || target.itemId || '') : '',
     items: order.items
+  };
+}
+
+// ---------------------------------------------------------------------------
+// INSTANT ID ROTATION (no network, no offer scan)
+// "Ek account ek baar hi select hoga — refresh dabao to turant dusra ID."
+// Everything here is a LOCAL read of the vault + live orders, so a switch is
+// decided in <2ms and the card can update immediately.
+// ---------------------------------------------------------------------------
+const ROTATION_OFFLINE = 'OFFLINE';
+const ROTATION_BUSY = 'BUSY';
+const ROTATION_USED = 'USED';
+const ROTATION_MAYBE_USED = 'MAYBE_USED';
+const ROTATION_FREE = 'FREE';
+
+const rotationHasSession = (acc) => Boolean(
+  acc && !acc.isLoggedOut && acc.isLoggedIn !== false &&
+  (acc.cookies || acc.tid || acc.jwtTid || acc.token || acc.auth_token || acc.access_token)
+);
+
+/**
+ * Every vault ID with an honest status for THIS order:
+ *  - FREE        → never used for this order, no live order holding it, no hint
+ *                  of an already-placed order (best / first pick)
+ *  - MAYBE_USED  → Swiggy previously said this ID already has an active order
+ *  - BUSY        → another live order in this bot is currently using it
+ *  - USED        → already selected once for THIS order (rotation never repeats)
+ *  - OFFLINE     → logged out / no session
+ */
+export function describeAccountRotation(order, { excludeKeys = [] } = {}) {
+  const db = getDb();
+  const accounts = db?.config?.accounts || {};
+  const orders = db?.orders || {};
+  const orderId = String(order?.id || '');
+  // The account currently selected on this order ALSO counts as used — that is
+  // exactly what "ek account ek baar hi select hoga" means: a refresh must land
+  // on a different ID, never on the one already showing.
+  const usedByThisOrder = new Set(
+    [
+      ...(Array.isArray(order?.usedAccountKeys) ? order.usedAccountKeys : []),
+      ...(excludeKeys || []),
+      order?.selectedAccount
+    ]
+      .filter(Boolean)
+      .map(String)
+  );
+  // Accounts an active order is currently parked on (bot-side "already used for ordering").
+  const busyWith = new Map();
+  for (const o of Object.values(orders)) {
+    if (!o || String(o.id) === orderId) continue;
+    if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(String(o.status || ''))) continue;
+    if (!o.selectedAccount) continue;
+    const isLive = Boolean(o.pendingSwiggyOrderId || o.cardStage === 'QR_GENERATED' || o.cardStage === 'BILL_READY' || o.cardStage === 'PAID_CONFIRMED');
+    if (!isLive) continue;
+    busyWith.set(String(o.selectedAccount), String(o.id));
+  }
+
+  const rows = [];
+  for (const [key, acc] of Object.entries(accounts)) {
+    if (!acc) continue;
+    let status = ROTATION_FREE;
+    let reason = 'free (never used on this order)';
+    if (!rotationHasSession(acc)) {
+      status = ROTATION_OFFLINE;
+      reason = acc.isLoggedOut ? 'logged out' : 'no session';
+    } else if (usedByThisOrder.has(String(key))) {
+      status = ROTATION_USED;
+      reason = 'already selected once on this order';
+    } else if (busyWith.has(String(key))) {
+      status = ROTATION_BUSY;
+      reason = `in use by order #${busyWith.get(String(key))}`;
+    } else if (acc.hasZeroActiveOrders === false || Number(acc.liveActiveOrdersCount || 0) > 0) {
+      status = ROTATION_MAYBE_USED;
+      reason = 'may already have a running order';
+    }
+    rows.push({
+      key: String(key),
+      phone: String(acc.phone || acc.mobile || String(key).replace(/^acc_/, '')),
+      name: String(acc.name || acc.swiggyName || '').trim(),
+      status,
+      reason,
+      totalOrdersCount: acc.totalOrdersCount === null || acc.totalOrdersCount === undefined ? null : Number(acc.totalOrdersCount),
+      isZeroOrderAccount: acc.isZeroOrderAccount === true,
+      selected: String(order?.selectedAccount || '') === String(key)
+    });
+  }
+
+  const rank = {
+    [ROTATION_FREE]: 0, [ROTATION_MAYBE_USED]: 1, [ROTATION_BUSY]: 2, [ROTATION_USED]: 3, [ROTATION_OFFLINE]: 4
+  };
+  rows.sort((a, b) =>
+    (rank[a.status] - rank[b.status]) ||
+    (Number(b.isZeroOrderAccount) - Number(a.isZeroOrderAccount)) ||
+    a.phone.localeCompare(b.phone));
+  return rows;
+}
+
+/**
+ * The next ID to use, decided instantly and locally.
+ * Rotation never repeats an ID that was already picked for this order; when the
+ * vault runs out it says so instead of silently reusing one.
+ */
+export function pickNextRotationAccount(order, { excludeKeys = [] } = {}) {
+  const rows = describeAccountRotation(order, { excludeKeys });
+  const usable = rows.filter((r) => r.status === ROTATION_FREE || r.status === ROTATION_MAYBE_USED);
+  if (usable.length > 0) {
+    return { success: true, ...usable[0], remaining: usable.length - 1, reset: false };
+  }
+  const busy = rows.filter((r) => r.status === ROTATION_BUSY);
+  if (busy.length > 0) {
+    return { success: true, ...busy[0], remaining: busy.length - 1, reset: false, warning: 'Ye ID dusre live order me hai.' };
+  }
+  const offline = rows.filter((r) => r.status === ROTATION_OFFLINE).length;
+  const used = rows.filter((r) => r.status === ROTATION_USED).length;
+  return {
+    success: false,
+    code: 'NO_FRESH_ID',
+    error: offline === rows.length
+      ? 'Vault me koi logged-in Swiggy ID nahi — account login karein.'
+      : `Is order ke liye saare ${used} ID ek-ek baar use ho gaye${offline ? ` (${offline} logged out)` : ''}. Naya ID login karein ya "♻ Reset rotation" dabaiye.`,
+    used,
+    offline
+  };
+}
+
+/** Rotation state for the card text: "ID 2/5 · agli baar 98xxxx". */
+export function rotationSummary(order) {
+  const rows = describeAccountRotation(order);
+  const usable = rows.filter((r) => r.status === ROTATION_FREE || r.status === ROTATION_MAYBE_USED);
+  const used = rows.filter((r) => r.status === ROTATION_USED).length;
+  return {
+    total: rows.length,
+    used,
+    remaining: usable.length,
+    nextKey: usable[0]?.key || '',
+    nextPhone: usable[0]?.phone || '',
+    rows
   };
 }
 
