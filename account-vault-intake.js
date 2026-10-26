@@ -22,7 +22,8 @@ import {
 import {
   buildPortableSessionJson,
   stripUntrustedOrderClaims,
-  detectedFileOrderClaims
+  detectedFileOrderClaims,
+  OFFER_TRACKS
 } from './account-views.js';
 import { extractSessionFilesFromZipBuffer } from './vault-sync.js';
 import { section, sub, table } from './rich-text.js';
@@ -489,9 +490,15 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
       ? (Number(acc.totalOrdersCount) === 0 ? '★ 0 orders (live)' : `▣ ${Number(acc.totalOrdersCount)} orders (live)`)
       : '⚠️ orders live-check pending';
     const act = item.offerAutoActivation || acc.offerAutoActivation || null;
-    const bf = act?.breakfast?.status === 'CLAIMED' ? '✓' : '✕';
-    const ln = act?.lateNight?.status === 'CLAIMED' ? '✓' : '✕';
-    return `${idx + 1}. ✓ <code>${label}</code> (${tag}) · ₹50 on ₹199 → BF ${bf} / LN ${ln}`;
+    // CHAAR offer — chaaron ka apna status (boss: "chaaro ka status dikhana hai").
+    const slotStatus = (t) => String(act?.[t.key]?.status || acc.offers?.[t.key]?.status || '').toUpperCase();
+    const cells = OFFER_TRACKS.map((t) => {
+      const st = slotStatus(t);
+      const mark = st === 'CLAIMED' || st === 'ALREADY_CLAIMED' ? '✓' : (st === 'PRE_LOCKED' ? '⏳' : '✕');
+      return `${t.emoji || ''}${mark}`;
+    }).join(' ');
+    const claimedN = OFFER_TRACKS.filter((t) => ['CLAIMED', 'ALREADY_CLAIMED'].includes(slotStatus(t))).length;
+    return `${idx + 1}. ✓ <code>${label}</code> (${tag}) · ₹50×4 → ${cells} (${claimedN}/4)`;
   }).join('\n');
   const moreNote = savedAccounts.length > 18
     ? `\n<i>...aur ${savedAccounts.length - 18} accounts bhi Vault me save ho gaye!</i>`

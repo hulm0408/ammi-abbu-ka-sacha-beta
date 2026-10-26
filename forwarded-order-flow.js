@@ -1057,10 +1057,30 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
       );
     }
     if (order.eventsClaimSummary) {
-      const bfMsg = order.eventsClaimSummary.breakfastMsg;
-      const lnMsg = order.eventsClaimSummary.lateNightMsg;
-      if (bfMsg) offerNotes.push(`• <b>Breakfast:</b> ${escapeHtml(bfMsg)}`);
-      if (lnMsg) offerNotes.push(`◷ <b>Late Night:</b> ${escapeHtml(lnMsg)}`);
+      const sum = order.eventsClaimSummary;
+      // CHAAR offer — user ko bhi har ek ka status (har ek ₹50). Purane orders
+      // jinme sirf BF/LN hai, unke liye neeche fallback rehta hai.
+      const four = sum.fourOffer || null;
+      if (four) {
+        const mark = (st) => {
+          const v = String(st || '').toUpperCase();
+          if (v === 'CLAIMED' || v === 'ALREADY_CLAIMED') return '✅';
+          if (v === 'PRE_LOCKED') return '⏳';
+          return '❌';
+        };
+        offerNotes.push(
+          `🎁 <b>Chaaron offer — har ek ₹50:</b>\n` +
+          `1. 🌙 Morning Link — ${mark(four.lateNight)} ₹50\n` +
+          `2. ☀️ Night Link — ${mark(four.breakfast)} ₹50\n` +
+          `3. 💸 Extra ₹50 — ${mark(four.extra50)} ₹50\n` +
+          `4. 🎉 Weekend — ${mark(four.weekend)} ₹50\n` +
+          `📊 <b>${Number(four.claimedCount || 0)}/4 claimed</b> · ₹${Number(four.claimedCount || 0) * 50} pakka / ₹200 possible`
+        );
+      }
+      const bfMsg = sum.breakfastMsg;
+      const lnMsg = sum.lateNightMsg;
+      if (!four && bfMsg) offerNotes.push(`• <b>Breakfast:</b> ${escapeHtml(bfMsg)}`);
+      if (!four && lnMsg) offerNotes.push(`◷ <b>Late Night:</b> ${escapeHtml(lnMsg)}`);
     }
     if (Number(order.walletSplitPayAmount || 0) > 0) {
       offerNotes.push(`₹ <b>Wallet Split-Pay Ready:</b> ₹${order.walletSplitPayAmount} Swiggy Money auto-deducts from UPI QR!`);

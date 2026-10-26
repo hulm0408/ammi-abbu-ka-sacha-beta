@@ -5862,6 +5862,31 @@ const couponTrialCache = new Map(); // `${accSig}|${restaurantId}|${CODE}` -> { 
 const COUPON_TRIAL_CACHE_TTL_MS = 5 * 60 * 1000;
 const COUPON_TRIAL_CACHE_MAX = 800;
 
+/**
+ * User card ke liye CHAAR offer ka sach (har ek ₹50). Live claim ka jawab ho to
+ * wahi, warna account par save kiya hua sach — jhooth nahi.
+ */
+function fourOfferSummaryFor(account, claim) {
+  const stored = account?.offers || {};
+  const act = account?.offerAutoActivation || {};
+  const pick = (k) => {
+    const live = String(claim?.[k]?.status || '').toUpperCase();
+    if (live) return live;
+    const saved = String(stored?.[k]?.status || act?.[k]?.status || '').toUpperCase();
+    return saved;
+  };
+  const four = {
+    lateNight: pick('lateNight'),
+    breakfast: pick('breakfast'),
+    extra50: pick('extra50'),
+    weekend: pick('weekend')
+  };
+  four.claimedCount = ['lateNight', 'breakfast', 'extra50', 'weekend']
+    .filter((k) => four[k] === 'CLAIMED' || four[k] === 'ALREADY_CLAIMED').length;
+  four.score = `${four.claimedCount}/4`;
+  return four;
+}
+
 function couponTrialAccSig(account) {
   return String(account?.id || account?.phone || account?.customerId || (account?.cookies || '').slice(0, 40));
 }
@@ -6853,7 +6878,9 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
             breakfastState: eventsClaimRes.breakfast?.slotState || '',
             breakfastMsg: eventsClaimRes.breakfast?.message || '',
             lateNightState: eventsClaimRes.lateNight?.slotState || '',
-            lateNightMsg: eventsClaimRes.lateNight?.message || ''
+            lateNightMsg: eventsClaimRes.lateNight?.message || '',
+            // Chaaron offer ka status (har ek ₹50) — user card me bhi dikhta hai.
+            fourOffer: fourOfferSummaryFor(account, eventsClaimRes)
           }
         : null;
       if (!order.couponCode && Number(order.discountAmount || 0) === 0 && Number(order.tradeDiscountTotal || 0) === 0) {
@@ -7785,7 +7812,9 @@ export async function applyLiveFreeCashRelock(account, order, { claimWaitMs = 25
       breakfastState: claimAnswer.breakfast?.slotState || '',
       breakfastMsg: claimAnswer.breakfast?.message || '',
       lateNightState: claimAnswer.lateNight?.slotState || '',
-      lateNightMsg: claimAnswer.lateNight?.message || ''
+      lateNightMsg: claimAnswer.lateNight?.message || '',
+      // Chaaron offer ka status (har ek ₹50) — user card me bhi dikhta hai.
+      fourOffer: fourOfferSummaryFor(account, claimAnswer)
     };
     out.claimState = `bf=${claimAnswer.breakfast?.slotState || '?'},ln=${claimAnswer.lateNight?.slotState || '?'}`;
   }

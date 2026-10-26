@@ -94,6 +94,9 @@ import {
   accountDetailText,
   liveOrderTruth,
   offerClaimTruth,
+  fourOfferStatusBlock,
+  fourOfferStatusLines,
+  fourOfferScoreLine,
   portableSessionJsonText,
   buildPortableSessionJson
 } from './account-views.js';
@@ -3168,37 +3171,48 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     }
   } catch (e) {}
 
-  // ALWAYS auto-activate BOTH offer links on EVERY imported ID — Breakfast
-  // (book-your-offer) and Dinner Late Night (pick-your-late-night-offer) — with
-  // reward option #1 = "₹50 off on ₹199". Not gated on zero-order accounts.
+  // HAR ID PAR CHAARON offer activate hote hain (Morning / Night / Extra ₹50 /
+  // Weekend), har ek par option #1 = "₹50 off on ₹199". Ek hi engine, shared
+  // ledger — dobara claim nahi hota (force nahi, warna 6h ledger bypass hota).
   if (db.config?.accounts?.[targetAcc]) {
     const accTarget = db.config.accounts[targetAcc];
     try {
-      const claimOut = await claimSwiggyBreakfastAndLateNightOffers(accTarget, { force: true, forcePatch: true, offerValue: 1 });
+      const claimOut = await autoActivateEventOffers(accTarget, { force: false, offerValue: 1 });
       if (claimOut) {
-        accTarget.offers = claimOut.offers || claimOut;
+        const slots = claimOut.offers || claimOut;
+        accTarget.offers = slots;
         accTarget.preferredOfferValue = 1;
-        accTarget.hasBreakfast = Boolean(claimOut.breakfast?.status === 'CLAIMED');
-        accTarget.hasLateNight = Boolean(claimOut.lateNight?.status === 'CLAIMED');
+        accTarget.hasBreakfast = Boolean(slots.breakfast?.status === 'CLAIMED' || slots.breakfast?.verified);
+        accTarget.hasLateNight = Boolean(slots.lateNight?.status === 'CLAIMED' || slots.lateNight?.verified);
+        accTarget.hasExtra50 = Boolean(slots.extra50?.status === 'CLAIMED' || slots.extra50?.verified);
+        accTarget.hasWeekend = Boolean(slots.weekend?.status === 'CLAIMED' || slots.weekend?.verified);
         accTarget.offerAutoActivation = {
           offerValue: 1,
           label: '₹50 off on ₹199',
-          at: new Date().toISOString(),
+          at: claimOut.at || new Date().toISOString(),
           source: 'JSON_IMPORT',
           bothClaimed: Boolean(claimOut.bothClaimed),
-          breakfast: claimOut.breakfast || null,
-          lateNight: claimOut.lateNight || null
+          allFourClaimed: Boolean(claimOut.allFourClaimed),
+          claimedCount: Number(claimOut.claimedCount || 0),
+          breakfast: slots.breakfast || null,
+          lateNight: slots.lateNight || null,
+          extra50: slots.extra50 || null,
+          weekend: slots.weekend || null
         };
         if (!accInfo.offers) accInfo.offers = {};
-        accInfo.offers.lateNight = claimOut.lateNight || claimOut.offers?.lateNight;
-        accInfo.offers.breakfast = claimOut.breakfast || claimOut.offers?.breakfast;
+        accInfo.offers.lateNight = slots.lateNight;
+        accInfo.offers.breakfast = slots.breakfast;
+        accInfo.offers.extra50 = slots.extra50;
+        accInfo.offers.weekend = slots.weekend;
         saveDb(db);
       }
     } catch (e) {}
+    const claimedSlot = (k) => {
+      const st = String(accTarget.offers?.[k]?.status || '').toUpperCase();
+      return st === 'CLAIMED' || st === 'ALREADY_CLAIMED' || accTarget.offers?.[k]?.verified === true;
+    };
     let possibleCount = (accTarget.isZeroOrderAccount || accTarget.totalOrdersCount === 0) ? 1 : 0;
-    if (accTarget.hasBreakfast || accTarget.offers?.breakfast?.status === 'CLAIMED') possibleCount += 1;
-    if (accTarget.hasLateNight || accTarget.offers?.lateNight?.status === 'CLAIMED') possibleCount += 1;
-    if (accTarget.preferredOfferValue > 0) possibleCount += 1;
+    possibleCount += ['breakfast', 'lateNight', 'extra50', 'weekend'].filter(claimedSlot).length;
     accTarget.possibleDiscountsCount = possibleCount;
     saveDb(db);
   }
@@ -3254,6 +3268,9 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     `▣ <b>OFFERS STATUS:</b>\n` +
     `• ◷ <b>Swiggy Late Night:</b> ${lateNightStatusText}\n` +
     `• • <b>Swiggy Breakfast:</b> ${breakfastStatusText}\n\n` +
+    `🎁 <b>CHAAR OFFER — har ek ₹50 (option 1):</b>\n` +
+    `${fourOfferStatusLines(portableSource, { escape: (v) => escapeHtml(String(v ?? '')) }).join('\n')}\n` +
+    `${fourOfferScoreLine(portableSource)}\n\n` +
     (bothClaimed
       ? `● <b>Status:</b> Both offers active! 50 off on 199 available on food orders.\n\n`
       : `! <b>Status:</b> One or more offers could not be claimed. Retry claim below or manage account.\n\n`) +
@@ -3650,7 +3667,10 @@ async function sendOfferDoctorCard(ctx, key, { fix = false, edit = false } = {})
   } catch (err) {
     report = { ok: false, verdict: [`Doctor fail: ${String(err?.message || err).slice(0, 150)}`] };
   }
-  const text = formatOfferDoctorReport(report?.ok === false && report?.before ? report.before : report, {
+  // Status pehle: chaaron offer, har ek ₹50 — phir live doctor detail.
+  const statusBlock = fourOfferStatusBlock(acc, { escape: (v) => escapeHtml(String(v ?? '')) });
+  const text = statusBlock + '\n\n' +
+    formatOfferDoctorReport(report?.ok === false && report?.before ? report.before : report, {
     accountLabel: label,
     escapeHtml: (v) => escapeHtml(String(v ?? ''))
   }) + (fix && report?.changes?.length
@@ -3735,20 +3755,57 @@ bot.action(/^boss_retry_claim_(.+)$/, async (ctx) => {
   const acc = db.config.accounts?.[accKey];
   if (!acc) return ctx.reply('× Account not found.');
 
-  const retryWait = await ctx.reply(`◷ <i>Swiggy Breakfast & Late Night offers claim request process ho rahi hai for <b>${escapeHtml(acc.name || accKey)}</b>...</i>`, { parse_mode: 'HTML' });
-  const claimRes = await claimSwiggyBreakfastAndLateNightOffers(acc, {
-    force: true,
+  const retryWait = await ctx.reply(`◷ <i>Chaaron offer (Morning / Night / Extra ₹50 / Weekend) claim kar raha hoon for <b>${escapeHtml(acc.name || accKey)}</b> — har ek par ₹50 (option 1)...</i>`, { parse_mode: 'HTML' });
+  // CHAARON offers ek hi engine se — `force: false` isliye ki 6h ledger ke andar
+  // dobara claim na ho (boss: "2 times claim ho rha tha").
+  const claimRes = await autoActivateEventOffers(acc, {
+    force: false,
     offerValue: acc.preferredOfferValue || 1
   });
-  acc.offers = claimRes;
-  acc.hasBreakfast = Boolean(claimRes.breakfast?.status === 'CLAIMED');
-  acc.hasLateNight = Boolean(claimRes.lateNight?.status === 'CLAIMED');
+  const slots = claimRes?.offers || claimRes || {};
+  acc.offers = slots;
+  acc.preferredOfferValue = 1;
+  const slotClaimed = (k) => String(slots?.[k]?.status || '').toUpperCase() === 'CLAIMED' || slots?.[k]?.verified === true;
+  acc.hasBreakfast = slotClaimed('breakfast');
+  acc.hasLateNight = slotClaimed('lateNight');
+  acc.hasExtra50 = slotClaimed('extra50');
+  acc.hasWeekend = slotClaimed('weekend');
+  acc.offerAutoActivation = {
+    offerValue: 1,
+    label: '₹50 off on ₹199',
+    at: claimRes?.at || new Date().toISOString(),
+    source: 'MANUAL_CLAIM',
+    bothClaimed: Boolean(claimRes?.bothClaimed),
+    allFourClaimed: Boolean(claimRes?.allFourClaimed),
+    claimedCount: Number(claimRes?.claimedCount || 0),
+    breakfast: slots.breakfast || null,
+    lateNight: slots.lateNight || null,
+    extra50: slots.extra50 || null,
+    weekend: slots.weekend || null
+  };
   saveDb(db);
   try { await bot.telegram.deleteMessage(ctx.chat.id, retryWait.message_id); } catch (e) {}
 
+  // Chaaron ka sach turant: kaunsa laga, kaunsa pre-locked, kaunsa fail + asli wajah.
+  await ctx.reply(
+    `${fourOfferStatusBlock(acc, { escape: (v) => escapeHtml(String(v ?? '')) })}\n\n` +
+    `<i>${claimRes?.allFourClaimed
+      ? 'Chaaron offer me ₹50 lag gaya — ₹200 tak free cash.'
+      : 'Jo nahi laga uska asli reason upar likha hai. “🔧 Fix ₹50 ab” dabaiye — read-back ke baad hi ✓ milta hai.'}</i>`,
+    {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🎁 Offer Doctor (live)', `boss_offer_doctor_${accKey}`)],
+        [Markup.button.callback('🔧 Fix ₹50 ab (read-back)', `boss_offer_fix_${accKey}`)],
+        [Markup.button.callback('◉ Account card', `boss_acc_detail_${accKey}`)]
+      ])
+    }
+  ).catch(() => {});
+
   // Offer laga ya nahi — likhne ke baad READ-BACK truth. Fail hone par chup
   // mat raho: doctor chala kar asli reason (value drift / 403 / cutoff) dikhao.
-  if (!(acc.hasBreakfast && acc.hasLateNight)) {
+  if (!(acc.hasBreakfast && acc.hasLateNight && acc.hasExtra50 && acc.hasWeekend)) {
     const doctor = await runOfferDoctorForAccount(accKey, {}).catch(() => null);
     if (doctor?.ok) {
       await ctx.reply(
