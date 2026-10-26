@@ -65,6 +65,12 @@ import {
   buildPortableAccountMessages,
 } from './account-vault-intake.js';
 import {
+  autoExportAccountAfterDelivery,
+  planDeliveryExport,
+  isOrderDelivered,
+  buildExportPayload
+} from './delivery-release.js';
+import {
   compactAccountListText,
   accountDetailText,
   liveOrderTruth,
@@ -5123,35 +5129,36 @@ bot.action([/^boss_export_single_(.+)$/, /^boss_export_json_(.+)$/], async (ctx)
 
   await ctx.answerCbQuery('Exporting FULL session JSON... ▣').catch(() => {});
 
-  const exported = exportSessionJson(key) || acc;
-  const jsonStr = JSON.stringify(exported, null, 2);
-  const compactStr = JSON.stringify(exported);
-  const phone = acc.phone || acc.mobile || key;
-  const fileName = `swiggy_${phone}.json`;
-  const codeBlock = jsonStr.length <= 3700 ? jsonStr : compactStr;
+  // Size measured before sending — a long session can never 400 with
+  // "message is too long" and kill the export.
+  const payload = buildExportPayload(acc, key, { orderCount: acc.totalOrdersCount || 0 });
+  const { jsonText: jsonStr, compact: compactStr, phone, fileName } = payload;
 
   try {
     await ctx.replyWithDocument(
+      { source: Buffer.from(jsonStr, 'utf-8'), filename: fileName },
       {
-        source: Buffer.from(jsonStr, 'utf-8'),
-        filename: fileName
-      },
-      {
-        caption: `▣ <b>Full Session File:</b> <code>${fileName}</code> (${jsonStr.length} chars)\n◉ <b>Account:</b> ${escapeHtml(acc.name || key)}`,
+        caption: `▣ <b>Session File:</b> <code>${escapeHtml(fileName)}</code> (${jsonStr.length} chars)\n◉ <b>Account:</b> ${escapeHtml(acc.name || key)}\n<i>7 fields: name, customerId, mobile, token, tid, sid, deviceId</i>`,
         parse_mode: 'HTML'
       }
     );
+  } catch (err) {
+    return ctx.reply(`× Export failed: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' }).catch(() => {});
+  }
 
+  try {
     await ctx.reply(
-      `<b>Full Session Code:</b> <code>${phone}</code> (${escapeHtml(acc.name || key)})\n` +
-      `<pre><code class="language-json">${escapeHtml(codeBlock)}</code></pre>`,
+      `<b>Session Code</b> <code>${escapeHtml(phone)}</code> (${escapeHtml(acc.name || key)})` +
+      (payload.inlineCode
+        ? `\n<pre><code class="language-json">${escapeHtml(payload.inlineCode)}</code></pre>`
+        : `\n<i>Poora JSON upar file me hai (bada session).</i>`),
       {
         parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
             [
-              makeFullSessionCopyButton(ctx, 'Copy Code', key, compactStr, `copy_code_${key}`, 'primary'),
-              { text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }
+              makeFullSessionCopyButton(ctx, '▤ Copy Session JSON', key, compactStr, `acc_copy_json_${key}`, 'success'),
+              { text: '☎ Copy Number', copy_text: { text: phone }, style: 'primary' }
             ],
             [
               { text: 'Back to Accounts', callback_data: 'acc_refresh_list', style: 'primary' },
@@ -5162,7 +5169,7 @@ bot.action([/^boss_export_single_(.+)$/, /^boss_export_json_(.+)$/], async (ctx)
       }
     );
   } catch (err) {
-    await ctx.reply(`× Export failed: ${err.message}`);
+    await ctx.reply(`▣ ${escapeHtml(fileName)} bhej diya (code message skip: ${escapeHtml(String(err.message || err).slice(0, 90))})`, { parse_mode: 'HTML' }).catch(() => {});
   }
 });
 
@@ -5184,46 +5191,55 @@ bot.action('boss_exp_confirm', async (ctx) => {
 
   await ctx.answerCbQuery(`Exporting ${selectedKeys.length} accounts... ▣`).catch(() => {});
 
+  let okCount = 0;
+  const failedKeys = [];
   try {
     for (const key of selectedKeys) {
       const acc = accounts[key];
-      const exported = exportSessionJson(key) || acc;
-      const jsonStr = JSON.stringify(exported, null, 2);
-      const compactStr = JSON.stringify(exported);
-      const phone = acc.phone || acc.mobile || key;
-      const fileName = `swiggy_${phone}.json`;
-      const codeBlock = jsonStr.length <= 3700 ? jsonStr : compactStr;
+      if (!acc) { failedKeys.push(key); continue; }
+      // Per-account isolation: one bad send can never abort the whole batch
+      // (that is exactly how 13 accounts silently stayed exported-but-not-sent).
+      const payload = buildExportPayload(acc, key, { orderCount: acc.totalOrdersCount || 0 });
+      const { jsonText: jsonStr, compact: compactStr, phone, fileName } = payload;
 
-      await ctx.replyWithDocument(
-        {
-          source: Buffer.from(jsonStr, 'utf-8'),
-          filename: fileName
-        },
-        {
-          caption: `▣ <code>${fileName}</code> — ${escapeHtml(acc.name || key)}`,
-          parse_mode: 'HTML'
-        }
-      );
-
-      await ctx.reply(
-        `<b>${escapeHtml(acc.name || key)}</b> (<code>${phone}</code>):\n` +
-        `<pre><code class="language-json">${escapeHtml(codeBlock)}</code></pre>`,
-        {
-          parse_mode: 'HTML',
-          reply_markup: {
-            inline_keyboard: [
-              [
-                makeFullSessionCopyButton(ctx, 'Copy Code', key, compactStr, `copy_code_${key}`, 'primary'),
-                { text: 'Copy Number', copy_text: { text: phone }, style: 'primary' }
-              ]
-            ]
+      try {
+        await ctx.replyWithDocument(
+          { source: Buffer.from(jsonStr, 'utf-8'), filename: fileName },
+          {
+            caption: `▣ <code>${escapeHtml(fileName)}</code> — ${escapeHtml(acc.name || key)}\n<i>7 fields: name, customerId, mobile, token, tid, sid, deviceId</i>`,
+            parse_mode: 'HTML'
           }
-        }
-      );
+        );
+        okCount++;
+      } catch (err) {
+        failedKeys.push(`${acc.phone || key}: ${String(err.message || err).slice(0, 80)}`);
+        continue;
+      }
+
+      try {
+        await ctx.reply(
+          `<b>${escapeHtml(acc.name || key)}</b> (<code>${escapeHtml(phone)}</code>)` +
+          (payload.inlineCode
+            ? `:\n<pre><code class="language-json">${escapeHtml(payload.inlineCode)}</code></pre>`
+            : `:\n<i>Poora JSON upar file me hai.</i>`),
+          {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  makeFullSessionCopyButton(ctx, '▤ Copy Session JSON', key, compactStr, `acc_copy_json_${key}`, 'success'),
+                  { text: '☎ Copy Number', copy_text: { text: phone }, style: 'primary' }
+                ]
+              ]
+            }
+          }
+        );
+      } catch { /* file is the deliverable; card is best-effort */ }
     }
 
     await ctx.reply(
-      `✓ <b>Export Complete:</b> ${selectedKeys.length} accounts exported with 100% full session cookies & 1-click Copy Code buttons.`,
+      `✓ <b>Export Complete:</b> ${okCount}/${selectedKeys.length} accounts exported (7-field JSON files).` +
+      (failedKeys.length ? `\n× Failed: ${failedKeys.map((f) => escapeHtml(f)).join(', ')}` : ''),
       {
         parse_mode: 'HTML',
         reply_markup: {
@@ -5646,33 +5662,52 @@ bot.action('boss_exlo_confirm', async (ctx) => {
       continue;
     }
 
-    const jsonStr = JSON.stringify(exported, null, 2);
-    const compactStr = JSON.stringify(exported);
-    const phone = acc.phone || acc.mobile || key.replace(/^acc_/, '');
-    const fileName = `swiggy_${phone}.json`;
-    const codeBlock = jsonStr.length <= 3700 ? jsonStr : compactStr;
+    // Portable 7-field JSON (name, customerId, mobile, token, tid, sid, deviceId)
+    // with the message size measured BEFORE sending, so "message is too long"
+    // can never happen again (it used to abort the loop and skip the logout).
+    const payload = buildExportPayload(acc, key, { orderCount: cnt });
+    const jsonStr = payload.jsonText;
+    const compactStr = payload.compact;
+    const phone = payload.phone;
+    const fileName = payload.fileName;
 
+    // The .json FILE is the deliverable. A big inline <pre> used to blow past
+    // Telegram's 4096-char limit ("message is too long"), which then aborted the
+    // whole loop and left the account NOT logged out. File first, always.
     try {
       await ctx.replyWithDocument(
         { source: Buffer.from(jsonStr, 'utf-8'), filename: fileName },
-        { caption: `⇧ <b>Exported & Logged Out:</b> <code>${fileName}</code> (${cnt} orders) — ${escapeHtml(acc.name || key)}`, parse_mode: 'HTML' }
-      );
-      await ctx.reply(
-        `<b>${escapeHtml(acc.name || key)}</b> (<code>${phone}</code>) — <b>${cnt} orders</b>\n` +
-        `<pre><code class="language-json">${escapeHtml(codeBlock)}</code></pre>`,
         {
-          parse_mode: 'HTML',
-          reply_markup: {
-            inline_keyboard: [
-              [ makeFullSessionCopyButton(ctx, 'Copy Code', key, compactStr, `copy_code_${key}`, 'primary'), { text: 'Copy Number', copy_text: { text: phone }, style: 'primary' } ]
-            ]
-          }
+          caption:
+            `⇧ <b>Exported &amp; Logged Out:</b> <code>${escapeHtml(fileName)}</code> (${cnt} orders) — ${escapeHtml(acc.name || key)}\n` +
+            `<i>7 fields: name, customerId, mobile, token, tid, sid, deviceId</i>`,
+          parse_mode: 'HTML'
         }
       );
       exportedCount++;
     } catch (err) {
-      await ctx.reply(`× Export failed for ${escapeHtml(acc.phone || key)}: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
+      await ctx.reply(`× Export failed for ${escapeHtml(acc.phone || key)}: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' }).catch(() => {});
       continue;
+    }
+
+    // Optional inline code + copy buttons: best-effort, never blocks logout.
+    try {
+      const inlineCode = payload.inlineCode;
+      await ctx.reply(
+        `<b>${escapeHtml(acc.name || key)}</b> (<code>${escapeHtml(phone)}</code>) — <b>${cnt} orders</b>` +
+        (inlineCode ? `\n<pre><code class="language-json">${escapeHtml(inlineCode)}</code></pre>` : `\n<i>Poora JSON upar file me hai.</i>`),
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [ makeFullSessionCopyButton(ctx, '▤ Copy Session JSON', key, compactStr, `acc_copy_json_${key}`, 'success'),
+                { text: '☎ Copy Number', copy_text: { text: phone }, style: 'primary' } ]
+            ]
+          }
+        }
+      );
+    } catch (cdErr) {
+      await ctx.reply(`▤ ${escapeHtml(fileName)} bhej diya (code message skip: ${escapeHtml(String(cdErr.message || cdErr).slice(0, 90))})`, { parse_mode: 'HTML' }).catch(() => {});
     }
 
     // Now logout only after successful export
@@ -12551,6 +12586,47 @@ export function releaseAndExportInjectedSessionOnDelivery(orderId) {
   return true;
 }
 
+// Auto export + logout for a delivered order. Safe to call repeatedly — the
+// planner refuses a second time, refuses while the ID has another live order,
+// and refuses when the session is already gone.
+async function autoExportDeliveredOrder(orderId) {
+  const deliveredOrderId = String(orderId || '');
+  if (!deliveredOrderId) return { exported: false, reason: 'no order id' };
+  const db = getDb();
+  const order = db.orders?.[deliveredOrderId];
+  if (!order) return { exported: false, reason: 'order not found' };
+  if (order.autoExportDoneAt) return { exported: false, reason: 'already auto-exported' };
+
+  const bossChatId = Number(getDb().config?.bossIds?.[0] || process.env.BOSS_ID || 0);
+  if (!bossChatId) return { exported: false, reason: 'no boss chat id' };
+
+  const result = await autoExportAccountAfterDelivery(deliveredOrderId, {
+    getDb,
+    saveDb,
+    bossChatId,
+    sendDocument: async (chatId, fileName, text, caption) => {
+      await bot.telegram.sendDocument(
+        chatId,
+        { source: Buffer.from(text, 'utf8'), filename: fileName },
+        { caption, parse_mode: 'HTML' }
+      );
+    },
+    notifyBoss: async (text) => {
+      await bot.telegram.sendMessage(bossChatId, text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+    },
+    logoutAccount: async (key) => {
+      // Logout from Swiggy's device list first (best effort), then wipe local.
+      await deactivateSwiggyAccountViaBridge(bossChatId, key, true).catch(() => {});
+      permanentLogoutAccount(key, { purgeVault: true });
+      deleteAccount(key, { purgeVault: true });
+    }
+  }).catch((err) => ({ exported: false, reason: String(err?.message || err) }));
+
+  return result;
+}
+
+export { autoExportDeliveredOrder };
+
 const customerMilestoneInFlight = new Set();
 
 export async function pushCustomerLiveDeliveryMilestone(order, { scan = null, force = false } = {}) {
@@ -12568,6 +12644,14 @@ export async function pushCustomerLiveDeliveryMilestone(order, { scan = null, fo
     if (isDelivered && fresh.injectedSessionStatus === 'ACTIVE') {
       releaseAndExportInjectedSessionOnDelivery(orderId);
       fresh.injectedSessionStatus = 'DELIVERED_RELEASED';
+    }
+    // AUTO EXPORT & LOGOUT once the order is delivered (Boss ki shart):
+    // the 7-field JSON is sent to the Boss and then the account leaves the
+    // vault — exactly like tapping "⇧ Export & Logout", but by itself.
+    if (isDelivered) {
+      autoExportDeliveredOrder(orderId).catch((err) => {
+        console.warn('[AutoExport] failed:', err?.message || err);
+      });
     }
 
     const chatId = String(
@@ -13551,6 +13635,7 @@ setOrderMilestoneNotifier(pushCustomerLiveDeliveryMilestone);
 // After a restart, resume tracking for recent confirmed orders that still have
 // no share link — "kal raat se tracking nahi mila" never needs a manual tap.
 let activeTrackingSweepTimer = null;
+let deliveredExportTimer = null;
 
 function resumeAutoTrackingForRecentOrders() {
   try {
@@ -13585,6 +13670,30 @@ function resumeAutoTrackingForRecentOrders() {
           .catch((err) => console.warn('[ActiveTracking] boot sweep failed:', err?.message || err));
       }, 45_000).unref?.();
     }
+    // Delivered-orders catch-up: if the milestone push was skipped (bot restart,
+    // suppressed card, WAF hold) the auto export+logout must still happen.
+    const runDeliveredExportSweep = () => {
+      try {
+        const liveDb = getDb();
+        const pending = Object.values(liveDb.orders || {})
+          .filter((o) => o && o.id && !o.autoExportDoneAt && isOrderDelivered(o))
+          .filter((o) => {
+            const made = new Date(o.deliveredAt || o.completedAt || o.createdAt || 0).getTime();
+            return Number.isFinite(made) && made >= Date.now() - 48 * 60 * 60 * 1000;
+          })
+          .slice(0, 5);
+        for (const o of pending) {
+          autoExportDeliveredOrder(o.id).catch(() => {});
+        }
+      } catch { /* never crash the bot */ }
+    };
+    setTimeout(runDeliveredExportSweep, 30_000).unref?.();
+    if (!deliveredExportTimer) {
+      const t = setInterval(runDeliveredExportSweep, 10 * 60 * 1000);
+      if (typeof t.unref === 'function') t.unref();
+      deliveredExportTimer = t;
+    }
+
     if (!activeTrackingSweepTimer) {
       const timer = setInterval(() => {
         try {

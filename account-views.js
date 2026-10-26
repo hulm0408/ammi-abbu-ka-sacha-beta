@@ -59,6 +59,18 @@ export function buildPortableSessionJson(acc, key = '') {
   };
 }
 
+/**
+ * Caption used when the 7-field JSON is sent to the Boss as a real `.json` file
+ * (manual "Export & Logout" and the automatic delivered-order export).
+ */
+export function buildPortableSessionJsonCaption({ name = '', phone = '', orderId = '', prefix = '⇧ Exported' } = {}) {
+  const safeName = escapeLight(name || phone || 'Swiggy Session');
+  const safePhone = escapeLight(String(phone || ''));
+  const orderBit = orderId ? ` · order <code>#${escapeLight(String(orderId))}</code>` : '';
+  return `${escapeLight(prefix)}: <b>${safeName}</b> · <code>${safePhone}</code>${orderBit}\n` +
+    `<i>7 fields: name, customerId, mobile, token, tid, sid, deviceId</i>`;
+}
+
 export function portableSessionJsonText(acc, key = '', { pretty = true } = {}) {
   const obj = buildPortableSessionJson(acc, key);
   return pretty ? JSON.stringify(obj, null, 2) : JSON.stringify(obj);

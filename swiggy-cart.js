@@ -8936,6 +8936,105 @@ export function extractOrderShareUrlDeep(...sources) {
  * Swiggy's mWeb BFF, classic `order/track`, `order/share`, `ofo/share`, mobile
  * `mapi/order/*` routes, or Official Swiggy Food MCP expose the share link).
  */
+// ---------------------------------------------------------------------------
+// "My Account → My Orders → Track → Share": the link a human sees in the
+// Swiggy web app. The DAPI JSON often omits it (desktop payloads, delivered
+// orders), but the PAGE Swiggy itself renders always carries it in
+// `__NEXT_DATA__`. Other bots read it from exactly here — so do we now.
+//
+// Only real Swiggy links are returned (validateTrackingUrlForOrder); when the
+// page genuinely has nothing we return '' and the caller keeps saying the
+// honest "not published yet".
+// ---------------------------------------------------------------------------
+const orderSharePageCache = new Map(); // orderId -> { url, page, at }
+const ORDER_SHARE_PAGE_TTL = 90 * 1000;
+
+export async function scrapeSwiggyOrderShareFromPages(account, orderId, { timeoutMs = 6000 } = {}) {
+  const cleanId = normalizeSwiggyOrderId(orderId) || String(orderId || '').trim();
+  if (!cleanId) return { url: '', page: '' };
+  // The instant-link watcher retries every 3s; without this cache we would hit
+  // Swiggy's HTML pages ~20× per order and invite a WAF block.
+  const cachedPage = orderSharePageCache.get(cleanId);
+  if (cachedPage && Date.now() - cachedPage.at < ORDER_SHARE_PAGE_TTL) {
+    return { url: cachedPage.url || '', page: cachedPage.page || '' };
+  }
+  const cookieParts = [];
+  try {
+    const clean = cleanSwiggyCookieString(account?.cookies || '', account);
+    if (clean) cookieParts.push(clean);
+  } catch { /* guest is fine for the public share page */ }
+  try {
+    const waf = wafPool.getTokenSync();
+    if (waf) cookieParts.push(`aws-waf-token=${waf}`);
+  } catch { /* optional */ }
+
+  const pages = [
+    'https://www.swiggy.com/my-orders',
+    `https://www.swiggy.com/track?orderId=${encodeURIComponent(cleanId)}`,
+    'https://www.swiggy.com/orders'
+  ];
+
+  const accept = (candidate) => {
+    const url = String(candidate || '').trim();
+    if (!url) return '';
+    if (!validateTrackingUrlForOrder(url, { swiggyOrderId: cleanId }, 'SWIGGY_API')) return '';
+    return url;
+  };
+
+  for (const page of pages) {
+    try {
+      const res = await fetch(page, {
+        redirect: 'follow',
+        headers: {
+          'User-Agent': MOBILE_WEB_UA,
+          Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-IN,en;q=0.9',
+          Referer: 'https://www.swiggy.com/',
+          ...(cookieParts.length ? { Cookie: cookieParts.join('; ') } : {})
+        },
+        signal: AbortSignal.timeout(Math.max(1500, Number(timeoutMs) || 6000))
+      });
+      if (!res || !res.ok) continue;
+      const html = await res.text();
+      if (!html || html.length < 200) continue;
+
+      // 1) Structured payloads first (`__NEXT_DATA__`, embedded JSON state).
+      for (const blob of extractJsonBlobsFromHtml(html)) {
+        let parsed = null;
+        try { parsed = JSON.parse(blob); } catch { continue; }
+        const hit = accept(extractOrderShareUrlDeep(parsed));
+        if (hit) {
+          orderSharePageCache.set(cleanId, { url: hit, page, at: Date.now() });
+          return { url: hit, page };
+        }
+      }
+      // 2) Raw HTML mentions of a track/share route for THIS order id.
+      const esc = cleanId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const patterns = [
+        new RegExp(`https?:\\/\\/(?:www\\.)?swiggy\\.com\\/(?:ofo\\/)?track\\/[A-Za-z0-9_-]{3,}[^"'\\s<>]*${esc}[^"'\\s<>]*`, 'i'),
+        new RegExp(`https?:\\/\\/(?:www\\.)?swiggy\\.com\\/(?:orders?\\/|track\\?)[^"'\\s<>]*${esc}[^"'\\s<>]*`, 'i'),
+        /https?:\/\/(?:r\.swiggy\.com\/[A-Za-z0-9_-]{3,}|swiggy\.onelink\.me\/[A-Za-z0-9_?=&%.\/-]+)/i
+      ];
+      for (const re of patterns) {
+        const m = html.match(re);
+        const hit = m ? accept(m[0]) : '';
+        if (hit) {
+          orderSharePageCache.set(cleanId, { url: hit, page, at: Date.now() });
+          return { url: hit, page };
+        }
+      }
+    } catch {
+      // network / timeout / WAF — next page, never a fake link
+    }
+  }
+  orderSharePageCache.set(cleanId, { url: '', page: '', at: Date.now() });
+  if (orderSharePageCache.size > 300) {
+    const oldest = orderSharePageCache.keys().next().value;
+    if (oldest) orderSharePageCache.delete(oldest);
+  }
+  return { url: '', page: '' };
+}
+
 async function fetchSecondaryOrderSharePayloads(accountOrCookies, orderId, customerId = '', {
   timeoutMs = 3800,
   allowMapiTrackV4 = true
@@ -9154,6 +9253,14 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
       });
       if (extra.shareUrl) trackingUrl = extra.shareUrl;
       extraPayloads = extra.payloads || [];
+    }
+    // Still nothing: read the page Swiggy renders for "My Orders → Track →
+    // Share" — the exact place a human copies the link from.
+    if (!trackingUrl && remaining() > 900) {
+      const scraped = await scrapeSwiggyOrderShareFromPages(acc, targetId, {
+        timeoutMs: Math.min(3000, callTimeout())
+      }).catch(() => ({ url: '' }));
+      if (scraped?.url) trackingUrl = scraped.url;
     }
 
     const recalled = recallSwiggyOrderTracking(targetId);
@@ -9432,6 +9539,20 @@ export async function fetchSwiggyTrackingLinkFast(account, orderId, {
         return out;
       }
       out.tried.push(route.split('?')[0]);
+    }
+  }
+
+  // Last resort: the very page a human opens (My Account → My Orders → Track →
+  // Share). One cheap HTML read — no Chromium, no fake link.
+  if (Date.now() - startedAt < budgetMs) {
+    const scraped = await scrapeSwiggyOrderShareFromPages(account, cleanId, {
+      timeoutMs: Math.max(1500, Math.min(4000, budgetMs - (Date.now() - startedAt)))
+    }).catch(() => ({ url: '', page: '' }));
+    if (scraped?.url) {
+      out.url = scraped.url;
+      out.page = scraped.page || '';
+      out.via = 'WEB_PAGE_SHARE';
+      return out;
     }
   }
   return out;
