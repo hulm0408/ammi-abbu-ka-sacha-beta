@@ -10,11 +10,15 @@ import {
 } from './channel-gate.js';
 import http from 'http';
 import { Telegraf, Markup } from 'telegraf';
+import { logThrottled, startMemoryGuard, perfSnapshot } from './perf-guard.js';
 import dotenv from 'dotenv';
 import QRCode from 'qrcode';
 import {
   getDb,
   saveDb,
+  getDbIoStats,
+  pruneDbForPerformance,
+  flushDbSync,
   isBoss,
   addBoss,
   isServicePaused,
@@ -168,6 +172,7 @@ import {
   handleBossForwardedOrderInput,
   registerForwardedOrderHandlers,
   executeRealQrGenerationForOrder,
+  getPaymentPollerStats,
   startOrderDeliveryInfoPoller,
   sendOrderDeliveryInfoNotice,
   applyBossOrderUpdate,
@@ -291,34 +296,6 @@ const bot = installBossMirror(
     })
   )
 );
-
-// ── UPDATE WATCHDOG ─────────────────────────────────────────────────────────
-// Telegraf polling ek ke baad ek update chalata hai. Koi handler agar network
-// par atak jaye to aage ke SAARE messages/uske buttons queue me ruk jate hain
-// (logs me "Promise timed out after 240000 ms" yahi tha). Ab har update par ek
-// hard deadline hai: deadline par kaam chhod kar (background me chalta rahe) next
-// update process hota hai — bot kabhi "dead" nahi dikhta.
-{
-  const UPDATE_DEADLINE_MS = Math.max(20_000, Number(process.env.UPDATE_DEADLINE_MS) || 45_000);
-  const origHandleUpdate = bot.handleUpdate.bind(bot);
-  bot.handleUpdate = async (update, webhookResponse) => {
-    let timer = null;
-    const deadline = new Promise((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), UPDATE_DEADLINE_MS);
-      if (typeof timer.unref === 'function') timer.unref();
-    });
-    const work = origHandleUpdate(update, webhookResponse).catch((err) => {
-      console.error('[UpdateWatchdog] handler failed:', err?.message || err);
-    });
-    const outcome = await Promise.race([work, deadline]).catch(() => 'error');
-    if (timer) clearTimeout(timer);
-    if (outcome === 'timeout') {
-      const kind = update?.callback_query ? 'button' : (update?.message ? 'message' : 'update');
-      console.warn(`[UpdateWatchdog] ${kind} ${UPDATE_DEADLINE_MS / 1000}s me poora nahi hua — queue aage badha di (kaam background me chal raha hai).`);
-    }
-    return outcome;
-  };
-}
 
 // Fix: Telegraf throws synchronously if answerCbQuery is called on a message update.
 // All existing handlers assume .catch() is enough, but assert() throws before Promise.
@@ -13778,6 +13755,11 @@ pollTimer = setInterval(refresh, 8000);
       zeroOtpCartIntake: true,
       cloudAccountVault: true,
       activeVaultAccounts: liveAccounts.length,
+      perf: perfSnapshot({
+        db: getDbIoStats(),
+        updates: typeof getUpdateRuntimeStats === 'function' ? getUpdateRuntimeStats() : null,
+        payment: getPaymentPollerStats()
+      }),
       timestamp: new Date().toISOString()
     }));
   });
@@ -13785,26 +13767,148 @@ pollTimer = setInterval(refresh, 8000);
     console.log(`◎ Cloud health & Swiggy tracking server listening on 0.0.0.0:${healthPort}`);
   });
 
+  // ── PERFORMANCE GUARDS ───────────────────────────────────────────────────
+  // Ek hi line ka honest warning Boss ko, sirf jab sach me memory pressure ho.
+  startMemoryGuard({
+    onPressure: () => { try { pruneDbForPerformance(); } catch {} },
+    onCritical: ({ heapMb, usedPct }) => {
+      const db = getDb();
+      const bossId = Number((db.config?.bossIds || [])[0] || process.env.BOSS_ID || 0);
+      if (!bossId) return;
+      telegram.sendMessage(
+        bossId,
+        `⚠️ <b>System memory pressure</b>\n\n` +
+        `◈ Heap: <b>${heapMb}MB (${usedPct}%)</b>\n` +
+        `◈ DB prun&#8203;e + cache clean kar diya (purane band orders ka bhaari data hata).\n\n` +
+        `<i>Bot chal raha hai — lekin agar ye baar-baar aaye to Render ka plan upgrade karna padega.</i>`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
+  });
+
+  // 30 min par DB hygiene (boot par bhi ek baar)
+  const runHygiene = () => {
+    try {
+      const out = pruneDbForPerformance();
+      if (out.stripped || out.removed) {
+        logThrottled('db-hygiene', `◈ DB hygiene: ${out.removed} purane order hataye, ${out.stripped} bhaari field saaf kiye (memory free).`);
+      }
+    } catch {}
+  };
+  runHygiene();
+  const hygieneTimer = setInterval(runHygiene, 30 * 60 * 1000);
+  if (typeof hygieneTimer.unref === 'function') hygieneTimer.unref();
+
   // Self keep-alive ping every 8 minutes via public Render edge URL so container never idles out
   const keepAliveUrl = getPublicServiceBaseUrl() + '/';
   setInterval(() => {
     fetch(keepAliveUrl, { signal: AbortSignal.timeout(10000) })
-      .then(r => console.log(`♥ Keep-alive ping -> ${keepAliveUrl} [${r.status}]`))
-      .catch(e => console.log(`♥ Keep-alive retry note: ${e.message}`));
+      .then(r => logThrottled('keepalive', `♥ Keep-alive ping -> ${keepAliveUrl} [${r.status}]`))
+      .catch(e => logThrottled('keepalive-fail', `♥ Keep-alive retry note: ${e.message}`));
   }, 8 * 60 * 1000).unref();
 }
 
-// Non-blocking Concurrent Parallel Update Dispatcher:
-// Telegraf's polling loop defaults to `await this.handleUpdate(update)` one update at a time,
-// which would block Account #2 / Order #2 behind Account #1's Swiggy API calls!
-// Dispatching concurrently lets 2..N Swiggy IDs fetch bills, generate QRs, & place orders AT THE EXACT SAME TIME!
+// ── BOUNDED CONCURRENT UPDATE DISPATCHER ────────────────────────────────────
+// Telegraf ka polling loop ek-ek update await karta hai: Account #1 ke Swiggy
+// call ke peeche #2/#3 atak jaate hain. Isliye concurrent dispatch chahiye —
+// par BILA limit ke nahi! Pehle har update turant parallel chalta tha, to 10
+// order aane par 10+ bhaari handler ek saath chalte the aur Render instance ki
+// memory/CPU khatam ho jaati thi ("hawa nikal jaati hai"). Ab:
+//   • max N updates parallel (UPDATE_CONCURRENCY, default 6)
+//   • baaki ek queue me (UPDATE_QUEUE_MAX, default 300)
+//   • har update par deadline (UPDATE_DEADLINE_MS, default 45s) — atka handler
+//     slot release kar deta hai, queue aage badhti hai
+//   • ek hi update_id dobara aaye (Telegram retry) to duplicate skip
+const updateRuntime = {
+  active: 0,
+  peak: 0,
+  queued: 0,
+  completed: 0,
+  dropped: 0,
+  timeouts: 0,
+  duplicates: 0,
+  seenIds: new Map(),
+  queue: [],
+  maxConcurrency: Math.max(1, Math.min(32, Number(process.env.UPDATE_CONCURRENCY) || 6)),
+  deadlineMs: Math.max(10_000, Number(process.env.UPDATE_DEADLINE_MS) || 45_000),
+  queueMax: Math.max(20, Number(process.env.UPDATE_QUEUE_MAX) || 300)
+};
+
+function isDuplicateUpdate(update) {
+  const id = update?.update_id;
+  if (!id) return false;
+  const now = Date.now();
+  const seen = updateRuntime.seenIds;
+  for (const [k, at] of seen) if (now - at > 120_000) seen.delete(k);
+  if (seen.has(id)) {
+    updateRuntime.duplicates += 1;
+    return true;
+  }
+  seen.set(id, now);
+  return false;
+}
+
+function pumpUpdateQueue(rawHandleUpdate) {
+  while (updateRuntime.active < updateRuntime.maxConcurrency && updateRuntime.queue.length > 0) {
+    const job = updateRuntime.queue.shift();
+    updateRuntime.queued = updateRuntime.queue.length;
+    updateRuntime.active += 1;
+    updateRuntime.peak = Math.max(updateRuntime.peak, updateRuntime.active);
+
+    let timer = null;
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), updateRuntime.deadlineMs);
+      if (typeof timer.unref === 'function') timer.unref();
+    });
+
+    const work = Promise.resolve()
+      .then(() => rawHandleUpdate(job.update, job.webhookResponse))
+      .catch((err) => console.error('[UpdateDispatcher] handler failed:', err?.message || err));
+
+    Promise.race([work, deadline])
+      .then((outcome) => {
+        if (outcome === 'timeout') {
+          updateRuntime.timeouts += 1;
+          const kind = job.update?.callback_query ? 'button' : (job.update?.message ? 'message' : 'update');
+          console.warn(`[UpdateDispatcher] ${kind} ${updateRuntime.deadlineMs / 1000}s me poora nahi hua — slot chhoda (kaam background me chal raha hai).`);
+        }
+      })
+      .finally(() => {
+        if (timer) clearTimeout(timer);
+        updateRuntime.active = Math.max(0, updateRuntime.active - 1);
+        updateRuntime.completed += 1;
+        pumpUpdateQueue(rawHandleUpdate);
+      });
+  }
+}
+
 const rawBotHandleUpdate = bot.handleUpdate.bind(bot);
 bot.handleUpdate = (update, webhookResponse) => {
-  rawBotHandleUpdate(update, webhookResponse).catch((err) => {
-    console.error('[ConcurrentUpdateDispatcher] Unhandled error:', err);
-  });
+  if (isDuplicateUpdate(update)) return Promise.resolve();
+  if (updateRuntime.queue.length >= updateRuntime.queueMax) {
+    updateRuntime.dropped += 1;
+    console.warn('[UpdateDispatcher] queue full — update drop kiya (bot phir bhi jawab dega, dobara tap karein).');
+    return Promise.resolve();
+  }
+  updateRuntime.queue.push({ update, webhookResponse });
+  updateRuntime.queued = updateRuntime.queue.length;
+  pumpUpdateQueue(rawBotHandleUpdate);
   return Promise.resolve();
 };
+
+export function getUpdateRuntimeStats() {
+  return {
+    active: updateRuntime.active,
+    peak: updateRuntime.peak,
+    queued: updateRuntime.queued,
+    completed: updateRuntime.completed,
+    dropped: updateRuntime.dropped,
+    timeouts: updateRuntime.timeouts,
+    duplicates: updateRuntime.duplicates,
+    maxConcurrency: updateRuntime.maxConcurrency,
+    deadlineMs: updateRuntime.deadlineMs
+  };
+}
 
 bot.command('parallel', async (ctx) => {
   if (!isBoss(ctx.from.id)) return;
@@ -14237,5 +14341,11 @@ if (!process.env.TEST_MODE && !process.env.BOT_TEST_MODE) {
 
 // `bot.stop()` throws when polling never started (bad token, boot failure) —
 // swallow it so shutdown stays clean instead of surfacing as an uncaught throw.
-process.once('SIGINT', () => { try { bot.stop('SIGINT'); } catch {} });
-process.once('SIGTERM', () => { try { bot.stop('SIGTERM'); } catch {} });
+process.once('SIGINT', () => {
+  try { flushDbSync(); } catch {}
+  try { bot.stop('SIGINT'); } catch {}
+});
+process.once('SIGTERM', () => {
+  try { flushDbSync(); } catch {}
+  try { bot.stop('SIGTERM'); } catch {}
+});

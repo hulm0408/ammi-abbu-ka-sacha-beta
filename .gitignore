@@ -75,3 +75,4 @@ extracted_mp4_frames/
 !test_v61_account_suspension_failover_fast_id_e2e.mjs
 !test_v62_offer_doctor_night_offer_e2e.mjs
 !test_v63_no_loop_place_truth_amount_lock_e2e.mjs
+!test_v64_perf_optimization_e2e.mjs
