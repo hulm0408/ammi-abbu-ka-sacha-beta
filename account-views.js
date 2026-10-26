@@ -28,11 +28,23 @@ export const OFFER_CAMPAIGN_URLS = {
 
 /** Chaaron offers ka order + boss ke naam (UI me isi order me dikhte hain). */
 export const OFFER_TRACKS = [
-  { key: 'lateNight', bossLabel: 'Morning Link', label: 'Late night (9PM–6AM)' },
-  { key: 'breakfast', bossLabel: 'Night Link', label: 'Breakfast (7AM–11AM)' },
-  { key: 'extra50', bossLabel: 'Extra ₹50', label: 'Extra ₹50 offer' },
-  { key: 'weekend', bossLabel: 'Weekend', label: 'Weekend offer' }
+  { key: 'lateNight', bossLabel: 'Morning Link', label: 'Late night (9PM–6AM)', emoji: '🌙' },
+  { key: 'breakfast', bossLabel: 'Night Link', label: 'Breakfast (7AM–11AM)', emoji: '☀️' },
+  { key: 'extra50', bossLabel: 'Extra ₹50', label: 'Extra ₹50 offer', emoji: '💸' },
+  { key: 'weekend', bossLabel: 'Weekend', label: 'Weekend offer', emoji: '🎉' }
 ];
+
+/**
+ * Chaar offer ka status kaise dikhega. Har line par ₹50 likha jata hai kyunki
+ * boss ka rule hai: "sabme 50 50 claim karna hai" — status bhi wahi bataye.
+ */
+export const OFFER_STATUS_VIEW = {
+  CLAIMED: { icon: '✅', label: 'CLAIMED' },
+  ALREADY_CLAIMED: { icon: '✅', label: 'CLAIMED' },
+  PRE_LOCKED: { icon: '⏳', label: 'PRE-LOCKED' },
+  FAILED: { icon: '❌', label: 'FAILED' },
+  NEW: { icon: '⚪', label: 'NEW' }
+};
 
 export function maskPhone(phone) {
   const digits = String(phone || '').replace(/\D/g, '').slice(-10);
@@ -184,6 +196,44 @@ export function isLiveSession(acc) {
 }
 
 /** ONE compact line per account ("less" — details come on tap). */
+/**
+ * Chaaron offer ka line-by-line status — har line par ₹50 saaf likha jata hai.
+ * `escape` pass karo jab Telegram HTML me jana ho.
+ */
+export function fourOfferStatusLines(acc, { escape = (v) => String(v ?? ''), showReason = true } = {}) {
+  const truth = offerClaimTruth(acc || {});
+  return OFFER_TRACKS.map((track, idx) => {
+    const slot = truth[track.key] || { status: 'NEW' };
+    const view = OFFER_STATUS_VIEW[String(slot.status || 'NEW').toUpperCase()] || OFFER_STATUS_VIEW.NEW;
+    let reason = '';
+    if (showReason && String(slot.status).toUpperCase() === 'FAILED' && slot.label) {
+      reason = String(slot.label).replace(/^×\s*Not claimed\s*—?\s*/i, '').trim();
+    }
+    const tail = view.label === 'PRE-LOCKED'
+      ? '₹50 — slot khulte hi lagega'
+      : (view.label === 'NEW' ? '₹50 — claim pending' : '₹50');
+    return `${idx + 1}. ${track.emoji} <b>${escape(track.bossLabel)}</b> — ${view.icon} <b>${view.label}</b> · ${tail}` +
+      (reason ? `\n     <i>${escape(reason.slice(0, 90))}</i>` : '');
+  });
+}
+
+/** "2/4 claimed · ₹100 pakka / ₹200 possible" — jhooth nahi, sirf ginti. */
+export function fourOfferScoreLine(acc) {
+  const truth = offerClaimTruth(acc || {});
+  const each = 50;
+  return `📊 Score: <b>${truth.claimedCount}/4 claimed</b> · ₹${truth.claimedCount * each} pakka / ₹${4 * each} possible` +
+    (truth.preLockedCount ? ` · ⏳ ${truth.preLockedCount} pre-locked` : '');
+}
+
+/** Poora chaar-offer status block (boss card, user card, import summary — sab jagah). */
+export function fourOfferStatusBlock(acc, { escape = (v) => String(v ?? ''), header = '' } = {}) {
+  return [
+    header || '🎁 <b>CHAAR OFFER — har ek ₹50 (option 1: ₹50 off on ₹199)</b>',
+    ...fourOfferStatusLines(acc, { escape }),
+    fourOfferScoreLine(acc)
+  ].join('\n');
+}
+
 export function compactAccountLine(acc, key, { activeKey = '', index = 1 } = {}) {
   const src = acc || {};
   const live = isLiveSession(src);
@@ -251,12 +301,9 @@ export function accountDetailText({ acc, key, activeKey = '', orderLines = [] } 
       ? `   ▪ Active orders: <b>${truth.activeOrders === null ? '—' : truth.activeOrders}</b>`
       : '   ▪ <i>File me jo order count likha ho wo nahi maana jata — sirf live check.</i>',
     '',
-    `🎁 <b>Offers (${escapeLight(claim.offerLabel)}):</b>`,
-    `   ▪ Breakfast: ${claim.breakfast.label}`,
-    `   ▪ Late night: ${claim.lateNight.label}`,
-    `   ▪ Extra ₹50: ${claim.extra50?.label || 'NEW — abhi claim nahi hua'}`,
-    `   ▪ Weekend: ${claim.weekend?.label || 'NEW — abhi claim nahi hua'}`,
-    `   ▪ Account: <b>${claim.allFour ? 'ALL 4 CLAIMED' : (claim.both ? 'ALREADY CLAIMED' : (claim.isNew ? 'NEW (claim pending)' : 'PARTIAL'))}</b>`,
+    `🎁 <b>CHAAR OFFER (${escapeLight(claim.offerLabel)}) — har ek ₹50:</b>`,
+    ...fourOfferStatusLines(src, { escape: escapeLight }),
+    `   ▪ ${fourOfferScoreLine(src)}`,
     claim.autoActivatedAt ? `   ▪ Auto-activated: ${escapeLight(claim.autoActivatedAt.slice(0, 19).replace('T', ' '))}` : '',
     src.offerDoctor
       ? `   ▪ 🎁 Doctor: LN <b>${escapeLight(String(src.offerDoctor.lateNight || '?'))}</b> · BF <b>${escapeLight(String(src.offerDoctor.breakfast || '?'))}</b>` +

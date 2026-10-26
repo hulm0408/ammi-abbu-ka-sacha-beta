@@ -125,14 +125,15 @@ console.log('\n=== 4. Compact list line + expanded detail with Copy JSON at bott
 
   const detail = views.accountDetailText({ acc: accounts.acc_9580917901, key: 'acc_9580917901', activeKey: 'acc_9580917901' });
   check('detail shows LIVE orders line', /LIVE check/.test(detail.text), detail.text);
-  check('detail shows ALREADY CLAIMED state', /ALREADY CLAIMED/.test(detail.text));
+  // Ab detail chaaron offer ka line-by-line sach + score dikhata hai.
+  check('detail shows chaar-offer score (2/4)', /2\/4 claimed/.test(detail.text), detail.text.split('\n').slice(4, 12).join(' | '));
   check('detail contains pre JSON block', /<pre><code class="language-json">/.test(detail.text));
   check('detail JSON has the 7 keys', Object.keys(JSON.parse(detail.json)).join(',') === 'name,customerId,mobile,token,tid,sid,deviceId');
   check('detail marks ACTIVE account', /\[ACTIVE\]/.test(detail.text));
 
   const unverDetail = views.accountDetailText({ acc: accounts.acc_9999999999, key: 'acc_9999999999' });
   check('unverified detail says file count not trusted', /File me jo order count/.test(unverDetail.text), unverDetail.text);
-  check('unverified detail says NEW (claim pending)', /NEW \(claim pending\)/.test(unverDetail.text));
+  check('unverified detail me chaaron offer NEW (claim pending)', /0\/4 claimed/.test(unverDetail.text) && (unverDetail.text.match(/claim pending/g) || []).length === 4, unverDetail.text.split('\n').slice(4, 12).join(' | '));
 }
 
 console.log('\n=== 5. Auto-activate: BOTH links, ALWAYS option 1 ===');
@@ -269,7 +270,7 @@ console.log('\n=== 9. index.js wiring: compact list, detail, live check, copy JS
   check('copy json handler registered', /bot\.action\(\/\^acc_copy_json_\(\.\+\)\$\/,/.test(src));
   check('send json handler registered', /bot\.action\(\/\^acc_send_json_\(\.\+\)\$\/,/.test(src));
   check('send all json handler registered', /bot\.action\('boss_send_all_json',/.test(src));
-  check('import claims BOTH offers with offerValue 1 (not quickLock default)', /claimSwiggyBreakfastAndLateNightOffers\(accTarget, \{ force: true, forcePatch: true, offerValue: 1 \}\)/.test(src));
+  check('import chaaron offers claim karta hai offerValue 1 par', /autoActivateEventOffers\(accTarget, \{ force: false, offerValue: 1 \}\)/.test(src));
   check('pre-claim also pins offerValue 1', /quickLockOnly: true, offerValue: 1, forcePatch: true/.test(src));
   check('zero-order gate removed from auto-claim', !/if \(accTarget\.isZeroOrderAccount \|\| accTarget\.totalOrdersCount === 0\) \{\s*\n\s*try \{\s*\n\s*const claimOut = await claimSwiggyBreakfastAndLateNightOffers/.test(src));
   check('login-time live check requires ordersVerifiedLive', /orderHistory\.ordersVerifiedLive === true/.test(src));
