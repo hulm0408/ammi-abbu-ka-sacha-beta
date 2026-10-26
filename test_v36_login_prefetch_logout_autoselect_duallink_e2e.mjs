@@ -42,10 +42,14 @@ try {
   });
 
   let claimCalled = false;
+  // Mock emulates a LIVE Swiggy answer (inspectAccountOrderHistoryAndOffers).
+  // `ordersVerifiedLive: true` is required since the file's own count is never trusted.
   const mockOrderProfileFn = async () => ({
     valid: true,
+    ordersVerifiedLive: true,
     totalOrdersCount: 0,
-    isZeroOrderAccount: true
+    isZeroOrderAccount: true,
+    liveActiveOrdersCount: 0
   });
 
   const mockClaimOffersFn = async (acc) => {

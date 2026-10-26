@@ -73,6 +73,7 @@ import {
   describeQrRef,
   parseUpiIntent
 } from './payment-qr-guard.js';
+import { isAccountSuspended, markAccountHealthy, markAccountSuspended, describeSuspendedAccount, suspendedAccountsSummary, classifySwiggyAccountFailure } from './account-health.js';
 import {
   autoExportAccountAfterDelivery,
   planDeliveryExport,
@@ -3095,9 +3096,13 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
   const customerId = accInfo.customerId || 'Verified';
 
   const db = getDb();
-  if (!db.config.activeOrderAccount || !db.config.accounts?.[db.config.activeOrderAccount]?.isLoggedIn) {
-    db.config.activeOrderAccount = targetAcc;
-    saveDb(db);
+  const activeAccNow = db.config.accounts?.[db.config.activeOrderAccount];
+  // Suspended ID ko kabhi "active for orders" mat banao — order wahin atkega.
+  if (!activeAccNow?.isLoggedIn || isAccountSuspended(activeAccNow)) {
+    if (!isAccountSuspended(db.config.accounts?.[targetAcc])) {
+      db.config.activeOrderAccount = targetAcc;
+      saveDb(db);
+    }
   }
   let linkedOrderId = orderId;
   if (!linkedOrderId) {
@@ -3570,6 +3575,15 @@ bot.action(/^boss_use_acc_(.+)$/, async (ctx) => {
   const accKey = ctx.match[1];
   const db = getDb();
   if (db.config.accounts?.[accKey]) {
+    // ⛔ Suspended ID par order place hi nahi hoga — select karne ka matlab hoga
+    // order ko dobara atka dena. Honest refusal + turant retry ka option.
+    if (isAccountSuspended(db.config.accounts[accKey])) {
+      const suspendInfo = describeSuspendedAccount(db.config.accounts[accKey]);
+      return ctx.answerCbQuery(
+        `⛔ Ye ID suspended hai — ${suspendInfo}. "Retry" se quarantine hatayein.`,
+        { show_alert: true }
+      ).catch(() => {});
+    }
     db.config.activeOrderAccount = accKey;
     const phone = db.config.accounts[accKey].phone || db.config.accounts[accKey].mobile || accKey;
     const draft = db.drafts?.[ctx.from.id];
@@ -3586,6 +3600,22 @@ bot.action(/^boss_use_acc_(.+)$/, async (ctx) => {
   } else {
     await ctx.answerCbQuery('Account not found!').catch(() => {});
   }
+});
+
+// Action: ⛔ Suspended ID ko retry/enable karo (quarantine clear)
+bot.action(/^boss_retry_acc_(.+)$/, async (ctx) => {
+  const accKey = ctx.match[1];
+  const db = getDb();
+  const acc = db.config.accounts?.[accKey];
+  if (!acc) return ctx.answerCbQuery('Account not found', { show_alert: true }).catch(() => {});
+  const wasSuspended = isAccountSuspended(acc);
+  markAccountHealthy(accKey, { note: 'boss manual retry' });
+  await ctx.answerCbQuery(wasSuspended ? '⛔ Quarantine hata diya — ID phir try hogi' : 'ID already healthy hai').catch(() => {});
+  await ctx.reply(
+    `✅ <b>${escapeHtml(acc.name || acc.phone || accKey)}</b> retry ke liye enable ho gayi.\n` +
+    `<i>Ab order card par ⚡ Next fresh ID dabaiye — bill turant isi ID par banega. Agar Swiggy ne sach me block kiya hai to phir ⛔ ho jayegi (jhooth nahi bolenge).</i>`,
+    { parse_mode: 'HTML', ...getBossPanelKeyboard() }
+  ).catch(() => {});
 });
 
 // Action: Retry offer claims

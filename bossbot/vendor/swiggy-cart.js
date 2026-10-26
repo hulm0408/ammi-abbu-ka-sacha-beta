@@ -6,6 +6,7 @@ import puppeteer from 'puppeteer-core';
 import QRCode from 'qrcode';
 import { getDb, saveDb, updateAccount, syncAccountsJsonMirror } from './store.js';
 import { shouldReusePendingQr, validateUpiIntentForQr } from './payment-qr-guard.js';
+import { classifySwiggyAccountFailure, isAccountSuspended, markAccountSuspended, markAccountHealthy, noteAccountFailure, describeSuspendedAccount } from './account-health.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken } from './swiggy-bridge.js';
@@ -511,11 +512,16 @@ export async function verifySwiggySessionLive(accountOrCookies) {
   }
 
   if (!webOk && !androidOk) {
+    const webMessage = webJson?.statusMessage || '';
+    const androidMessage = chkJson?.statusMessage || '';
+    const failure = classifySwiggyAccountFailure({ message: `${webMessage} ${androidMessage}`.trim() });
     return {
       valid: false,
       transport: 'none',
-      webMessage: webJson?.statusMessage || '',
-      androidMessage: chkJson?.statusMessage || ''
+      suspended: failure.suspended,
+      suspendReason: failure.suspended ? failure.reason : '',
+      webMessage,
+      androidMessage
     };
   }
 
@@ -567,6 +573,25 @@ export async function verifySwiggySessionLive(accountOrCookies) {
 // Seamlessly supports BOTH Web `_session_tid` cookies AND Native Android `token`+`tid` JSONs!
 // ---------------------------------------------------------------------------
 const sessionAuthInFlight = new Map();
+
+/**
+ * SPEED: agla ID pehle se "garam" rakho. Jab Boss/customer ⚡ Next ID dabata
+ * hai, us waqt session-auth ka network round-trip pehle se ho chuka hota hai
+ * (45s cache), isliye bill turant banta hai.
+ */
+export function warmAccountSessionAuth(accountOrKey) {
+  try {
+    const db = getDb();
+    const key = typeof accountOrKey === 'string' ? accountOrKey : resolveAccountKeyForHealth(accountOrKey);
+    const acc = key ? db?.config?.accounts?.[key] : accountOrKey;
+    if (!acc || !acc.isLoggedIn || isAccountSuspended(acc)) return Promise.resolve(false);
+    return getSwiggySessionAuth(acc, false)
+      .then((auth) => Boolean(auth && !auth.sessionExpired))
+      .catch(() => false);
+  } catch {
+    return Promise.resolve(false);
+  }
+}
 
 export async function getSwiggySessionAuth(accountOrCookies, forceRefresh = false) {
   if (!accountOrCookies) return null;
@@ -6084,6 +6109,13 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     const savedAddresses = addrBundle.fetchedAddrs;
 
     if (auth?.sessionExpired) {
+      const suspended = suspendedFailureResult({
+        acc: account,
+        message: String(auth?.statusMessage || ''),
+        stage: 'SYNC_CART_AND_CHECKOUT',
+        orderId: order?.id
+      });
+      if (suspended) return suspended;
       return {
         success: false,
         sessionExpired: true,
@@ -6189,6 +6221,13 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
 
     let liveCart = inspectedInitialCart;
     if (liveCart?.sessionExpired) {
+      const suspended = suspendedFailureResult({
+        acc: account,
+        message: String(liveCart?.statusMessage || liveCart?.error || ''),
+        stage: 'SYNC_CART_AND_CHECKOUT',
+        orderId: order?.id
+      });
+      if (suspended) return suspended;
       return {
         success: false,
         sessionExpired: true,
@@ -6825,6 +6864,15 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       }).catch(() => null);
       const swiggyMsg = probe?.json?.statusMessage || probe?.json?.data?.cartMeta?.cart_banner_message || probe?.json?.data?.cart_banner_message || '';
       if (probe?.json?.statusCode === 999 || (probe?.json?.statusCode === 1 && /session|login|auth/i.test(swiggyMsg))) {
+        const suspended = suspendedFailureResult({
+          acc: account,
+          message: swiggyMsg,
+          statusCode: probe?.json?.statusCode,
+          httpStatus: probe?.status || 0,
+          stage: 'SYNC_CART_AND_CHECKOUT',
+          orderId: order?.id
+        });
+        if (suspended) return suspended;
         const accLabel = account?.phone || account?.mobile || account?.name || 'Selected Account';
         return {
           success: false,
@@ -6870,6 +6918,11 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     if (captureScreenshot && liveCart?.items?.length > 0) {
       qrBuffer = await captureSwiggyPaymentScreenshot(account.cookies || cleanCookies).catch(() => null);
     }
+
+    // Sync pura hua = Swiggy ne is ID se order uthaya => quarantine/stale
+    // suspend flag clear (jhoothi suspension ID ko hamesha band na kare).
+    const healthyKey = resolveAccountKeyForHealth(account);
+    if (healthyKey) markAccountHealthy(healthyKey, { note: 'cart sync ok' });
 
     return {
       success: true,
@@ -7055,6 +7108,62 @@ const ROTATION_BUSY = 'BUSY';
 const ROTATION_USED = 'USED';
 const ROTATION_MAYBE_USED = 'MAYBE_USED';
 const ROTATION_FREE = 'FREE';
+const ROTATION_SUSPENDED = 'SUSPENDED';
+
+/**
+ * Kaunsi vault key is account object ki hai? (identity → phone → customerId)
+ * Health/quarantine record usi key par likhna zaroori hai jo rotation padhta hai.
+ */
+export function resolveAccountKeyForHealth(acc, fallback = '') {
+  if (!acc || typeof acc !== 'object') return String(fallback || '');
+  const db = getDb();
+  const accounts = db?.config?.accounts || {};
+  const direct = Object.keys(accounts).find((k) => accounts[k] === acc);
+  if (direct) return direct;
+  if (acc.key && accounts[acc.key]) return String(acc.key);
+  const phone = String(acc.phone || acc.mobile || '').replace(/\D/g, '').slice(-10);
+  if (phone) {
+    const byPhone = Object.keys(accounts).find(
+      (k) => String(accounts[k]?.phone || accounts[k]?.mobile || '').replace(/\D/g, '').slice(-10) === phone
+    );
+    if (byPhone) return byPhone;
+  }
+  if (acc.customerId) {
+    const byCid = Object.keys(accounts).find((k) => String(accounts[k]?.customerId || '') === String(acc.customerId));
+    if (byCid) return byCid;
+  }
+  return String(fallback || acc.id || '');
+}
+
+/**
+ * Sync/QR failure ke message se pata karo ki ID suspended hai ya nahi.
+ * Sirf asli suspension par result lautta hai (baaki failures jaan-boojh kar
+ * chhode jaate hain taaki purani behaviour na badle).
+ */
+function suspendedFailureResult({ acc, key = '', message = '', detailed = '', code = '', statusCode = null, httpStatus = 0, stage = '', orderId = '' }) {
+  const failure = classifySwiggyAccountFailure({ message, detailed, code, statusCode, httpStatus });
+  if (!failure.suspended) return null;
+  const k = key || resolveAccountKeyForHealth(acc);
+  if (k) {
+    markAccountSuspended(k, {
+      reason: failure.reason,
+      code: failure.matched || code,
+      stage,
+      orderId,
+      httpStatus
+    });
+  }
+  const label = acc?.phone || acc?.mobile || k || 'Ye ID';
+  return {
+    success: false,
+    suspended: true,
+    code: 'ACCOUNT_SUSPENDED',
+    accountKey: k,
+    accountPhone: String(label),
+    reason: failure.reason,
+    error: `⛔ Swiggy ID ${label} suspended/blocked hai (${failure.reason}). Is ID par order place nahi hoga — bot turant dusri healthy ID par order shift karega.`
+  };
+}
 
 const rotationHasSession = (acc) => Boolean(
   acc && !acc.isLoggedOut && acc.isLoggedIn !== false &&
@@ -7103,7 +7212,11 @@ export function describeAccountRotation(order, { excludeKeys = [] } = {}) {
     if (!acc) continue;
     let status = ROTATION_FREE;
     let reason = 'free (never used on this order)';
-    if (!rotationHasSession(acc)) {
+    if (isAccountSuspended(acc)) {
+      // Swiggy ne is ID ko block kiya hai — ispar order place hi nahi hoga.
+      status = ROTATION_SUSPENDED;
+      reason = `account suspended — ${describeSuspendedAccount(acc) || 'Swiggy block'}`;
+    } else if (!rotationHasSession(acc)) {
       status = ROTATION_OFFLINE;
       reason = acc.isLoggedOut ? 'logged out' : 'no session';
     } else if (usedByThisOrder.has(String(key))) {
@@ -7124,12 +7237,14 @@ export function describeAccountRotation(order, { excludeKeys = [] } = {}) {
       reason,
       totalOrdersCount: acc.totalOrdersCount === null || acc.totalOrdersCount === undefined ? null : Number(acc.totalOrdersCount),
       isZeroOrderAccount: acc.isZeroOrderAccount === true,
-      selected: String(order?.selectedAccount || '') === String(key)
+      selected: String(order?.selectedAccount || '') === String(key),
+      suspended: status === ROTATION_SUSPENDED,
+      suspendedReason: status === ROTATION_SUSPENDED ? describeSuspendedAccount(acc) : ''
     });
   }
 
   const rank = {
-    [ROTATION_FREE]: 0, [ROTATION_MAYBE_USED]: 1, [ROTATION_BUSY]: 2, [ROTATION_USED]: 3, [ROTATION_OFFLINE]: 4
+    [ROTATION_FREE]: 0, [ROTATION_MAYBE_USED]: 1, [ROTATION_BUSY]: 2, [ROTATION_USED]: 3, [ROTATION_OFFLINE]: 4, [ROTATION_SUSPENDED]: 5
   };
   rows.sort((a, b) =>
     (rank[a.status] - rank[b.status]) ||
@@ -7155,6 +7270,17 @@ export function pickNextRotationAccount(order, { excludeKeys = [] } = {}) {
   }
   const offline = rows.filter((r) => r.status === ROTATION_OFFLINE).length;
   const used = rows.filter((r) => r.status === ROTATION_USED).length;
+  const suspendedRows = rows.filter((r) => r.status === ROTATION_SUSPENDED);
+  if (suspendedRows.length > 0 && suspendedRows.length === rows.length) {
+    return {
+      success: false,
+      code: 'ALL_ACCOUNTS_SUSPENDED',
+      error: `Saari ${suspendedRows.length} Swiggy ID suspended hain — inpar order place nahi hoga. Naya ID login karein, ya Boss "⛔ Retry" se quarantine hataye.`,
+      used,
+      offline,
+      suspended: suspendedRows.length
+    };
+  }
   return {
     success: false,
     code: 'NO_FRESH_ID',
@@ -7300,6 +7426,23 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
   if (typeof accKey === 'object' && accKey !== null && !acc) {
     acc = accKey;
     accKey = acc.id || acc.account || (acc.phone ? `acc_${acc.phone}` : 'acc_temp');
+  }
+
+  if (isAccountSuspended(acc)) {
+    return {
+      key: accKey,
+      valid: false,
+      suspended: true,
+      reason: 'ACCOUNT_SUSPENDED',
+      error: `Account suspended — ${describeSuspendedAccount(acc)}`,
+      totalOrdersCount: typeof acc?.totalOrdersCount === 'number' ? acc.totalOrdersCount : 999999,
+      isZeroOrderAccount: false,
+      liveActiveOrdersCount: 0,
+      hasZeroActiveOrders: true,
+      superStatus: 'UNKNOWN',
+      preferredOfferValue: 1,
+      walletBalance: 0
+    };
   }
 
   if (!acc || !acc.isLoggedIn || acc.isLoggedOut || acc.sessionExpired || (!acc.cookies && !acc.tid && !acc.jwtTid && !acc.token)) {
@@ -7706,7 +7849,17 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   const db = getDb();
   const accounts = db?.config?.accounts || {};
 
-  const allEntries = Object.entries(accounts).filter(([, a]) => a && a.isLoggedIn && !a.isLoggedOut && (a.cookies || a.tid || a.jwtTid || a.token));
+  const suspendedKeys = Object.entries(accounts).filter(([, a]) => isAccountSuspended(a)).map(([k]) => k);
+  // Suspended ID par order place hi nahi hoga — scan/selection me time barbaad na karo.
+  const allEntries = Object.entries(accounts).filter(([, a]) => a && a.isLoggedIn && !a.isLoggedOut && !isAccountSuspended(a) && (a.cookies || a.tid || a.jwtTid || a.token));
+  if (allEntries.length === 0 && suspendedKeys.length > 0) {
+    return {
+      success: false,
+      code: 'ALL_ACCOUNTS_SUSPENDED',
+      error: `Saari ${suspendedKeys.length} logged-in Swiggy ID suspended hain (${suspendedKeys.map((k) => accounts[k]?.phone || k).join(', ')}). Naya ID login karein, ya Boss "⛔ Retry" se quarantine hataye.`,
+      suspendedKeys
+    };
+  }
   if (allEntries.length === 0) {
     const totalAccountsInDb = Object.keys(accounts).length;
     return {
@@ -8760,8 +8913,32 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       const err = new Error(
         `Swiggy payment gateway rejected QR creation: HTTP ${placeRes.status}, statusCode=${json?.statusCode}, msg="${json?.statusMessage || 'Unknown'}"`
       );
-      err.diag = {
+      // Suspended ID: Swiggy order place par "account blocked" bolta hai.
+      // Ise aam error samajhna hi order atakne ki wajah thi.
+      const suspendFailure = classifySwiggyAccountFailure({
+        message: String(json?.statusMessage || ''),
+        detailed: String(orderData?.message || json?.data?.message || ''),
         code: 'SWIGGY_PLACE_ORDER_QR_FAILED',
+        statusCode: json?.statusCode,
+        httpStatus: placeRes.status,
+        rawText
+      });
+      if (suspendFailure.suspended) {
+        const suspendKey = resolveAccountKeyForHealth(account);
+        if (suspendKey) {
+          markAccountSuspended(suspendKey, {
+            reason: suspendFailure.reason,
+            code: suspendFailure.matched,
+            stage: 'POST_PAYMENTS_ORDER_PLACE',
+            orderId: order?.id,
+            httpStatus: placeRes.status
+          });
+        }
+      }
+      err.diag = {
+        code: suspendFailure.suspended ? 'ACCOUNT_SUSPENDED' : 'SWIGGY_PLACE_ORDER_QR_FAILED',
+        suspended: suspendFailure.suspended,
+        accountKey: resolveAccountKeyForHealth(account),
         stage: 'POST_PAYMENTS_ORDER_PLACE',
         httpStatus: placeRes.status,
         swiggyStatusCode: json?.statusCode ?? null,
@@ -8811,6 +8988,12 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       order.pendingQrLat = String(order.addressDetails?.lat || '');
       order.pendingQrLng = String(order.addressDetails?.lng || '');
       order.pendingQrAddressAccount = String(account.phone || account.mobile || '');
+    }
+
+    // QR ban gaya = is ID par Swiggy ne order accept kiya => healthy.
+    {
+      const healthyKey = resolveAccountKeyForHealth(account);
+      if (healthyKey) markAccountHealthy(healthyKey, { note: 'QR generated' });
     }
 
     return {
