@@ -43,6 +43,11 @@ export const OFFER_STATUS_VIEW = {
   ALREADY_CLAIMED: { icon: '✅', label: 'CLAIMED' },
   PRE_LOCKED: { icon: '⏳', label: 'PRE-LOCKED' },
   FAILED: { icon: '❌', label: 'FAILED' },
+  // Swiggy ne offer "save" kar diya par doosra reward (coupon) — yeh ₹50 free
+  // cash NAHI hai, isliye ✅ nahi dikhaya jata.
+  WRONG_REWARD: { icon: '🟡', label: 'WRONG REWARD' },
+  NO_CAMPAIGN_ID: { icon: '❌', label: 'NO CAMPAIGN' },
+  CLAIMED_OTHER_VALUE: { icon: '🟡', label: 'WRONG REWARD' },
   NEW: { icon: '⚪', label: 'NEW' }
 };
 
@@ -159,6 +164,14 @@ export function offerClaimTruth(acc) {
         at: rec.claimedAt || activation?.at || ''
       };
     }
+    if (state === 'WRONG_REWARD' || state === 'CLAIMED_OTHER_VALUE') {
+      return {
+        status: 'WRONG_REWARD',
+        claimed: false,
+        label: `🟡 Offer save hui par ₹50 free cash nahi${rec.message ? ` — ${String(rec.message).slice(0, 70)}` : ''}`,
+        at: activation?.at || ''
+      };
+    }
     return {
       status: 'FAILED',
       claimed: false,
@@ -211,7 +224,9 @@ export function fourOfferStatusLines(acc, { escape = (v) => String(v ?? ''), sho
     }
     const tail = view.label === 'PRE-LOCKED'
       ? '₹50 — slot khulte hi lagega'
-      : (view.label === 'NEW' ? '₹50 — claim pending' : '₹50');
+      : view.label === 'WRONG REWARD'
+        ? '₹50 free cash nahi mila (Swiggy ne doosra reward rakha)'
+        : (view.label === 'NEW' ? '₹50 — claim pending' : '₹50');
     return `${idx + 1}. ${track.emoji} <b>${escape(track.bossLabel)}</b> — ${view.icon} <b>${view.label}</b> · ${tail}` +
       (reason ? `\n     <i>${escape(reason.slice(0, 90))}</i>` : '');
   });

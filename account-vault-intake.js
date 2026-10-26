@@ -352,7 +352,10 @@ export async function ingestAndPersistRawAccountTexts(
         await Promise.allSettled(
           chunk.map(async ({ account, key }) => {
             try {
-              const claimOut = await claimOffersFn(account, { force: true, offerValue: 1 });
+              // `force: false` — engine pehle GET se asli state padhta hai, isliye
+              // already-laga offer par ek bhi write nahi jata (double claim band),
+              // aur jo galat reward par atka hai woh PATCH se ₹50 par set hota hai.
+              const claimOut = await claimOffersFn(account, { force: false, offerValue: 1 });
               const freshDb = getDb();
               const target = freshDb.config?.accounts?.[key] || account;
               if (!target || !claimOut) return;
@@ -494,7 +497,10 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
     const slotStatus = (t) => String(act?.[t.key]?.status || acc.offers?.[t.key]?.status || '').toUpperCase();
     const cells = OFFER_TRACKS.map((t) => {
       const st = slotStatus(t);
-      const mark = st === 'CLAIMED' || st === 'ALREADY_CLAIMED' ? '✓' : (st === 'PRE_LOCKED' ? '⏳' : '✕');
+      const mark = st === 'CLAIMED' || st === 'ALREADY_CLAIMED' ? '✓'
+        : st === 'PRE_LOCKED' ? '⏳'
+        : (st === 'WRONG_REWARD' || st === 'CLAIMED_OTHER_VALUE') ? '🟡'
+        : '✕';
       return `${t.emoji || ''}${mark}`;
     }).join(' ');
     const claimedN = OFFER_TRACKS.filter((t) => ['CLAIMED', 'ALREADY_CLAIMED'].includes(slotStatus(t))).length;
@@ -579,14 +585,38 @@ export function buildPortableAccountMessages(result) {
  * into ONE single batch execution + ONE single summary reply — ZERO Telegram `429` flood errors!
  */
 export function createBulkDocumentBatchCollector({
-  windowMs = 650,
+  // 1500ms: Telegram 10-20 files thoda gap se bhejta hai. 650ms me batch beech
+  // me hi cut ho jata tha aur "jitni file bheji, utni hi" nahi dikhti thi.
+  windowMs = 1500,
   downloadBufferFn,
   ingestOptions = {},
   onBatchComplete
 } = {}) {
   const buckets = new Map();
+  const flushing = new Set();      // chat -> flush chal raha hai
+  const pendingAfterFlush = new Set();
 
   async function flushBucket(chatKey) {
+    if (flushing.has(chatKey)) {
+      // Isi chat ka flush pehle se chal raha hai (bada batch) — naya bucket
+      // uske baad hi chalega, warna do imports aapas me race karte hain aur
+      // accounts ghayab ho jate hain.
+      pendingAfterFlush.add(chatKey);
+      return null;
+    }
+    flushing.add(chatKey);
+    try {
+      return await flushBucketInner(chatKey);
+    } finally {
+      flushing.delete(chatKey);
+      if (pendingAfterFlush.delete(chatKey)) {
+        // Jo files flush ke dauraan aayi thi — usi ke turant baad process karo.
+        setTimeout(() => { flushBucket(chatKey).catch(() => {}); }, 50);
+      }
+    }
+  }
+
+  async function flushBucketInner(chatKey) {
     const bucket = buckets.get(chatKey);
     if (!bucket) return null;
     buckets.delete(chatKey);
