@@ -71,7 +71,20 @@ export const EVENT_OFFERS = [
     url: 'https://events.swiggy.com/pick-your-offer',
     slug: 'pick-your-offer',
     prefixHint: '',
-    windowed: false
+    windowed: false,
+    // Page par campaign id na mile to yeh ids EK-EK karke live verify hote
+    // hain (write + read-back). Guess nahi — sirf jo verify ho wahi use hota hai.
+    candidates: (day) => [
+      `byo-pick-your-offer-v2-${day}`,
+      `byo-pick-your-offer-v2-${day + 1}`,
+      `byo-pick-your-offer-${day}`,
+      `byo-pick-your-offer-v2`,
+      `byo-pick-your-offer-v1-${day}`,
+      `byo-pick-your-offer-v1`,
+      `byo-pick-your-offer`,
+      `byo-extra50-v1-${day}`,
+      `byo-x50-v1-${day}`
+    ]
   },
   {
     key: 'weekend',
@@ -80,7 +93,16 @@ export const EVENT_OFFERS = [
     url: 'https://events.swiggy.com/byo-weekend',
     slug: 'byo-weekend',
     prefixHint: '',
-    windowed: false
+    windowed: false,
+    candidates: (day) => [
+      `byo-weekend-v1-${day}`,
+      `byo-weekend-v1`,
+      `byo-weekend-${day}`,
+      `byo-weekend`,
+      `byo-weekend-v2`,
+      `byo-weekend-v2-${day}`,
+      `byo-wknd-v1`
+    ]
   }
 ];
 
@@ -98,12 +120,34 @@ const DAY_SUFFIX_RE = /-(\d{1,3})$/;
 // (fixed) hote hain. Regex GREEDY rakho — lazy hone se `byo-pick-your-offer-v2-26`
 // `byo-pick` ban jata tha (asli bug, test ne pakda).
 const CAMPAIGN_TOKEN_RE = /byo-[a-z0-9][a-z0-9-]*/gi;
+// Campaign-ish keys/params — in pages par id ka naam `byo-...` na ho to bhi
+// pakdi jaye (Extra ₹50 / Weekend pages sach me bilkul khaali hote hain).
+const CAMPAIGN_KEY_RE = /"(?:notify)?campaign[A-Za-z_]*"\s*:\s*"([a-z0-9][a-z0-9_-]{4,})"/gi;
+const CAMPAIGN_PARAM_RE = /[?&]campaign=([a-z0-9][a-z0-9_-]{4,})/gi;
+const SLUG_KEY_RE = /"(?:offerSlug|offer_slug|slug)"\s*:\s*"([a-z0-9][a-z0-9_-]{4,})"/gi;
 
 /** HTML/JSON se sabse sahi campaign id candidates (lamba pehle). */
 export function scanCampaignTokens(text) {
-  const raw = String(text || '').match(CAMPAIGN_TOKEN_RE) || [];
-  const cleaned = [...new Set(raw.map((t) => t.replace(/-+$/, '').toLowerCase()))].filter((t) => t.length > 4);
-  return cleaned.sort((a, b) => b.length - a.length);
+  const src = String(text || '');
+  const raw = src.match(CAMPAIGN_TOKEN_RE) || [];
+  const extra = [];
+  for (const re of [CAMPAIGN_KEY_RE, CAMPAIGN_PARAM_RE, SLUG_KEY_RE]) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      const v = String(m[1] || '').toLowerCase();
+      // Slug-key values (jaise `book-your-offer`) campaign id nahi hote —
+      // sirf tab lo jab usme digits ya `byo` ho.
+      if (re === SLUG_KEY_RE && !/\d/.test(v) && !v.startsWith('byo')) continue;
+      extra.push(v);
+    }
+  }
+  const cleaned = [...new Set([...raw, ...extra].map((t) => String(t).replace(/[-_]+$/, '').toLowerCase()))]
+    .filter((t) => t.length > 4 && t.length < 64);
+  // `byo-` wale pehle (asli Swiggy naming), phir baaki — dono me lamba pehle.
+  const byo = cleaned.filter((t) => t.startsWith('byo-')).sort((a, b) => b.length - a.length);
+  const rest = cleaned.filter((t) => !t.startsWith('byo-')).sort((a, b) => b.length - a.length);
+  return [...byo, ...rest];
 }
 
 function pickBestToken(tokens, offer) {
@@ -284,6 +328,214 @@ export function campaignIdsForOffer(offerKey, meta, nowMs = Date.now()) {
   const fixed = String(info.fixedCampaignId || '').trim();
   if (fixed) return { ids: [fixed], source: info.source || 'FIXED', prefix: '', fixed };
   return { ids: [], source: info.source || 'NONE', prefix: '', fixed: '' };
+}
+
+// ── fixed offers (Extra ₹50 / Weekend): self-verifying discovery ─────────────
+//
+// `pick-your-offer` aur `byo-weekend` page apne campaign id HTML me NAHI dete
+// (isliye bot sirf Late Night + Breakfast claim kar pata tha). Yahan id ka
+// anumaan nahi lagta — candidates KO LIVE likh kar read-back se verify karte
+// hain: jo id read-back me `shouldNotify:true` lauta de, wahi asli id hai.
+// Pehla success 6 ghante cache hota hai, isliye 19 ID par sirf ek hi baar
+// discovery chalti hai.
+
+const resolvedFixedIds = new Map(); // `${offerKey}|${day}` -> { id, at, source, tried }
+const FIXED_ID_TTL_MS = 6 * 60 * 60 * 1000;
+const FIXED_ID_NEGATIVE_TTL_MS = 10 * 60 * 1000;
+const MAX_LADDER_WRITES = 3;
+
+/** Pehle se resolved fixed campaign id (agar cache fresh hai). */
+export function cachedFixedCampaignId(offerKey, nowMs = Date.now()) {
+  const day = swiggyDayNumber(nowMs);
+  const rec = resolvedFixedIds.get(`${offerKey}|${day}`);
+  if (!rec) return null;
+  const ttl = rec.id ? FIXED_ID_TTL_MS : FIXED_ID_NEGATIVE_TTL_MS;
+  if (Date.now() - rec.at > ttl) {
+    resolvedFixedIds.delete(`${offerKey}|${day}`);
+    return null;
+  }
+  return rec;
+}
+
+/** Resolved id yaad rakho (aur meta cache me bhi, taaki doctor wahi dikhaye). */
+export function rememberFixedCampaignId(offerKey, id, { source = 'CANDIDATE_VERIFIED', tried = [], nowMs = Date.now() } = {}) {
+  const day = swiggyDayNumber(nowMs);
+  resolvedFixedIds.set(`${offerKey}|${day}`, { id: id || '', at: Date.now(), source, tried: tried.slice(0, 8) });
+  if (id && _metaCache && _metaCache[offerKey]) {
+    _metaCache[offerKey] = { ..._metaCache[offerKey], fixedCampaignId: id, source };
+  }
+  return day;
+}
+
+export function resetFixedCampaignCache() {
+  resolvedFixedIds.clear();
+}
+
+// Extra ₹50 / Weekend page par id nahi hoti — to ho sakta hai woh kisi chhote
+// JSON endpoint se aati ho. Yeh sirf DISCOVERY ke waqt (6h me ek baar) chalta
+// hai; jo bhi mile use claim ke waqt live verify kiya jata hai.
+const FIXED_DISCOVERY_PATHS = (slug) => [
+  `/api/campaign/${slug}`,
+  `/api/campaign/details?slug=${slug}`,
+  `/api/campaign?slug=${slug}`,
+  `/api/campaigns?slug=${slug}`,
+  `/api/notify/campaign/${slug}`
+];
+
+async function discoverFixedCampaignIdsFromApis(offer, { fetchImpl, timeoutMs = 4000 } = {}) {
+  const found = [];
+  for (const path of FIXED_DISCOVERY_PATHS(String(offer?.slug || ''))) {
+    if (!offer?.slug) break;
+    try {
+      const res = await fetchImpl(`https://events.swiggy.com${path}`, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!res?.ok) continue;
+      const text = typeof res.text === 'function' ? await res.text() : '';
+      for (const token of scanCampaignTokens(text)) {
+        if (!found.includes(token)) found.push(token);
+      }
+    } catch { /* endpoint nahi hai — koi baat nahi */ }
+    if (found.length >= 4) break;
+  }
+  return found.slice(0, 5);
+}
+
+/** Ops escape hatch: `EVENT_OFFER_EXTRA_CANDIDATES=extra50:byo-x-1,weekend:byo-w-1`. */
+function envExtraCandidates(offerKey) {
+  const raw = String(process.env.EVENT_OFFER_EXTRA_CANDIDATES || '').trim();
+  if (!raw) return [];
+  const out = [];
+  for (const part of raw.split(',')) {
+    const [k, v] = part.split(':').map((x) => String(x || '').trim());
+    if (!v) continue;
+    if (!k || k === offerKey) out.push(v);
+  }
+  return out.slice(0, 6);
+}
+
+/**
+ * Fixed offer ka campaign id dhoondo AUR claim karo (ek hi pass me).
+ * Returns `{ campaignId, metaSource, results, tried }`.
+ */
+async function claimFixedOfferViaLadder(offer, {
+  account,
+  headers,
+  auth,
+  fetchImpl,
+  value,
+  force,
+  nowMs = Date.now()
+}) {
+  const day = swiggyDayNumber(nowMs);
+  const cacheKey = `${offer.key}|${day}`;
+  const cached = resolvedFixedIds.get(cacheKey);
+  if (cached) {
+    const ttl = cached.id ? FIXED_ID_TTL_MS : FIXED_ID_NEGATIVE_TTL_MS;
+    if (Date.now() - cached.at < ttl) {
+      if (!cached.id) {
+        return { campaignId: '', metaSource: 'CANDIDATE_FAILED_CACHED', results: [], tried: cached.tried || [] };
+      }
+      const res = await ensureCampaignClaim(account, {
+        campaignId: cached.id,
+        offerKey: offer.key,
+        referer: offer.url,
+        value,
+        headers,
+        auth,
+        fetchImpl,
+        force,
+        windowOpen: null
+      });
+      // Cache hit: koi naya probe/write nahi hua — purana discovery record
+      // `cachedTried` me alag rakha jata hai (warna "dobara ladder chali" lagta).
+      return { campaignId: cached.id, metaSource: 'CACHED_RESOLVED', results: [res], tried: [], cachedTried: cached.tried || [] };
+    }
+    resolvedFixedIds.delete(cacheKey);
+  }
+
+  const baseCandidates = typeof offer.candidates === 'function' ? offer.candidates(day) : [];
+  const apiCandidates = await discoverFixedCampaignIdsFromApis(offer, { fetchImpl });
+  const candidates = [...new Set([
+    ...apiCandidates,
+    ...envExtraCandidates(offer.key),
+    ...baseCandidates
+  ])].slice(0, 16);
+  const tried = [];
+  let authFailed = false;
+
+  // Phase 1 — sirf padho (koi write nahi): koi campaign pehle se laga hua mila?
+  // WAF ki limit (<40 req/10s) ka khayal: zyada se zyada 6 probe.
+  for (const id of candidates.slice(0, 6)) {
+    const before = await readCampaignState(id, { headers, fetchImpl });
+    tried.push({ id, probe: before.httpStatus || 0, active: Boolean(before.shouldNotify), value: Number(before.value || 0), phase: 'probe' });
+    if (before.httpStatus === 401) { authFailed = true; break; }
+    if (before.ok && before.shouldNotify) {
+      const res = await ensureCampaignClaim(account, {
+        campaignId: id,
+        offerKey: offer.key,
+        referer: offer.url,
+        value,
+        headers,
+        auth,
+        fetchImpl,
+        force,
+        windowOpen: null
+      });
+      if (res.verified) {
+        rememberFixedCampaignId(offer.key, id, { tried, nowMs });
+        return { campaignId: id, metaSource: 'RESOLVED_ALREADY_ACTIVE', results: [res], tried };
+      }
+    }
+  }
+  if (authFailed) {
+    return {
+      campaignId: '',
+      metaSource: 'AUTH_FAILED',
+      results: [{ campaignId: '', state: 'AUTH_FAILED', verified: false, writes: 0, reason: 'session se mana (401) — re-login' }],
+      tried
+    };
+  }
+
+  // Phase 2 — candidate par likho aur read-back se verify karo. Sirf jo verify
+  // ho wahi asli id hai; baaki chhod diye jate hain (junk id par likhna no-op).
+  let writes = 0;
+  for (const id of candidates) {
+    if (writes >= MAX_LADDER_WRITES) break;
+    const res = await ensureCampaignClaim(account, {
+      campaignId: id,
+      offerKey: offer.key,
+      referer: offer.url,
+      value,
+      headers,
+      auth,
+      fetchImpl,
+      force: true,
+      windowOpen: null
+    });
+    writes += Number(res.writes || 0);
+    tried.push({ id, state: res.state, verified: Boolean(res.verified), phase: 'write' });
+    if (res.state === 'RATE_LIMITED') {
+      return { campaignId: id, metaSource: 'RATE_LIMITED', results: [res], tried };
+    }
+    if (res.verified) {
+      rememberFixedCampaignId(offer.key, id, { tried, nowMs });
+      return { campaignId: id, metaSource: 'CANDIDATE_VERIFIED', results: [res], tried };
+    }
+  }
+
+  rememberFixedCampaignId(offer.key, '', { source: 'CANDIDATE_FAILED', tried, nowMs });
+  const idList = candidates.slice(0, 5).join(', ');
+  return {
+    campaignId: '',
+    metaSource: 'CANDIDATE_FAILED',
+    tried,
+    results: [{
+      campaignId: '',
+      state: 'NO_CAMPAIGN_ID',
+      verified: false,
+      writes: 0,
+      reason: `Swiggy ne ${offer.name} ka campaign id nahi bataya — ${Math.min(writes, MAX_LADDER_WRITES)} candidate likh kar dekhe (${idList}), koi verify nahi hua`
+    }]
+  };
 }
 
 // ── claim engine ─────────────────────────────────────────────────────────────
@@ -485,21 +737,26 @@ export async function ensureCampaignClaim(account, {
     }
 
     const after = await readCampaignState(campaignId, { headers: hdr, fetchImpl });
-    const ok = after.ok && after.shouldNotify && after.value === value;
+    // Claim hua ya nahi = `shouldNotify`. Value 1 par atakna galat tha: kuch
+    // campaigns sirf apne options dete hain — tab bhi offer LAG jata hai, isliye
+    // use CLAIMED_OTHER_VALUE kaha jata hai (jhootha "save nahi hua" nahi).
+    const claimedAny = after.ok && after.shouldNotify === true;
+    const ok = claimedAny && after.value === value;
     // Write accept hua par state save nahi — agar window ABHI band hai to yeh
     // normal pre-book hai (Swiggy band slot par shouldNotify:false hi rakhta
     // hai). Use PRE_LOCKED maano: 6h tak dobara write nahi.
-    const preLocked = !ok && after.ok && Number(writeRes.status) >= 200 && Number(writeRes.status) < 300 && windowOpen === false;
-    const state = ok ? 'CLAIMED' : preLocked ? 'PRE_LOCKED' : (after.ok ? 'WRITE_NOT_SAVED' : 'READBACK_FAILED');
+    const preLocked = !claimedAny && after.ok && Number(writeRes.status) >= 200 && Number(writeRes.status) < 300 && windowOpen === false;
+    const state = ok ? 'CLAIMED' : claimedAny ? 'CLAIMED_OTHER_VALUE' : preLocked ? 'PRE_LOCKED' : (after.ok ? 'WRITE_NOT_SAVED' : 'READBACK_FAILED');
     // PRE_LOCKED me humne jo value bheji wahi yaad rakhte hain (read-back 0
     // dikhata hai kyunki window band hai) — warna har call dobara likhega.
-    ledgerSet(accSig, campaignId, ok ? value : (preLocked ? value : after.value), ok, state);
+    ledgerSet(accSig, campaignId, ok ? value : (preLocked ? value : after.value), claimedAny, state);
     return {
       campaignId,
       method,
       writes: 1,
       state,
-      verified: ok,
+      verified: claimedAny,
+      valueMatched: ok,
       preLocked,
       httpStatus: Number(writeRes.status || 0),
       value: after.value,
@@ -507,7 +764,9 @@ export async function ensureCampaignClaim(account, {
       message: writeJson?.message || '',
       reason: ok
         ? `claim ho gaya (read-back: option ${after.value})`
-        : preLocked
+        : claimedAny
+          ? `claim ho gaya par Swiggy ne option ${after.value} lagaya (1 nahi) — read-back verified`
+          : preLocked
           ? 'pre-lock ho gaya (window abhi band hai, Swiggy slot khulne par laga dega)'
           : after.ok
             ? `Swiggy ne likha par save nahi kiya (read-back: shouldNotify=${after.shouldNotify}, value=${after.value})`
@@ -552,7 +811,73 @@ export async function activateAllEventOffers(account, {
     for (const offerKey of offerKeys) {
       const offer = getEventOffer(offerKey);
       if (!offer) continue;
-      const { ids, source } = campaignIdsForOffer(offerKey, resolvedMeta, nowMs);
+      let { ids, source } = campaignIdsForOffer(offerKey, resolvedMeta, nowMs);
+      let ladderFailure = null;
+
+      // Fixed offers (Extra ₹50 / Weekend): inke page par campaign id nahi hoti,
+      // isliye self-verifying ladder — jo id likhne ke baad read-back me verify
+      // ho jaye wahi asli hai. Isse hi Extra ₹50 aur Weekend claim hote hain.
+      if (!ids.length && !offer.windowed && typeof offer.candidates === 'function') {
+        const ladder = await claimFixedOfferViaLadder(offer, {
+          account, headers, auth, fetchImpl, value: offerValue, force, nowMs
+        });
+        const primary = ladder.results?.[0] || null;
+        const ladderState = String(primary?.state || '').toUpperCase();
+        const isAlready = ladderState === 'ALREADY_ACTIVE' || ladderState === 'ALREADY_VERIFIED';
+
+        if (ladder.campaignId && primary?.verified) {
+          if (isAlready) already += 1; else claimed += 1;
+          offers[offerKey] = {
+            key: offerKey,
+            bossLabel: offer.bossLabel,
+            name: offer.name,
+            url: offer.url,
+            campaign: ladder.campaignId,
+            ids: [ladder.campaignId],
+            metaSource: ladder.metaSource,
+            status: 'CLAIMED',
+            state: primary.state,
+            verified: true,
+            valueMatched: primary.valueMatched !== false,
+            alreadyActive: isAlready,
+            writes: Number(primary.writes || 0),
+            campaignUrl: offer.url,
+            discount: (EVENT_OFFER_OPTIONS[offerValue] || EVENT_OFFER_OPTIONS[1]).shortLabel,
+            message: primary.reason || '',
+            results: ladder.results,
+            tried: ladder.tried,
+            cachedTried: ladder.cachedTried || []
+          };
+          continue;
+        }
+
+        if (ladderState === 'RATE_LIMITED' || ladderState === 'AUTH_FAILED') {
+          failed += 1;
+          offers[offerKey] = {
+            key: offerKey,
+            bossLabel: offer.bossLabel,
+            name: offer.name,
+            url: offer.url,
+            campaign: ladder.campaignId || '',
+            ids: ladder.campaignId ? [ladder.campaignId] : [],
+            metaSource: ladder.metaSource,
+            status: 'FAILED',
+            state: ladderState,
+            verified: false,
+            alreadyActive: false,
+            writes: 0,
+            campaignUrl: offer.url,
+            discount: (EVENT_OFFER_OPTIONS[offerValue] || EVENT_OFFER_OPTIONS[1]).shortLabel,
+            message: primary?.reason || '',
+            results: ladder.results,
+            tried: ladder.tried
+          };
+          continue;
+        }
+
+        ladderFailure = ladder;
+        source = ladder.metaSource;
+      }
       if (!ids.length) {
         offers[offerKey] = {
           key: offerKey,
@@ -566,8 +891,11 @@ export async function activateAllEventOffers(account, {
           state: 'NO_CAMPAIGN_ID',
           verified: false,
           claimed: false,
-          message: 'offer page se campaign id nahi mili — link khol kar ek baar claim karein',
-          reason: 'offer page se campaign id nahi mili — link khol kar ek baar claim karein'
+          message: ladderFailure?.results?.[0]?.reason
+            || 'offer page se campaign id nahi mili — link khol kar ek baar claim karein',
+          reason: ladderFailure?.results?.[0]?.reason
+            || 'offer page se campaign id nahi mili — link khol kar ek baar claim karein',
+          tried: ladderFailure?.tried || []
         };
         failed += 1;
         continue;
