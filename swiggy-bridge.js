@@ -667,7 +667,7 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
             fromLedger: true
           };
         }
-        if (recent.state === 'PRE_LOCKED' && recent.value === chosenVal) {
+        if (recent.state === 'PRE_LOCKED' && recent.value === chosenVal && !recent.stalePreLock) {
           return {
             res: { ok: true, status: 200, statusText: 'Ledger: pre-locked' },
             json: { message: 'Pre-locked earlier' },

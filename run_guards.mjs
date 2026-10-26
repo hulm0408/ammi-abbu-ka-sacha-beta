@@ -54,7 +54,8 @@ const TESTS = [
   "test_v64_perf_optimization_e2e.mjs",
   "test_v65_four_offers_every_import_e2e.mjs",
   "test_v66_four_offer_status_boss_and_user_e2e.mjs",
-  "test_v67_fixed_offer_discovery_ladder_e2e.mjs"
+  "test_v67_fixed_offer_discovery_ladder_e2e.mjs",
+  "test_v68_qr_applies_offer_before_place_e2e.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];

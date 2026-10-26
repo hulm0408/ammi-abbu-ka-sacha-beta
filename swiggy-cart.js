@@ -7782,7 +7782,14 @@ function describeFreeCashGap(order, claimAnswer) {
   return `Free cash abhi apply nahi hua (${claimAnswer.breakfast?.message || claimAnswer.lateNight?.message || 'Swiggy ne credit nahi diya'}).`;
 }
 
-export async function applyLiveFreeCashRelock(account, order, { claimWaitMs = 2500 } = {}) {
+export async function applyLiveFreeCashRelock(account, order, {
+  claimWaitMs = 2500,
+  // QR PLACE se pehle hum slot gate ignore karte hain: free cash tab hi milta
+  // hai jab claim sach me live ho, aur ek extra cart push sasta hai compared to
+  // bina offer ka QR ban jana ("QR bina offer" = customer zyada paisa deta tha).
+  ignoreSlotGate = false,
+  claimForce = false
+} = {}) {
   const out = { applied: false, via: '', reason: '', claimState: '' };
   if (!account || !order) { out.reason = 'no-account'; return out; }
   const alreadyIn = Number(order.campaignFreeCash || 0) + Number(order.freeCashApplied || 0);
@@ -7799,7 +7806,7 @@ export async function applyLiveFreeCashRelock(account, order, { claimWaitMs = 25
   let claimTimer = null;
   try {
     claimAnswer = await Promise.race([
-      claimSwiggyBreakfastAndLateNightOffers(account).catch(() => null),
+      claimSwiggyBreakfastAndLateNightOffers(account, claimForce ? { force: true } : {}).catch(() => null),
       new Promise((resolve) => { claimTimer = setTimeout(() => resolve(null), claimWaitMs); })
     ]);
   } finally {
@@ -7851,7 +7858,7 @@ export async function applyLiveFreeCashRelock(account, order, { claimWaitMs = 25
   // 3) Only while the redeem window is literally open does a re-push help.
   const slotLiveNow = claimAnswer?.breakfast?.slotState === 'ACTIVE_NOW'
     || claimAnswer?.lateNight?.slotState === 'ACTIVE_NOW';
-  if (!slotLiveNow) {
+  if (!slotLiveNow && !ignoreSlotGate) {
     out.reason = claimAnswer
       ? `slot-not-open (${out.claimState})`
       : 'claim-unavailable';
@@ -8644,6 +8651,54 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         cartAddressId
       };
       throw err;
+    }
+
+    // ── OFFER APPLY BEFORE PLACE (yahi "QR bina offer" ka fix hai) ───────────
+    // Boss (27-10-2026): "QR BINA OFFER APPLY HOTE HUE BAN RAHA HAI aur doosre
+    // bot se zyada price". Wajah: bill banne ke baad offer late cred hota tha
+    // aur hum wahi purana (bina free cash ka) cart seedha place kar dete the.
+    // Ab place se PEHLE ek baar offers/free cash dobara live check + cart
+    // re-push hota hai (bounded), aur naya (kam) total hi QR me jata hai.
+    let prePlaceOfferApply = null;
+    try {
+      const beforeRewardCash = Math.max(0, Number(cm.trade_discount_reward_amount || 0))
+        + Math.max(0, Number(cm.offer_presentation_info?.reward_offer_savings_info?.savings || 0));
+      const walletAlreadyThere = Math.max(0, Number(cm.swiggy_money || 0)) + Math.max(0, Number(cm.user_swiggy_money || 0));
+      if (order && beforeRewardCash === 0 && Number(order.campaignFreeCash || 0) === 0) {
+        prePlaceOfferApply = await applyLiveFreeCashRelock(account, order, {
+          claimWaitMs: 3500,
+          ignoreSlotGate: true
+        }).catch((e) => ({ applied: false, reason: `error: ${e?.message || e}` }));
+        if (prePlaceOfferApply?.applied) {
+          const refreshedCart = await swiggyCartGet(account, { lat: reqLat, lng: reqLng, timeoutMs: 6000 }).catch(() => null);
+          const refreshedMeta = unwrapCartMeta(refreshedCart);
+          if (refreshedMeta && Number(refreshedMeta.order_total || 0) > 0) {
+            curCart = refreshedCart;
+            cm = refreshedMeta;
+            itemCount = extractCartCount(refreshedCart, refreshedMeta);
+            console.log(`[OfferApply] ${account?.phone || 'ID'}: free cash ₹${Number(order.campaignFreeCash || 0)} QR se pehle lag gaya (via ${prePlaceOfferApply.via}) — naya total ₹${Number(cm.order_total || 0)}.`);
+          }
+        }
+        order.prePlaceOfferApply = {
+          at: new Date().toISOString(),
+          applied: Boolean(prePlaceOfferApply?.applied),
+          via: prePlaceOfferApply?.via || '',
+          reason: prePlaceOfferApply?.reason || '',
+          claimState: prePlaceOfferApply?.claimState || '',
+          rewardCashBefore: beforeRewardCash,
+          walletAlreadyThere,
+          totalAfter: Number(cm.order_total || 0)
+        };
+      }
+    } catch (offerApplyErr) {
+      console.warn('[OfferApply] skipped:', offerApplyErr?.message || offerApplyErr);
+    }
+
+    // Agar live cart purane bill se SASTA ho gaya (offer lag gaya) to order par
+    // bhi wahi amount likho — customer ko kam hi dikhega, zyada kabhi nahi.
+    if (Number(cm.order_total || 0) > 0 && Number(order?.finalPayable || 0) > Number(cm.order_total)) {
+      order.finalPayable = Number(cm.order_total);
+      order.campaignFreeCash = Math.max(Number(order.campaignFreeCash || 0), Number(prePlaceOfferApply?.applied ? order.campaignFreeCash : 0));
     }
 
     // ── AMOUNT INVARIANCE ────────────────────────────────────────────────────
