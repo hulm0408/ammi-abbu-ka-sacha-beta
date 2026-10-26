@@ -72,3 +72,4 @@ extract_frames.py
 extracted_mp4_frames/
 
 
+!test_v61_account_suspension_failover_fast_id_e2e.mjs

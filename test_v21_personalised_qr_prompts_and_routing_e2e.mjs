@@ -123,7 +123,8 @@ console.log('\n--- Scenario 1: personalised payment QR is delivered ---');
 
   // Same service with an explicit Swiggy UPI intent.
   const db2 = getDb();
-  db2.orders.V21_QR2 = { ...db2.orders.V21_QR, id: 'V21_QR2', pendingSwiggyUpiUri: 'upi://pay?pa=swiggy@axis&am=73&cu=INR&tn=Swiggy', customerPaymentMessageId: null };
+  db2.orders.V21_QR2 = { ...db2.orders.V21_QR, id: 'V21_QR2', // v60/v61: real Swiggy merchant VPA (a `swiggy@*` placeholder scans invalid)
+    pendingSwiggyUpiUri: 'upi://pay?pa=upiswiggy@icici&pn=SWIGGY&am=73&cu=INR&tr=V21TXN', customerPaymentMessageId: null };
   saveDb(db2);
   reset();
   await sendApprovedOrderPaymentToUser(String(CUSTOMER), getDb().orders.V21_QR2, { force: true });

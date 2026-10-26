@@ -19,6 +19,7 @@
 // ============================================================================
 
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl } from './link-utils.js';
+import { isAccountSuspended } from './account-health.js';
 
 export const SWIGGY_ORDERS_PAGE = 'https://www.swiggy.com/orders';
 
@@ -131,6 +132,9 @@ export async function retryFetch(fn, {
 // ---------------------------------------------------------------------------
 function hasUsableSession(acc) {
   if (!acc) return false;
+  // Suspended/quarantined ID par order place hi nahi hoga — ladder me na aaye,
+  // warna user ka order us ID par jaakar phir atak jayega.
+  if (isAccountSuspended(acc)) return false;
   if (acc.isLoggedIn === false || acc.isLoggedOut === true || acc.sessionExpired === true) return false;
   return Boolean(acc.cookies || acc.tid || acc.jwtTid || acc.token);
 }

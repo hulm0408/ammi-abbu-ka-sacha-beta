@@ -233,7 +233,8 @@ console.log('\n━━━ Scenario 2: coupon gauntlet is time-boxed (the real "5 
 console.log('\n━━━ Scenario 3: BEST pick & QR generation have hard deadlines ━━━');
 {
   const flow = fs.readFileSync('./forwarded-order-flow.js', 'utf8');
-  check('BEST account pick runs inside a race with a deadline timer', /ID_SELECT_TIMEOUT/.test(flow) && /scanBudgetMs \+ 6_000/.test(flow));
+  // v61: backstop 6s -> 4s (ID selection faster), budget default 12s
+  check('BEST account pick runs inside a race with a deadline timer', /ID_SELECT_TIMEOUT/.test(flow) && /scanBudgetMs \+ 4_000/.test(flow));
   check('a timed-out pick releases the IDs it reserved so retry is instant',
     /if \(!syncRes\) \{[\s\S]{0,500}releaseSwiggyAccountReservation/.test(flow)
     && /releaseSwiggyAccountReservation[\s\S]{0,300}ID_SELECT_TIMEOUT/.test(flow));

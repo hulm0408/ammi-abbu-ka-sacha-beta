@@ -106,11 +106,14 @@ import {
   clearCouponTrialCache,
   invalidateAccountOrderProfileCache,
   getSwiggySessionAuth,
+  warmAccountSessionAuth,
+  resolveAccountKeyForHealth,
   swiggyCartFlush,
   dapiFetch,
   computeTrackHmac as swiggyComputeTrackHmac,
   buildSignedOrderTrackUrl
 } from './swiggy-cart.js';
+import { classifySwiggyAccountFailure, isAccountSuspended, markAccountSuspended, markAccountHealthy, noteAccountFailure, describeSuspendedAccount, suspendedAccountsSummary } from './account-health.js';
 
 function isValidCartInput(input) {
   const s = String(input || '').trim();
@@ -2148,12 +2151,23 @@ export async function executeOrderBillSyncOnAccount({
     throw new Error(`Order #${orderId} not found. ` + orderNotFoundDiag(db, orderId));
   }
 
+  // SPEED: baseline auth call (ek network round-trip) sync ke saath PARALLEL
+  // chalti hai, sync ke baad sequential nahi — ID switch ~1 RTT tez.
+  const baselineAcc = accKey === 'BEST'
+    ? null
+    : (getDb().config?.accounts?.[order.selectedAccount || accKey] || null);
+  const baselineAuthPromise = baselineAcc
+    ? getSwiggySessionAuth(baselineAcc).catch(() => null)
+    : Promise.resolve(null);
+
   let syncRes = null;
   if (accKey === 'BEST') {
     // HARD DEADLINE: three parallel probes × waves × coupon trials must never
     // stretch ID selection to minutes. 22s budget + a 28s backstop keeps the
     // card coming back inside Telegraf's handler window.
-    const scanBudgetMs = Math.max(8_000, Number(process.env.ID_SELECT_BUDGET_MS) || 22_000);
+    // SPEED: 22s se 12s — koi bhi ID 12s me bill na bana paye to honest error
+    // (aur turant agla ID try karne ka mauka) instead of minute-long wait.
+    const scanBudgetMs = Math.max(6_000, Number(process.env.ID_SELECT_BUDGET_MS) || 12_000);
     let deadlineTimer = null;
     syncRes = await Promise.race([
       findBestMaxCouponAccountForOrder(order, {
@@ -2162,7 +2176,7 @@ export async function executeOrderBillSyncOnAccount({
         maxScanBudgetMs: scanBudgetMs
       }),
       new Promise((resolve) => {
-        deadlineTimer = setTimeout(() => resolve(null), scanBudgetMs + 6_000);
+        deadlineTimer = setTimeout(() => resolve(null), scanBudgetMs + 4_000);
         if (typeof deadlineTimer.unref === 'function') deadlineTimer.unref();
       })
     ]).finally(() => { if (deadlineTimer) clearTimeout(deadlineTimer); });
@@ -2174,14 +2188,18 @@ export async function executeOrderBillSyncOnAccount({
           releaseSwiggyAccountReservation(key, orderId);
         }
       } catch {}
-      const timeoutErr = new Error(`ID selection timed out after ${Math.round((scanBudgetMs + 6_000) / 1000)}s (Swiggy slow / WAF). Koi ID logout nahi hui — dobara tap karein.`);
+      const timeoutErr = new Error(`ID selection timed out after ${Math.round((scanBudgetMs + 4_000) / 1000)}s (Swiggy slow / WAF). Koi ID logout nahi hui — dobara tap karein.`);
       timeoutErr.code = 'ID_SELECT_TIMEOUT';
       timeoutErr.diag = { code: 'ID_SELECT_TIMEOUT', stage: 'PICK_BEST_ACCOUNT', budgetMs: scanBudgetMs };
       throw timeoutErr;
     }
     if (!syncRes?.success) {
       const err = new Error(syncRes?.error || 'Could not sync cart across logged-in accounts.');
-      err.diag = { code: 'BEST_ACCOUNT_SYNC_FAILED', stage: 'PICK_BEST_ACCOUNT', comparison: syncRes?.accountComparison };
+      err.diag = {
+        code: syncRes?.code === 'ALL_ACCOUNTS_SUSPENDED' ? 'ALL_ACCOUNTS_SUSPENDED' : 'BEST_ACCOUNT_SYNC_FAILED',
+        stage: 'PICK_BEST_ACCOUNT',
+        comparison: syncRes?.accountComparison
+      };
       throw err;
     }
   } else {
@@ -2191,7 +2209,18 @@ export async function executeOrderBillSyncOnAccount({
       err.diag = { code: 'ACCOUNT_NOT_LOGGED_IN', stage: 'PICK_SPECIFIC_ACCOUNT' };
       throw err;
     }
+    // Suspended ID par bill banana hi nahi hai — turant honest error, warna
+    // waqt barbaad aur order atka rehta hai.
+    const preCheckAcc = db.config?.accounts?.[accKey];
+    if (isAccountSuspended(preCheckAcc)) {
+      const suspErr = new Error(`⛔ Swiggy ID ${preCheckAcc?.phone || accKey} suspended hai — ${describeSuspendedAccount(preCheckAcc)}. Order dusri ID par shift hoga.`);
+      suspErr.diag = { code: 'ACCOUNT_SUSPENDED', stage: 'PICK_SPECIFIC_ACCOUNT', accountKey: accKey };
+      throw suspErr;
+    }
+
     // Execute inside per-account lock so DIFFERENT accounts run 100% simultaneously in parallel!
+    // SPEED: instant switch me lock ka intezaar 25s nahi, 8s — warna "ID select
+    // karne me lag" wala hi problem. Actually free accounts ko farq nahi padta.
     syncRes = await withSwiggyAccountLock(accKey, async () => {
       // Clear any foreign `addressDetails.id` from a previous account before syncing on `accKey`!
       if (order.addressDetails?.id && order.selectedAccount && order.selectedAccount !== accKey) {
@@ -2199,10 +2228,39 @@ export async function executeOrderBillSyncOnAccount({
       }
       const r = await syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false, skipAutoOffers });
       return r;
-    });
+    }, { maxWaitMs: skipAutoOffers ? 8_000 : 25_000 });
     if (!syncRes?.success) {
       const err = new Error(syncRes?.error || 'Failed to sync cart & address on selected Swiggy account.');
-      err.diag = { code: syncRes?.code || 'ACCOUNT_CART_SYNC_FAILED', stage: 'PICK_SPECIFIC_ACCOUNT' };
+      err.diag = {
+        code: syncRes?.code || 'ACCOUNT_CART_SYNC_FAILED',
+        stage: 'PICK_SPECIFIC_ACCOUNT',
+        accountKey: accKey,
+        suspended: Boolean(syncRes?.suspended)
+      };
+      // Suspension sirf message me nahi — vault me lock hoti hai, taaki rotation
+      // ise dobara pick na kare (user ka order healthy ID par chala jaye).
+      if (syncRes?.suspended || syncRes?.code === 'ACCOUNT_SUSPENDED') {
+        markAccountSuspended(accKey, {
+          reason: String(syncRes?.reason || syncRes?.error || 'Swiggy account suspended'),
+          code: 'ACCOUNT_SUSPENDED',
+          stage: 'PICK_SPECIFIC_ACCOUNT',
+          orderId: order.id
+        });
+        void notifyBossAccountSuspended(telegram, {
+          orderId: order.id,
+          key: accKey,
+          phone: acc?.phone || acc?.mobile || accKey,
+          reason: String(syncRes?.reason || syncRes?.error || 'Swiggy account suspended')
+        });
+      } else {
+        noteAccountFailure(accKey, {
+          kind: classifySwiggyAccountFailure({ message: String(syncRes?.error || ''), code: syncRes?.code || '' }).kind,
+          reason: String(syncRes?.error || ''),
+          code: syncRes?.code || '',
+          stage: 'PICK_SPECIFIC_ACCOUNT',
+          orderId: order.id
+        });
+      }
       throw err;
     }
     order.selectedAccount = accKey;
@@ -2260,7 +2318,7 @@ export async function executeOrderBillSyncOnAccount({
 
   const usedAcc = getDb().config?.accounts?.[order.selectedAccount];
   if (usedAcc) {
-    const authSnap = await getSwiggySessionAuth(usedAcc).catch(() => null);
+    const authSnap = await baselineAuthPromise;
     const latestExisting = authSnap?.orders?.[0]?.order_id;
     order.baselineSwiggyOrderId = latestExisting ? String(latestExisting) : '';
   }
@@ -2297,6 +2355,16 @@ export async function executeOrderBillSyncOnAccount({
 
   freshDb = getDb();
   await postOrReplaceForwardedCard(telegram, chatId, order, freshDb, formatOrderBodyFn, { includeQrDelete: true });
+
+  // Bill ban gaya => ID healthy hai (purana suspend/quarantine clear), aur agla
+  // fresh ID background me "garam" ho jata hai (session auth cache) taaki
+  // ⚡ Next ID dabate hi bill turant bane.
+  try {
+    if (order.selectedAccount) markAccountHealthy(order.selectedAccount, { note: 'bill sync ok' });
+    const nextPick = pickNextRotationAccount(order);
+    if (nextPick?.success && nextPick.key) void warmAccountSessionAuth(nextPick.key);
+  } catch {}
+
   return order;
 }
 
@@ -2375,6 +2443,53 @@ export async function autoAssignBestAccountWithFallback({
 }
 
 // Shared helper to generate REAL Swiggy Dynamic QR for a single order (safe for `Promise.all` across 10+ distinct IDs!)
+const SUSPENSION_QUARANTINE_HOURS = Math.max(
+  1,
+  Math.round((Number(process.env.ACCOUNT_SUSPEND_QUARANTINE_MS) || 6 * 60 * 60 * 1000) / (60 * 60 * 1000))
+);
+
+/**
+ * Boss ko seedha batao ki ek ID suspended ho gayi aur order kis ID par shift hua.
+ * Buttons: ⛔ Retry (quarantine clear) + ◉ Accounts.
+ */
+export async function notifyBossAccountSuspended(telegram, {
+  orderId = '', key = '', phone = '', reason = '', switchedTo = '', switchedToKey = '', attempted = []
+} = {}) {
+  try {
+    const db = getDb();
+    const bossId = Number(db?.config?.bossIds?.[0] || process.env.BOSS_ID || 0);
+    if (!bossId || typeof telegram?.sendMessage !== 'function') return false;
+    const lines = [
+      `⛔ <b>SWIGGY ID SUSPENDED</b>`,
+      ``,
+      `☎ ID: <code>${escapeHtml(String(phone || key || '—'))}</code>`,
+      `◈ Order: <b>#${escapeHtml(String(orderId || '—'))}</b>`,
+      `⚠️ Reason: <i>${escapeHtml(String(reason || 'Swiggy ne account block kiya').slice(0, 200))}</i>`,
+      switchedTo
+        ? `
+✅ <b>Order shift ho gaya:</b> <code>${escapeHtml(String(switchedTo))}</code> — customer ko naya QR isi ID se banega, order nahi rukega.`
+        : `
+❗ Koi healthy ID nahi mili${attempted.length ? ` (tried: ${escapeHtml(attempted.join(', '))})` : ''}. Naya ID login karein — order card par turant lagega.`,
+      `
+<i>Ye ID ${Math.round(SUSPENSION_QUARANTINE_HOURS)} ghante rotation me nahi aayegi. Swiggy se block hat jaye to ⛔ Retry dabaiye.</i>`
+    ];
+    const keyboard = key
+      ? { reply_markup: { inline_keyboard: [
+          [{ text: '⛔ Retry is ID', callback_data: `boss_retry_acc_${String(key).slice(0, 40)}` }],
+          [{ text: '◉ Accounts', callback_data: 'boss_view_accounts' }]
+        ] } }
+      : { reply_markup: { inline_keyboard: [[{ text: '◉ Accounts', callback_data: 'boss_view_accounts' }]] } };
+    await telegram.sendMessage(bossId, lines.join('\n'), {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...keyboard
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function executeRealQrGenerationForOrder({
   telegram,
   chatId,
@@ -2442,31 +2557,125 @@ export async function executeRealQrGenerationForOrder({
       throw qrTimeoutErr;
     }
   } catch (qrErr) {
-    const msg = String(qrErr?.message || '');
-    const swMsg = String(qrErr?.diag?.swiggyMessage || '');
-    const isSessionDead = /session expired|login again|unauthorized|unauthenticated/i.test(`${msg} ${swMsg}`) || Number(qrErr?.diag?.swiggyStatusCode) === 999;
-    if (!isSessionDead) throw qrErr;
-
-    // Silent Zero-OTP Auto-Failover to next saved JSON account in Vault!
-    const markDb = getDb();
-    if (markDb.config?.accounts?.[accKey]) {
-      markDb.config.accounts[accKey].isLoggedIn = false;
-      saveDb(markDb);
-    }
-    invalidateAccountOrderProfileCache(accKey);
-    releaseSwiggyAccountReservation(accKey, order.id);
-
-    const backupPick = await findBestMaxCouponAccountForOrder(order, {
-      captureScreenshot: false,
-      excludeAccountKeys: [accKey]
+    const failure = classifySwiggyAccountFailure({
+      message: String(qrErr?.message || ''),
+      detailed: String(qrErr?.diag?.swiggyMessage || ''),
+      code: String(qrErr?.diag?.code || qrErr?.code || ''),
+      httpStatus: qrErr?.diag?.httpStatus,
+      statusCode: qrErr?.diag?.swiggyStatusCode,
+      rawText: String(qrErr?.diag?.rawSnippet || '')
     });
-    if (!backupPick?.success || !backupPick.winningKey) throw qrErr;
+    // Suspended ID (Swiggy "account blocked") aur dead session — dono par order
+    // ko dusri healthy ID par le jaana hai, warna customer ka order ruk jata hai.
+    if (!failure.suspended && !failure.sessionDead) throw qrErr;
 
-    accKey = backupPick.winningKey;
-    acc = getDb().config?.accounts?.[accKey] || backupPick.winningAccount;
-    order.selectedAccount = accKey;
-    order.orderAccount = acc?.phone || accKey;
-    realQr = await withSwiggyAccountLock(accKey, () => runGenerator(acc, order, true));
+    const failedFirstKey = String(accKey || '');
+    const failedFirstPhone = String(acc?.phone || acc?.mobile || failedFirstKey);
+    const failedKeys = [failedFirstKey].filter(Boolean);
+
+    if (failure.suspended) {
+      markAccountSuspended(failedFirstKey, {
+        reason: failure.reason,
+        code: failure.matched || 'ACCOUNT_SUSPENDED',
+        stage: 'GENERATE_REAL_SWIGGY_QR',
+        orderId: order.id,
+        httpStatus: qrErr?.diag?.httpStatus
+      });
+      // Swiggy qr block karta hai to pending intent/order id jhoothe hain — clear.
+      order.pendingSwiggyUpiUri = '';
+      order.pendingSwiggyOrderId = '';
+      order.pendingSwiggyPaasId = '';
+      order.qrInvalidatedAt = new Date().toISOString();
+      order.qrInvalidReason = 'account suspended';
+    } else {
+      const markDb = getDb();
+      if (markDb.config?.accounts?.[failedFirstKey]) {
+        markDb.config.accounts[failedFirstKey].isLoggedIn = false;
+        saveDb(markDb);
+      }
+      invalidateAccountOrderProfileCache(failedFirstKey);
+    }
+    releaseSwiggyAccountReservation(failedFirstKey, order.id);
+
+    // INSTANT failover: lokal vault pick (0ms). Pehle yahan poora multi-account
+    // network scan hota tha — wahi "ID selection slow" ki asli wajah thi.
+    let switched = false;
+    let lastErr = qrErr;
+    for (let attempt = 0; attempt < 3 && !switched; attempt++) {
+      const pick = pickNextRotationAccount(order, { excludeKeys: failedKeys });
+      if (!pick?.success) break;
+      const nextKey = String(pick.key);
+      if (!nextKey || failedKeys.includes(nextKey)) break;
+      failedKeys.push(nextKey);
+      const nextAcc = getDb().config?.accounts?.[nextKey];
+      if (!nextAcc || !nextAcc.isLoggedIn || isAccountSuspended(nextAcc)) continue;
+      try {
+        const nextQr = await withSwiggyAccountLock(
+          nextKey,
+          () => runGenerator(nextAcc, order, true),
+          { maxWaitMs: 10_000 }
+        );
+        if (nextQr) {
+          realQr = nextQr;
+          accKey = nextKey;
+          acc = nextAcc;
+          order.selectedAccount = nextKey;
+          order.orderAccount = nextAcc.phone || nextKey;
+          order.accountFailoverFrom = failedFirstPhone;
+          order.accountFailoverAt = new Date().toISOString();
+          switched = true;
+        }
+      } catch (nextErr) {
+        lastErr = nextErr;
+        const nextFailure = classifySwiggyAccountFailure({
+          message: String(nextErr?.message || ''),
+          detailed: String(nextErr?.diag?.swiggyMessage || ''),
+          code: String(nextErr?.diag?.code || ''),
+          httpStatus: nextErr?.diag?.httpStatus,
+          statusCode: nextErr?.diag?.swiggyStatusCode
+        });
+        if (nextFailure.suspended) {
+          markAccountSuspended(nextKey, {
+            reason: nextFailure.reason,
+            code: nextFailure.matched,
+            stage: 'GENERATE_REAL_SWIGGY_QR',
+            orderId: order.id
+          });
+        } else if (nextFailure.sessionDead) {
+          const db2 = getDb();
+          if (db2.config?.accounts?.[nextKey]) {
+            db2.config.accounts[nextKey].isLoggedIn = false;
+            saveDb(db2);
+          }
+        }
+        releaseSwiggyAccountReservation(nextKey, order.id);
+      }
+    }
+
+    await notifyBossAccountSuspended(telegram, {
+      orderId: order.id,
+      key: failedFirstKey,
+      phone: failedFirstPhone,
+      reason: failure.reason,
+      switchedTo: switched ? String(acc?.phone || accKey) : '',
+      attempted: failedKeys.map((k) => getDb()?.config?.accounts?.[k]?.phone || k)
+    });
+
+    if (!switched) {
+      const exhausted = new Error(
+        `Koi bhi healthy Swiggy ID QR nahi bana payi (${failure.suspended ? `${failedFirstPhone} suspended hai` : failure.reason}). ` +
+        `Tried: ${failedKeys.map((k) => getDb()?.config?.accounts?.[k]?.phone || k).join(', ')}. ` +
+        `Naya ID login karein ya ⛔ Retry se suspended ID wapas enable karein — order tab tak ruka rahega.`
+      );
+      exhausted.diag = {
+        code: failure.suspended ? 'ALL_ACCOUNTS_SUSPENDED' : 'QR_FAILOVER_EXHAUSTED',
+        stage: 'GENERATE_REAL_SWIGGY_QR',
+        tried: failedKeys,
+        reason: failure.reason,
+        cause: lastErr?.diag || null
+      };
+      throw exhausted;
+    }
   }
   const payable = Number(realQr.amount || order.finalPayable || 0);
   if (payable > 0) order.finalPayable = payable;
@@ -3147,7 +3356,7 @@ export function registerForwardedOrderHandlers(bot, {
   //      automatically (no extra taps needed).
   // ===========================================================================
   const rotationStatusIcon = (status) => ({
-    FREE: '🟢', MAYBE_USED: '🟡', BUSY: '🟠', USED: '🔵', OFFLINE: '⚪'
+    FREE: '🟢', MAYBE_USED: '🟡', BUSY: '🟠', USED: '🔵', OFFLINE: '⚪', SUSPENDED: '⛔'
   }[status] || '⚪');
 
   const rotationRowsText = (order) => {
@@ -3156,10 +3365,14 @@ export function registerForwardedOrderHandlers(bot, {
     const usedLine = summary.used > 0
       ? ` · is order par ${summary.used} ID use ho chuki`
       : '';
+    const suspendedRows = summary.rows.filter((r) => r.status === 'SUSPENDED');
+    const suspendedLine = suspendedRows.length > 0
+      ? `\n⛔ <b>${suspendedRows.length} ID suspended</b> (order inpar place nahi hoga) — <i>${escapeHtml(String(suspendedRows[0].suspendedReason || suspendedRows[0].reason).slice(0, 120))}</i>`
+      : '';
     const current = order.selectedAccount
       ? `<code>${escapeHtml(String(order.orderAccount || order.selectedAccount))}</code>`
       : '<i>koi nahi</i>';
-    const line = `⚡ <b>ID rotation:</b> ${current}${usedLine} · bachi hui fresh ID: <b>${summary.remaining}</b>/${summary.total}`;
+    const line = `⚡ <b>ID rotation:</b> ${current}${usedLine} · bachi hui fresh ID: <b>${summary.remaining}</b>/${summary.total}${suspendedLine}`;
     return { summary, line };
   };
 
@@ -3293,6 +3506,26 @@ export function registerForwardedOrderHandlers(bot, {
     })();
   });
 
+  // ⛔ Suspended IDs ko Boss jaan-boojh kar wapas enable kar sakta hai (Swiggy
+  // ne block hata diya ho, ya ye galti se flag hui ho).
+  bot.action(/^fwd_retry_susp_([A-Za-z0-9_]+)$/, async (ctx) => {
+    const orderId = ctx.match[1];
+    const order = lookupOrder(getDb(), orderId);
+    if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
+    if (!canManageAccountChoice(order, ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true });
+    const rows = describeAccountRotation(order).filter((r) => r.status === 'SUSPENDED');
+    if (rows.length === 0) return ctx.answerCbQuery('Koi suspended ID nahi hai.');
+    for (const r of rows) markAccountHealthy(r.key, { note: 'manual retry by user' });
+    await ctx.answerCbQuery(`⛔ ${rows.length} ID retry ke liye enable`).catch(() => {});
+    await ctx.reply(
+      `⛔ <b>${rows.length} suspended ID wapas enable</b>\n` +
+      rows.map((r) => `• <code>${escapeHtml(r.phone)}</code>`).join('\n') +
+      `\n\n<i>Ab ⚡ Next fresh ID dabaiye — bill usi par banega. Agar Swiggy ne sach me block kiya hai to dobara ⛔ ho jayegi (honest).</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+    await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, getDb(), formatOrderBodyFn).catch(() => {});
+  });
+
   // Manual picker — every account is a button with an honest status.
   bot.action(/^fwd_pick_acc_([A-Za-z0-9_]+)$/, async (ctx) => {
     const orderId = ctx.match[1];
@@ -3302,7 +3535,8 @@ export function registerForwardedOrderHandlers(bot, {
     await ctx.answerCbQuery('👤 ID chunein').catch(() => {});
 
     const rows = describeAccountRotation(order);
-    const pickable = rows.filter((r) => r.status !== 'OFFLINE').slice(0, 20);
+    const suspendedRows = rows.filter((r) => r.status === 'SUSPENDED');
+    const pickable = rows.filter((r) => r.status !== 'OFFLINE' && r.status !== 'SUSPENDED').slice(0, 20);
     // Remember the exact order the buttons were rendered in, so a tap always
     // resolves to the ID the user actually saw.
     const liveDb = getDb();
@@ -3315,7 +3549,7 @@ export function registerForwardedOrderHandlers(bot, {
     const lines = [
       `👤 <b>ID CHOOSE — #${escapeHtml(String(orderId))}</b>`,
       ``,
-      `🟢 free · 🟡 shayad order chal raha · 🟠 dusre order me · 🔵 is order par use ho chuki`,
+      `🟢 free · 🟡 shayad order chal raha · 🟠 dusre order me · 🔵 is order par use ho chuki · ⛔ suspended`,
       ``
     ];
     if (pickable.length === 0) {
@@ -3333,6 +3567,13 @@ export function registerForwardedOrderHandlers(bot, {
         `fwd_set_acc_${orderId}_${i}`
       )
     ]));
+    if (suspendedRows.length > 0) {
+      lines.push('', `⛔ <b>${suspendedRows.length} ID suspended</b> (inpar order place nahi hoga):`);
+      suspendedRows.slice(0, 5).forEach((r) => {
+        lines.push(`   • <code>${escapeHtml(r.phone)}</code> — <i>${escapeHtml(r.suspendedReason || r.reason)}</i>`);
+      });
+      buttons.push([Markup.button.callback('⛔ Suspended ID retry karein', `fwd_retry_susp_${orderId}`)]);
+    }
     buttons.push([Markup.button.callback('⚡ Next fresh ID', `fwd_next_acc_${orderId}`)]);
     buttons.push([Markup.button.callback('♻ Reset rotation', `fwd_reset_rot_${orderId}`)]);
     buttons.push([Markup.button.callback('‹ Back to Bill', `fwd_panel_back_${orderId}`)]);

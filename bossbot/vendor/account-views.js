@@ -10,6 +10,8 @@
  * Pure functions only — no Telegram, no network — so they are unit-testable.
  */
 
+import { isAccountSuspended, describeSuspendedAccount } from './account-health.js';
+
 export const PORTABLE_SESSION_FIELDS = ['name', 'customerId', 'mobile', 'token', 'tid', 'sid', 'deviceId'];
 
 /** "₹50 off on ₹199" — the reward the bot must lock on every imported ID. */
@@ -157,9 +159,13 @@ export function isLiveSession(acc) {
 export function compactAccountLine(acc, key, { activeKey = '', index = 1 } = {}) {
   const src = acc || {};
   const live = isLiveSession(src);
-  const icon = src.sessionExpired
-    ? '⚠️'
-    : (live ? (String(key) === String(activeKey) ? '★' : '🟢') : '⚪');
+  // ⛔ suspended ID rotation me nahi aayegi — list me saaf dikhna chahiye.
+  const suspended = isAccountSuspended(src);
+  const icon = suspended
+    ? '⛔'
+    : (src.sessionExpired
+      ? '⚠️'
+      : (live ? (String(key) === String(activeKey) ? '★' : '🟢') : '⚪'));
   const truth = liveOrderTruth(src);
   const orders = truth.verified
     ? (truth.totalOrders === 0 ? '0 ord' : `${truth.totalOrders} ord`)
@@ -168,7 +174,8 @@ export function compactAccountLine(acc, key, { activeKey = '', index = 1 } = {})
   const claimBit = claim.both ? '₹50 ✓' : (claim.isNew ? '₹50 new' : '₹50 ✕');
   const name = String(src.name || '').trim();
   const expiredBit = src.sessionExpired ? ' · ⚠️ session expired' : '';
-  return `${index}. ${icon} <code>${maskPhone(src.phone || src.mobile || key)}</code>${name ? ` ${escapeLight(name)}` : ''} · ${orders} · ${claimBit}${expiredBit}`;
+  const suspendBit = suspended ? ` · ⛔ suspended` : '';
+  return `${index}. ${icon} <code>${maskPhone(src.phone || src.mobile || key)}</code>${name ? ` ${escapeLight(name)}` : ''} · ${orders} · ${claimBit}${expiredBit}${suspendBit}`;
 }
 
 export function compactAccountListText(accounts = {}, { activeKey = '', header = '' } = {}) {
@@ -179,6 +186,9 @@ export function compactAccountListText(accounts = {}, { activeKey = '', header =
     liveCount: live,
     totalCount: entries.length,
     text: (header || '◉ <b>SWIGGY ACCOUNTS</b>') + `\n<i>${live} live / ${entries.length} total — tap any account to expand</i>` +
+      (entries.filter(([, a]) => isAccountSuspended(a)).length > 0
+        ? `\n⛔ <b>${entries.filter(([, a]) => isAccountSuspended(a)).length} suspended</b> — inpar order place nahi hoga (rotation inhe skip karti hai)`
+        : '') +
       (lines.length ? `\n\n${lines.join('\n')}` : '\n\n<i>Koi account nahi — JSON bhejein ya Number se login karein.</i>')
   };
 }
@@ -193,9 +203,12 @@ export function accountDetailText({ acc, key, activeKey = '', orderLines = [] } 
   const claim = offerClaimTruth(src);
   const live = isLiveSession(src);
   const json = portableSessionJsonText(src, key);
-  const statusText = live
-    ? '● Logged In'
-    : (src.sessionExpired ? '⚠️ Session Expired' : '○ Logged Out');
+  const suspendedNow = isAccountSuspended(src);
+  const statusText = suspendedNow
+    ? `⛔ Suspended — ${describeSuspendedAccount(src)}`
+    : (live
+      ? '● Logged In'
+      : (src.sessionExpired ? '⚠️ Session Expired' : '○ Logged Out'));
   const lines = [
     `◉ <b>${escapeLight(src.name || key)}</b>${String(key) === String(activeKey) ? ' ★ <b>[ACTIVE]</b>' : ''}`,
     `☎ <code>${String(src.phone || src.mobile || 'not set')}</code> · ◈ ${statusText}`,

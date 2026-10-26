@@ -163,7 +163,8 @@ console.log('\n=== 6. forwarded-order-flow: Regenerate = naya QR ===');
   check('invalid intent throws QR_INTENT_INVALID instead of sending', /QR_INTENT_INVALID/.test(src) && /Customer ko bheja nahi gaya/.test(src));
   check('QR version stamped on regenerate', /order\.qrVersion = forceNewQr/.test(src));
   check('card shows "QR #N (naya)" and the ref', /QR #\$\{Number\(order\.qrVersion\)\}/.test(src) && /QR Ref:/.test(src));
-  check('fallback account path also forces a new QR', /runGenerator\(acc, order, true\)/.test(src));
+  // v61: failover healthy ID par NAYA QR banata hai (force=true, purana intent nahi)
+  check('fallback account path also forces a new QR', /runGenerator\(nextAcc, order, true\)/.test(src));
 }
 
 console.log('\n=== 7. swiggy-cart: 4-min blind reuse khatam ===');
@@ -191,8 +192,12 @@ console.log('\n=== 8. Order #288600 ka asli scenario (Swiggy id nahi bana) ===')
     swiggyPaymentUrl: '',
     addressDetails: { name: 'Sneha', mobile: '9109533577', address: '350, MIG 2, New Subhash Nagar', lat: '26.9', lng: '82.1' }
   };
+  // Scenario: Boss ka UPI set HI nahi hai (doosre tests ne set kiya ho to bhi).
+  const savedBossUpi = store.getDb().config?.bossUpiId || '';
+  store.mutateDb((d) => { d.config.bossUpiId = ''; });
   const fb = guard.buildFallbackUpiIntent({ upiId: getDbBossUpi(), amount: noIntentOrder.finalPayable, orderId: noIntentOrder.id });
-  check('order #288600: placeholder ke saath koi QR nahi banta', fb.ok === false, JSON.stringify(fb));
+  check('order #288600: UPI set nahi hai to koi QR nahi banta', fb.ok === false, JSON.stringify(fb));
+  store.mutateDb((d) => { d.config.bossUpiId = savedBossUpi; });
 
   // Boss apna UPI set karta hai => valid QR.
   const set = guard.buildFallbackUpiIntent({ upiId: 'ankur@okhdfcbank', amount: 43, orderId: '288600' });
