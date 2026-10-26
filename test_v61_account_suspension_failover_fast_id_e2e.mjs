@@ -377,7 +377,7 @@ console.log('\n=== 8. Wiring: Boss/customer buttons + UI truth ===');
   check('BEST scan skips suspended IDs', /!isAccountSuspended\(a\)/.test(cartSrc));
   check('fallback ladder skips suspended IDs', /isAccountSuspended\(acc\)\) return false/.test(pilotSrc));
   check('cart sync marks suspension from Swiggy message', /suspendedFailureResult\(\{/.test(cartSrc));
-  check('QR place failure classifies suspension', /ACCOUNT_SUSPENDED' : 'SWIGGY_PLACE_ORDER_QR_FAILED'/.test(cartSrc));
+  check('QR place failure classifies suspension', /suspendFailure\.suspended\s*\n?\s*\? 'ACCOUNT_SUSPENDED'/.test(cartSrc) && /SWIGGY_PLACE_ORDER_QR_FAILED/.test(cartSrc));
   check('successful sync clears quarantine (honest, not permanent)', /markAccountHealthy\(healthyKey, \{ note: 'cart sync ok' \}\)/.test(cartSrc));
   check('bossbot vendor has account-health.js', fs.existsSync('./bossbot/vendor/account-health.js'));
   check('bossbot vendor swiggy-cart rotates suspended IDs too', fs.readFileSync('./bossbot/vendor/swiggy-cart.js', 'utf8').includes('ROTATION_SUSPENDED'));

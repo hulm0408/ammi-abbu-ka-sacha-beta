@@ -4442,7 +4442,7 @@ export function getPublicServiceBaseUrl() {
       if (/^https?:$/i.test(parsed.protocol)) return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, '');
     } catch {}
   }
-  return '';
+  return 'https://ammi-abbu-ka-sacha-beta.onrender.com';
 }
 
 export function buildSignedOrderTrackUrl(orderOrId) {
@@ -6159,24 +6159,36 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       order.items = cartMeta.cartDetails.items;
       if (cartMeta.restaurantName) order.restaurantName = cartMeta.restaurantName;
     } else if (groupCartId && (!Array.isArray(order.items) || order.items.length === 0)) {
-      const liveGc = await fetchLiveGroupCart(
-        groupCartId,
-        restaurantId,
-        hostName,
-        account,
-        String(order.addressDetails.lat),
-        String(order.addressDetails.lng)
-      );
+      const gcLat = String(order.addressDetails.lat);
+      const gcLng = String(order.addressDetails.lng);
+      let liveGc = await fetchLiveGroupCart(groupCartId, restaurantId, hostName, account, gcLat, gcLng);
+      // Swiggy kabhi apne hi response me "ACTIVE" bolta hai par items nahi deta
+      // (host ne cart badla / session ne join nahi kiya). Ek doosre account se
+      // read-only retry pehle karo — "fetch failed" bolne se pehle.
+      if (!(liveGc?.status === 'ACTIVE' && liveGc.items?.length > 0)) {
+        const retryGc = await fetchLiveGroupCart(groupCartId, restaurantId, hostName, null, gcLat, gcLng).catch(() => null);
+        if (retryGc?.status === 'ACTIVE' && retryGc.items?.length > 0) {
+          liveGc = retryGc;
+        } else if (!liveGc) {
+          liveGc = retryGc;
+        }
+      }
       if (liveGc?.status === 'ACTIVE' && liveGc.items?.length > 0) {
         order.items = liveGc.items;
         restaurantId = liveGc.restaurantId || restaurantId;
         if (liveGc.restaurantName) order.restaurantName = liveGc.restaurantName;
       } else {
-        const reason = liveGc?.statusMessage || liveGc?.status || 'Group cart is empty or closed on Swiggy';
+        const rawReason = String(liveGc?.statusMessage || liveGc?.status || '').trim();
+        // "ACTIVE" ek haalat hai, error nahi. Isse pehle bot "Group cart fetch
+        // failed: ACTIVE" bolta tha — bekaar aur confusing.
+        const cartAlive = /^(active|open|ongoing|in_?progress)$/i.test(rawReason);
         return {
           success: false,
-          code: 'GROUP_CART_FETCH_FAILED',
-          error: `Group Cart (${groupCartId}) fetch failed on Swiggy: ${reason}.`
+          code: cartAlive ? 'GROUP_CART_EMPTY_ON_SWIGGY' : 'GROUP_CART_FETCH_FAILED',
+          retryable: true,
+          error: cartAlive
+            ? `Group cart ${groupCartId} Swiggy par khula hai (ACTIVE) par items nahi mile — host ne cart khaali/badla lagta hai. Naya group cart link bhejein, ya 30s baad dobara try karein.`
+            : `Group Cart (${groupCartId}) fetch failed on Swiggy: ${rawReason || 'koi jawab nahi mila'}.`
         };
       }
     }
@@ -7313,6 +7325,12 @@ export function resolveAccountLockId(accountOrKey) {
   return String(accountOrKey.id || accountOrKey.phone || accountOrKey.mobile || accountOrKey.tid || 'unknown_acc');
 }
 
+/** Kya ye account ABHI kisi doosre job me busy hai? (scan/rotation skip ke liye) */
+export function isSwiggyAccountBusy(accountOrKey) {
+  const lockId = resolveAccountLockId(accountOrKey);
+  return swiggyAccountLocks.has(lockId);
+}
+
 export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = 25_000 } = {}) {
   const lockId = resolveAccountLockId(accountOrKey);
   const heldSet = heldAccountLocksAls.getStore();
@@ -7851,13 +7869,25 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
 
   const suspendedKeys = Object.entries(accounts).filter(([, a]) => isAccountSuspended(a)).map(([k]) => k);
   // Suspended ID par order place hi nahi hoga — scan/selection me time barbaad na karo.
-  const allEntries = Object.entries(accounts).filter(([, a]) => a && a.isLoggedIn && !a.isLoggedOut && !isAccountSuspended(a) && (a.cookies || a.tid || a.jwtTid || a.token));
+  // Busy ID skip: warna scan ek hi ID par 25s lock ka intezaar karta hai
+  // (yahi ACCOUNT_LOCK_TIMEOUT aur "ID busy" ka asli source tha).
+  const busyEntries = Object.entries(accounts).filter(([k, a]) => a && isSwiggyAccountBusy(k)).map(([k]) => k);
+  const allEntries = Object.entries(accounts).filter(([k, a]) => a && a.isLoggedIn && !a.isLoggedOut && !isAccountSuspended(a) && !isSwiggyAccountBusy(k) && (a.cookies || a.tid || a.jwtTid || a.token));
   if (allEntries.length === 0 && suspendedKeys.length > 0) {
     return {
       success: false,
       code: 'ALL_ACCOUNTS_SUSPENDED',
       error: `Saari ${suspendedKeys.length} logged-in Swiggy ID suspended hain (${suspendedKeys.map((k) => accounts[k]?.phone || k).join(', ')}). Naya ID login karein, ya Boss "⛔ Retry" se quarantine hataye.`,
       suspendedKeys
+    };
+  }
+  if (allEntries.length === 0 && busyEntries.length > 0) {
+    // Sab ID abhi kisi kaam me hain — ye "logout" nahi hai. Honest + retryable.
+    return {
+      success: false,
+      code: 'ALL_ACCOUNTS_BUSY',
+      error: `Saari ${busyEntries.length} Swiggy ID abhi kisi doosre order par kaam kar rahi hain — 15-20 second me dobara tap karein (koi ID logout nahi hui).`,
+      busyKeys: busyEntries
     };
   }
   if (allEntries.length === 0) {
@@ -8319,6 +8349,22 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     throw err;
   }
 
+  // Swiggy ne pehle hi is order ko PLACE kar diya tha par intent nahi diya. Tab
+  // cart khaali ho chuka hota hai, aur QR dobara banane par bot "bill relock
+  // failed" jaisi confusing error deta tha. Honest state batao — naya QR
+  // maangne par (forceNewQr) hi dobara place hota hai.
+  if (order?.swiggyPlacedUnpaid && !forceNewQr) {
+    const placedAgoMs = Date.now() - (Date.parse(String(order.placedWithoutIntentAt || '')) || Date.now());
+    if (placedAgoMs < 30 * 60 * 1000) {
+      const err = new Error(
+        `Swiggy par ye order pehle hi place ho chuka hai (#${order.pendingSwiggyOrderId || '—'}) par payment nahi hua. ` +
+        `Payment link se pay karein, ya "Naya QR" dabaiye (tab ek naya place hoga).`
+      );
+      err.diag = { code: 'ORDER_ALREADY_PLACED_UNPAID', stage: 'GENERATE_REAL_QR', placedOrderId: order.pendingSwiggyOrderId || '' };
+      throw err;
+    }
+  }
+
   // A QR must never be generated from a city default, an unresolved short link, or an
   // unconfirmed account number. Fail closed unless the exact delivery location/contact exists.
   if (!isUsableDeliveryAddress(order?.addressDetails)) {
@@ -8570,6 +8616,33 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       throw err;
     }
 
+    // ── AMOUNT INVARIANCE ────────────────────────────────────────────────────
+    // Customer ko jo bill dikha tha, QR usse ZYADA ka nahi hona chahiye. Pehle
+    // ID switch ke baad free-cash/offer chhoot jata tha aur ₹37 ka bill ₹82 ka
+    // QR ban jata tha — customer se zyada paisa kat jata. Ab place se pehle hi
+    // check, aur mismatch par honest error (QR banta hi nahi).
+    const shownBillAmount = Number(order?.billShownAmount || 0);
+    const livePayableNow = Number(cm.order_total || 0);
+    if (shownBillAmount > 0 && livePayableNow > shownBillAmount + 0.5) {
+      const diff = Math.round((livePayableNow - shownBillAmount) * 100) / 100;
+      const err = new Error(
+        `Bill ₹${shownBillAmount} ka tha, par is ID (${account?.phone || '—'}) par Swiggy ₹${livePayableNow} maang raha hai ` +
+        `(₹${diff} zyada — offer/free-cash is ID par nahi mila). QR nahi banaya, customer se zyada paisa nahi katega. ` +
+        `"⚡ Next ID" dabaiye ya offers dobara lagne dein.`
+      );
+      err.diag = {
+        code: 'QR_AMOUNT_ABOVE_SHOWN_BILL',
+        stage: 'GENERATE_REAL_QR',
+        shownBillAmount,
+        livePayableNow,
+        difference: diff,
+        shownBillAccount: order?.billShownAccount || '',
+        accountPhone: account?.phone || '',
+        cartId: String(cm.originalCartId || cm.cartId || cm.cart_id || '')
+      };
+      throw err;
+    }
+
     const cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || '');
     const addressId = requestedAddressId;
     const lat = reqLat;
@@ -8591,6 +8664,20 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       throw err;
     }
 
+    // Swiggy kabhi `app_redirection_info` ke bajaye kisi doosre field me intent
+    // bhejta hai (ya `payment_fallbacks` me). Pehle sirf ek path dekha jata tha,
+    // isliye "statusCode:0 Done Successfully" ke baad bhi QR nahi banta tha.
+    const findAnyUpiIntent = (obj) => {
+      let text = '';
+      try { text = JSON.stringify(obj); } catch { return ''; }
+      const matches = String(text).match(/upi:\/\/pay\?[^"'\\\s<]+/g) || [];
+      for (const raw of matches) {
+        const decoded = raw.replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+        if (/[?&]pa=/.test(decoded)) return decoded;
+      }
+      return '';
+    };
+
     const extractUpiFromPlaceJson = (placeJson) => {
       const od = placeJson?.data?.order_data || placeJson?.data?.orderData || null;
       let rd = od?.app_redirection_info ?? od?.appRedirectionInfo ?? null;
@@ -8602,8 +8689,11 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         rd?.upi_intent_url ||
         od?.upiIntentUrl ||
         od?.upi_intent_url ||
+        placeJson?.data?.payment_fallbacks?.upiIntentUrl ||
+        placeJson?.data?.upiIntentUrl ||
+        findAnyUpiIntent(placeJson) ||
         '';
-      return { orderData: od, redir: rd, upiIntentUrl: uri };
+      return { orderData: od, redir: rd, upiIntentUrl: String(uri || '').trim() };
     };
 
     // AUTOMATIC SWIGGY MONEY / WALLET FREE CASH SPLIT-PAY ON REAL MERCHANT QR:
@@ -8909,9 +8999,19 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       ? validateUpiIntentForQr(upiIntentUrl, { amount: liveOrderTotal, requireAmount: false })
       : { valid: false, problems: ['upi intent missing'] };
 
-    if (!placeRes.ok || json?.statusCode !== 0 || !upiIntentUrl || !upiIntentUrl.startsWith('upi://') || !intentCheck.valid) {
+    const placeAccepted = Boolean(placeRes.ok && json?.statusCode === 0);
+    const placedOrderId = String(orderData?.order_id || orderData?.orderId || '');
+
+    if (!placeAccepted || !upiIntentUrl || !upiIntentUrl.startsWith('upi://') || !intentCheck.valid) {
+      // Do bilkul alag haalat hain — inhe ek hi error me mila dena hi confusion tha:
+      //  (A) Swiggy ne mana kiya (statusCode != 0) -> asli rejection.
+      //  (B) Swiggy ne ORDER PLACE kar diya par UPI intent nahi diya -> order
+      //      bana hua hai, sirf QR nahi mila. "Rejected" kehna jhooth tha, aur
+      //      doosre account par dobara try karne se ek AUR unpaid order ban jata tha.
       const err = new Error(
-        `Swiggy payment gateway rejected QR creation: HTTP ${placeRes.status}, statusCode=${json?.statusCode}, msg="${json?.statusMessage || 'Unknown'}"`
+        placeAccepted
+          ? `Swiggy ne order place kar diya${placedOrderId ? ` (Order ID ${placedOrderId})` : ''} par UPI intent nahi mila — QR nahi ban sakta.`
+          : `Swiggy payment gateway rejected QR creation: HTTP ${placeRes.status}, statusCode=${json?.statusCode}, msg="${json?.statusMessage || 'Unknown'}"`
       );
       // Suspended ID: Swiggy order place par "account blocked" bolta hai.
       // Ise aam error samajhna hi order atakne ki wajah thi.
@@ -8936,7 +9036,12 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         }
       }
       err.diag = {
-        code: suspendFailure.suspended ? 'ACCOUNT_SUSPENDED' : 'SWIGGY_PLACE_ORDER_QR_FAILED',
+        code: suspendFailure.suspended
+          ? 'ACCOUNT_SUSPENDED'
+          : (placeAccepted ? 'SWIGGY_PLACED_NO_UPI_INTENT' : 'SWIGGY_PLACE_ORDER_QR_FAILED'),
+        placed: placeAccepted,
+        placedOrderId,
+        paymentFallbacks: json?.data?.payment_fallbacks || null,
         suspended: suspendFailure.suspended,
         accountKey: resolveAccountKeyForHealth(account),
         stage: 'POST_PAYMENTS_ORDER_PLACE',
@@ -8949,9 +9054,19 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         intentProblems: intentCheck.problems || [],
         rawSnippet: rawText.slice(0, 500)
       };
-      if (!intentCheck.valid) {
+      // Order bana hua hai — yaad rakho, warna agla retry SEESHA naya unpaid
+      // order place kar dega (yahi 5-6 "not created yet" orders ki wajah thi).
+      if (placeAccepted && order && typeof order === 'object') {
+        order.pendingSwiggyOrderId = placedOrderId || order.pendingSwiggyOrderId || '';
+        order.pendingSwiggyUpiUri = '';
+        order.swiggyPlacedUnpaid = true;
+        order.placedWithoutIntentAt = new Date().toISOString();
+        err.diag.alreadyPlacedOrderId = placedOrderId;
+      }
+      if (!intentCheck.valid && !placeAccepted) {
         err.diag.code = 'SWIGGY_UPI_INTENT_INVALID';
         err.diag.stage = 'POST_PAYMENTS_ORDER_PLACE';
+        err.diag.intentProblems = intentCheck.problems || [];
       }
       throw err;
     }
