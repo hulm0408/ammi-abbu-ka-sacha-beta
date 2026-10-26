@@ -601,14 +601,49 @@ export function syncAccountsJsonMirror(data, { skipCloudPush = false } = {}) {
           savedAt: a.savedAt || new Date().toISOString()
         };
       });
-    fs.writeFileSync(getAccountsJsonFile(), JSON.stringify(mirrorList, null, 2), 'utf-8');
+    // compact: pretty-print se ~35% chhoti file + tez write
+    fs.writeFileSync(getAccountsJsonFile(), JSON.stringify(mirrorList), 'utf-8');
     if (!skipCloudPush) {
       scheduleCloudVaultSync(() => buildCloudVaultSnapshot(getDb()));
     }
   } catch (e) {}
 }
 
+// ── DB I/O FAST PATH ────────────────────────────────────────────────────────
+// PEHLE: har `getDb()` disk se poora db.json padhta tha + har order/account ka
+// JSON.stringify banata tha; har `saveDb()` phir disk dobara padhta tha aur
+// poora file pretty-print karke likhta tha. 10 orders + 19 IDs par ek update me
+// yeh sau baar hota tha => event loop block => "hawa nikal jaati hai".
+// AB: file ka newest text memory me rehta hai (signature se validated), baselines
+// sirf zaroorat par bante hain, aur write compact hota hai.
+const dbIo = {
+  file: '',
+  text: '',            // newest serialized state (memory truth, disk se naya)
+  sig: '',             // file signature jab humne aakhri baar padha/likha
+  writeSeq: 0,         // har save par +1 (concurrent-writer detect)
+  dirty: false,
+  flushTimer: null,
+  stats: { reads: 0, diskReads: 0, parses: 0, saves: 0, merges: 0, writes: 0, lastGetMs: 0, lastSaveMs: 0, totalGetMs: 0 }
+};
+
+const DB_PRETTY = process.env.DB_PRETTY === '1';
+// Render par async (coalesced) write default ON: ek tick ke kai saves ek hi disk
+// write ban jaate hain. Tests/dev me sync rehta hai (predictable files).
+const DB_ASYNC_WRITE = process.env.DB_ASYNC_WRITE === '1'
+  || (process.env.DB_ASYNC_WRITE !== '0' && (process.env.RENDER === 'true' || Boolean(process.env.RENDER_SERVICE_NAME)));
+
+function dbFileSig(file) {
+  try {
+    const st = fs.statSync(file);
+    return `${st.mtimeMs}:${st.size}:${st.ino}`;
+  } catch {
+    return '';
+  }
+}
+
+let ensureDbDone = false;
 function ensureDb() {
+  if (ensureDbDone && dbIo.file === getDbFile()) return;
   const dir = getDataDir();
   const dbPath = getDbFile();
   if (!fs.existsSync(dir)) {
@@ -617,6 +652,53 @@ function ensureDb() {
   if (!fs.existsSync(dbPath)) {
     fs.writeFileSync(dbPath, JSON.stringify(defaultData, null, 2), 'utf-8');
   }
+  dbIo.file = dbPath;
+  dbIo.sig = dbFileSig(dbPath);
+  ensureDbDone = true;
+}
+
+/** Newest DB text: memory (jo abhi likha gaya) ya disk (jo kisi aur ne likha). */
+function newestDbText() {
+  const file = getDbFile();
+  const sig = dbFileSig(file);
+  const externalChange = Boolean(sig) && sig !== dbIo.sig;
+  if (dbIo.file === file && dbIo.text && !externalChange) {
+    dbIo.stats.reads += 1;
+    return dbIo.text;
+  }
+  const text = fs.readFileSync(file, 'utf-8');
+  dbIo.stats.diskReads += 1;
+  dbIo.sig = sig;
+  dbIo.text = text;
+  dbIo.file = file;
+  return text;
+}
+
+/** Baseline maps (caller ke read ke waqt ka sach) — sirf save ke waqt bante hain. */
+function buildBaselines(pristineText) {
+  const base = JSON.parse(pristineText);
+  const toMap = (obj) => {
+    const out = {};
+    for (const [k, v] of Object.entries(obj || {})) out[k] = JSON.stringify(v);
+    return out;
+  };
+  return {
+    orders: toMap(base.orders),
+    accounts: toMap(base.config?.accounts),
+    deleted: toMap(base.config?.deletedAccounts),
+    vault: toMap(base.sessionVault),
+    drafts: toMap(base.drafts)
+  };
+}
+
+export function getDbIoStats() {
+  return {
+    dbSizeKb: Math.round(Buffer.byteLength(dbIo.text || '', 'utf8') / 1024),
+    ...dbIo.stats,
+    avgGetDbMs: dbIo.stats.reads ? Math.round((dbIo.stats.totalGetMs / dbIo.stats.reads) * 100) / 100 : 0,
+    asyncWrite: DB_ASYNC_WRITE,
+    dirty: dbIo.dirty
+  };
 }
 
 let accountsSeeded = false;
@@ -678,8 +760,10 @@ function seedAccountsFromJson(data) {
 
 export function getDb() {
   ensureDb();
+  const t0 = Date.now();
   try {
-    const raw = fs.readFileSync(getDbFile(), 'utf-8');
+    const raw = newestDbText();
+    dbIo.stats.parses += 1;
     const data = JSON.parse(raw);
     if (!data.config) data.config = { ...defaultData.config };
     if (!data.config.bossIds) {
@@ -704,35 +788,13 @@ export function getDb() {
     }
     seedAccountsFromJson(data);
     delete data.config.depositAmount;
-    // Tag non-enumerable baseline snapshots for orders, accounts, deletedAccounts & sessionVault so NO concurrent async fiber ever clobbers newly uploaded accounts OR resurrects concurrently deleted accounts!
-    const baseOrdersJson = {};
-    for (const [oid, oVal] of Object.entries(data.orders || {})) {
-      baseOrdersJson[oid] = JSON.stringify(oVal);
-    }
-    const baseAccountsJson = {};
-    for (const [ak, aVal] of Object.entries(data.config.accounts || {})) {
-      baseAccountsJson[ak] = JSON.stringify(aVal);
-    }
-    const baseDeletedJson = {};
-    for (const [dk, dVal] of Object.entries(data.config.deletedAccounts || {})) {
-      baseDeletedJson[dk] = JSON.stringify(dVal);
-    }
-    const baseVaultJson = {};
-    for (const [vk, vVal] of Object.entries(data.sessionVault || {})) {
-      baseVaultJson[vk] = JSON.stringify(vVal);
-    }
-    // Drafts need the same protection: a handler that awaits a Swiggy call and then
-    // saves its old snapshot must never resurrect links the customer already sent
-    // (or revert a draft that another fiber cleared/claimed).
-    const baseDraftsJson = {};
-    for (const [dk, dVal] of Object.entries(data.drafts || {})) {
-      baseDraftsJson[dk] = JSON.stringify(dVal);
-    }
-    Object.defineProperty(data, '__baseOrdersJson', { value: baseOrdersJson, enumerable: false, configurable: true });
-    Object.defineProperty(data, '__baseAccountsJson', { value: baseAccountsJson, enumerable: false, configurable: true });
-    Object.defineProperty(data, '__baseDeletedJson', { value: baseDeletedJson, enumerable: false, configurable: true });
-    Object.defineProperty(data, '__baseVaultJson', { value: baseVaultJson, enumerable: false, configurable: true });
-    Object.defineProperty(data, '__baseDraftsJson', { value: baseDraftsJson, enumerable: false, configurable: true });
+    // Baseline (concurrent-writer protection ke liye) ab LAZY hai: sirf save ke
+    // waqt banta hai. Pehle har getDb par ~40 JSON.stringify chalte the.
+    Object.defineProperty(data, '__pristineText', { value: raw, enumerable: false, configurable: true, writable: true });
+    Object.defineProperty(data, '__readSeq', { value: dbIo.writeSeq, enumerable: false, configurable: true, writable: true });
+    Object.defineProperty(data, '__baseCache', { value: null, enumerable: false, configurable: true, writable: true });
+    dbIo.stats.totalGetMs += Date.now() - t0;
+    dbIo.stats.lastGetMs = Date.now() - t0;
     return data;
   } catch (err) {
     console.error('Error reading db:', err);
@@ -740,8 +802,30 @@ export function getDb() {
   }
 }
 
+/** save ke waqt: caller ke read-point ka baseline (cached). */
+function baselinesFor(data) {
+  if (data.__baseCache) return data.__baseCache;
+  // Baseline hi nahi (test/fiber ne db ko JSON-clone kiya, ya object scratch se
+  // bana): purana behaviour = khaali baseline. Isse disk ke naye tombstones
+  // phir bhi lagte hain — logged-out ID wapas zinda nahi hoti.
+  if (!data.__pristineText) {
+    const empty = { orders: {}, accounts: {}, deleted: {}, vault: {}, drafts: {} };
+    try { Object.defineProperty(data, '__baseCache', { value: empty, enumerable: false, configurable: true, writable: true }); } catch {}
+    return empty;
+  }
+  try {
+    const built = buildBaselines(data.__pristineText);
+    data.__baseCache = built;
+    return built;
+  } catch {
+    return null;
+  }
+}
+
 export function saveDb(data) {
   ensureDb();
+  const tSave = Date.now();
+  dbIo.stats.saves += 1;
   if (data?.config) {
     if (typeof data.config.totalSlots === 'number') {
       data.config.totalSlots = Math.max(0, data.config.totalSlots);
@@ -774,154 +858,253 @@ export function saveDb(data) {
     }
   } catch {}
 
-  // Concurrent-Safe Parallel Merge for Orders + Uploaded Accounts + Session Vault!
-  // Any account/vault/order written concurrently to disk after `getDb()` was called is 100% preserved unless explicitly mutated/deleted by caller!
-  const dbFile = getDbFile();
-  if (data && fs.existsSync(dbFile)) {
-    try {
-      const liveDisk = JSON.parse(fs.readFileSync(dbFile, 'utf-8'));
+  // ── Concurrent-safe merge: sirf tab jab kisi NE aur likha ho ────────────────
+  // Pehle har save par disk dobara padha+parse hota tha (chahe kuch badla hi na
+  // ho). Ab: agar hamare read ke baad koi aur writer nahi aaya, merge skip.
+  try {
+    mergeConcurrentWriters(data);
+  } catch {}
 
-      if (data.__baseDraftsJson && typeof data.drafts === 'object' && data.drafts !== null) {
-        const diskDrafts = liveDisk?.drafts || {};
-        const baseDraftMap = data.__baseDraftsJson;
-        // Drop drafts this caller never touched but which were deleted on disk.
-        for (const uid of Object.keys(data.drafts)) {
-          const existedAtRead = Object.prototype.hasOwnProperty.call(baseDraftMap, uid);
-          const presentOnDisk = Object.prototype.hasOwnProperty.call(diskDrafts, uid);
-          if (existedAtRead && !presentOnDisk && JSON.stringify(data.drafts[uid]) === baseDraftMap[uid]) {
-            delete data.drafts[uid];
-          }
-        }
-        for (const [uid, diskDraft] of Object.entries(diskDrafts)) {
-          const existedAtRead = Object.prototype.hasOwnProperty.call(baseDraftMap, uid);
-          const presentInCaller = Object.prototype.hasOwnProperty.call(data.drafts, uid);
-          if (!existedAtRead && !presentInCaller) {
-            // A draft created/updated concurrently (link pasted, order claimed).
-            data.drafts[uid] = diskDraft;
-          } else if (existedAtRead && presentInCaller && JSON.stringify(data.drafts[uid]) === baseDraftMap[uid]) {
-            // Caller did not touch this draft -> keep whatever is on disk now.
-            data.drafts[uid] = diskDraft;
-          }
-        }
-        const refreshedDraftBase = {};
-        for (const [uid, dVal] of Object.entries(data.drafts)) refreshedDraftBase[uid] = JSON.stringify(dVal);
-        Object.defineProperty(data, '__baseDraftsJson', { value: refreshedDraftBase, enumerable: false, configurable: true });
-      }
-
-      if (data.__baseOrdersJson && typeof data.orders === 'object' && data.orders !== null) {
-        const diskOrders = liveDisk?.orders || {};
-        const baseMap = data.__baseOrdersJson;
-        for (const [oid, diskOrder] of Object.entries(diskOrders)) {
-          const existedAtRead = Object.prototype.hasOwnProperty.call(baseMap, oid);
-          const presentInCaller = Object.prototype.hasOwnProperty.call(data.orders, oid);
-          if (!existedAtRead && !presentInCaller) {
-            data.orders[oid] = diskOrder;
-          } else if (existedAtRead && presentInCaller && JSON.stringify(data.orders[oid]) === baseMap[oid]) {
-            data.orders[oid] = diskOrder;
-          }
-        }
-        const refreshedBase = {};
-        for (const [oid, oVal] of Object.entries(data.orders)) refreshedBase[oid] = JSON.stringify(oVal);
-        Object.defineProperty(data, '__baseOrdersJson', { value: refreshedBase, enumerable: false, configurable: true });
-      }
-
-      if (data.config && typeof data.config.deletedAccounts === 'object') {
-        const diskDeleted = liveDisk?.config?.deletedAccounts || {};
-        const baseDelMap = data.__baseDeletedJson || {};
-        for (const [dk, dVal] of Object.entries(diskDeleted)) {
-          if (!dVal) continue;
-          const existedDelAtRead = Object.prototype.hasOwnProperty.call(baseDelMap, dk);
-          const presentDelInCaller = Object.prototype.hasOwnProperty.call(data.config.deletedAccounts, dk);
-          // If caller explicitly deleted tombstone (i.e. `existedDelAtRead && !presentDelInCaller`), respect caller's re-login!
-          // If `!existedDelAtRead` or already present, another fiber deleted `dk` — preserve the deletion UNCONDITIONALLY!
-          if (!existedDelAtRead || presentDelInCaller) {
-            data.config.deletedAccounts[dk] = dVal;
-            if (data.config.accounts && Object.prototype.hasOwnProperty.call(data.config.accounts, dk)) {
-              delete data.config.accounts[dk];
-            }
-          }
-        }
-        if (data.__baseDeletedJson) {
-          const refreshedDelBase = {};
-          for (const [dk, dVal] of Object.entries(data.config.deletedAccounts)) refreshedDelBase[dk] = JSON.stringify(dVal);
-          Object.defineProperty(data, '__baseDeletedJson', { value: refreshedDelBase, enumerable: false, configurable: true });
-        }
-      }
-
-      if (data.__baseAccountsJson && data.config && typeof data.config.accounts === 'object' && data.config.accounts !== null) {
-        const diskAccounts = liveDisk?.config?.accounts || {};
-        const baseAccMap = data.__baseAccountsJson;
-        const callerDeleted = data.config.deletedAccounts || {};
-        // First: remove any account that existed at read and was concurrently deleted on disk!
-        for (const ak of Object.keys(data.config.accounts)) {
-          const existedAtRead = Object.prototype.hasOwnProperty.call(baseAccMap, ak);
-          const presentOnDisk = Object.prototype.hasOwnProperty.call(diskAccounts, ak);
-          if (existedAtRead && !presentOnDisk) {
-            delete data.config.accounts[ak];
-          }
-        }
-        for (const [ak, diskAcc] of Object.entries(diskAccounts)) {
-          const existedAtRead = Object.prototype.hasOwnProperty.call(baseAccMap, ak);
-          const presentInCaller = Object.prototype.hasOwnProperty.call(data.config.accounts, ak);
-          const diskPhone = normalizeTenDigitPhone(diskAcc?.phone || diskAcc?.mobile || String(ak).replace(/^acc_/, ''));
-          if (!existedAtRead && !presentInCaller && !isAccountTombstoned(callerDeleted, ak, diskPhone)) {
-            // Brand-new `.json` account imported concurrently while this fiber was awaiting Swiggy — NEVER WIPE IT!
-            data.config.accounts[ak] = diskAcc;
-          } else if (existedAtRead && presentInCaller && JSON.stringify(data.config.accounts[ak]) === baseAccMap[ak]) {
-            data.config.accounts[ak] = diskAcc;
-          }
-        }
-        const refreshedAccBase = {};
-        for (const [ak, aVal] of Object.entries(data.config.accounts)) refreshedAccBase[ak] = JSON.stringify(aVal);
-        Object.defineProperty(data, '__baseAccountsJson', { value: refreshedAccBase, enumerable: false, configurable: true });
-      }
-
-      // FINAL UNCONDITIONAL SAFETY: Purge any account from caller accounts that is tombstoned!
-      if (data.config?.accounts && typeof data.config.accounts === 'object' && data.config?.deletedAccounts) {
-        for (const [ak, aVal] of Object.entries(data.config.accounts)) {
-          const phone = normalizeTenDigitPhone(aVal?.phone || aVal?.mobile || String(ak).replace(/^acc_/, ''));
-          if (isAccountTombstoned(data.config.deletedAccounts, ak, phone)) {
-            delete data.config.accounts[ak];
-          }
-        }
-      }
-
-      if (data.__baseVaultJson && typeof data.sessionVault === 'object' && data.sessionVault !== null) {
-        const diskVault = liveDisk?.sessionVault || {};
-        const baseVaultMap = data.__baseVaultJson;
-        for (const vk of Object.keys(data.sessionVault)) {
-          const existedAtRead = Object.prototype.hasOwnProperty.call(baseVaultMap, vk);
-          const presentOnDisk = Object.prototype.hasOwnProperty.call(diskVault, vk);
-          if (existedAtRead && !presentOnDisk && JSON.stringify(data.sessionVault[vk]) === baseVaultMap[vk]) {
-            delete data.sessionVault[vk];
-          }
-        }
-        for (const [vk, diskV] of Object.entries(diskVault)) {
-          const existedAtRead = Object.prototype.hasOwnProperty.call(baseVaultMap, vk);
-          const presentInCaller = Object.prototype.hasOwnProperty.call(data.sessionVault, vk);
-          if (!existedAtRead && !presentInCaller) {
-            data.sessionVault[vk] = diskV;
-          } else if (existedAtRead && presentInCaller && JSON.stringify(data.sessionVault[vk]) === baseVaultMap[vk]) {
-            data.sessionVault[vk] = diskV;
-          }
-        }
-        const refreshedVaultBase = {};
-        for (const [vk, vVal] of Object.entries(data.sessionVault)) refreshedVaultBase[vk] = JSON.stringify(vVal);
-        Object.defineProperty(data, '__baseVaultJson', { value: refreshedVaultBase, enumerable: false, configurable: true });
-      }
-    } catch (e) {}
+  let text;
+  try {
+    text = DB_PRETTY ? JSON.stringify(data, null, 2) : JSON.stringify(data);
+  } catch (err) {
+    console.error('[store] serialize failed:', err?.message || err);
+    return;
   }
 
+  dbIo.file = getDbFile();
+  dbIo.text = text;
+  dbIo.writeSeq += 1;
+  dbIo.stats.lastSaveMs = Date.now() - tSave;
+
+  // Is object ka naya baseline = jo abhi likhne ja raha hai.
+  try {
+    Object.defineProperty(data, '__pristineText', { value: text, enumerable: false, configurable: true, writable: true });
+    Object.defineProperty(data, '__readSeq', { value: dbIo.writeSeq, enumerable: false, configurable: true, writable: true });
+    Object.defineProperty(data, '__baseCache', { value: null, enumerable: false, configurable: true, writable: true });
+  } catch {}
+
+  if (DB_ASYNC_WRITE) {
+    dbIo.dirty = true;
+    scheduleDbFlush();
+  } else {
+    writeDbTextSync(text);
+  }
+}
+
+/** Atomic disk write (tmp + rename) — partial file kabhi nahi. */
+function writeDbTextSync(text) {
+  const dbFile = getDbFile();
   const tmpFile = `${dbFile}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
-    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), 'utf-8');
+    fs.writeFileSync(tmpFile, text, 'utf-8');
     fs.renameSync(tmpFile, dbFile);
   } catch (err) {
+    try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch {}
     try {
-      if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
-    } catch (e) {}
-    fs.writeFileSync(dbFile, JSON.stringify(data, null, 2), 'utf-8');
+      fs.writeFileSync(dbFile, text, 'utf-8');
+    } catch (e2) {
+      console.error('[store] DB write failed:', e2?.message || e2);
+      return false;
+    }
   }
+  dbIo.sig = dbFileSig(dbFile);
+  dbIo.dirty = false;
+  dbIo.stats.writes += 1;
+  return true;
+}
+
+function scheduleDbFlush() {
+  if (dbIo.flushTimer) return;
+  dbIo.flushTimer = setImmediate(() => {
+    dbIo.flushTimer = null;
+    flushDbSync();
+  });
+  if (typeof dbIo.flushTimer?.unref === 'function') dbIo.flushTimer.unref();
+}
+
+/** Pending write turant disk par (SIGTERM / shutdown / external read se pehle). */
+export function flushDbSync() {
+  if (!dbIo.dirty) return false;
+  const text = dbIo.text;
+  if (!text) return false;
+  // Kisi DOOSRE process ne beech me likha ho to uske naye keys bacha lo.
+  try {
+    const file = getDbFile();
+    const sig = dbFileSig(file);
+    if (sig && sig !== dbIo.sig) {
+      const disk = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const mine = JSON.parse(text);
+      const merged = additiveMerge(mine, disk);
+      const mergedText = DB_PRETTY ? JSON.stringify(merged, null, 2) : JSON.stringify(merged);
+      dbIo.text = mergedText;
+      return writeDbTextSync(mergedText);
+    }
+  } catch {}
+  return writeDbTextSync(text);
+}
+
+/**
+ * Doosre process (bossbot) ke naye orders/accounts kabhi na udein — additive
+ * merge: jo disk par hai par humare paas nahi, woh add; tombstones ka aadar.
+ */
+function additiveMerge(mine, disk) {
+  const push = (target, source, skipTombstone = null) => {
+    for (const [k, v] of Object.entries(source || {})) {
+      if (Object.prototype.hasOwnProperty.call(target, k)) continue;
+      if (skipTombstone && Object.prototype.hasOwnProperty.call(skipTombstone, k)) continue;
+      target[k] = v;
+    }
+  };
+  try {
+    mine.orders = mine.orders || {};
+    push(mine.orders, disk.orders);
+    mine.drafts = mine.drafts || {};
+    push(mine.drafts, disk.drafts);
+    mine.sessionVault = mine.sessionVault || {};
+    push(mine.sessionVault, disk.sessionVault);
+    mine.config = mine.config || {};
+    mine.config.accounts = mine.config.accounts || {};
+    mine.config.deletedAccounts = mine.config.deletedAccounts || {};
+    push(mine.config.accounts, disk.config?.accounts, mine.config.deletedAccounts);
+    push(mine.config.deletedAccounts, disk.config?.deletedAccounts);
+  } catch {}
+  return mine;
+}
+
+/**
+ * Purane concurrent-writer protection ka naya, LAZY version. Sirf tab chalta
+ * hai jab hamare read ke baad koi aur writer (fiber/process) aaya ho.
+ */
+function purgeTombstonedAccounts(data) {
+  try {
+    if (!data?.config?.accounts || typeof data.config.accounts !== 'object' || !data.config.deletedAccounts) return 0;
+    let purged = 0;
+    for (const [ak, aVal] of Object.entries(data.config.accounts)) {
+      const phone = normalizeTenDigitPhone(aVal?.phone || aVal?.mobile || String(ak).replace(/^acc_/, ''));
+      if (isAccountTombstoned(data.config.deletedAccounts, ak, phone)) {
+        delete data.config.accounts[ak];
+        purged += 1;
+      }
+    }
+    return purged;
+  } catch {
+    return 0;
+  }
+}
+
+function mergeConcurrentWriters(data) {
+  // Tombstone purge HAMESHA chalta hai — ek purana fiber (jiske paas baseline
+  // nahi hai) bhi logged-out ID ko wapas zinda nahi kar sakta.
+  purgeTombstonedAccounts(data);
+  const base = baselinesFor(data);
+  if (!base) return false;
+  const fileChanged = dbFileSig(getDbFile()) !== dbIo.sig;
+  const wroteSinceRead = data.__readSeq !== dbIo.writeSeq;
+  if (!wroteSinceRead && !fileChanged) return false;
+
+  let liveDisk;
+  try {
+    liveDisk = JSON.parse(dbIo.text || fs.readFileSync(getDbFile(), 'utf-8'));
+  } catch {
+    return false;
+  }
+  dbIo.stats.merges += 1;
+
+  if (typeof data.drafts === 'object' && data.drafts !== null) {
+    const diskDrafts = liveDisk?.drafts || {};
+    for (const uid of Object.keys(data.drafts)) {
+      const existedAtRead = Object.prototype.hasOwnProperty.call(base.drafts, uid);
+      const presentOnDisk = Object.prototype.hasOwnProperty.call(diskDrafts, uid);
+      if (existedAtRead && !presentOnDisk && JSON.stringify(data.drafts[uid]) === base.drafts[uid]) {
+        delete data.drafts[uid];
+      }
+    }
+    for (const [uid, diskDraft] of Object.entries(diskDrafts)) {
+      const existedAtRead = Object.prototype.hasOwnProperty.call(base.drafts, uid);
+      const presentInCaller = Object.prototype.hasOwnProperty.call(data.drafts, uid);
+      if (!existedAtRead && !presentInCaller) {
+        data.drafts[uid] = diskDraft;
+      } else if (existedAtRead && presentInCaller && JSON.stringify(data.drafts[uid]) === base.drafts[uid]) {
+        data.drafts[uid] = diskDraft;
+      }
+    }
+  }
+
+  if (typeof data.orders === 'object' && data.orders !== null) {
+    const diskOrders = liveDisk?.orders || {};
+    for (const [oid, diskOrder] of Object.entries(diskOrders)) {
+      const existedAtRead = Object.prototype.hasOwnProperty.call(base.orders, oid);
+      const presentInCaller = Object.prototype.hasOwnProperty.call(data.orders, oid);
+      if (!existedAtRead && !presentInCaller) {
+        data.orders[oid] = diskOrder;
+      } else if (existedAtRead && presentInCaller && JSON.stringify(data.orders[oid]) === base.orders[oid]) {
+        data.orders[oid] = diskOrder;
+      }
+    }
+  }
+
+  if (data.config && typeof data.config.deletedAccounts === 'object') {
+    const diskDeleted = liveDisk?.config?.deletedAccounts || {};
+    for (const [dk, dVal] of Object.entries(diskDeleted)) {
+      if (!dVal) continue;
+      const existedDelAtRead = Object.prototype.hasOwnProperty.call(base.deleted, dk);
+      const presentDelInCaller = Object.prototype.hasOwnProperty.call(data.config.deletedAccounts, dk);
+      if (!existedDelAtRead || presentDelInCaller) {
+        data.config.deletedAccounts[dk] = dVal;
+        if (data.config.accounts && Object.prototype.hasOwnProperty.call(data.config.accounts, dk)) {
+          delete data.config.accounts[dk];
+        }
+      }
+    }
+  }
+
+  if (data.config && typeof data.config.accounts === 'object' && data.config.accounts !== null) {
+    const diskAccounts = liveDisk?.config?.accounts || {};
+    const callerDeleted = data.config.deletedAccounts || {};
+    for (const ak of Object.keys(data.config.accounts)) {
+      const existedAtRead = Object.prototype.hasOwnProperty.call(base.accounts, ak);
+      const presentOnDisk = Object.prototype.hasOwnProperty.call(diskAccounts, ak);
+      if (existedAtRead && !presentOnDisk) {
+        delete data.config.accounts[ak];
+      }
+    }
+    for (const [ak, diskAcc] of Object.entries(diskAccounts)) {
+      const existedAtRead = Object.prototype.hasOwnProperty.call(base.accounts, ak);
+      const presentInCaller = Object.prototype.hasOwnProperty.call(data.config.accounts, ak);
+      const diskPhone = normalizeTenDigitPhone(diskAcc?.phone || diskAcc?.mobile || String(ak).replace(/^acc_/, ''));
+      if (!existedAtRead && !presentInCaller && !isAccountTombstoned(callerDeleted, ak, diskPhone)) {
+        data.config.accounts[ak] = diskAcc;
+      } else if (existedAtRead && presentInCaller && JSON.stringify(data.config.accounts[ak]) === base.accounts[ak]) {
+        data.config.accounts[ak] = diskAcc;
+      }
+    }
+  }
+
+  // FINAL UNCONDITIONAL SAFETY: Purge any account from caller accounts that is tombstoned!
+  purgeTombstonedAccounts(data);
+
+  if (typeof data.sessionVault === 'object' && data.sessionVault !== null) {
+    const diskVault = liveDisk?.sessionVault || {};
+    for (const vk of Object.keys(data.sessionVault)) {
+      const existedAtRead = Object.prototype.hasOwnProperty.call(base.vault, vk);
+      const presentOnDisk = Object.prototype.hasOwnProperty.call(diskVault, vk);
+      if (existedAtRead && !presentOnDisk && JSON.stringify(data.sessionVault[vk]) === base.vault[vk]) {
+        delete data.sessionVault[vk];
+      }
+    }
+    for (const [vk, diskV] of Object.entries(diskVault)) {
+      const existedAtRead = Object.prototype.hasOwnProperty.call(base.vault, vk);
+      const presentInCaller = Object.prototype.hasOwnProperty.call(data.sessionVault, vk);
+      if (!existedAtRead && !presentInCaller) {
+        data.sessionVault[vk] = diskV;
+      } else if (existedAtRead && presentInCaller && JSON.stringify(data.sessionVault[vk]) === base.vault[vk]) {
+        data.sessionVault[vk] = diskV;
+      }
+    }
+  }
+  return true;
 }
 
 const UNSAFE_ORDER_KEYS = new Set(['__proto__', 'prototype', 'constructor', '__defineGetter__', '__defineSetter__']);
@@ -1947,3 +2130,79 @@ export function appendAuditEvent(action, meta = {}) {
   } catch {}
 }
 
+// ── DB HYGIENE (memory/disk blast door) ─────────────────────────────────────
+// Orders ke andar jo kuch sirf debug ke liye tha, woh hamesha ke liye pada rehta
+// tha aur har getDb()/saveDb() me copy hota tha. 10 orders ke baad memory aur
+// disk dono bhar jaate the. Yeh pruner purane bhaari fields saaf karta hai aur
+// purane band orders ko chhota kar deta hai (paise/receipt fields chhod kar).
+const HEAVY_ORDER_FIELDS = [
+  'availableCoupons', 'couponCandidates', 'liveCartSnapshot', 'cartSnapshot',
+  'lastCartPayload', 'swiggyRawPayload', 'rawPlaceResponse', 'rawPlaceJson',
+  'offerScanHistory', 'freeCashAttempts', 'qrScreenshotBase64', 'checkoutScreenshotBase64'
+];
+
+export function pruneDbForPerformance(db = null, { keepOrders = 400, stripAfterMs = 3 * 24 * 60 * 60 * 1000 } = {}) {
+  const data = db || getDb();
+  let stripped = 0;
+  let removed = 0;
+  try {
+    const now = Date.now();
+    const orders = data.orders || {};
+    const ids = Object.keys(orders);
+    for (const id of ids) {
+      const o = orders[id];
+      if (!o || typeof o !== 'object') continue;
+      const ended = Date.parse(String(o.completedAt || o.paidAt || o.cancelledAt || o.updatedAt || o.createdAt || '')) || 0;
+      const finished = ['COMPLETED', 'CANCELLED', 'REJECTED'].includes(String(o.status || ''));
+      if (finished || (ended && now - ended > stripAfterMs)) {
+        for (const f of HEAVY_ORDER_FIELDS) {
+          if (o[f] !== undefined) {
+            delete o[f];
+            stripped += 1;
+          }
+        }
+        if (Array.isArray(o.events) && o.events.length > 40) o.events = o.events.slice(-40);
+        if (Array.isArray(o.timeline) && o.timeline.length > 40) o.timeline = o.timeline.slice(-40);
+      }
+    }
+    // sabse purane band orders hatao (sirf jab bahut zyada ho gaye ho)
+    if (ids.length > keepOrders) {
+      const removable = ids
+        .filter((id) => ['COMPLETED', 'CANCELLED', 'REJECTED'].includes(String(orders[id]?.status || '')))
+        .sort((a, b) => (Date.parse(String(orders[a]?.createdAt || '')) || 0) - (Date.parse(String(orders[b]?.createdAt || '')) || 0));
+      const excess = ids.length - keepOrders;
+      for (const id of removable.slice(0, excess)) {
+        delete orders[id];
+        removed += 1;
+      }
+    }
+    // event/audit lists ko bound karo
+    if (Array.isArray(data.auditLog) && data.auditLog.length > 300) data.auditLog = data.auditLog.slice(-300);
+    if (Array.isArray(data.config?.accountHealthEvents) && data.config.accountHealthEvents.length > 120) {
+      data.config.accountHealthEvents = data.config.accountHealthEvents.slice(-120);
+    }
+    for (const uid of Object.keys(data.userStates || {})) {
+      const st = data.userStates[uid];
+      if (st && typeof st === 'object') {
+        for (const f of HEAVY_ORDER_FIELDS) delete st[f];
+        if (Array.isArray(st.history) && st.history.length > 30) st.history = st.history.slice(-30);
+      }
+    }
+  } catch {}
+  // Prune ka asar bhi save hona chahiye — warna memory free hoti dikhti hai,
+  // hoti nahi (pehle sirf ek copy mutate ho kar fenki jaati thi).
+  if (!db && (stripped > 0 || removed > 0)) {
+    try { saveDb(data); } catch {}
+  }
+  return { stripped, removed };
+}
+
+// Async write mode me shutdown par pending write kabhi na ude.
+if (DB_ASYNC_WRITE && !globalThis.__dbFlushHooksInstalled) {
+  globalThis.__dbFlushHooksInstalled = true;
+  const safeFlush = () => { try { flushDbSync(); } catch {} };
+  process.on('exit', safeFlush);
+  process.once('SIGTERM', safeFlush);
+  process.once('SIGINT', safeFlush);
+  process.once('beforeExit', safeFlush);
+}

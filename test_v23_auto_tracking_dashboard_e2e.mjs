@@ -9,6 +9,26 @@
 
 import './network-shield.js';
 import assert from 'assert';
+import fs from 'node:fs';
+
+// Yeh test ek fake tracking link (TARGET123) asli order id par save karta hai.
+// Store ab orders ko honest tareeke se disk par rakhta hai (pehle woh write
+// chup-chaap kho jata tha), isliye test ke baad state wapas kar dena zaroori
+// hai — warna baad ke test (v26) us fake link ko asli samajh lete hain.
+const DB_PATH_V23 = 'data/db.json';
+const ACC_PATH_V23 = 'accounts.json';
+const dbSnapV23 = fs.existsSync(DB_PATH_V23) ? fs.readFileSync(DB_PATH_V23, 'utf8') : null;
+const accSnapV23 = fs.existsSync(ACC_PATH_V23) ? fs.readFileSync(ACC_PATH_V23, 'utf8') : null;
+process.on('exit', () => {
+  try {
+    if (dbSnapV23 !== null) fs.writeFileSync(DB_PATH_V23, dbSnapV23);
+    else if (fs.existsSync(DB_PATH_V23)) fs.unlinkSync(DB_PATH_V23);
+  } catch {}
+  try {
+    if (accSnapV23 !== null) fs.writeFileSync(ACC_PATH_V23, accSnapV23);
+    else if (fs.existsSync(ACC_PATH_V23)) fs.unlinkSync(ACC_PATH_V23);
+  } catch {}
+});
 import { getDb, saveDb } from './store.js';
 import {
   normalizeSwiggyOrderId,

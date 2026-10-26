@@ -257,10 +257,12 @@ console.log('\n=== 6. NO 240s DEAD TIME: watchdog + timeout ===');
   const indexSrc = fs.readFileSync('./index.js', 'utf8');
   check('handlerTimeout 60s (pehle 240s)', /handlerTimeout: 60_000/.test(indexSrc));
   check('240000 wala timeout source me nahi bacha', !/handlerTimeout: 240_000/.test(indexSrc));
-  check('UPDATE WATCHDOG laga hai', /\[UpdateWatchdog\]/.test(indexSrc));
+  check('BOUNDED UPDATE DISPATCHER laga hai', /\[UpdateDispatcher\]/.test(indexSrc));
   check('default update deadline 45s', /Number\(process\.env\.UPDATE_DEADLINE_MS\) \|\| 45_000/.test(indexSrc));
   check('timeout par queue aage badhti hai (Promise.race)', /Promise\.race\(\[work, deadline\]\)/.test(indexSrc));
-  check('handler error watchdog ko crash nahi karta', /\[UpdateWatchdog\] handler failed/.test(indexSrc));
+  check('handler error dispatcher ko crash nahi karta', /\[UpdateDispatcher\] handler failed/.test(indexSrc));
+  check('concurrency capped hai (unbounded parallel nahi)', /maxConcurrency: Math\.max\(1, Math\.min\(32/.test(indexSrc));
+  check('duplicate Telegram retries skip hote hain', /function isDuplicateUpdate\(update\)/.test(indexSrc));
 }
 
 console.log('\n=== 7. Group cart / busy IDs ke honest codes ===');

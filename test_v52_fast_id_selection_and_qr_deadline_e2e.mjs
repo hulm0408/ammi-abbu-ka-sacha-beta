@@ -40,7 +40,8 @@ function jsonRes(status, payload, url = '') {
 
 // The vault must survive every scenario unchanged (no ID wipe / logout).
 const dbPath = './data/db.json';
-const dbBackup = fs.readFileSync(dbPath, 'utf8');
+// Har guard test apna saaf DB paata hai (run_guards.mjs) — file na ho to bhi chale.
+const dbBackup = fs.existsSync(dbPath) ? fs.readFileSync(dbPath, 'utf8') : null;
 const realFetch = globalThis.fetch;
 
 const cart = await import('./swiggy-cart.js');
@@ -337,7 +338,7 @@ console.log('\n━━━ Scenario 6: claim storm protection (single-flight + 403
 // ---------------------------------------------------------------------------
 console.log('\n━━━ Scenario 5: no wipe, no order deletion, vault untouched ━━━');
 {
-  const before = JSON.parse(dbBackup);
+  const before = dbBackup ? JSON.parse(dbBackup) : { config: { accounts: {} }, orders: {} };
   const after = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
   const identityOf = (db) => Object.keys(db.config?.accounts || {})
     .sort()
