@@ -281,13 +281,44 @@ if (!BOSS_SECRET || BOSS_SECRET.length < 6) {
 const bot = installBossMirror(
   installBulletproofTelegramTransport(
     new Telegraf(BOT_TOKEN, {
-      handlerTimeout: 240_000,
+      // 240s ka timeout matlab ek atka hua handler poore bot ko 4 minute block
+      // kar deta tha ("Promise timed out after 240000 ms" spam + koi reply nahi).
+      // 60s kaafi hai: har network kaam ka apna budget already hai.
+      handlerTimeout: 60_000,
       telegram: {
         agent: createIpv4TelegramAgent()
       }
     })
   )
 );
+
+// ── UPDATE WATCHDOG ─────────────────────────────────────────────────────────
+// Telegraf polling ek ke baad ek update chalata hai. Koi handler agar network
+// par atak jaye to aage ke SAARE messages/uske buttons queue me ruk jate hain
+// (logs me "Promise timed out after 240000 ms" yahi tha). Ab har update par ek
+// hard deadline hai: deadline par kaam chhod kar (background me chalta rahe) next
+// update process hota hai — bot kabhi "dead" nahi dikhta.
+{
+  const UPDATE_DEADLINE_MS = Math.max(20_000, Number(process.env.UPDATE_DEADLINE_MS) || 45_000);
+  const origHandleUpdate = bot.handleUpdate.bind(bot);
+  bot.handleUpdate = async (update, webhookResponse) => {
+    let timer = null;
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), UPDATE_DEADLINE_MS);
+      if (typeof timer.unref === 'function') timer.unref();
+    });
+    const work = origHandleUpdate(update, webhookResponse).catch((err) => {
+      console.error('[UpdateWatchdog] handler failed:', err?.message || err);
+    });
+    const outcome = await Promise.race([work, deadline]).catch(() => 'error');
+    if (timer) clearTimeout(timer);
+    if (outcome === 'timeout') {
+      const kind = update?.callback_query ? 'button' : (update?.message ? 'message' : 'update');
+      console.warn(`[UpdateWatchdog] ${kind} ${UPDATE_DEADLINE_MS / 1000}s me poora nahi hua — queue aage badha di (kaam background me chal raha hai).`);
+    }
+    return outcome;
+  };
+}
 
 // Fix: Telegraf throws synchronously if answerCbQuery is called on a message update.
 // All existing handlers assume .catch() is enough, but assert() throws before Promise.

@@ -321,6 +321,9 @@ export function formatBossDiagnosticErrorMessage(err, meta = {}) {
     ...(err?.diag?.httpStatus ? [`httpStatus: ${err.diag.httpStatus}`] : []),
     ...(err?.diag?.swiggyStatusCode !== undefined ? [`swiggyStatusCode: ${err.diag.swiggyStatusCode}`] : []),
     ...(err?.diag?.swiggyMessage ? [`swiggyMsg: ${err.diag.swiggyMessage}`] : []),
+    ...(err?.diag?.placedOrderId ? [`placedOrderId: ${err.diag.placedOrderId}`] : []),
+    ...(err?.diag?.intentProblems?.length ? [`intentProblems: ${err.diag.intentProblems.join(' | ')}`] : []),
+    ...(err?.diag?.tried?.length ? [`tried: ${err.diag.tried.join(', ')}`] : []),
     ...(err?.diag?.rawSnippet ? [`raw: ${String(err.diag.rawSnippet).replace(/\s+/g, ' ').slice(0, 320)}`] : []),
     `error: ${msg}`,
     `time: ${new Date().toISOString()}`
@@ -2133,7 +2136,31 @@ export function startOrderPaymentPoller({
 }
 
 // Shared helper to sync a single order onto a chosen Swiggy ID safely in parallel
-export async function executeOrderBillSyncOnAccount({
+// EK ORDER = EK BILL SYNC. Logs me ek hi order par 3-4 accounts parallel bill
+// bana rahe the => "ID switch" storm, lock timeouts aur aapas me takraav.
+const orderBillSyncInFlight = new Map();
+
+/** Kya is order ka bill abhi ban raha hai? */
+export function isOrderBillSyncInFlight(orderId) {
+  return orderBillSyncInFlight.has(String(orderId || ''));
+}
+
+export function executeOrderBillSyncOnAccount(args = {}) {
+  const key = String(args?.orderId || '');
+  if (!key) return executeOrderBillSyncOnAccountInternal(args);
+  const running = orderBillSyncInFlight.get(key);
+  if (running) {
+    // Naya request purane ke saath hi chalega — jhagdna nahi.
+    return running;
+  }
+  const run = executeOrderBillSyncOnAccountInternal(args);
+  orderBillSyncInFlight.set(key, run);
+  const clear = () => { if (orderBillSyncInFlight.get(key) === run) orderBillSyncInFlight.delete(key); };
+  run.then(clear, clear);
+  return run;
+}
+
+async function executeOrderBillSyncOnAccountInternal({
   telegram,
   chatId,
   orderId,
@@ -2307,6 +2334,14 @@ export async function executeOrderBillSyncOnAccount({
 
   order.status = 'ACCEPTED';
   order.cardStage = 'BILL_READY';
+  // Jo bill ab customer/boss ko dikhega WAHI QR ka amount hona chahiye. Isliye
+  // yahan snapshot lete hain; QR banate waqt isse zyada amount ho to QR block
+  // hota hai (log me ₹37 ka bill -> ₹82 ka QR, yeh wahi bug tha).
+  if (Number(order.finalPayable || 0) > 0) {
+    order.billShownAmount = Number(order.finalPayable);
+    order.billShownAt = new Date().toISOString();
+    order.billShownAccount = String(order.selectedAccount || '');
+  }
   order.pendingSwiggyUpiUri = '';
   order.pendingSwiggyOrderId = '';
   order.pendingSwiggyPaasId = '';
@@ -2486,7 +2521,40 @@ const SUSPENSION_QUARANTINE_HOURS = Math.max(
 );
 
 /**
- * Boss ko seedha batao ki ek ID suspended ho gayi aur order kis ID par shift hua.
+ * Swiggy ne order place kar diya par UPI intent nahi diya — Boss ko saaf batao
+ * (ghabrane wali "rejected" error nahi) aur naya QR maangne ka button do.
+ */
+export async function notifyBossOrderPlacedNoIntent(telegram, { orderId = '', phone = '', placedOrderId = '' } = {}) {
+  try {
+    const db = getDb();
+    const bossId = Number(db?.config?.bossIds?.[0] || process.env.BOSS_ID || 0);
+    if (!bossId || typeof telegram?.sendMessage !== 'function') return false;
+    await telegram.sendMessage(
+      bossId,
+      `⚠️ <b>ORDER PLACE HUA, QR NAHI MILA</b>\n\n` +
+      `◈ Order: <b>#${escapeHtml(String(orderId))}</b>\n` +
+      `# Swiggy order: <code>${escapeHtml(String(placedOrderId || '—'))}</code>\n` +
+      `☎ ID: <code>${escapeHtml(String(phone || '—'))}</code>\n\n` +
+      `<i>Swiggy ne order accept kar liya ("Done Successfully") par UPI intent nahi diya. ` +
+      `Isliye bot ne doosra account try NAHI kiya — warna doosra unpaid order ban jata. ` +
+      `Customer ko payment link bhejein ya naya QR generate karein; order dobara place nahi hoga.</i>`,
+      {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🔁 Naya QR (isi order par)', `fwd_gen_qr_${String(orderId)}`)],
+          [Markup.button.url('↗ Swiggy payments', 'https://www.swiggy.com/payments')]
+        ])
+      }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Boss ko seedha batao ki ek ID suspended ho gayi aur order kis order par shift hua.
  * Buttons: ⛔ Retry (quarantine clear) + ◉ Accounts.
  */
 export async function notifyBossAccountSuspended(telegram, {
@@ -2527,7 +2595,31 @@ export async function notifyBossAccountSuspended(telegram, {
   }
 }
 
-export async function executeRealQrGenerationForOrder({
+// EK ORDER = EK QR ATTEMPT. Pehle ek hi order par 4-5 parallel attempts chal
+// jate the (har ek Swiggy par naya unpaid order place karta tha, aur har ek
+// apna error spam karta tha). Ab doosra caller wahi promise paata hai.
+const qrGenerationInFlight = new Map();
+
+export function executeRealQrGenerationForOrder(args = {}) {
+  const key = String(args?.orderId || '');
+  if (key && qrGenerationInFlight.has(key)) {
+    return qrGenerationInFlight.get(key);
+  }
+  const run = executeRealQrGenerationForOrderInternal(args);
+  if (key) {
+    qrGenerationInFlight.set(key, run);
+    const clear = () => { if (qrGenerationInFlight.get(key) === run) qrGenerationInFlight.delete(key); };
+    run.then(clear, clear);
+  }
+  return run;
+}
+
+/** Kya is order ka QR abhi ban raha hai? (UI ko "chal raha hai" batane ke liye) */
+export function isQrGenerationInFlight(orderId) {
+  return qrGenerationInFlight.has(String(orderId || ''));
+}
+
+async function executeRealQrGenerationForOrderInternal({
   telegram,
   chatId,
   orderId,
@@ -2604,6 +2696,41 @@ export async function executeRealQrGenerationForOrder({
     });
     // Suspended ID (Swiggy "account blocked") aur dead session — dono par order
     // ko dusri healthy ID par le jaana hai, warna customer ka order ruk jata hai.
+    // (A) Order place ho chuka hai, bas UPI intent nahi mila. Is haalat me
+    // DOOSRE account par jaana sabse bada nuksaan tha: Swiggy par ek aur unpaid
+    // order ban jata, aur customer ko kuch nahi milta. Yahan rukna sahi hai.
+    if (String(qrErr?.diag?.code || '') === 'SWIGGY_PLACED_NO_UPI_INTENT') {
+      const placedId = String(qrErr?.diag?.placedOrderId || '');
+      const placedDb = getDb();
+      const placedOrder = placedDb.orders?.[order.id];
+      if (placedOrder) {
+        placedOrder.pendingSwiggyOrderId = placedId || placedOrder.pendingSwiggyOrderId || '';
+        placedOrder.swiggyPlacedUnpaid = true;
+        placedOrder.placedWithoutIntentAt = placedOrder.placedWithoutIntentAt || new Date().toISOString();
+        placedOrder.qrBlockedReason = 'Swiggy placed the order but returned no UPI intent';
+        upsertOrder(placedOrder.id, placedOrder);
+      }
+      const noIntentErr = new Error(
+        `Swiggy ne order #${placedId || '—'} place kar diya par payment intent (UPI QR) nahi diya. ` +
+        `Payment link se pay karein ya "Naya QR" dabaiye — dobara order place nahi hoga.`
+      );
+      noIntentErr.diag = {
+        code: 'QR_PLACED_NO_INTENT',
+        stage: 'GENERATE_REAL_SWIGGY_QR',
+        placedOrderId: placedId,
+        paymentFallbacks: qrErr?.diag?.paymentFallbacks || null,
+        accountPhone: acc?.phone || accKey
+      };
+      noIntentErr.placedOrderId = placedId;
+      noIntentErr.code = 'QR_PLACED_NO_INTENT';
+      await notifyBossOrderPlacedNoIntent(telegram, {
+        orderId: order.id,
+        phone: acc?.phone || accKey,
+        placedOrderId: placedId
+      });
+      throw noIntentErr;
+    }
+
     if (!failure.suspended && !failure.sessionDead) throw qrErr;
 
     const failedFirstKey = String(accKey || '');
@@ -3779,7 +3906,7 @@ export function registerForwardedOrderHandlers(bot, {
           customRealQrGenerator,
           // "↻ Regenerate Swiggy QR" = genuinely new QR. Without this the cached
           // QR came back byte-identical ("same QR, same problem").
-          forceNewQr: order.cardStage === 'QR_GENERATED' || Boolean(order.pendingSwiggyUpiUri) || Boolean(order.qrInvalidatedAt)
+          forceNewQr: order.cardStage === 'QR_GENERATED' || Boolean(order.pendingSwiggyUpiUri) || Boolean(order.qrInvalidatedAt) || Boolean(order.swiggyPlacedUnpaid)
         });
       } catch (err) {
         const freshDb = getDb();
