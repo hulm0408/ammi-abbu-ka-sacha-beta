@@ -16,7 +16,7 @@
  * bajaye ₹50 free cash nahi), cutoff miss, ya slot band.
  */
 import { getDb, saveDb } from './store.js';
-import { EVENT_OFFER_LINKS, EVENT_OFFERS, extractCampaignInfoFromHtml } from './event-offers.js';
+import { EVENT_OFFER_LINKS, EVENT_OFFERS, extractCampaignInfoFromHtml, cachedFixedCampaignId, activateAllEventOffers } from './event-offers.js';
 
 export const OFFER_CAMPAIGN_URLS = {
   breakfast: 'https://events.swiggy.com/book-your-offer?utm_source=app&utm_medium=share',
@@ -102,12 +102,20 @@ export async function loadOfferCampaignMeta({ force = false, fetchImpl = globalT
     const fixedMeta = async (offerKey) => {
       const offer = EVENT_OFFERS.find((o) => o.key === offerKey);
       if (!offer) return { campaign: '', source: 'NONE' };
+      // In pages par campaign id HTML me hoti hi nahi. Claim engine ne jab
+      // live write + read-back se id resolve ki ho, wahi sabse sach hai.
+      const cached = cachedFixedCampaignId(offerKey);
       try {
         const res = await fetchImpl(offer.url, { signal: AbortSignal.timeout(6000) });
         const html = await res.text();
         const info = extractCampaignInfoFromHtml(html, offer);
-        return { campaign: info.fixedCampaignId || info.prefix || '', source: info.source || 'NONE' };
+        const campaign = info.fixedCampaignId || info.prefix || cached?.id || '';
+        return {
+          campaign,
+          source: info.fixedCampaignId || info.prefix ? (info.source || 'NONE') : (cached?.source || (campaign ? 'CACHED_RESOLVED' : 'NONE'))
+        };
       } catch (err) {
+        if (cached?.id) return { campaign: cached.id, source: cached.source || 'CACHED_RESOLVED' };
         return { campaign: '', source: 'PAGE_FAILED', error: String(err?.message || err).slice(0, 80) };
       }
     };
@@ -176,7 +184,9 @@ export function resolveTrackCampaigns(meta, trackKey, nowMs = Date.now()) {
         fixed: true,
         primary: null,
         rows: [],
-        reason: 'offer page se campaign id nahi mili'
+        // Kya-kya try hua — boss ko saaf dikhe (jhooth nahi).
+        tried: (cachedFixedCampaignId(trackKey)?.tried || []).slice(0, 5).map((t) => t.id || '').filter(Boolean),
+        reason: 'campaign id page par nahi hoti — claim karte waqt live verify hoti hai (▣ Claim / 🔧 Fix dabaiye)'
       };
     }
     const row = {
@@ -555,6 +565,34 @@ export async function fixAccountOffers(account, {
     const track = before.tracks?.[trackKey];
     if (!track) continue;
     const referer = OFFER_CAMPAIGN_URLS[trackKey] || '';
+    const trackDef = TRACKS[trackKey] || {};
+    // Extra ₹50 / Weekend: page par campaign id nahi milti, isliye engine ki
+    // self-verifying ladder chalai jati hai (likho → read-back → tabhi ✓).
+    if (trackDef.fixed && !(track.rows || []).length) {
+      let slot = null;
+      try {
+        const out = await activateAllEventOffers(acc, { offerKeys: [trackKey], force: true, fetchImpl });
+        slot = out?.offers?.[trackKey] || null;
+      } catch (err) {
+        slot = { campaign: '', verified: false, message: String(err?.message || err).slice(0, 120) };
+      }
+      if (slot?.campaign) {
+        resolvedMeta[trackDef.metaField] = slot.campaign;
+        resolvedMeta[trackDef.sourceField] = slot.metaSource || 'CANDIDATE_VERIFIED';
+      }
+      changes.push({
+        track: trackKey,
+        campaign: slot?.campaign || '',
+        action: 'ladder',
+        wrote: Number(slot?.writes || 0) > 0,
+        writeStatus: 200,
+        verified: Boolean(slot?.verified),
+        value: Number(value),
+        shouldNotify: Boolean(slot?.verified),
+        reason: slot?.verified ? '' : (slot?.message || 'campaign id live verify nahi hui')
+      });
+      continue;
+    }
     for (const row of (track.rows || []).slice(0, 2)) {
       const campaign = row.campaign;
       const probe = row.probe || {};
@@ -619,6 +657,9 @@ export function formatOfferDoctorReport(report, { accountLabel = '', escapeHtml 
     const icon = t.state === 'LIVE_NOW' || t.state === 'BOOKED' ? '🟢' : (t.state === 'WRONG_REWARD' ? '🟡' : '🔴');
     lines.push(`${icon} <b>${esc(t.label)}</b> — <b>${esc(t.state)}</b>`);
     lines.push(`   ${esc(t.reason)}`);
+    if (Array.isArray(t.tried) && t.tried.length) {
+      lines.push(`   <i>try kiye: ${t.tried.map((x) => esc(x)).join(', ')}</i>`);
+    }
     for (const row of (t.rows || []).slice(0, 3)) {
       const p = row.probe || {};
       lines.push(
