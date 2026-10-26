@@ -114,6 +114,7 @@ import {
   buildSignedOrderTrackUrl
 } from './swiggy-cart.js';
 import { classifySwiggyAccountFailure, isAccountSuspended, markAccountSuspended, markAccountHealthy, noteAccountFailure, describeSuspendedAccount, suspendedAccountsSummary } from './account-health.js';
+import { diagnoseAccountOffers, fixAccountOffers } from './offer-claim-doctor.js';
 
 function isValidCartInput(input) {
   const s = String(input || '').trim();
@@ -2363,9 +2364,45 @@ export async function executeOrderBillSyncOnAccount({
     if (order.selectedAccount) markAccountHealthy(order.selectedAccount, { note: 'bill sync ok' });
     const nextPick = pickNextRotationAccount(order);
     if (nextPick?.success && nextPick.key) void warmAccountSessionAuth(nextPick.key);
+    // ₹50 / night offer: agar is ID par reward option galat ya campaign book hi
+    // nahi hua to background me theek ho jata hai (kaam karte hue, block kiye bina).
+    if (order.selectedAccount) void autoHealOffersForAccount(order.selectedAccount);
   } catch {}
 
   return order;
+}
+
+/**
+ * OFFER AUTO-HEAL — jab ID cart me lagti hai, us waqt offer ki asli state
+ * padho; agar reward option galat (~₹150 coupon) ya campaign book hi nahi hua
+ * to ek baar khud theek kar do. Har ID par 15 min me max ek baar, background me,
+ * order flow ko kabhi block nahi karta.
+ */
+export async function autoHealOffersForAccount(key, { minGapMs = 15 * 60 * 1000, nowMs = Date.now() } = {}) {
+  const k = String(key || '');
+  if (!k) return null;
+  try {
+    const db = getDb();
+    const acc = db?.config?.accounts?.[k];
+    if (!acc || !acc.isLoggedIn || isAccountSuspended(acc)) return null;
+    const lastAt = Date.parse(String(acc.offerAutoHealAt || '')) || 0;
+    if (lastAt && nowMs - lastAt < minGapMs) return null;
+    acc.offerAutoHealAt = new Date(nowMs).toISOString();
+    saveDb(db);
+
+    const diag = await diagnoseAccountOffers(acc, { key: k, nowMs });
+    const ln = diag?.tracks?.lateNight;
+    const bf = diag?.tracks?.breakfast;
+    const needsFix = [ln, bf].some((t) => t && (t.state === 'WRONG_REWARD' || t.state === 'NOT_BOOKED'));
+    if (!needsFix) return diag;
+
+    const fixed = await fixAccountOffers(acc, { key: k, nowMs });
+    console.log(`[OfferAutoHeal] ${acc.phone || k}: ${(fixed.changes || []).map((c) => `${c.campaign}:${c.verified ? 'ok' : 'fail'}`).join(' ')}`);
+    return fixed;
+  } catch (err) {
+    console.warn('[OfferAutoHeal] skipped:', err?.message || err);
+    return null;
+  }
 }
 
 /**

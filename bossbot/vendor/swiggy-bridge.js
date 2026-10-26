@@ -741,9 +741,6 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
     if (!bfAll.length) bfAll.push({ res: { ok: false, status: 500, statusText: 'Empty' }, json: {}, statusJson: {} });
     if (!lnAll.length) lnAll.push({ res: { ok: false, status: 500, statusText: 'Empty' }, json: {}, statusJson: {} });
 
-    const bfStatusNow = bfAll[0]?.statusJson || {};
-    const lnStatusNow = lnAll[0]?.statusJson || {};
-
     const { res: resBf, json: bfJson } = bfAll[0];
     const { res: resLn, json: lnJson } = lnAll[0];
 
@@ -752,6 +749,62 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
 
     const bfOk = bfLockedCount > 0;
     const lnOk = lnLockedCount > 0;
+
+    // ── READ-BACK VERIFICATION ────────────────────────────────────────────────
+    // "HTTP 200" ka matlab offer lag gaya nahi hota. Swiggy kabhi write accept
+    // kar ke kuch aur save karta hai (ya kuch bhi nahi) — aur tab hi "dusre ID
+    // par offer lag raha hai, mere par nahi" jaisa hota hai. Isliye jahan write
+    // hua wahan ek GET se ASLI state padhi jati hai; UI sirf wahi sach dikhata hai.
+    const readBackNotifyState = async (campaignId) => {
+      if (!campaignId) return null;
+      try {
+        const res = await fetch(`${'https://events.swiggy.com/api/notify'}?campaign=${encodeURIComponent(campaignId)}`, {
+          headers: baseHeaders,
+          signal: AbortSignal.timeout(5000)
+        });
+        if (!res.ok) return { ok: false, status: res.status, shouldNotify: false, value: 0, timestamp: '' };
+        const json = await res.json().catch(() => ({}));
+        return {
+          ok: true,
+          status: res.status,
+          shouldNotify: Boolean(json?.shouldNotify),
+          value: Number(json?.value || 0),
+          timestamp: json?.timestamp || ''
+        };
+      } catch {
+        return { ok: false, status: 0, shouldNotify: false, value: 0, timestamp: '' };
+      }
+    };
+
+    const bfVerify = (bfOk && bfWin.todayCampaign) ? await readBackNotifyState(bfWin.todayCampaign) : null;
+    const lnVerify = (lnOk && lnWin.todayCampaign) ? await readBackNotifyState(lnWin.todayCampaign) : null;
+
+    const applyVerification = (verifyOut, label) => {
+      if (!verifyOut || !verifyOut.ok) return { ok: true, stateJson: null, note: '' };
+      if (!verifyOut.shouldNotify) {
+        return {
+          ok: false,
+          stateJson: verifyOut,
+          note: `${label}: Swiggy ne save nahi kiya (read-back: not subscribed)`
+        };
+      }
+      if (Number(verifyOut.value) && Number(verifyOut.value) !== chosenVal) {
+        return {
+          ok: true,
+          stateJson: verifyOut,
+          note: `${label}: Swiggy par option ${verifyOut.value} (${(EVENT_OFFER_OPTIONS[Number(verifyOut.value)] || {}).shortLabel || ''}) save hai, ₹50 free cash nahi`
+        };
+      }
+      return { ok: true, stateJson: verifyOut, note: '' };
+    };
+
+    const bfApplied = applyVerification(bfVerify, 'Breakfast');
+    const lnApplied = applyVerification(lnVerify, 'Late night');
+    const bfFinalOk = bfOk && bfApplied.ok;
+    const lnFinalOk = lnOk && lnApplied.ok;
+
+    const bfStatusNow = { ...(bfAll[0]?.statusJson || {}), ...(bfApplied.stateJson || {}) };
+    const lnStatusNow = { ...(lnAll[0]?.statusJson || {}), ...(lnApplied.stateJson || {}) };
 
     const describeSlotState = (ok, res, json, statusNow, win, isLn) => {
       if (!ok) {
@@ -780,8 +833,10 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
       };
     };
 
-    const bfDesc = describeSlotState(bfOk, resBf, bfJson, bfStatusNow, bfWin, false);
-    const lnDesc = describeSlotState(lnOk, resLn, lnJson, lnStatusNow, lnWin, true);
+    const bfDesc = describeSlotState(bfFinalOk, resBf, bfJson, bfStatusNow, bfWin, false);
+    const lnDesc = describeSlotState(lnFinalOk, resLn, lnJson, lnStatusNow, lnWin, true);
+    if (bfApplied.note) bfDesc.msg = `${bfDesc.msg} — ${bfApplied.note}`;
+    if (lnApplied.note) lnDesc.msg = `${lnDesc.msg} — ${lnApplied.note}`;
 
     console.log(`[EventsClaim] Account ${account.phone || account.name || 'User'} result:`, {
       offerValue: chosenVal,
@@ -790,12 +845,13 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
     });
 
     const claimOut = {
-      success: bfOk || lnOk,
-      bothClaimed: bfOk && lnOk,
+      success: bfFinalOk || lnFinalOk,
+      bothClaimed: bfFinalOk && lnFinalOk,
+      verified: Boolean(bfVerify?.ok || lnVerify?.ok),
       offerValue: chosenVal,
       offerLabel: chosenMeta.shortLabel,
       lockedMap: prevLockedMap,
-      sessionExpired: !bfOk && !lnOk && (resBf.status === 401 || resLn.status === 401 || liveSessionDead),
+      sessionExpired: !bfFinalOk && !lnFinalOk && (resBf.status === 401 || resLn.status === 401 || liveSessionDead),
       // Swiggy's own throttle answer — remembered longer so we STOP retrying and
       // let the limit cool down instead of making it worse.
       rateLimited: [403, 429].includes(Number(resBf.status)) || [403, 429].includes(Number(resLn.status)),
@@ -807,7 +863,8 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
         lockedDaysCount: bfLockedCount,
         upcomingCampaigns: bfWin.upcomingDays,
         slotState: bfDesc.state,
-        status: bfOk ? 'CLAIMED' : 'FAILED',
+        verified: Boolean(bfVerify?.ok && bfVerify?.shouldNotify && Number(bfVerify?.value) === chosenVal),
+        status: bfFinalOk ? 'CLAIMED' : 'FAILED',
         statusCode: resBf.status,
         discount: chosenMeta.shortLabel,
         offerValue: Number(bfStatusNow?.value || chosenVal),
@@ -822,7 +879,8 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
         lockedDaysCount: lnLockedCount,
         upcomingCampaigns: lnWin.upcomingDays,
         slotState: lnDesc.state,
-        status: lnOk ? 'CLAIMED' : 'FAILED',
+        verified: Boolean(lnVerify?.ok && lnVerify?.shouldNotify && Number(lnVerify?.value) === chosenVal),
+        status: lnFinalOk ? 'CLAIMED' : 'FAILED',
         statusCode: resLn.status,
         discount: chosenMeta.shortLabel,
         offerValue: Number(lnStatusNow?.value || chosenVal),
