@@ -257,6 +257,16 @@ export function checkLoggedInFromCookies(input) {
 // Locks in TODAY + ALL NEXT 14 UPCOMING DAYS in advance via `POST` + `PATCH` on `events.swiggy.com/api/notify`
 // so Swiggy's daily batch cutoff (`18:30 IST` LN / `05:00 IST` BF) NEVER misses crediting Free Cash / Coupons!
 // ---------------------------------------------------------------------------
+// The two offer links the Boss imports for: Breakfast (6AM–11AM slot, redeem
+// 7–11AM) and Dinner/Late-Night (9PM–11PM slot, redeem 9PM–6AM). Every JSON
+// import auto-locks BOTH, always with reward option #1 = "₹50 off on ₹199".
+export const EVENT_CAMPAIGN_URLS = {
+  breakfast: 'https://events.swiggy.com/book-your-offer?utm_source=app&utm_medium=share',
+  lateNight: 'https://events.swiggy.com/pick-your-late-night-offer?utm_source=app&utm_medium=share'
+};
+export const PREFERRED_EVENT_OFFER_VALUE = 1; // 4 options per slot -> always the ₹50-on-₹199 one
+export const PREFERRED_EVENT_OFFER_LABEL = '₹50 off on ₹199';
+
 export const EVENT_OFFER_OPTIONS = {
   1: { value: 1, shortLabel: '₹50 Free Cash (>₹199)', fullLabel: '₹ ₹50 Free Cash (MOV ₹199 • Stacks Over Coupons)' },
   2: { value: 2, shortLabel: '₹150 OFF Coupon (>₹249)', fullLabel: '# ₹150 OFF Coupon (MOV ₹249)' },
@@ -298,8 +308,8 @@ async function getLiveEventCampaignMeta(forceRefresh = false) {
   };
   try {
     const [bfRes, lnRes] = await Promise.all([
-      fetch('https://events.swiggy.com/book-your-offer?utm_source=app&utm_medium=share', { signal: AbortSignal.timeout(5000) }),
-      fetch('https://events.swiggy.com/pick-your-late-night-offer?utm_source=app&utm_medium=share', { signal: AbortSignal.timeout(5000) })
+      fetch(EVENT_CAMPAIGN_URLS.breakfast, { signal: AbortSignal.timeout(5000) }),
+      fetch(EVENT_CAMPAIGN_URLS.lateNight, { signal: AbortSignal.timeout(5000) })
     ]);
     const [bfHtml, lnHtml] = await Promise.all([bfRes.text(), lnRes.text()]);
     const parseNexus = (html, defPrefix) => {
@@ -375,6 +385,77 @@ function resolveCampaignWindowInfo(boundaries, prefix, defaultDay = 15, isLateNi
     cutoffMs,
     slotOpenMs,
     endMs: matched?.endMs || null
+  };
+}
+
+/**
+ * AUTO-ACTIVATE both offer links (book-your-offer + pick-your-late-night-offer) for an
+ * account, ALWAYS picking reward option #1 = "₹50 off on ₹199" out of the 4
+ * choices Swiggy shows on each slot.
+ *
+ * Returns a compact record the account card can show honestly:
+ *   { ok, success, bothClaimed, offerValue, label, alreadyClaimed,
+ *     breakfast: { status, alreadyActive, message }, lateNight: { ... }, at }
+ */
+export async function autoActivateEventOffers(account, { force = true } = {}) {
+  if (!account) {
+    return { ok: false, success: false, bothClaimed: false, reason: 'No account provided', offerValue: PREFERRED_EVENT_OFFER_VALUE, label: PREFERRED_EVENT_OFFER_LABEL };
+  }
+  const at = new Date().toISOString();
+  let raw = null;
+  try {
+    account.preferredOfferValue = PREFERRED_EVENT_OFFER_VALUE;
+    raw = await claimSwiggyBreakfastAndLateNightOffers(account, {
+      force,
+      forcePatch: true,
+      offerValue: PREFERRED_EVENT_OFFER_VALUE
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      success: false,
+      bothClaimed: false,
+      reason: String(err?.message || err).slice(0, 160),
+      offerValue: PREFERRED_EVENT_OFFER_VALUE,
+      label: PREFERRED_EVENT_OFFER_LABEL,
+      breakfast: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) },
+      lateNight: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) },
+      at
+    };
+  }
+
+  const slot = (rec) => {
+    if (!rec) return { status: 'FAILED', message: 'No answer from Swiggy' };
+    const claimed = String(rec.status || '').toUpperCase() === 'CLAIMED';
+    return {
+      status: claimed ? 'CLAIMED' : 'FAILED',
+      alreadyActive: Boolean(rec.alreadyActive),
+      message: String(rec.message || rec.rawMessage || '').slice(0, 140),
+      slotState: rec.slotState || '',
+      discount: PREFERRED_EVENT_OFFER_LABEL,
+      campaignUrl: rec.campaignUrl || '',
+      campaign: rec.campaign || '',
+      claimedAt: claimed ? at : ''
+    };
+  };
+
+  const breakfast = slot(raw?.breakfast);
+  const lateNight = slot(raw?.lateNight);
+  return {
+    ok: Boolean(raw?.success),
+    success: Boolean(raw?.success),
+    bothClaimed: Boolean(raw?.bothClaimed),
+    alreadyClaimed: Boolean(breakfast.alreadyActive && lateNight.alreadyActive),
+    offerValue: PREFERRED_EVENT_OFFER_VALUE,
+    label: PREFERRED_EVENT_OFFER_LABEL,
+    sessionExpired: Boolean(raw?.sessionExpired),
+    rateLimited: Boolean(raw?.rateLimited),
+    breakfast,
+    lateNight,
+    offers: raw?.offers || null,
+    lockedMap: raw?.lockedMap || null,
+    campaigns: { ...EVENT_CAMPAIGN_URLS },
+    at
   };
 }
 
@@ -551,7 +632,7 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
         // Already locked on Swiggy's server with the exact desired reward value!
         if (statusRes.ok && isSubscribed && curVal === chosenVal) {
           prevLockedMap[campaignId] = chosenVal;
-          return { res: statusRes, json: { ...statusJson, message: 'Already active' }, statusJson };
+          return { res: statusRes, json: { ...statusJson, message: 'Already active' }, statusJson, alreadyActive: true };
         }
 
         // Need either `POST` (first time subscribing) or `PATCH` (switching reward option 1..4)!
@@ -719,8 +800,10 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
       // let the limit cool down instead of making it worse.
       rateLimited: [403, 429].includes(Number(resBf.status)) || [403, 429].includes(Number(resLn.status)),
       breakfast: {
-        name: 'Breakfast Morning (7AM–11AM)',
+        name: 'Breakfast Morning (6AM–11AM)',
         campaign: bfWin.todayCampaign,
+        alreadyActive: Boolean(bfAll[0]?.alreadyActive),
+        campaignUrl: EVENT_CAMPAIGN_URLS.breakfast,
         lockedDaysCount: bfLockedCount,
         upcomingCampaigns: bfWin.upcomingDays,
         slotState: bfDesc.state,
@@ -732,8 +815,10 @@ async function _claimSwiggyOffersUncached(account, { force = false, offerValue =
         message: bfDesc.msg
       },
       lateNight: {
-        name: 'Late Night (9PM–6AM)',
+        name: 'Dinner Late Night (9PM–11PM slot)',
         campaign: lnWin.todayCampaign,
+        alreadyActive: Boolean(lnAll[0]?.alreadyActive),
+        campaignUrl: EVENT_CAMPAIGN_URLS.lateNight,
         lockedDaysCount: lnLockedCount,
         upcomingCampaigns: lnWin.upcomingDays,
         slotState: lnDesc.state,

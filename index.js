@@ -62,7 +62,16 @@ import {
   ingestAndPersistRawAccountTexts,
   formatBulkVaultImportSummaryHtml,
   createBulkDocumentBatchCollector,
+  buildPortableAccountMessages,
 } from './account-vault-intake.js';
+import {
+  compactAccountListText,
+  accountDetailText,
+  liveOrderTruth,
+  offerClaimTruth,
+  portableSessionJsonText,
+  buildPortableSessionJson
+} from './account-views.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { scanFailuresLine } from './scan-diagnostics.js';
 import * as wafPool from './waf-pool.js';
@@ -2932,7 +2941,7 @@ async function processAccountEntrySequentially(ctx, entry, { index = 1, total = 
         token: liveToken || liveTid,
         tid: liveTid,
         cookies: finalCookieStr
-      }, { quickLockOnly: true }),
+      }, { quickLockOnly: true, offerValue: 1, forcePatch: true }),
       new Promise(resolve => setTimeout(() => resolve(null), 2500))
     ]);
   } catch {}
@@ -3051,34 +3060,56 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
   let orderHistory = null;
   try {
     orderHistory = await inspectAccountOrderHistoryAndOffers(targetAcc, currentAcc, { force: true });
-    if (orderHistory && orderHistory.valid !== false && typeof orderHistory.totalOrdersCount === 'number') {
+    if (orderHistory && orderHistory.valid !== false && orderHistory.ordersVerifiedLive === true && typeof orderHistory.totalOrdersCount === 'number') {
+      // LIVE answer from Swiggy — this is the only count we are allowed to trust.
       db.config.accounts[targetAcc].totalOrdersCount = orderHistory.totalOrdersCount;
       db.config.accounts[targetAcc].cachedTotalOrdersCount = orderHistory.totalOrdersCount;
+      db.config.accounts[targetAcc].ordersVerifiedLive = true;
+      db.config.accounts[targetAcc].orderCountSource = 'LIVE';
+      db.config.accounts[targetAcc].orderTruthCheckedAt = new Date().toISOString();
       db.config.accounts[targetAcc].isZeroOrderAccount = (orderHistory.totalOrdersCount === 0);
       delete db.config.accounts[targetAcc].accountError;
       saveDb(db);
-    } else if (orderHistory?.valid === false && db.config?.accounts?.[targetAcc]) {
-      db.config.accounts[targetAcc].accountError = orderHistory.error || 'Verification issue';
+    } else if (db.config?.accounts?.[targetAcc]) {
+      // No live answer -> do NOT print any count taken from the file.
+      db.config.accounts[targetAcc].ordersVerifiedLive = false;
+      db.config.accounts[targetAcc].orderCountSource = 'UNVERIFIED';
+      delete db.config.accounts[targetAcc].totalOrdersCount;
+      delete db.config.accounts[targetAcc].isZeroOrderAccount;
+      if (orderHistory?.valid === false) {
+        db.config.accounts[targetAcc].accountError = orderHistory.error || 'Verification issue';
+      }
       saveDb(db);
     }
   } catch (e) {}
 
-  // If 0 orders in past, immediately pre-fetch & lock Breakfast & Late Night offers and compute possible discounts count!
+  // ALWAYS auto-activate BOTH offer links on EVERY imported ID — Breakfast
+  // (book-your-offer) and Dinner Late Night (pick-your-late-night-offer) — with
+  // reward option #1 = "₹50 off on ₹199". Not gated on zero-order accounts.
   if (db.config?.accounts?.[targetAcc]) {
     const accTarget = db.config.accounts[targetAcc];
-    if (accTarget.isZeroOrderAccount || accTarget.totalOrdersCount === 0) {
-      try {
-        const claimOut = await claimSwiggyBreakfastAndLateNightOffers(accTarget, { force: true, offerValue: 1 });
-        if (claimOut) {
-          accTarget.offers = claimOut.offers || claimOut;
-          accTarget.hasBreakfast = Boolean(claimOut.breakfast?.status === 'CLAIMED');
-          accTarget.hasLateNight = Boolean(claimOut.lateNight?.status === 'CLAIMED');
-          if (!accInfo.offers) accInfo.offers = {};
-          accInfo.offers.lateNight = claimOut.lateNight || claimOut.offers?.lateNight;
-          accInfo.offers.breakfast = claimOut.breakfast || claimOut.offers?.breakfast;
-        }
-      } catch (e) {}
-    }
+    try {
+      const claimOut = await claimSwiggyBreakfastAndLateNightOffers(accTarget, { force: true, forcePatch: true, offerValue: 1 });
+      if (claimOut) {
+        accTarget.offers = claimOut.offers || claimOut;
+        accTarget.preferredOfferValue = 1;
+        accTarget.hasBreakfast = Boolean(claimOut.breakfast?.status === 'CLAIMED');
+        accTarget.hasLateNight = Boolean(claimOut.lateNight?.status === 'CLAIMED');
+        accTarget.offerAutoActivation = {
+          offerValue: 1,
+          label: '₹50 off on ₹199',
+          at: new Date().toISOString(),
+          source: 'JSON_IMPORT',
+          bothClaimed: Boolean(claimOut.bothClaimed),
+          breakfast: claimOut.breakfast || null,
+          lateNight: claimOut.lateNight || null
+        };
+        if (!accInfo.offers) accInfo.offers = {};
+        accInfo.offers.lateNight = claimOut.lateNight || claimOut.offers?.lateNight;
+        accInfo.offers.breakfast = claimOut.breakfast || claimOut.offers?.breakfast;
+        saveDb(db);
+      }
+    } catch (e) {}
     let possibleCount = (accTarget.isZeroOrderAccount || accTarget.totalOrdersCount === 0) ? 1 : 0;
     if (accTarget.hasBreakfast || accTarget.offers?.breakfast?.status === 'CLAIMED') possibleCount += 1;
     if (accTarget.hasLateNight || accTarget.offers?.lateNight?.status === 'CLAIMED') possibleCount += 1;
@@ -3087,36 +3118,31 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     saveDb(db);
   }
 
-  const knownOrders = (typeof currentAcc.totalOrdersCount === 'number' && currentAcc.totalOrdersCount !== 999999)
-    ? currentAcc.totalOrdersCount
-    : (typeof currentAcc.cachedTotalOrdersCount === 'number' && currentAcc.cachedTotalOrdersCount !== 999999 ? currentAcc.cachedTotalOrdersCount : null);
+  // Order count: ONLY a live Swiggy answer counts. No "?? 0" fallback — a file
+  // that claims 0 orders must never be shown as a fresh 0-order ID.
+  const liveTruth = liveOrderTruth(orderHistory?.ordersVerifiedLive === true
+    ? { ...currentAcc, totalOrdersCount: orderHistory.totalOrdersCount, ordersVerifiedLive: true }
+    : currentAcc);
 
   let pastOrdersText = '';
   let idDiagnosticNote = '';
-
   if (orderHistory && orderHistory.valid === false) {
     idDiagnosticNote = `\n⚠️ <b>ID Diagnostic:</b> <i>${escapeHtml(orderHistory.error || 'Session verification issue')}</i>`;
-    if (knownOrders !== null) {
-      pastOrdersText = (knownOrders === 0)
-        ? `<b>0 Orders</b> (★ Fresh 0-Order Account)`
-        : `<b>${knownOrders} Order${knownOrders === 1 ? '' : 's'}</b> (● Used Account)`;
-    } else {
-      pastOrdersText = `<i>⚠️ Verification Incomplete (${escapeHtml(orderHistory.error || 'Check Session')})</i>`;
-    }
-  } else {
-    const ordersCountNum = orderHistory?.totalOrdersCount ?? knownOrders ?? 0;
-    pastOrdersText = (ordersCountNum === 0)
-      ? `<b>0 Orders</b> (★ Fresh 0-Order Account — Max Coupons Eligible!)`
-      : `<b>${ordersCountNum} Order${ordersCountNum === 1 ? '' : 's'}</b> (● Used Account)`;
   }
+  pastOrdersText = liveTruth.totalOrders === null
+    ? `<i>⚠️ Live check pending — file ka likha count nahi maana jata (tap “⟳ Live Check Orders”)</i>`
+    : (liveTruth.totalOrders === 0
+      ? `<b>0 Orders</b> (★ LIVE verified — Max Coupons Eligible!)`
+      : `<b>${liveTruth.totalOrders} Order${liveTruth.totalOrders === 1 ? '' : 's'}</b> (● Used Account — LIVE verified)`);
 
   const exported = exportSessionJson(targetAcc) || accInfo.exportJson || db.config?.accounts?.[targetAcc];
-  const sessionJsonStr = exported ? JSON.stringify(exported, null, 2) : '';
-  const compactStr = exported ? JSON.stringify(exported) : '';
+  const portableSource = db.config?.accounts?.[targetAcc] || exported || {};
+  const sessionJsonStr = portableSessionJsonText(portableSource, targetAcc, { pretty: true });
+  const compactStr = portableSessionJsonText(portableSource, targetAcc, { pretty: false });
 
   const offers = accInfo.offers || {};
-  const lateNight = offers.lateNight || { status: 'CLAIMED', discount: '50 off on 199' };
-  const breakfast = offers.breakfast || { status: 'CLAIMED', discount: '50 off on 199' };
+  const lateNight = offers.lateNight || { status: 'NONE', message: 'abhi claim nahi hua' };
+  const breakfast = offers.breakfast || { status: 'NONE', message: 'abhi claim nahi hua' };
   const isLateNightClaimed = lateNight.status === 'CLAIMED';
   const isBreakfastClaimed = breakfast.status === 'CLAIMED';
   const bothClaimed = isLateNightClaimed && isBreakfastClaimed;
@@ -3156,14 +3182,6 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     `▣ <i>Account is saved in DB — tap <b>Copy Code</b> below to copy 100% FULL code!</i>`;
 
   const keyboardButtons = [];
-  const copyRow = [];
-  if (compactStr) {
-    copyRow.push(makeFullSessionCopyButton(ctx, 'Copy Code', targetAcc, compactStr, `copy_code_${targetAcc}`, 'primary'));
-  }
-  if (phone) {
-    copyRow.push({ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' });
-  }
-  if (copyRow.length > 0) keyboardButtons.push(copyRow);
 
   keyboardButtons.push([
     { text: '▣ Claim ₹50 Offers', callback_data: `boss_retry_claim_${targetAcc}`, style: 'success' },
@@ -3184,6 +3202,17 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     { text: 'Add Another Account', callback_data: 'send_to_another_number', style: 'primary' },
     { text: 'Delete Account from Swiggy', callback_data: `boss_swiggy_delete_start_${targetAcc}`, style: 'danger' }
   ]);
+
+  // ⬇ COPY BLOCK — bottom of the card, one per account (portable 7-field JSON).
+  const copyRow = [];
+  if (compactStr) {
+    copyRow.push(makeFullSessionCopyButton(ctx, '▤ Copy Session JSON', targetAcc, compactStr, `acc_copy_json_${targetAcc}`, 'success'));
+    copyRow.push({ text: '⬇ Send .json', callback_data: `acc_send_json_${targetAcc}`, style: 'primary' });
+  }
+  if (phone) {
+    copyRow.push({ text: '☎ Copy Number', copy_text: { text: phone }, style: 'primary' });
+  }
+  if (copyRow.length > 0) keyboardButtons.push(copyRow);
 
   keyboardButtons.push([
     { text: 'Main Menu', callback_data: 'boss_panel_home', style: 'primary' },
@@ -6738,24 +6767,14 @@ export async function showFamilyAccounts(ctx) {
   const liveCount = entries.filter(([, a]) => isAccountLoggedInSession(a)).length;
   const deadCount = entries.length - liveCount;
 
-  let text = `◉ <b>CONNECTED SWIGGY ACCOUNTS (${liveCount} Active / ${entries.length} Total):</b>\n\n`;
-  if (entries.length === 0) {
-    text += `<i>Koi bhi account connected nahi hai.\nNiche diye buttons se JSON ya Number se login karein!</i>\n\n`;
-  } else {
-    for (const [key, acc] of entries) {
-      const isLive = isAccountLoggedInSession(acc);
-      const status = isLive ? `● Logged In` : (acc.sessionExpired ? `⚠️ Session Expired` : '○ Logged Out');
-      const isActive = key === activeKey ? ' ★ <b>[ACTIVE]</b>' : '';
-      const cnt = typeof acc.totalOrdersCount === 'number'
-        ? acc.totalOrdersCount
-        : (typeof acc.cachedTotalOrdersCount === 'number' ? acc.cachedTotalOrdersCount : null);
-      const orderBadge = cnt === 0
-        ? '★ 0 Orders (Fresh 0-Order ID)'
-        : (cnt !== null ? `● ${cnt} Order${cnt === 1 ? '' : 's'}` : '○ Orders: Not checked');
-      text += `• <b>${escapeHtml(acc.name || key)}</b>${isActive} — <b>${status}</b>\n` +
-        `  ☎ <code>${acc.phone || 'Not set'}</code> • 📦 <b>${orderBadge}</b>\n`;
-    }
-    text += `\n<i>↓ Kisi bhi account par tap karein (Copy Code / Claim Offer / Logout / Re-Login / Delete ke liye):</i>`;
+  // Collapsed one-liner per account; full truth + Copy JSON lives behind the tap.
+  const compact = compactAccountListText(accounts, {
+    activeKey,
+    header: `◉ <b>CONNECTED SWIGGY ACCOUNTS (${liveCount} Active / ${entries.length} Total):</b>`
+  });
+  let text = compact.text;
+  if (entries.length > 0) {
+    text += `\n<i>↓ Kisi bhi account par tap karein — orders LIVE check, offer CLAIMED/NEW, aur Copy JSON.</i>`;
   }
 
   const buttons = [];
@@ -6765,16 +6784,16 @@ export async function showFamilyAccounts(ctx) {
     const [k1, a1] = entries[i];
     const live1 = isAccountLoggedInSession(a1);
     const icon1 = live1 ? (k1 === activeKey ? '★' : '●') : (a1.sessionExpired ? '⚠️' : '○');
-    const cnt1 = typeof a1.totalOrdersCount === 'number' ? a1.totalOrdersCount : (typeof a1.cachedTotalOrdersCount === 'number' ? a1.cachedTotalOrdersCount : null);
-    const ordBadge1 = cnt1 === 0 ? '[0 ord]' : (cnt1 !== null ? `[${cnt1} ord]` : '');
+    const t1 = liveOrderTruth(a1);
+    const ordBadge1 = t1.totalOrders === null ? '[ord?]' : (t1.totalOrders === 0 ? '[0 ord✓]' : `[${t1.totalOrders} ord✓]`);
     const label1 = `${icon1} ${a1.phone || a1.name || k1} ${ordBadge1}`.trim();
     row.push({ text: label1, callback_data: `acc_view_detail_${k1}`, style: live1 ? 'success' : 'primary' });
     if (entries[i + 1]) {
       const [k2, a2] = entries[i + 1];
       const live2 = isAccountLoggedInSession(a2);
       const icon2 = live2 ? (k2 === activeKey ? '★' : '●') : (a2.sessionExpired ? '⚠️' : '○');
-      const cnt2 = typeof a2.totalOrdersCount === 'number' ? a2.totalOrdersCount : (typeof a2.cachedTotalOrdersCount === 'number' ? a2.cachedTotalOrdersCount : null);
-      const ordBadge2 = cnt2 === 0 ? '[0 ord]' : (cnt2 !== null ? `[${cnt2} ord]` : '');
+      const t2 = liveOrderTruth(a2);
+      const ordBadge2 = t2.totalOrders === null ? '[ord?]' : (t2.totalOrders === 0 ? '[0 ord✓]' : `[${t2.totalOrders} ord✓]`);
       const label2 = `${icon2} ${a2.phone || a2.name || k2} ${ordBadge2}`.trim();
       row.push({ text: label2, callback_data: `acc_view_detail_${k2}`, style: live2 ? 'success' : 'primary' });
     }
@@ -7230,6 +7249,7 @@ const bulkAccountDocCollector = createBulkDocumentBatchCollector({
 
     let successCount = 0;
     let expiredCount = 0;
+    const processedKeys = [];
 
     for (let i = 0; i < accountsToProcess.length; i++) {
       const item = accountsToProcess[i];
@@ -7238,6 +7258,7 @@ const bulkAccountDocCollector = createBulkDocumentBatchCollector({
         total: accountsToProcess.length,
         fileName: item.fileName
       });
+      if (res.success && res.key) processedKeys.push(res.key);
       if (res.success) successCount++;
       else if (res.expired) expiredCount++;
       if (i < accountsToProcess.length - 1) {
@@ -7246,21 +7267,55 @@ const bulkAccountDocCollector = createBulkDocumentBatchCollector({
     }
 
     if (accountsToProcess.length > 1) {
+      const liveDb = getDb();
+      const processedList = processedKeys
+        .map((k) => liveDb.config?.accounts?.[k])
+        .filter(Boolean);
+      const truthLine = (a) => (a.ordersVerifiedLive === true
+        ? (Number(a.totalOrdersCount) === 0 ? '★ 0 orders (LIVE)' : `● ${Number(a.totalOrdersCount)} orders (LIVE)`)
+        : '⚠️ live check pending');
+      const lines = processedKeys.map((k, i) => {
+        const a = liveDb.config?.accounts?.[k];
+        if (!a) return `${i + 1}. × <code>${k}</code> — save fail`;
+        const act = a.offerAutoActivation || {};
+        const bf = act.breakfast?.status === 'CLAIMED' ? '✓' : '✕';
+        const ln = act.lateNight?.status === 'CLAIMED' ? '✓' : '✕';
+        return `${i + 1}. 🟢 <code>${a.phone || k}</code> · ${truthLine(a)} · ₹50 on ₹199 → BF ${bf} / LN ${ln}`;
+      }).join('\n');
       await lastCtx.reply(
         `<blockquote>✓ <b>ALL FILE ACCOUNTS PROCESSED ONE BY ONE</b></blockquote>\n\n` +
         `Total Files/Accounts: <b>${accountsToProcess.length}</b>\n` +
         `● Logged In & Ready: <b>${successCount}</b>\n` +
         (expiredCount > 0 ? `× Expired: <b>${expiredCount}</b>\n\n` : '\n') +
-        `Sabhi accounts ke order counts & ₹50 offers live lock ho chuke hain.\n` +
-        `Ab bot har new order par automatic <b>Best 0-Order ID</b> select karega!`,
+        (lines ? `${lines}\n\n` : '') +
+        `<i>Order count sirf LIVE Swiggy check se — file ka likha count nahi maana jata.</i>\n` +
+        `<i>Har account par tap karke poora JSON + Copy button milega.</i>`,
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [Markup.button.callback('◉ View Connected Accounts', 'boss_view_accounts')],
+            [Markup.button.callback('⬇ Send All JSON', 'boss_send_all_json')],
             [Markup.button.callback('⌂ Main Menu', 'boss_panel_home')]
           ])
         }
       );
+
+      // One .json document per imported account (7 fields, exact order).
+      for (const k of processedKeys.slice(0, 40)) {
+        const a = liveDb.config?.accounts?.[k];
+        if (!a) continue;
+        const payload = buildPortableSessionJson(a, k);
+        const phone = String(a.phone || k).replace(/\D/g, '').slice(-10) || 'session';
+        try {
+          await lastCtx.replyWithDocument(
+            { source: Buffer.from(JSON.stringify(payload, null, 2), 'utf8'), filename: `${phone}.json` },
+            {
+              caption: `▤ <b>${escapeHtml(String(a.name || phone))}</b> · <code>${phone}</code>\n${truthLine(a)}\n<i>name, customerId, mobile, token, tid, sid, deviceId</i>`,
+              parse_mode: 'HTML'
+            }
+          );
+        } catch { /* skip individual failures */ }
+      }
     }
   }
 });
@@ -11333,50 +11388,27 @@ bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
   const isActive = key === activeKey;
   const isLogged = isAccountLoggedInSession(acc);
 
-  const exported = exportSessionJson(key) || ((acc.cookies || acc.tid || acc.token) ? acc : null);
-  const sessionJsonStr = exported ? JSON.stringify(exported, null, 2) : '';
-  const compactStr = exported ? JSON.stringify(exported) : '';
   const phone = acc.phone || acc.mobile || '';
-  const codeBlock = sessionJsonStr.length <= 3400 ? sessionJsonStr : compactStr;
+  // The portable 7-key JSON ({name, customerId, mobile, token, tid, sid, deviceId})
+  // — exactly the shape the Boss pastes elsewhere.
+  const compactStr = portableSessionJsonText(acc, key, { pretty: false });
 
-  const cnt = typeof acc.totalOrdersCount === 'number'
-    ? acc.totalOrdersCount
-    : (typeof acc.cachedTotalOrdersCount === 'number' ? acc.cachedTotalOrdersCount : null);
-  const orderCountText = cnt === 0
-    ? '★ 0 Orders (Fresh Zero-Order ID)'
-    : (cnt !== null ? `● ${cnt} Past Order${cnt === 1 ? '' : 's'}` : '○ Not checked yet');
-
-  const statusText = isLogged
-    ? '● Logged In'
-    : (acc.sessionExpired ? '⚠️ Session Expired (Re-login required)' : '○ Logged Out');
+  const detail = accountDetailText({ acc, key, activeKey: isActive ? key : '' });
 
   const text = `<b>Swiggy Account Control</b>\n\n` +
-    `◉ <b>${escapeHtml(acc.name || key)}</b>\n` +
-    `☎ <code>${phone || 'No phone set'}</code>\n` +
-    `◈ Status: <b>${statusText}</b>\n` +
-    `📦 <b>Past Orders:</b> <b>${orderCountText}</b>\n` +
-    (isActive ? `★ <b>(Currently Active Order Hub)</b>\n` : '') +
-    (acc.sessionExpired ? `\n⚠️ <i>Swiggy session has expired. Please re-login via OTP or drop a fresh JSON below to use this account for orders!</i>\n` : '') +
-    `\n` +
-    (codeBlock ? `▤ <b>Full Session Code (${codeBlock.length} chars):</b>\n<pre><code class="language-json">${escapeHtml(codeBlock)}</code></pre>\n\n` : '') +
-    `Select an option:`;
+    detail.text +
+    (isActive ? `\n★ <b>(Currently Active Order Hub)</b>` : '') +
+    (acc.sessionExpired ? `\n⚠️ <i>Swiggy session has expired. Please re-login via OTP or drop a fresh JSON below to use this account for orders!</i>` : '') +
+    `\n\nSelect an option:`;
 
   const buttons = [];
 
-  if (compactStr || phone) {
-    const row = [];
-    if (compactStr) {
-      row.push(makeFullSessionCopyButton(ctx, 'Copy Code', key, compactStr, `copy_code_${key}`, 'primary'));
-    }
-    if (phone) {
-      row.push({ text: 'Copy Number', copy_text: { text: phone }, style: 'primary' });
-    }
-    buttons.push(row);
-  }
-
   if (isLogged) {
     buttons.push([
+      { text: '⟳ Live Check Orders', callback_data: `acc_live_orders_${key}`, style: 'primary' },
       { text: '▣ Claim ₹50 Offers', callback_data: `boss_retry_claim_${key}`, style: 'success' },
+    ]);
+    buttons.push([
       { text: '₹ Claim Free Cash', callback_data: `boss_check_fc_${key}`, style: 'success' }
     ]);
     buttons.push([
@@ -11409,6 +11441,19 @@ bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
     ]);
   }
 
+  // ⬇ COPY BLOCK — always at the BOTTOM, one per account.
+  //   • "Copy Session JSON" -> native one-tap copy when it fits, else chunks
+  //   • "Send .json"        -> real file for long sessions
+  const copyRow = [];
+  if (compactStr) {
+    copyRow.push(makeFullSessionCopyButton(ctx, '▤ Copy Session JSON', key, compactStr, `acc_copy_json_${key}`, 'success'));
+    copyRow.push({ text: '⬇ Send .json', callback_data: `acc_send_json_${key}`, style: 'primary' });
+  }
+  if (phone) {
+    copyRow.push({ text: '☎ Copy Number', copy_text: { text: phone }, style: 'primary' });
+  }
+  if (copyRow.length) buttons.push(copyRow);
+
   buttons.push([
     { text: 'Back to Accounts', callback_data: 'boss_view_accounts', style: 'primary' },
     { text: 'Main Menu', callback_data: 'boss_panel_home', style: 'primary' }
@@ -11420,6 +11465,118 @@ bot.action(/^acc_view_detail_(.+)$/, async (ctx) => {
     if (e.message && e.message.includes('Message is not modified')) return;
     await sendSafeHtml(ctx, text, { reply_markup: { inline_keyboard: buttons } });
   }
+});
+
+// ⟳ LIVE ORDER CHECK — the ONLY way an order count is ever displayed.
+bot.action(/^acc_live_orders_(.+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+  const key = ctx.match[1];
+  const db = getDb();
+  const acc = db.config?.accounts?.[key];
+  if (!acc) return ctx.answerCbQuery('Account not found', { show_alert: true }).catch(() => {});
+  await ctx.answerCbQuery('Swiggy se live check kar raha hoon…').catch(() => {});
+  let note = '';
+  try {
+    const prof = await inspectAccountOrderHistoryAndOffers(key, acc, { force: true });
+    const target = getDb().config?.accounts?.[key] || acc;
+    if (prof && prof.valid !== false && prof.ordersVerifiedLive === true && typeof prof.totalOrdersCount === 'number') {
+      target.totalOrdersCount = prof.totalOrdersCount;
+      target.cachedTotalOrdersCount = prof.totalOrdersCount;
+      target.ordersVerifiedLive = true;
+      target.orderCountSource = 'LIVE';
+      target.orderTruthCheckedAt = new Date().toISOString();
+      target.isZeroOrderAccount = prof.totalOrdersCount === 0;
+      target.liveActiveOrdersCount = Number(prof.liveActiveOrdersCount || 0);
+      delete target.accountError;
+      saveDb(getDb());
+      note = prof.totalOrdersCount === 0
+        ? '★ LIVE check: is ID par <b>0 orders</b> (Swiggy ne khud bataya).'
+        : `● LIVE check: <b>${prof.totalOrdersCount} order(s)</b> mile Swiggy par.`;
+    } else {
+      target.ordersVerifiedLive = false;
+      target.orderCountSource = 'UNVERIFIED';
+      delete target.totalOrdersCount;
+      delete target.isZeroOrderAccount;
+      target.accountError = prof?.error || 'Live check nahi chala';
+      saveDb(getDb());
+      note = `⚠️ Live check fail: <b>${escapeHtml(String(prof?.error || 'Swiggy se jawab nahi aaya'))}</b>\n<i>File me likha order count nahi maana jayega.</i>`;
+    }
+  } catch (e) {
+    note = `⚠️ Live check error: <b>${escapeHtml(String(e.message || e))}</b>`;
+  }
+  const fresh = getDb().config?.accounts?.[key] || acc;
+  const detail = accountDetailText({ acc: fresh, key, activeKey: getActiveOrderAccountKey() === key ? key : '' });
+  return sendSafeHtml(ctx, `${note}\n\n${detail.text}`, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '⟳ Check Again', callback_data: `acc_live_orders_${key}`, style: 'primary' }],
+        [{ text: '← Back to Account', callback_data: `acc_view_detail_${key}`, style: 'primary' }]
+      ]
+    }
+  });
+});
+
+// ▤ Copy Session JSON — the exact 7 fields: name, customerId, mobile, token, tid, sid, deviceId
+bot.action(/^acc_copy_json_(.+)$/, async (ctx) => {
+  const key = ctx.match[1];
+  const acc = getDb().config?.accounts?.[key];
+  if (!acc) return ctx.answerCbQuery('Account not found', { show_alert: true }).catch(() => {});
+  const pretty = portableSessionJsonText(acc, key, { pretty: true });
+  const compact = portableSessionJsonText(acc, key, { pretty: false });
+  await ctx.answerCbQuery('Neeche code tap karke copy karein ▤').catch(() => {});
+  // Telegram copy_text caps at 256 chars, so a long session is split into
+  // tappable chunks (each is a real, copyable piece) — plus the .json file.
+  const chunks = [];
+  let rest = compact;
+  while (rest.length > 0) {
+    chunks.push(rest.slice(0, 250));
+    rest = rest.slice(250);
+  }
+  const body = chunks.map((c, i) => `<b>${i + 1}/${chunks.length}</b> <code>${escapeHtml(c)}</code>`).join('\n');
+  await sendSafeHtml(ctx,
+    `▤ <b>Session JSON</b> — <code>${escapeHtml(String(acc.phone || key))}</code>\n` +
+    `<i>Har chunk tap karke copy karein (Telegram limit 256 chars).</i>\n\n${body}\n\n` +
+    `<pre><code class="language-json">${escapeHtml(pretty)}</code></pre>`,
+    { reply_markup: { inline_keyboard: [[{ text: '⬇ Send as .json file', callback_data: `acc_send_json_${key}`, style: 'primary' }]] } }
+  ).catch(async () => {
+    await ctx.reply(pretty);
+  });
+});
+
+// ⬇ Send EVERY account's portable JSON (one .json document each)
+bot.action('boss_send_all_json', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+  await ctx.answerCbQuery('Bhej raha hoon…').catch(() => {});
+  const accounts = Object.entries(getDb().config?.accounts || {});
+  if (accounts.length === 0) return ctx.reply('Koi account saved nahi hai.');
+  let sent = 0;
+  for (const [key, acc] of accounts.slice(0, 40)) {
+    if (!acc) continue;
+    const payload = buildPortableSessionJson(acc, key);
+    const phone = String(acc.phone || key).replace(/\D/g, '').slice(-10) || 'session';
+    try {
+      await ctx.replyWithDocument(
+        { source: Buffer.from(JSON.stringify(payload, null, 2), 'utf8'), filename: `${phone}.json` },
+        { caption: `▤ <b>${escapeHtml(String(acc.name || phone))}</b> · <code>${phone}</code>`, parse_mode: 'HTML' }
+      );
+      sent++;
+    } catch { /* continue */ }
+  }
+  await ctx.reply(`✓ ${sent}/${accounts.length} account JSON bheje gaye.`).catch(() => {});
+});
+
+// ⬇ Send the portable session as a real .json document
+bot.action(/^acc_send_json_(.+)$/, async (ctx) => {
+  const key = ctx.match[1];
+  const acc = getDb().config?.accounts?.[key];
+  if (!acc) return ctx.answerCbQuery('Account not found', { show_alert: true }).catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  const json = buildPortableSessionJson(acc, key);
+  const phone = String(acc.phone || key).replace(/\D/g, '').slice(-10) || 'session';
+  await ctx.replyWithDocument(
+    { source: Buffer.from(JSON.stringify(json, null, 2), 'utf8'), filename: `${phone}.json` },
+    { caption: `▤ <b>${escapeHtml(String(acc.name || phone))}</b> · <code>${phone}</code>\n<i>7 fields: name, customerId, mobile, token, tid, sid, deviceId</i>`, parse_mode: 'HTML' }
+  ).catch((e) => ctx.reply(`Send failed: ${e.message}`).catch(() => {}));
 });
 
 // Set as Active Order Hub

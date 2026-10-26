@@ -1566,14 +1566,16 @@ export function importSessionJson(rawJson, targetKey = null) {
         sid: sid || db.config.accounts[key].sid || '',
         deviceId: deviceId || db.config.accounts[key].deviceId || '',
         cookies: cookieStr,
+        // A count that came from an uploaded `.json` file is NEVER trusted.
+        // Only a live Swiggy answer (`ordersVerifiedLive === true`) may set the
+        // order count — otherwise the existing (verified) value is kept as-is.
         ...(data.ordersVerifiedLive === true && typeof data.totalOrdersCount === 'number' && data.totalOrdersCount !== 999999 ? {
           totalOrdersCount: data.totalOrdersCount,
           cachedTotalOrdersCount: data.totalOrdersCount,
           ordersVerifiedLive: true,
+          orderCountSource: 'LIVE',
           isZeroOrderAccount: data.totalOrdersCount === 0
-        } : (typeof data.totalOrdersCount === 'number' && data.totalOrdersCount !== 999999 ? {
-          totalOrdersCount: data.totalOrdersCount
-        } : {})),
+        } : {}),
         isLoggedIn: true,
         freshlyAuthenticated: true,
         savedAt: new Date().toISOString()
