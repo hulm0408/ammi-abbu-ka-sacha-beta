@@ -450,6 +450,13 @@ export function buildSimpleTrackingMessage(order, { milestoneUpdate = false } = 
     rows.push([{ text: `📞 Call Partner: ${partnerPhone}`, callback_data: `user_call_partner_${order.id}` }]);
   }
   if (trackingUrl) rows.push([{ text: '🛵 Track on Swiggy', url: trackingUrl, style: 'success' }]);
+  // 📦 Boss (30-10-2026): "link kiu nahi aaraha kiuki order to ofo place nahi
+  // horaha" — jab order OFO hi nahi bana to link ka wada nahi. Sach + admin.
+  if (!trackingUrl && order?.ofoPlaced === false) {
+    lines.push('', '<i>Tracking link is order par Swiggy ne nahi banaya (OFO mode confirm nahi hua) —' +
+      ' pareshan na hon, order normal chal raha hai. Admin ko batayein.</i>');
+    rows.push([{ text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }]);
+  }
   rows.push([{ text: '🏁 Ho gaya — naya order', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder, style: 'primary' }]);
   return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
 }

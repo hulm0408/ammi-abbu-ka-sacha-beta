@@ -8457,6 +8457,137 @@ export function isZeroSmsTestSandboxActive() {
   return /(?:^|[\\/])test[_-].*\.(?:mjs|cjs|js)$/i.test(entry);
 }
 
+/**
+ * 📦 OFO (ORDER FOR OTHERS) — boss (30-10-2026):
+ *   "ab samajh aaya link kiu nahi aaraha kiuki order to ofo place nahi horaha".
+ *
+ * Sach: Swiggy ka tracking/OFO link SIRF tab banta hai jab order asli OFO order ho
+ * (cart OFO mode me ho + recipient ka naam/phone ho + place payload me OFO flags
+ * ho). Pehle bot sirf PLACE payload me OFO flags bhejta tha, cart normal cart hi
+ * rehta tha — isliye order normal order ban jata tha aur `ofo/track` link kabhi
+ * publish hi nahi hota tha.
+ *
+ * Yeh function cart ko ASLI OFO mode me daalta hai (app me "Order for someone
+ * else" jaisa) aur proof ke saath batata hai ki OFO laga ya nahi.
+ */
+export async function ensureOfoCartMode(account, order, {
+  addressId = '', lat = '', lng = '', allowRevert = true, timeoutMs = 7000
+} = {}) {
+  const recipientPhone = normalizeIndianMobile(
+    order?.addressDetails?.mobile || order?.recipientMobile || order?.deliveryPhone || order?.phone || ''
+  );
+  const recipientName = String(order?.addressDetails?.name || order?.recipientName || order?.name || 'Customer').trim();
+  const accountPhone = normalizeIndianMobile(account?.phone || account?.mobile || '');
+  const out = {
+    ok: false,
+    ofo: false,
+    requested: Boolean(recipientPhone),
+    recipientPhone,
+    recipientName,
+    accountPhone,
+    reason: '',
+    total: 0,
+    itemCount: 0
+  };
+  if (!recipientPhone) {
+    out.reason = 'recipient ka phone number nahi hai — OFO bina tracking link ban hi nahi sakta';
+    return out;
+  }
+  if (!addressId) {
+    out.reason = 'address_id nahi hai — OFO cart bind nahi ho sakta';
+    return out;
+  }
+  const items = Array.isArray(order?.items) ? order.items : [];
+  if (!order?.restaurantId || items.length === 0) {
+    out.reason = 'cart items / restaurantId missing — OFO cart re-push nahi ho sakta';
+    return out;
+  }
+
+  const orderComments = `Call ${recipientPhone} on arrival. Order for: ${recipientName}. Do not call the ordering number.`;
+  const deliveryInstructions = [{
+    type: 'CALL_PHONE',
+    phone: recipientPhone,
+    instruction: `Call ${recipientPhone} on arrival. Order for ${recipientName}.`
+  }];
+  const payload = {
+    restaurantId: String(order.restaurantId),
+    address_id: String(addressId),
+    couponCode: String(order.couponCode || ''),
+    cartItems: buildSwiggyCartItemsPayload(items),
+    mealItems: [],
+    subscriptionItems: Array.isArray(order.activeSubscriptionItems) ? order.activeSubscriptionItems : [],
+    is_order_for_someone_else: true,
+    ordering_for_someone_else: true,
+    order_for_others: true,
+    alternate_mobile: recipientPhone,
+    alternate_phone: recipientPhone,
+    order_comments: orderComments,
+    delivery_instructions: deliveryInstructions,
+    recipient_details: { name: recipientName, phone: recipientPhone, mobile: recipientPhone },
+    contact_details: { name: recipientName, phone: recipientPhone, mobile: recipientPhone },
+    alternate_contact: { name: recipientName, phone: recipientPhone, mobile: recipientPhone }
+  };
+
+  const baseline = Number(order?.finalPayable || order?.subtotal || 0);
+  let sync = null;
+  try {
+    sync = await swiggyCartUpdate(account, payload, { lat, lng, flushFirst: false, timeoutMs });
+  } catch (err) {
+    out.reason = `OFO cart push fail: ${String(err?.message || err).slice(0, 140)}`;
+    return out;
+  }
+  const meta = sync?.json?.data?.cartMeta || sync?.json?.data || {};
+  const itemCount = Number(meta?.cart_total_count ?? meta?.total_items_count ?? 0)
+    || (Array.isArray(meta?.cart_menu_items) ? meta.cart_menu_items.reduce((n, x) => n + Number(x.quantity || 1), 0) : 0);
+  const total = Number(meta?.order_total || 0);
+  out.total = total;
+  out.itemCount = itemCount;
+  out.syncStatus = Number(sync?.json?.statusCode ?? -1);
+  out.syncMessage = String(sync?.json?.statusMessage || '').slice(0, 160);
+
+  if (sync?.json?.statusCode === 0 && itemCount > 0 && total > 0) {
+    // Bill badal gaya to revert — customer ko dikhaye bill se zyada kabhi nahi.
+    if (baseline > 0 && total > baseline + 0.5) {
+      if (allowRevert) {
+        const plainPayload = { ...payload };
+        for (const k of ['is_order_for_someone_else', 'ordering_for_someone_else', 'order_for_others',
+          'alternate_mobile', 'alternate_phone', 'order_comments', 'delivery_instructions',
+          'recipient_details', 'contact_details', 'alternate_contact']) delete plainPayload[k];
+        await swiggyCartUpdate(account, plainPayload, { lat, lng, flushFirst: false, timeoutMs }).catch(() => null);
+        out.reason = `OFO cart ne bill badal diya (₹${baseline} → ₹${total}) — revert kar diya`;
+        return out;
+      }
+    }
+    out.ok = true;
+    out.ofo = true;
+    out.reason = '';
+    return out;
+  }
+
+  out.reason = out.syncMessage
+    || `OFO cart push ne cart confirm nahi kiya (statusCode=${out.syncStatus}, items=${itemCount}, total=${total})`;
+  return out;
+}
+
+/** Place-response me OFO ka asli saboot (jhoot nahi). */
+export function detectOfoFromPlaceResponse(placeJson) {
+  const out = { ofo: false, markers: [], recipientSeen: '' };
+  if (!placeJson || typeof placeJson !== 'object') return out;
+  let text = '';
+  try { text = JSON.stringify(placeJson); } catch { return out; }
+  const lower = text.toLowerCase();
+  for (const marker of ['ordering_for_someone_else', 'is_order_for_someone_else', 'order_for_others', 'ofo']) {
+    if (lower.includes(marker)) out.markers.push(marker);
+  }
+  // "order_for_others": true jaisa explicit flag hi sabse strong saboot hai.
+  const explicit = /"(?:is_order_for_someone_else|ordering_for_someone_else|order_for_others)"\s*:\s*true/i.test(text);
+  if (explicit) out.recipientSeen = 'explicit_flag';
+  const m = text.match(/"(?:recipient_phone|alternate_mobile|alternate_phone)"\s*:\s*"?(\d{10})/i);
+  if (m) out.recipientSeen = out.recipientSeen || m[1];
+  out.ofo = Boolean(explicit) || (/\bofo\b/i.test(lower) && !out.markers.includes('ORDER'));
+  return out;
+}
+
 export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder) {
   const isWrapped = accountOrOpts && typeof accountOrOpts === 'object' && ('account' in accountOrOpts) && !maybeOrder;
   const account = isWrapped ? accountOrOpts.account : accountOrOpts;
@@ -8850,6 +8981,67 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         cartMessage: swiggyMsg
       };
       throw err;
+    }
+
+    // ── 📦 OFO CART MODE — PLACE SE PEHLE (boss 30-10-2026) ──────────────────
+    // "link kiu nahi aaraha kiuki order to ofo place nahi horaha". Bina OFO cart
+    // ke Swiggy normal order banata hai aur `ofo/track` link kabhi publish nahi
+    // hota. Isliye place se pehle cart ko asli OFO mode me daalte hain, aur jo
+    // hua wo order par likh dete hain (jhooth nahi).
+    let ofoAttempt = null;
+    try {
+      ofoAttempt = await ensureOfoCartMode(account, order, { addressId, lat, lng });
+    } catch (ofoErr) {
+      ofoAttempt = { ok: false, ofo: false, reason: `OFO cart error: ${String(ofoErr?.message || ofoErr).slice(0, 140)}` };
+    }
+    if (order && typeof order === 'object') {
+      order.ofoCart = {
+        at: new Date().toISOString(),
+        attempted: true,
+        ofo: Boolean(ofoAttempt?.ofo),
+        reason: String(ofoAttempt?.reason || '').slice(0, 180),
+        recipientPhone: String(ofoAttempt?.recipientPhone || ''),
+        totalAfter: Number(ofoAttempt?.total || 0),
+        itemCount: Number(ofoAttempt?.itemCount || 0)
+      };
+    }
+    if (ofoAttempt?.ok && ofoAttempt?.ofo) {
+      // OFO push ne live cart refresh kar diya — naya total/items use karo.
+      const ofoCart = await swiggyCartGet(account, { lat, lng, timeoutMs: 6000 }).catch(() => null);
+      const ofoMeta = unwrapCartMeta(ofoCart);
+      if (ofoMeta && Number(ofoMeta.order_total || 0) > 0) {
+        curCart = ofoCart;
+        cm = ofoMeta;
+        itemCount = extractCartCount(ofoCart, ofoMeta);
+      }
+      if (Number(cm.order_total || 0) > 0 && Number(order?.finalPayable || 0) > Number(cm.order_total)) {
+        order.finalPayable = Number(cm.order_total);
+      }
+      console.log(`[OFO] ${account?.phone || 'ID'}: cart OFO mode me (recipient ${ofoAttempt.recipientPhone}) — tracking link isi se banega.`);
+    } else if (String(process.env.OFO_STRICT || '').trim() === '1') {
+      // Strict mode (boss chahe to): OFO na bane to order place hi na ho — kyunki
+      // OFO ke bina tracking link Swiggy kabhi nahi deta.
+      const err = new Error(
+        `OFO (order for others) cart nahi bana — isliye order place nahi kiya: ` +
+        `${ofoAttempt?.reason || 'wajah nahi mili'}. (OFO_STRICT=1)`
+      );
+      err.diag = {
+        code: 'OFO_CART_MODE_FAILED',
+        stage: 'PRE_PLACE_OFO',
+        ofoReason: String(ofoAttempt?.reason || '').slice(0, 200),
+        recipientPhone: String(ofoAttempt?.recipientPhone || ''),
+        accountPhone: String(account?.phone || ''),
+        cartId: String(cm.originalCartId || cm.cartId || cm.cart_id || ''),
+        addressId
+      };
+      throw err;
+    } else {
+      // Default: order rok kar customer ko phasana galat hoga — place karo, par
+      // BOSS ko saaf batao ki OFO nahi bana (isliye link nahi aayega).
+      console.warn(`[OFO] ${account?.phone || 'ID'}: OFO cart nahi bana — ${ofoAttempt?.reason || 'wajah nahi mili'}. Order place ho raha hai (non-OFO), link nahi aayega.`);
+      if (order && typeof order === 'object') {
+        order.ofoWarning = `OFO cart nahi bana: ${String(ofoAttempt?.reason || 'wajah nahi mili').slice(0, 150)}`;
+      }
     }
 
     // Swiggy kabhi `app_redirection_info` ke bajaye kisi doosre field me intent
@@ -9279,6 +9471,16 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       }
       if (liveOrderTotal > 0) {
         order.finalPayable = liveOrderTotal;
+      }
+      // 📦 OFO ka asli saboot — place response se hi, apne aap se jhooth nahi.
+      const ofoProof = detectOfoFromPlaceResponse(json);
+      order.ofoPlaced = Boolean(ofoProof.ofo);
+      order.ofoPlaceMarkers = ofoProof.markers;
+      order.ofoRecipientSeen = String(ofoProof.recipientSeen || '');
+      order.ofoPlaceAt = new Date().toISOString();
+      if (!ofoProof.ofo) {
+        // Boss ko turant sach — warna wo link ka intezaar karta rahega jo aayega hi nahi.
+        order.ofoWarning = 'place response me OFO confirm nahi hua — tracking link der se ya kabhi nahi aayega';
       }
       order.pendingSwiggyOrderId = swiggyOrderId;
       order.pendingSwiggyPaasId = paymentTxnId;
