@@ -257,7 +257,8 @@ console.log('\n--- Scenario 6: source wiring ---');
   check('the sweep exists and is exported', /export async function refreshActiveOrdersTracking/.test(trk));
   check('the sweep is read-only', /readOnly: true/.test(trk));
   check('scans accept a readOnly flag', /readOnly = false/.test(cart));
-  check('the read-only flag is forwarded into the scan', /concurrency,\s*\n\s*readOnly,?\s*\n\s*(includeStaleFlags,?\s*\n\s*)?\}\)/.test(trk));
+  check('the read-only flag is forwarded into the scan',
+    /concurrency,\s*\n\s*readOnly,?\s*\n\s*includeStaleFlags/.test(trk));
   check('demotion requires a HARD expiry', /auth\.hardExpired === true\)/.test(cart));
   check('transient fallbacks are flagged', /transient: !hardExpired/.test(cart));
   check('a boss button exists', /boss_active_tracking/.test(idx) && /🔄 Active Orders Tracking/.test(idx));

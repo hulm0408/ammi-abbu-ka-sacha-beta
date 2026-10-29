@@ -297,6 +297,8 @@ import {
   isTerminalDeliveryStatus,
   isCancelledOrRefusedStatus,
   resolveTrackEndpointPayload,
+  adoptSwiggyOrderIdForBot,
+  extractTrackingNow,
 } from './order-tracking.js';
 import {
   esc,
@@ -14821,6 +14823,13 @@ bot.action(/^user_paid_status_([A-Za-z0-9_-]+)$/, async (ctx) => {
     return ctx.answerCbQuery('Unauthorized: not your order.', { show_alert: true }).catch(() => {});
   }
   await ctx.answerCbQuery('Checking payment + live tracking…').catch(() => {});
+  // 📱 Customer ke phone se place hua order ho to bot ke paas Swiggy id hoti hi
+  // nahi — pehle usi ID ki "My Orders" se apna order adopt karo, warna na payment
+  // check hota hai na tracking link nikalti hai (boss 30-10-2026).
+  if (!order.swiggyOrderId && !order.pendingSwiggyOrderId) {
+    const adopted = await adoptSwiggyOrderIdForBot(order.id, { budgetMs: 7000 }).catch(() => null);
+    if (adopted?.ok) order = lookupOrder(getDb(), order.id) || order;
+  }
   const res = await checkOrderPaidStatusOnly(order.id || rawId);
   try {
     const ord = lookupOrder(getDb(), order.id || rawId) || order;
@@ -14829,8 +14838,9 @@ bot.action(/^user_paid_status_([A-Za-z0-9_-]+)$/, async (ctx) => {
       saveDb(getDb());
     }
     const link = ord ? getStoredSwiggyTrackingUrl(ord) : '';
-    if (ord.swiggyOrderId) {
-      try { startOrderTrackingAuto(ord.id, { budgetMs: 15000, trackMilestones: true, force: true }); } catch {}
+    // Id ho ya na ho — ladder chalta hai (khud id adopt karke link laata hai).
+    if (ord && !['CANCELLED', 'REJECTED'].includes(String(ord.status || ''))) {
+      try { startOrderTrackingAuto(ord.id, { budgetMs: 15000, trackMilestones: true, force: true, delays: PAYMENT_TRACKING_DELAYS }); } catch {}
     }
     // ALWAYS reply with full live status as a brand-new message in chat:
     const msg = buildSimpleTrackingMessage(ord, { milestoneUpdate: true });
@@ -14846,6 +14856,79 @@ bot.action(/^user_paid_status_([A-Za-z0-9_-]+)$/, async (ctx) => {
       ).catch(() => {});
     });
   } catch {}
+});
+
+// ── 🔗 TRACKING LINK LAO (boss 30-10-2026) ─────────────────────────────────
+// "same id me dusre bot me login karta to turant nikaal dete" — yahi karte hain:
+// pehle usi ID se (jo order place karne wali hai), phir poora vault. Har fail par
+// ASLI reason, kabhi fake link nahi.
+const TRACK_FAIL_REASONS = {
+  ORDER_NOT_FOUND: 'order record nahi mila',
+  NO_SWIGGY_ID: 'Swiggy order id nahi mili — jis ID se order hua usme "My Orders" me order dikha do, phir try karo',
+  NOT_ON_ANY_ACCOUNT: 'kisi bhi ID par ye order nahi mila (session dead / doosra number)',
+  NO_ACCOUNT_CREDS: 'vault me koi logged-in ID nahi hai',
+  WAF_COOLDOWN: 'Swiggy ne temporarily block kiya (WAF) — 3-5 min me dobara',
+  NOT_PUBLISHED_YET: 'Swiggy ne abhi share link publish nahi kiya — order chal raha ho to 2-5 min me aa jata hai',
+  AMBIGUOUS_MATCH: 'ek se zyada order mile — kaunsa aapka hai pakka nahi hua'
+};
+
+bot.action(/^track_now_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const orderId = ctx.match[1];
+  const db = getDb();
+  const order = lookupOrder(db, orderId) || db.orders?.[orderId] || getActiveUserOrder(db, ctx.from.id);
+  if (!order) return ctx.answerCbQuery('Order nahi mila.', { show_alert: true }).catch(() => {});
+  if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
+    return ctx.answerCbQuery('Ye aapka order nahi.', { show_alert: true }).catch(() => {});
+  }
+  await ctx.answerCbQuery('Link la raha hoon…').catch(() => {});
+  const res = await extractTrackingNow(order.id, { budgetMs: 14000 }).catch((err) => ({ ok: false, reason: String(err?.message || err) }));
+  const fresh = lookupOrder(getDb(), order.id) || order;
+
+  if (res?.ok && res.url) {
+    await updateOrderCards(getDb().orders?.[order.id] || fresh).catch(() => {});
+    const msg = buildSimpleTrackingMessage(fresh, { milestoneUpdate: false });
+    await ctx.reply(msg.text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...msg.keyboard
+    }).catch(() => {});
+    // Boss ko bhi — dono taraf (standing rule).
+    for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
+      if (String(bossId) === String(ctx.from.id)) continue;
+      await bot.telegram.sendMessage(
+        bossId,
+        `🔗 <b>TRACKING LINK MILA</b>\nOrder <code>#${escapeHtml(String(order.id))}</code>\n` +
+        `<a href="${escapeHtml(res.url)}">${escapeHtml(res.url)}</a>`,
+        { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }
+      ).catch(() => {});
+    }
+    return;
+  }
+
+  const reasonCode = String(res?.reason || 'NOT_FOUND');
+  const reasonText = TRACK_FAIL_REASONS[reasonCode] || `abhi nahi mila (${reasonCode})`;
+  await ctx.reply(
+    `⚠️ <b>Tracking link abhi nahi mila</b>\n\n` +
+    `<i>${escapeHtml(reasonText)}</i>` +
+    (res?.swiggyOrderId ? `\n\nSwiggy order: <code>${escapeHtml(String(res.swiggyOrderId))}</code>` : '') +
+    `\n\nOrder chal raha ho to link 2-5 min me khud aa jata hai — neeche dobara try kar sakte hain.`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [{ text: '🔁 Dobara try', callback_data: `track_now_${order.id}`, style: 'success' }],
+        supportRow()
+      ])
+    }
+  ).catch(() => {});
+  for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
+    if (String(bossId) === String(ctx.from.id)) continue;
+    await bot.telegram.sendMessage(
+      bossId,
+      `⚠️ <b>TRACKING LINK NAHI MILA</b>\nOrder <code>#${escapeHtml(String(order.id))}</code> · user <code>${escapeHtml(String(order.userId || ''))}</code>\n` +
+      `<i>${escapeHtml(reasonCode)}</i>${res?.swiggyOrderId ? ` · swiggy <code>${escapeHtml(String(res.swiggyOrderId))}</code>` : ''}`,
+      { parse_mode: 'HTML', ...Markup.inlineKeyboard([[{ text: '🔁 Dobara try', callback_data: `track_now_${order.id}`, style: 'success' }]]) }
+    ).catch(() => {});
+  }
 });
 
 bot.action(/^user_resend_approved_qr_([A-Za-z0-9_-]+)$/, async (ctx) => {

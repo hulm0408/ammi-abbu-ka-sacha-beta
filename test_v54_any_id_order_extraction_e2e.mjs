@@ -222,7 +222,7 @@ console.log('\n━━━ 7) wiring of the pasted-id path ━━━');
 
   const trk = fs.readFileSync('./order-tracking.js', 'utf8');
   check('cooldown bypass is opt-in only', /wafCooldownMs > 0 && !ignoreWafCooldown/.test(trk));
-  check('scan receives readOnly (no wipe contract)', /readOnly,\n\s*includeStaleFlags/.test(trk));
+  check('scan receives readOnly (no wipe contract)', /readOnly,\s*\n\s*includeStaleFlags/.test(trk));
 }
 
 globalThis.fetch = realFetch;

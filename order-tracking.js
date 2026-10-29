@@ -23,6 +23,7 @@ import {
   validateTrackingUrlForOrder,
   extractOrderShareUrlDeep,
   dapiFetch,
+  fetchSwiggyTrackingLinkFast,
   buildSignedOrderTrackUrl,
   getSwiggyOrderSnapshot,
   checkRealSwiggyPaymentAndExtractTracking
@@ -229,6 +230,244 @@ function applyScanToOrder(order, scan) {
   };
 }
 
+// ── 📱 ORDER-ID ADOPTION (boss 30-10-2026) ──────────────────────────────────
+// "jis id se order hota, same id me dusre bot me login karta to wo nikaal kar
+//  dete turant — ab to har order user ke device par hota hai."
+//
+// Jab order customer ke phone se place hota hai, bot ke paas Swiggy ka order id
+// hota hi nahi — bina id ke `trackV4` call hi nahi ho sakti, isliye tracking
+// link kabhi nikalta hi nahi tha. Fix: usi ID se `order/all` padho (jo app ke
+// "My Orders" me dikhta hai), apna order pehchano (time + amount + restaurant),
+// id adopt karo — phir wahi turant trackV4 se OFO link.
+const ADOPT_WINDOW_BEFORE_MS = 15 * 60 * 1000;   // order banne se 15 min pehle tak
+const ADOPT_WINDOW_AFTER_MS = 12 * 60 * 60 * 1000; // 12 ghante tak naya order dhoondo
+
+function orderPlacedAtMs(order) {
+  const raw = order?.paidAt || order?.placedAt || order?.createdAt || order?.billApprovedAt || '';
+  const t = raw ? new Date(raw).getTime() : NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
+function swiggyOrderTimeMs(raw) {
+  const candidates = [raw?.order_time, raw?.order_time_epoch, raw?.created_at, raw?.order_date, raw?.placement_time];
+  for (const value of candidates) {
+    if (value === null || value === undefined || value === '') continue;
+    if (typeof value === 'number' || /^\d{10,13}$/.test(String(value).trim())) {
+      const n = Number(value);
+      const ms = String(value).length >= 13 ? n : n * 1000;
+      if (Number.isFinite(ms) && ms > 1_000_000_000_000) return ms;
+    }
+    const t = new Date(value).getTime();
+    if (Number.isFinite(t) && t > 1_000_000_000_000) return t;
+  }
+  return 0;
+}
+
+function amountMatches(swiggyOrderRaw, order) {
+  const ours = Number(order?.finalPayable || order?.finalTotal || 0);
+  if (!(ours > 0)) return true;
+  const theirs = Number(
+    swiggyOrderRaw?.order_total || swiggyOrderRaw?.net_total || swiggyOrderRaw?.total ||
+    swiggyOrderRaw?.bill_total || swiggyOrderRaw?.final_total || 0
+  );
+  if (!(theirs > 0)) return true;
+  return Math.abs(theirs - ours) <= Math.max(2, ours * 0.05);
+}
+
+function restaurantMatches(swiggyOrderRaw, order) {
+  const ours = String(order?.restaurantName || order?.restaurant || '').toLowerCase().trim();
+  const theirs = String(
+    swiggyOrderRaw?.restaurant_name || swiggyOrderRaw?.restaurant?.name || swiggyOrderRaw?.res_name || ''
+  ).toLowerCase().trim();
+  if (!ours || !theirs) return null; // unknown — neither proves nor disproves
+  const a = ours.replace(/[^a-z0-9]/g, '');
+  const b = theirs.replace(/[^a-z0-9]/g, '');
+  if (!a || !b) return null;
+  return a.includes(b) || b.includes(a);
+}
+
+/**
+ * Bot ke apne order record ke liye Swiggy order id dhoondo — wahi tarika jo
+ * doosra bot karta hai (us ID me login → "My Orders" → latest order).
+ * Kabhi id guess nahi karte: time window + amount/restaurant match zaroori hai.
+ */
+export async function adoptSwiggyOrderIdForBot(orderRef, { getAccountsFn = null, budgetMs = 9000, accountLimit = 3 } = {}) {
+  const order = findOrderRecord(orderRef);
+  if (!order) return { ok: false, reason: 'ORDER_NOT_FOUND' };
+  const existing = orderSwiggyOrderId(order);
+  if (existing) return { ok: true, swiggyOrderId: existing, adopted: false };
+
+  const database = getDb();
+  const accountsMap = database?.config?.accounts || {};
+  const hasCreds = (acc) => Boolean(acc && (acc.cookies || acc.tid || acc.jwtTid || acc.token || acc.auth_token || acc.access_token));
+  const preferred = String(order.selectedAccount || '');
+  const preferredPhone = String(order.orderAccount || order.selectedAccountPhone || '').replace(/\D/g, '').slice(-10);
+
+  let entries = Object.entries(accountsMap).filter(([, acc]) => hasCreds(acc));
+  entries.sort(([k1, a1], [k2, a2]) => {
+    const score = ([k, a]) => {
+      let s = 0;
+      if (preferred && k === preferred) s += 100;
+      const phone = String(a?.phone || a?.mobile || '').replace(/\D/g, '').slice(-10);
+      if (preferredPhone && phone && phone === preferredPhone) s += 60;
+      if (a?.isLoggedIn) s += 10;
+      if (!a?.isLoggedOut && !a?.sessionExpired) s += 5;
+      return s;
+    };
+    return score([k2, a2]) - score([k1, a1]);
+  });
+  entries = entries.slice(0, Math.max(1, Number(accountLimit) || 3));
+  if (!entries.length) return { ok: false, reason: 'NO_ACCOUNT_CREDS' };
+
+  const attachedIds = new Set(
+    Object.values(database?.orders || {})
+      .filter((o) => o && String(o.id) !== String(order.id))
+      .map((o) => orderSwiggyOrderId(o))
+      .filter(Boolean)
+  );
+
+  const startedAt = Date.now();
+  const placedAt = orderPlacedAtMs(order);
+  const tried = [];
+  for (const [accKey, acc] of entries) {
+    if (Date.now() - startedAt > budgetMs) break;
+    tried.push(accKey);
+    const res = await dapiFetch(acc, 'order/all', { timeoutMs: Math.min(6000, Math.max(2500, budgetMs - (Date.now() - startedAt))) }).catch(() => null);
+    const list = Array.isArray(res?.json?.data?.orders) ? res.json.data.orders : [];
+    if (!list.length) continue;
+
+    const scored = [];
+    for (const raw of list) {
+      const id = normalizeSwiggyOrderId(raw?.order_id || raw?.orderId || raw?.id);
+      if (!id) continue;
+      if (attachedIds.has(id)) continue;
+      const whenMs = swiggyOrderTimeMs(raw);
+      let score = 0;
+      if (placedAt && whenMs) {
+        if (whenMs < placedAt - ADOPT_WINDOW_BEFORE_MS) continue;
+        if (whenMs > placedAt + ADOPT_WINDOW_AFTER_MS) continue;
+        score += 40;
+      }
+      const amt = amountMatches(raw, order);
+      if (!amt) continue;
+      score += amt ? 25 : 0;
+      const rest = restaurantMatches(raw, order);
+      if (rest === true) score += 30;
+      if (rest === false) continue;
+      const st = String(raw?.order_status || raw?.status || '').toLowerCase();
+      if (/cancel|refus|fail/.test(st)) continue;
+      if (/deliver|placed|confirm|processing|prepar|pick|transit/i.test(st)) score += 5;
+      scored.push({ id, score, whenMs, status: st });
+    }
+    if (!scored.length) continue;
+    scored.sort((a, b) => (b.score - a.score) || (b.whenMs - a.whenMs));
+    const best = scored[0];
+    // Strong match hi adopt karo: time + (amount ya restaurant).
+    if (best.score < 50) {
+      return { ok: false, reason: 'AMBIGUOUS_MATCH', accKey, candidates: scored.slice(0, 3).map((c) => c.id), tried };
+    }
+    const freshDb = getDb();
+    const target = freshDb.orders?.[order.id];
+    if (target) {
+      target.swiggyOrderId = best.id;
+      target.pendingSwiggyOrderId = target.pendingSwiggyOrderId || best.id;
+      target.swiggyOrderAdoptedAt = new Date().toISOString();
+      target.swiggyOrderAdoptedFrom = accKey;
+      if (!target.placedAt) target.placedAt = new Date().toISOString();
+      if (!target.selectedAccount) target.selectedAccount = accKey;
+      if (!target.selectedAccountPhone) {
+        const phone = String(acc?.phone || acc?.mobile || '').trim();
+        if (phone) { target.selectedAccountPhone = phone; target.orderAccount = phone; }
+      }
+      saveDb(freshDb);
+      return { ok: true, adopted: true, swiggyOrderId: best.id, accKey, score: best.score, tried };
+    }
+    return { ok: false, reason: 'ORDER_RECORD_MISSING' };
+  }
+  return { ok: false, reason: 'NOT_ON_ANY_ACCOUNT', tried };
+}
+
+/**
+ * 🔗 MANUAL / INSTANT EXTRACTION — "turant link do".
+ * Wahi id jisse order hua usse pehle try, phir poora vault (WAF cooldown ignore,
+ * kyunki insaan wait kar raha hai). Har fail par asli reason lautata hai.
+ */
+export async function extractTrackingNow(orderRef, {
+  budgetMs = 12000,
+  getAccountsFn = null,
+  allowScan = true
+} = {}) {
+  const startedAt = Date.now();
+  let order = findOrderRecord(orderRef);
+  if (!order) return { ok: false, url: '', reason: 'ORDER_NOT_FOUND' };
+
+  let swiggyOrderId = orderSwiggyOrderId(order);
+  if (!swiggyOrderId) {
+    const adopted = await adoptSwiggyOrderIdForBot(order.id, { getAccountsFn, budgetMs: Math.min(8000, budgetMs) }).catch(() => null);
+    if (!adopted?.ok) {
+      return {
+        ok: false,
+        url: '',
+        reason: adopted?.reason || 'NO_SWIGGY_ID',
+        detail: 'order id nahi mila (kis account se place hua pata nahi)'
+      };
+    }
+    swiggyOrderId = adopted.swiggyOrderId;
+    order = findOrderRecord(orderRef) || order;
+  }
+
+  const stored = getStoredSwiggyTrackingUrl(order);
+  if (stored) return { ok: true, url: stored, source: 'STORED', swiggyOrderId };
+
+  const db = getDb();
+  const accKey = String(order.selectedAccount || '');
+  const acc = accKey ? db.config?.accounts?.[accKey] : null;
+  if (acc && (acc.cookies || acc.tid || acc.token)) {
+    const fast = await fetchSwiggyTrackingLinkFast(acc, swiggyOrderId, {
+      budgetMs: Math.max(2500, Math.min(5000, budgetMs - (Date.now() - startedAt))),
+      attempts: 2
+    }).catch(() => null);
+    if (fast?.url) {
+      const freshDb = getDb();
+      const target = freshDb.orders?.[order.id];
+      if (target) {
+        target.trackingLink = fast.url;
+        target.trackingLinkSource = 'SWIGGY_API';
+        target.trackingFoundAt = new Date().toISOString();
+        saveDb(freshDb);
+        if (trackingNotifier) {
+          try { await trackingNotifier(target, { previousUrl: '', scan: { trackingUrl: fast.url, status: 'TRACKING_FOUND' } }); } catch {}
+        }
+      }
+      return { ok: true, url: fast.url, source: 'TRACK_V4_FAST', swiggyOrderId, accKey };
+    }
+  }
+
+  if (!allowScan) return { ok: false, url: '', reason: 'NOT_PUBLISHED_YET', swiggyOrderId };
+
+  const remainingBudget = Math.max(3000, budgetMs - (Date.now() - startedAt));
+  const scan = await ensureOrderTracking(order.id, {
+    budgetMs: remainingBudget,
+    deep: true,
+    force: true,
+    readOnly: true,
+    ignoreWafCooldown: true,
+    includeStaleFlags: true,
+    getAccountsFn
+  }).catch(() => null);
+
+  const fresh = findOrderRecord(orderRef);
+  const url = fresh ? getStoredSwiggyTrackingUrl(fresh) : '';
+  if (url) return { ok: true, url, source: 'VAULT_SCAN', swiggyOrderId, scanStatus: scan?.status };
+  return {
+    ok: false,
+    url: '',
+    reason: scan?.status || 'NOT_FOUND',
+    swiggyOrderId,
+    failures: (scan?.failures || []).slice(0, 5)
+  };
+}
+
 /**
  * Scan every logged-in Swiggy id for this order and persist whatever Swiggy
  * returns (tracking link, OTP, live status, and the account that owns it).
@@ -255,9 +494,25 @@ export async function ensureOrderTracking(orderRef, {
   const order = findOrderRecord(orderRef, db);
   if (!order) return { status: 'ORDER_NOT_FOUND', hasOrder: false, trackingUrl: '' };
 
-  const swiggyOrderId = orderSwiggyOrderId(order);
+  let swiggyOrderId = orderSwiggyOrderId(order);
   if (!swiggyOrderId) {
-    return { status: 'NO_SWIGGY_ID', hasOrder: false, trackingUrl: '', orderId: order.id };
+    // 📱 Customer ke phone se place hua order: id pehle dhoondo (My Orders),
+    // warna trackV4 hi nahi ho sakta — yahi "link nikal nahi raha" ki asli wajah.
+    const adopted = await adoptSwiggyOrderIdForBot(order.id, {
+      getAccountsFn,
+      budgetMs: Math.min(8000, budgetMs)
+    }).catch(() => null);
+    if (adopted?.ok && adopted.swiggyOrderId) {
+      swiggyOrderId = adopted.swiggyOrderId;
+    } else {
+      return {
+        status: 'NO_SWIGGY_ID',
+        hasOrder: false,
+        trackingUrl: '',
+        orderId: order.id,
+        adoptReason: adopted?.reason || 'NO_SWIGGY_ID'
+      };
+    }
   }
 
   const existingUrl = getStoredSwiggyTrackingUrl(order);
@@ -286,6 +541,10 @@ export async function ensureOrderTracking(orderRef, {
   if (inflightScans.has(inflightKey)) return inflightScans.get(inflightKey);
 
   const run = (async () => {
+    // NOTE (30-10-2026): placing account ka `sessionExpired` flag sirf purana hint
+    // hai — boss: "usi id me login karke wo turant nikaal dete". Isliye jis account
+    // se order hua use hamesha poochho, flag ke baawajood (readOnly scan, koi wipe
+    // nahi).
     const scan = await scanOrderAcrossAccounts(swiggyOrderId, {
       getAccountsFn,
       preferredAccountKey: order.selectedAccount || '',
@@ -293,7 +552,7 @@ export async function ensureOrderTracking(orderRef, {
       deep,
       concurrency,
       readOnly,
-      includeStaleFlags
+      includeStaleFlags: includeStaleFlags || Boolean(order.selectedAccount)
     });
     const freshDb = getDb();
     let target = freshDb.orders?.[order.id] || null;
@@ -397,7 +656,8 @@ export function startOrderTrackingAuto(orderId, {
   if (!order) return null;
   const isMilestoneTracking = Boolean(trackMilestones || order.injectedSessionStatus === 'ACTIVE');
   if (getStoredSwiggyTrackingUrl(order) && !isMilestoneTracking && !force) return null;
-  if (!orderSwiggyOrderId(order)) return null;
+  // NOTE (30-10-2026): order id na hone par bhi ladder chalta hai — har attempt
+  // pehle id adopt karta hai (customer ke phone se place hue orders ke liye).
   if (['CANCELLED', 'REJECTED'].includes(String(order.status || ''))) return null;
   // Cancelled/refused orders never get tracking retries.
   if (isCancelledOrRefusedStatus(order.liveOrderStatus)) return null;
@@ -431,9 +691,14 @@ export function startOrderTrackingAuto(orderId, {
       schedule(Math.min(wafCd + 5000, 15 * 60 * 1000));
       return;
     }
-    const fresh = findOrderRecord(key);
+    let fresh = findOrderRecord(key);
     if (!fresh || ['CANCELLED', 'REJECTED'].includes(String(fresh.status || ''))) {
       return stopOrderTrackingAuto(key);
+    }
+    // Customer ke phone se place hua order → pehle Swiggy order id adopt karo.
+    if (!orderSwiggyOrderId(fresh)) {
+      const adopted = await adoptSwiggyOrderIdForBot(key, { budgetMs: Math.min(6000, budgetMs) }).catch(() => null);
+      if (adopted?.ok) fresh = findOrderRecord(key) || fresh;
     }
     const liveMilestones = Boolean(trackMilestones || fresh.injectedSessionStatus === 'ACTIVE');
     if (getStoredSwiggyTrackingUrl(fresh) && !liveMilestones) {

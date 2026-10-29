@@ -246,6 +246,7 @@ export function buildSimpleOrderCard(order) {
       rows.push([{ text: `📞 Call Partner: ${partnerPhone}`, callback_data: `user_call_partner_${order.id}` }]);
     }
     if (trackingUrl) rows.push([{ text: '🛵 Track on Swiggy', url: trackingUrl, style: 'success' }]);
+  rows.push([{ text: '🔗 Naya link lao', callback_data: `track_now_${order.id}`, style: 'primary' }]);
     rows.push([
       { text: '🔄 Refresh status', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
       { text: '🏁 Finish', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder, style: 'primary' }
@@ -303,8 +304,9 @@ export function buildSimpleOrderCard(order) {
     rows.push([{ text: '✓ I have paid — get tracking', callback_data: `user_paid_status_${order.id}`, style: 'success' }]);
     rows.push([
       { text: '🔁 Resend QR', callback_data: `user_resend_approved_qr_${order.id}`, style: 'primary' },
-      { text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }
+      { text: '🔗 Link lao', callback_data: `track_now_${order.id}`, style: 'success' }
     ]);
+    rows.push([{ text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }]);
     rows.push([{ text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }]);
     return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
