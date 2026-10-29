@@ -22,6 +22,7 @@ function _isLazyRateLimited(userId, maxPerWindow = 5, windowMs = 60_000) {
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
 import { validateUpiIntentForQr, describeQrRef, shouldReusePendingQr } from './payment-qr-guard.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
+import { OFFER_TRACKS } from './account-views.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
 import { startOrderTrackingAuto, ensureOrderTracking, isTerminalDeliveryStatus } from './order-tracking.js';
@@ -1068,13 +1069,14 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
           if (v === 'PRE_LOCKED') return '⏳';
           return '❌';
         };
+        const trackRows = OFFER_TRACKS
+          .map((t, i) => `${i + 1}. ${t.emoji} ${t.bossLabel} — ${mark(four[t.key])} ₹50`)
+          .join('\n');
+        const claimedCount = Number(four.claimedCount || 0);
         offerNotes.push(
-          `🎁 <b>Chaaron offer — har ek ₹50:</b>\n` +
-          `1. 🌙 Morning Link — ${mark(four.lateNight)} ₹50\n` +
-          `2. ☀️ Night Link — ${mark(four.breakfast)} ₹50\n` +
-          `3. 💸 Extra ₹50 — ${mark(four.extra50)} ₹50\n` +
-          `4. 🎉 Weekend — ${mark(four.weekend)} ₹50\n` +
-          `📊 <b>${Number(four.claimedCount || 0)}/4 claimed</b> · ₹${Number(four.claimedCount || 0) * 50} pakka / ₹200 possible`
+          `🎁 <b>Saare ${OFFER_TRACKS.length} offer — har ek ₹50:</b>\n` +
+          `${trackRows}\n` +
+          `📊 <b>${claimedCount}/${four.total || OFFER_TRACKS.length} claimed</b> · ₹${claimedCount * 50} pakka / ₹${(four.total || OFFER_TRACKS.length) * 50} possible`
         );
       }
       const bfMsg = sum.breakfastMsg;

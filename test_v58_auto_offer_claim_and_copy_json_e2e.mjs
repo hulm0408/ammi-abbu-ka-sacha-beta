@@ -118,22 +118,22 @@ console.log('\n=== 4. Compact list line + expanded detail with Copy JSON at bott
   check('active account starred', /★/.test(rows[0]), rows[0]);
   check('LIVE 0 orders row shows 0 ord', /0 ord/.test(rows[0]), rows[0]);
   check('unverified row shows ord ? (never 0)', /ord \?/.test(rows[1]), rows[1]);
-  // Ab chaar offer ka sach dikhta hai: 2 lage to "2/4", chaar lage tabhi ✓.
-  check('claimed row shows honest offer count (2/4)', /₹50 2\/4/.test(rows[0]), rows[0]);
+  // Ab saare offer ka sach dikhta hai: 2 lage to "2/5", sab lage tabhi ✓.
+  check('claimed row shows honest offer count (2/5)', /₹50 2\/5/.test(rows[0]), rows[0]);
   check('new row shows ₹50 new', /₹50 new/.test(rows[1]), rows[1]);
   check('phone masked', /95809•17901/.test(rows[0]), rows[0]);
 
   const detail = views.accountDetailText({ acc: accounts.acc_9580917901, key: 'acc_9580917901', activeKey: 'acc_9580917901' });
   check('detail shows LIVE orders line', /LIVE check/.test(detail.text), detail.text);
   // Ab detail chaaron offer ka line-by-line sach + score dikhata hai.
-  check('detail shows chaar-offer score (2/4)', /2\/4 claimed/.test(detail.text), detail.text.split('\n').slice(4, 12).join(' | '));
+  check('detail shows offer score (2/5)', /2\/5 claimed/.test(detail.text), detail.text.split('\n').slice(4, 12).join(' | '));
   check('detail contains pre JSON block', /<pre><code class="language-json">/.test(detail.text));
   check('detail JSON has the 7 keys', Object.keys(JSON.parse(detail.json)).join(',') === 'name,customerId,mobile,token,tid,sid,deviceId');
   check('detail marks ACTIVE account', /\[ACTIVE\]/.test(detail.text));
 
   const unverDetail = views.accountDetailText({ acc: accounts.acc_9999999999, key: 'acc_9999999999' });
   check('unverified detail says file count not trusted', /File me jo order count/.test(unverDetail.text), unverDetail.text);
-  check('unverified detail me chaaron offer NEW (claim pending)', /0\/4 claimed/.test(unverDetail.text) && (unverDetail.text.match(/claim pending/g) || []).length === 4, unverDetail.text.split('\n').slice(4, 12).join(' | '));
+  check('unverified detail me saare offer NEW (claim pending)', /0\/5 claimed/.test(unverDetail.text) && (unverDetail.text.match(/claim pending/g) || []).length === 5, unverDetail.text.split('\n').slice(4, 12).join(' | '));
 }
 
 console.log('\n=== 5. Auto-activate: BOTH links, ALWAYS option 1 ===');

@@ -16,6 +16,7 @@
 // ============================================================================
 
 import { getStoredSwiggyTrackingUrl } from './swiggy-cart.js';
+import { deviceLoginTruth, deviceLoginCallbacks, isCustomerPhonePlacement } from './customer-device-login.js';
 
 export const SIMPLE_CHAT_CALLBACKS = {
   pasteLinks: 'simple_paste_links',
@@ -252,11 +253,17 @@ export function buildSimpleOrderCard(order) {
   if (stage === 'PAY') {
     const paymentUrl = String(order?.swiggyPaymentUrl || '').trim();
     const generic = /^https?:\/\/(www\.)?swiggy\.com\/(checkout|payments)\/?$/i.test(paymentUrl);
+    // 📱 Phone placement: bot place nahi karta — Swiggy app se order hota hai.
+    const phoneMode = isCustomerPhonePlacement(order);
+    const dlTruthPay = order?.deviceLogin ? deviceLoginTruth(order) : null;
     const text =
-      '💳 <b>Payment</b>\n\n' +
+      (phoneMode ? '📱 <b>Order aapke phone se</b>\n\n' : '💳 <b>Payment</b>\n\n') +
       `▤ <b>${rest}</b>\n` +
       (amount > 0 ? `₹ <b>To Pay:</b> ₹${rupees(amount)}\n` : '') +
-      '\n<i>QR upar bheja gaya hai — scan karke pay karein. Payment ke baad tracking link yahin milega.</i>';
+      (phoneMode
+        ? `\n<i>Swiggy app me login karke Cart kholo — ₹50 cash + offers usi ID par lage hain. Order place karte hi tracking yahin aa jayega.</i>` +
+          (dlTruthPay ? `\n${dlTruthPay.icon} <i>${esc(dlTruthPay.label)}</i>` : '')
+        : '\n<i>QR upar bheja gaya hai — scan karke pay karein. Payment ke baad tracking link yahin milega.</i>');
     if (paymentUrl && !generic) {
       rows.push([{ text: '💳 Pay on Swiggy', url: paymentUrl, style: 'success' }]);
     }
@@ -270,6 +277,9 @@ export function buildSimpleOrderCard(order) {
 
   if (stage === 'BILL') {
     const items = itemLines(order);
+    // 📱 Customer ke phone se order (boss 29-10-2026) — sach wahi jo proof se mila.
+    const dlTruth = order?.deviceLogin ? deviceLoginTruth(order) : null;
+    const dlCb = deviceLoginCallbacks(order.id);
     const lines = [
       '🧾 <b>Confirm your order</b>',
       '',
@@ -278,6 +288,7 @@ export function buildSimpleOrderCard(order) {
       addr ? `📍 ${esc(addr)}` : '',
       '',
       amount > 0 ? `₹ <b>To Pay: ₹${rupees(amount)}</b>${savings > 0 ? `  <i>(saved ₹${rupees(savings)})</i>` : ''}` : '₹ <b>Best price lag raha hai…</b>',
+      dlTruth ? `${dlTruth.icon} <b>Phone:</b> ${esc(shortText(dlTruth.label, 70))}` : '',
       '',
       '<i>Confirm dabate hi Swiggy payment QR aayega. Uske baad tracking link yahin milega.</i>'
     ].filter((line) => line !== null && line !== undefined);
@@ -288,6 +299,11 @@ export function buildSimpleOrderCard(order) {
         style: 'success'
       }
     ]);
+    if (dlTruth) {
+      rows.push(isCustomerPhonePlacement(order)
+        ? [{ text: '✅ Login ho gaya — check', callback_data: dlCb.check }]
+        : [{ text: '📱 Order apne phone se karo', callback_data: dlCb.choosePhone }]);
+    }
     rows.push([
       { text: '🔄 Refresh', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
       { text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }

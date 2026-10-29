@@ -18,6 +18,13 @@ import {
   divider,
   DIVIDER,
 } from './rich-text.js';
+import { deviceLoginTruth } from './customer-device-login.js';
+
+/** Boss card me phone-login ka sach (sirf jo proof se pata chala). */
+function deviceLoginBadge(order) {
+  const truth = deviceLoginTruth(order);
+  return `${truth.icon} ${esc(truth.label)}`;
+}
 
 const PUBLIC_SERVICE_URL = getPublicServiceBaseUrl();
 
@@ -397,6 +404,8 @@ export function buildBossOrderCard(order, db = getDb()) {
     `<b>Order ref:</b> <code>#${esc(String(order.id))}</code>`,
     `<b>Swiggy order id:</b> ${swiggyOrderId ? `<code>${esc(swiggyOrderId)}</code>` : '<i>not created yet</i>'}`,
     `<b>Placed from:</b> ${placedFrom ? `<code>${esc(placedFrom)}</code>` : '<i>account not selected</i>'}`,
+    // 📱 Customer ke phone se order? Sach wahi jo proof se mila (jhooth nahi).
+    ...(order.deviceLogin ? [`<b>Phone login:</b> ${deviceLoginBadge(order)}`] : []),
     ...(displayLiveStatus ? [`<b>Swiggy status:</b> <code>${esc(displayLiveStatus)}</code>`] : []),
     `<b>Tracking:</b> ${trackingUrl
       ? `<a href="${esc(trackingUrl)}">Open live Swiggy tracking</a>`

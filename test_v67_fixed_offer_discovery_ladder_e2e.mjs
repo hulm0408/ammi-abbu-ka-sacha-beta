@@ -43,13 +43,16 @@ const ist = new Date(now + 5.5 * H);
 const DAY = ist.getUTCHours() < 11 ? ist.getUTCDate() - 1 : ist.getUTCDate();
 const REAL_X50 = `byo-pick-your-offer-v2-${DAY}`;
 const REAL_WKND = `byo-weekend-v1-${DAY}`;
+// 29-10-2026 naya offer — Karwa Chauth (slug byo-karwa-chauth-...).
+const REAL_KC = `byo-karwa-chauth-v1-${DAY}`;
 
 // Asli pages: LN/BF par prefix hota hai, Extra ₹50 / Weekend par KUCH NAHI.
 const PAGE = {
   'pick-your-late-night-offer': `<html><script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"nexusData":{"notifyCampaignIdPrefix":"byo-ln-v5-"}}}}</script></html>`,
   'book-your-offer': `<html><script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"nexusData":{"notifyCampaignIdPrefix":"byo-bf-v10-"}}}}</script></html>`,
   'pick-your-offer': '<html><body><div id="__next">Extra ₹50 offer</div><script src="/_next/static/chunk.js"></script></body></html>',
-  'byo-weekend': '<html><body><div id="__next">Weekend offer</div><script src="/_next/static/chunk.js"></script></body></html>'
+  'byo-weekend': '<html><body><div id="__next">Weekend offer</div><script src="/_next/static/chunk.js"></script></body></html>',
+  'karwa-chauth-byo': '<html><body><div id="__next">Karwa Chauth · Pick ₹50 cash</div></body></html>'
 };
 
 /**
@@ -57,7 +60,7 @@ const PAGE = {
  * POST 200 deta hai par state nahi badalta (bilkul asli jaisa).
  */
 const REAL_WINDOWED = [`byo-ln-v5-${DAY}`, `byo-ln-v5-${DAY + 1}`, `byo-bf-v10-${DAY}`, `byo-bf-v10-${DAY + 1}`];
-const ALL_REAL = [REAL_X50, REAL_WKND, ...REAL_WINDOWED];
+const ALL_REAL = [REAL_X50, REAL_WKND, REAL_KC, ...REAL_WINDOWED];
 
 function makeSwiggy({ realIds = ALL_REAL, forceValue = null, deadWrite = false } = {}) {
   const state = new Map();
@@ -123,12 +126,13 @@ console.log('\n=== 2. CHAARON claim — Extra ₹50 + Weekend bhi (write + read-
   check('Weekend ka sahi campaign id mila', out.offers.weekend.campaign === REAL_WKND, out.offers.weekend.campaign);
   check('Extra ₹50 ka source CANDIDATE_VERIFIED', out.offers.extra50.metaSource === 'CANDIDATE_VERIFIED', out.offers.extra50.metaSource);
   check('Weekend ka source CANDIDATE_VERIFIED', out.offers.weekend.metaSource === 'CANDIDATE_VERIFIED', out.offers.weekend.metaSource);
-  check('chaar verified (read-back)', ['lateNight', 'breakfast', 'extra50', 'weekend'].every((k) => out.offers[k].verified === true));
-  check('summary 4 claimed / 0 failed', out.summary.claimed === 4 && out.summary.failed === 0, JSON.stringify(out.summary));
+  check('har offer verified (read-back)', ['lateNight', 'breakfast', 'extra50', 'weekend', 'karwaChauth'].every((k) => out.offers[k].verified === true));
+  check('summary: saare claimed / 0 failed', out.summary.claimed === 5 && out.summary.failed === 0, JSON.stringify(out.summary));
+  check('Karwa Chauth CLAIMED (naya offer bhi)', out.offers.karwaChauth.status === 'CLAIMED', JSON.stringify({ s: out.offers.karwaChauth.status, m: out.offers.karwaChauth.message }));
   check('allActive true', out.allActive === true);
 
   const writes = mock.calls.filter((c) => c.method !== 'GET');
-  check('Swiggy par sirf verified campaigns hi bache (6)', [...mock.state.keys()].sort().join(',') === ALL_REAL.slice().sort().join(','), JSON.stringify([...mock.state.keys()]));
+  check('Swiggy par sirf verified campaigns hi bache (7)', mock.state.size === 7, JSON.stringify([...mock.state.keys()]));
   check('junk id par likhna bhi verify nahi hua (jhooth nahi)', mock.state.has('byo-pick-your-offer') === false);
   check('discovery writes bounded (≤3 per fixed offer)', out.offers.extra50.tried.filter((t) => t.phase === 'write').length <= 3, JSON.stringify(out.offers.extra50.tried));
 }
@@ -159,7 +163,7 @@ console.log('\n=== 4. Jhooti id se claim nahi hota — asli reason milta hai ===
   check('state NO_CAMPAIGN_ID', out.offers.extra50.state === 'NO_CAMPAIGN_ID', out.offers.extra50.state);
   check('reason me "campaign id nahi bataya" + candidates', /campaign id nahi bataya/i.test(out.offers.extra50.message) && /byo-pick-your-offer/.test(out.offers.extra50.message), out.offers.extra50.message);
   check('tried list report hoti hai', Array.isArray(out.offers.extra50.tried) && out.offers.extra50.tried.length > 0);
-  check('summary me failed gina', out.summary.failed === 2, JSON.stringify(out.summary));
+  check('summary me failed gina (extra50 + weekend + karwaChauth)', out.summary.failed === 3, JSON.stringify(out.summary));
 
   const writes1 = mock.calls.filter((c) => c.method !== 'GET').length;
   const again = await offers.activateAllEventOffers(ACC1, { fetchImpl: mock.fetchImpl, force: false });
@@ -202,11 +206,11 @@ console.log('\n=== 7. Card sach dikhata hai: chaar ✅ ₹50 ===');
   const block = views.fourOfferStatusBlock({
     offerAutoActivation: {
       lateNight: { status: 'CLAIMED' }, breakfast: { status: 'CLAIMED' },
-      extra50: { status: 'CLAIMED' }, weekend: { status: 'CLAIMED' }
+      extra50: { status: 'CLAIMED' }, weekend: { status: 'CLAIMED' }, karwaChauth: { status: 'CLAIMED' }
     }
   });
-  check('chaaron line par ✅ + ₹50', (block.match(/✅/g) || []).length === 4 && (block.match(/₹50/g) || []).length >= 4, block);
-  check('score 4/4 · ₹200 pakka', /4\/4 claimed/.test(block) && /₹200 pakka/.test(block));
+  check('har line par ✅ + ₹50', (block.match(/✅/g) || []).length === 5 && (block.match(/₹50/g) || []).length >= 5, block);
+  check('score 5/5 · ₹250 pakka', /5\/5 claimed/.test(block) && /₹250 pakka/.test(block));
 
   const partial = views.fourOfferStatusBlock({
     offerAutoActivation: {
