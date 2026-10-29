@@ -300,9 +300,17 @@ export function buildSimpleOrderCard(order) {
       }
     ]);
     if (dlTruth) {
+      // Boss (29-10-2026): "burhe ammi se OTP kaise parhaunga" — isliye OTP-free
+      // rasta pehla button hai: bot khud order kare, ghar me kuch na karna pade.
       rows.push(isCustomerPhonePlacement(order)
-        ? [{ text: '✅ Login ho gaya — check', callback_data: dlCb.check }]
-        : [{ text: '📱 Order apne phone se karo', callback_data: dlCb.choosePhone }]);
+        ? [
+            { text: '✅ Login ho gaya — check', callback_data: dlCb.check },
+            { text: '🙅 OTP nahi — bot kare', callback_data: dlCb.botPlaces }
+          ]
+        : [
+            { text: '🙅 OTP nahi — bot kare', callback_data: dlCb.botPlaces },
+            { text: '📱 Apne phone se', callback_data: dlCb.choosePhone }
+          ]);
     }
     rows.push([
       { text: '🔄 Refresh', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },

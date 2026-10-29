@@ -108,6 +108,7 @@ import {
   attachDeviceLogin,
   markHandoverSent,
   customerChoseOwnPhone,
+  chooseBotPlacement,
   isCustomerPhonePlacement,
   markCustomerSaidLoggedIn,
   verifyAccountSessionLive,
@@ -11534,6 +11535,26 @@ bot.action(/^devlogin_help_([A-Za-z0-9_-]+)$/, async (ctx) => {
   await ctx.reply(buildDeviceLoginHelpText({ order }), { parse_mode: 'HTML' }).catch(() => {});
 });
 
+// 🙅 "OTP nahi ho payega" — sabse aam case (burhe Ammi/Abbu, boss bahar).
+// Bot wapas apni taraf se order karta hai: ghar me kisi ko kuch nahi karna.
+bot.action(/^devlogin_bot_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const order = await loadDeviceLoginOrder(ctx);
+  if (!order) return;
+  await ctx.answerCbQuery('Theek hai — bot khud order karega').catch(() => {});
+  const db = getDb();
+  chooseBotPlacement(order);
+  db.orders[order.id] = order;
+  saveDb(db);
+  await ctx.reply(
+    `🙅 <b>OTP SKIP — BOT KHUD ORDER KAREGA</b>\n\n` +
+    `Swiggy ID: <code>${escapeHtml(String(order.deviceLogin?.phone || order.orderAccount || ''))}</code>\n` +
+    `<i>Ghar me kisi ko phone/OTP kuch nahi karna. Order usi ID se place hoga jispar ₹50 cash laga hua hai — ` +
+    `aap sirf payment/QR kar dena, tracking + delivery OTP bot bhej dega.</i>`,
+    { parse_mode: 'HTML' }
+  ).catch(() => {});
+  try { await updateOrderCards(getDb().orders?.[order.id] || order); } catch {}
+});
+
 bot.action(SIMPLE_CHAT_CALLBACKS.myOrder, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await handlePreviousOrder(ctx);
@@ -13150,8 +13171,17 @@ export function injectAccountSessionIntoOrder(order, preferredAccKey = null) {
  * Card customer ko jata hai (boss-mirror se boss ko bhi), aur `order.deviceLogin`
  * par sirf utna likha jata hai jitna proof se pata chala.
  */
-export async function sendDeviceLoginHandover(order, { telegram = null, chatId = null } = {}) {
+export async function sendDeviceLoginHandover(order, { telegram = null, chatId = null, force = false } = {}) {
   if (!order) return { ok: false, reason: 'no order' };
+  // Boss (29-10-2026): "itni burhe ammi se OTP kaise parhaunga" — yeh card
+  // OPTIONAL hai. `DEVICE_LOGIN_AUTO_HANDOVER=0` se bilkul band, aur ek order
+  // par sirf ek baar (spam nahi).
+  if (!force && String(process.env.DEVICE_LOGIN_AUTO_HANDOVER ?? '1') === '0') {
+    return { ok: false, reason: 'auto handover off (DEVICE_LOGIN_AUTO_HANDOVER=0)' };
+  }
+  if (!force && order.deviceLogin?.handoverSentAt) {
+    return { ok: false, reason: 'handover pehle hi bhej diya (dobara nahi)', phone: order.deviceLogin.phone };
+  }
   const db = getDb();
   const accKey = order.selectedAccount || order.injectedSession?.accountKey || '';
   const acc = accKey ? db.config?.accounts?.[accKey] : null;

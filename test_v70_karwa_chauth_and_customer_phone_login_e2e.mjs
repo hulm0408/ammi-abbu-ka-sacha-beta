@@ -194,6 +194,40 @@ console.log('\n=== 3. Customer ko ID handover card (wahi ID jispar offers lage h
   check('phone na ho to card sach bolta hai', /phone number nahi hai/i.test(badCard.text));
 }
 
+console.log('\n=== 3b. "Burhe Ammi se OTP kaise parhaunga" → OTP ki zarurat hi nahi ===');
+{
+  // Boss ka asli sawaal: 70+ saal ki Ammi se OTP padhwana possible nahi.
+  const order = { id: 'ord_otp_1', selectedAccount: 'acc_9876500123', orderAccount: '9876500123' };
+  dl.attachDeviceLogin(order, ACC, { key: 'acc_9876500123' });
+  dl.markHandoverSent(order);
+  const card = dl.buildDeviceLoginHandover({ order, account: ACC, key: 'acc_9876500123' });
+  const flat = card.buttons.flat();
+  check('card saaf kehta hai ki yeh OPTIONAL hai', /optional/i.test(card.text));
+  check('card me "Ammi/Abbu ko kuch nahi karna"', /kuch nahi karna/i.test(card.text));
+  check('OTP-free button sabse pehle', flat[0].callback_data === 'devlogin_bot_ord_otp_1', JSON.stringify(flat[0]));
+  check('button label "OTP nahi — bot khud order kare"', /OTP nahi/i.test(flat[0].text));
+  check('card me "ek hi baar, ~30 din" sach', /ek hi baar/i.test(card.text) && /30 din/.test(card.text));
+  check('default mode BOT hi hai (kuch karna hi nahi)', order.placementMode === dl.PLACEMENT_MODE.BOT);
+
+  // Bot placement chuna → wapas default, koi "pending login" bakwaas nahi
+  dl.chooseBotPlacement(order);
+  check('placementMode BOT par wapas', order.placementMode === dl.PLACEMENT_MODE.BOT);
+  check('botPlacesOrder true', order.deviceLogin.botPlacesOrder === true);
+  check('status NOT_REQUESTED (adhoora pending nahi)', order.deviceLogin.status === dl.DEVICE_LOGIN_STATUS.NOT_REQUESTED);
+  check('sach likha: OTP ki zarurat nahi', /OTP ki zarurat nahi/i.test(order.deviceLogin.lastReason));
+  check('bot placement par "bot place nahi karega" nahi kehta', !/bot place nahi karega/i.test(dl.deviceLoginTruth(order).label));
+
+  // Help text me boss ke teen asli raste
+  const help = dl.buildDeviceLoginHelpText({ order });
+  check('help: Ammi se OTP ki zarurat nahi', /OTP ki zarurat NAHI/i.test(help));
+  check('help: OTP sirf ek baar (~30 din)', /sirf ek baar/i.test(help) && /30 din/.test(help));
+  check('help: bot me Login with Number se boss khud OTP daal sakta hai', /Login with Number/i.test(help));
+
+  // Har order par card nahi aana chahiye (spam nahi) + env se band
+  check('handover dobara nahi jata (spam nahi)', /handover pehle hi bhej diya/.test(indexSrc));
+  check('DEVICE_LOGIN_AUTO_HANDOVER=0 se band ho sakta hai', /DEVICE_LOGIN_AUTO_HANDOVER/.test(indexSrc));
+}
+
 console.log('\n=== 4. "Order main apne phone se karunga" → bot place nahi karta ===');
 {
   const order = { id: 'ord_dl_2', selectedAccount: 'acc_9876500123', orderAccount: '9876500123' };
@@ -273,12 +307,16 @@ console.log('\n=== 6. Wiring: consent par handover, callbacks, import summary ==
   check('devlogin_check_ callback registered', /bot\.action\(\/\^devlogin_check_/.test(indexSrc));
   check('devlogin_phone_ callback registered', /bot\.action\(\/\^devlogin_phone_/.test(indexSrc));
   check('devlogin_help_ callback registered', /bot\.action\(\/\^devlogin_help_/.test(indexSrc));
+  check('devlogin_bot_ callback registered (OTP skip)', /bot\.action\(\/\^devlogin_bot_/.test(indexSrc));
+  check('OTP skip par bot khud order karta hai (message)', /OTP SKIP — BOT KHUD ORDER KAREGA/.test(indexSrc));
+  check('user card BILL me OTP-free button', /OTP nahi — bot kare/.test(chatSrc));
   check('phone choose par boss ko bhi batata hai (dono ko)', /CUSTOMER PHONE PLACEMENT ON/.test(indexSrc));
   check('paid/tracking par order proof likha jata hai', /noteCustomerPlacedOrder\(order, order\.swiggyOrderId\)/.test(indexSrc));
   check('proof message customer + boss dono ko', /ORDER CUSTOMER KE PHONE SE PLACE HUA/.test(indexSrc));
 
   check('boss card par phone-login badge', /deviceLoginBadge\(order\)/.test(panelSrc) && /deviceLoginTruth/.test(panelSrc));
   check('simple user card par phone status + button', /dlCb\.choosePhone/.test(chatSrc) && /dlCb\.check/.test(chatSrc) && /deviceLoginTruth/.test(chatSrc));
+  check('simple card me OTP-free rasta pehle', /dlCb\.botPlaces/.test(chatSrc));
   check('PAY stage phone placement par QR note nahi', /Order aapke phone se<\/b>/.test(chatSrc));
 
   const html = intake.formatBulkVaultImportSummaryHtml({
