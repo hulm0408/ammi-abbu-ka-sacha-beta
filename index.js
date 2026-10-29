@@ -220,6 +220,7 @@ import {
   claimInstamartFreeCash,
   fetchSwiggyProfileFromCookies,
   parseAddressDetails,
+  parseLooseAddress,
   parseCartDetails,
   extractAddressShareUrl,
   isAddressShareUrl,
@@ -10572,7 +10573,23 @@ bot.on('text', async (ctx, next) => {
   const validAddrLink = allLinks.find(l => isValidDeliveryAddressUrl(l));
   const parsedCartDirect = parseCartDetails(rawText);
   const parsedAddrDirect = parseAddressDetails(rawText);
-  const hasAnyValidOrderInput = Boolean(validCartLink || validAddrLink || parsedCartDirect || parsedAddrDirect);
+
+  // 🛠 Boss (29-10-2026): "ab address ko kya hua wo kyu nahi le raha".
+  // Customer ne seedha address TYPE kiya, par strict parser ko city/pincode/
+  // keyword na milne se null mila — bot address chup-chaap gira kar wapas
+  // "Cart + Address link chahiye" bolta tha. Jab bot khud address maang raha ho
+  // (ya cart aa chuka hai aur address baaki hai) to address-jaisa text accept karo.
+  const preDraft = getDraft(userId);
+  const askingAddressNow = Boolean(
+    (state && ['waiting_address', 'waiting_both_links'].includes(state.action)) ||
+    (preDraft.cart && !preDraft.address) ||
+    (!preDraft.cart && !preDraft.address && simpleChatForUser(userId) && Boolean(String(rawText || '').trim()))
+  );
+  const looseAddrDirect = (!parsedAddrDirect && !validAddrLink && askingAddressNow)
+    ? parseLooseAddress(rawText)
+    : null;
+  const addrDirect = parsedAddrDirect || looseAddrDirect;
+  const hasAnyValidOrderInput = Boolean(validCartLink || validAddrLink || parsedCartDirect || addrDirect);
 
   // SIMPLE MODE: one short line, never a lecture. The card already shows what is
   // missing; the customer only has to paste the links (no typing at all).
@@ -10612,7 +10629,7 @@ bot.on('text', async (ctx, next) => {
     // verdict for that token, otherwise an old "expired" would fire instantly
     // and the customer would swear the bot rejects every new link.
     if (validAddrLink) clearOfoResolutionFailures(validAddrLink);
-    if (parsedAddrDirect) clearOfoResolutionFailures(rawText);
+    if (addrDirect) clearOfoResolutionFailures(rawText);
 
     // Fetch both Cart and Address links simultaneously in parallel via Promise.all!
     const [cartMeta, addrMeta] = await Promise.all([
@@ -10638,8 +10655,8 @@ bot.on('text', async (ctx, next) => {
       addedCart = true;
     }
 
-    if (parsedAddrDirect || validAddrLink) {
-      let geoAddr = parsedAddrDirect;
+    if (addrDirect || validAddrLink) {
+      let geoAddr = addrDirect;
       if (addrMeta?.addressDetails && !addrMeta.addressDetails.unresolvableShortLink) {
         geoAddr = { ...(geoAddr || {}), ...addrMeta.addressDetails };
       } else if (geoAddr) {
@@ -10654,7 +10671,7 @@ bot.on('text', async (ctx, next) => {
 
       // A typed/GPS address replaces any previously stored share link — otherwise
       // the stale (broken) link keeps being used and fails forever.
-      const typedOverridesLink = Boolean(parsedAddrDirect) && !validAddrLink;
+      const typedOverridesLink = Boolean(addrDirect) && !validAddrLink;
       // A new link/typed address is a NEW attempt: drop the previous failure
       // marker so an old dead link's verdict can never be shown for this one.
       const freshAddressDetails = { ...(geoAddr || {}) };
@@ -10670,7 +10687,7 @@ bot.on('text', async (ctx, next) => {
         (addrMeta.addressDetails.address || (addrMeta.addressDetails.lat && addrMeta.addressDetails.lng))
       );
       const resolvedTextAddress = Boolean(
-        geoAddr && (geoAddr.address?.length >= 8 || (geoAddr.lat && geoAddr.lng)) &&
+        geoAddr && (geoAddr.address?.length >= 6 || (geoAddr.lat && geoAddr.lng)) &&
         !geoAddr.unresolvableShortLink
       );
       const addressIsResolved = resolvedFromLink || resolvedTextAddress;
@@ -10746,7 +10763,9 @@ bot.on('text', async (ctx, next) => {
       curDraft.addressDetails &&
       !curDraft.addressDetails.unresolvableShortLink &&
       (String(curDraft.addressDetails.address || '').trim().length >= 8 ||
-        (curDraft.addressDetails.lat && curDraft.addressDetails.lng))
+        (curDraft.addressDetails.lat && curDraft.addressDetails.lng) ||
+        // Customer ne khud address type kiya hai — usko "kahin na kahin" mat gira.
+        (curDraft.addressTyped && String(curDraft.addressDetails.address || curDraft.address || '').trim().length >= 6))
     );
     if (simpleChatForUser(userId) && curDraft.cart && curDraft.address && !addressUsable) {
       await cleanupUserChat(ctx.telegram, ctx.chat?.id || userId, userId, {
@@ -11184,7 +11203,8 @@ async function handleSendToBoss(ctx) {
   const draftAddressText = String(draft.addressDetails?.address || '').trim();
   const draftHasUsableAddress = Boolean(
     (draftAddressText && !isLinkString(draftAddressText) && draftAddressText.length >= 8) ||
-    (draft.addressDetails?.lat && draft.addressDetails?.lng)
+    (draft.addressDetails?.lat && draft.addressDetails?.lng) ||
+    (draft.addressTyped && draftAddressText && !isLinkString(draftAddressText) && draftAddressText.length >= 6)
   ) && !draft.addressDetails?.unresolvableShortLink;
   if (addressLink && draftHasUsableAddress) {
     console.warn('[AddressResolve] using the already-fetched address (no link re-resolve)');
@@ -11213,7 +11233,11 @@ async function handleSendToBoss(ctx) {
     } catch (e) {}
   } else if (!addressLink) {
     // Plain-text address / GPS pin — the message itself is the source.
-    const parsedAddress = parseAddressDetails(addressSource, { allowWithUrl: true }) || parseAddressDetails(addressSource);
+    // Boss (29-10-2026): typed address ko loose parser se bhi maano — warna
+    // "B-402 Eldeco Greens" jaisa address yahan null ho kar order ruk jata tha.
+    const parsedAddress = parseAddressDetails(addressSource, { allowWithUrl: true })
+      || parseAddressDetails(addressSource)
+      || parseLooseAddress(addressSource);
     if (parsedAddress) {
       for (const [key, value] of Object.entries(parsedAddress)) {
         if (value !== null && value !== undefined && value !== '') deliveryDetails[key] = value;

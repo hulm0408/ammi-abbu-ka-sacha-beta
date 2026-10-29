@@ -2741,6 +2741,71 @@ export function hasAddressShareUrl(text) {
   return Boolean(extractAddressShareUrl(text));
 }
 
+/**
+ * Boss (29-10-2026): "ab address ko kya hua wo kyu nahi le raha".
+ *
+ * Asli wajah: jab customer seedha address TYPE karta tha ("B-402 Eldeco Greens",
+ * "H.No 12, Near Shiv Mandir, Bakshi Ka Talab"), strict parser ko koi city /
+ * pincode / "flat|road|nagar" keyword nahi milta tha → `null` → bot address
+ * chup-chaap girа kar wapas "Cart + Address link chahiye" bolta tha.
+ *
+ * Ye parser SIRF tab use hota hai jab bot khud address maang raha ho, aur
+ * tab bhi sirf tab jab text me URL na ho aur wo address-jaisa lage.
+ */
+export function parseLooseAddress(text) {
+  if (!text || typeof text !== 'string') return null;
+  const raw = String(text).replace(/&amp;/gi, '&').trim();
+  if (raw.length < 6 || raw.length > 600) return null;
+  if (/https?:\/\/|www\.|t\.me\/|@[a-z0-9_]{3,}/i.test(raw)) return null;
+  if (raw.startsWith('/')) return null;
+  // Pure chit-chat / commands are not addresses.
+  const oneWordish = raw.replace(/[^A-Za-z\u0900-\u097F ]/g, '').trim();
+  if (/^(hi+|hey+|hello|hii+|namaste|salam|assalam|asalam|ok|okay|okey|thanks|thank you|thanx|start|menu|help|address|cart|haan|han|no|nahi|done|yes|yep|good|nice)$/i.test(oneWordish.toLowerCase())) return null;
+  if (!/[A-Za-z\u0900-\u097F]/.test(raw)) return null;
+
+  const words = raw.split(/\s+/).filter(Boolean);
+  const hasDigit = /\d/.test(raw);
+  const hasComma = /,/.test(raw);
+  const hasAddressWord = /\b(house|h\.?no|flat|floor|plot|block|sector|phase|nagar|ganj|colony|road|rd|marg|street|lane|gali|apartment|apt|tower|hostel|near|opp|opposite|behind|beside|green|greens|enclave|vihar|puram|khand|chauraha|chowk|market|mandi|park|society|residency|bhavan|bhawan|kothi|bhawan|bandra|district|tehsil|village|gram|post|po|p\.o)\b/i.test(raw);
+  // Address maanne ke liye: ya number ho, ya comma ho, ya 2+ words + address word.
+  // "2 burgers bhej do" ek address nahi hai — food/action words ko chhod do.
+  const hasFoodOrActionWord = /\b(bhej\w*|bhejo|chahiye|chaiye|karo|kro|kar\s*do|order|khana|food|pizza|burger|biryani|mangwa\w*|deliver\w*|jaldi|abhi|kab|kitna|price|bill|paisa|refund|help|waiting)\b/i.test(raw);
+  if (hasFoodOrActionWord && !hasAddressWord && !hasComma) return null;
+  const looksAddress = Boolean(hasAddressWord) || hasComma || hasDigit;
+  if (!looksAddress) return null;
+  if (!hasDigit && !hasComma && words.length < 2) return null;
+
+  const clean = raw.replace(/\s*\n\s*/g, ', ').replace(/\s{2,}/g, ' ').replace(/[,\s]+$/, '').trim();
+  const segs = clean.split(/[,\n]+/).map((x) => x.trim()).filter(Boolean);
+  const knownCities = [
+    'Lucknow', 'Hyderabad', 'Secunderabad', 'Bangalore', 'Bengaluru', 'New Delhi', 'Delhi',
+    'Mumbai', 'Navi Mumbai', 'Thane', 'Pune', 'Kolkata', 'Chennai', 'Jaipur', 'Ahmedabad',
+    'Chandigarh', 'Noida', 'Greater Noida', 'Gurgaon', 'Gurugram', 'Ghaziabad', 'Faridabad',
+    'Kanpur', 'Varanasi', 'Prayagraj', 'Allahabad', 'Agra', 'Gorakhpur', 'Bareilly', 'Aligarh',
+    'Moradabad', 'Meerut', 'Kota', 'Indore', 'Bhopal', 'Patna', 'Ranchi', 'Raipur', 'Bilaspur',
+    'Bhubaneswar', 'Guwahati', 'Kochi', 'Coimbatore', 'Nagpur', 'Surat', 'Vadodara', 'Ludhiana',
+    'Amritsar', 'Dehradun', 'Jodhpur', 'Udaipur', 'Gwalior', 'Jabalpur', 'Visakhapatnam', 'Vijayawada'
+  ];
+  const city = knownCities.find((c) => new RegExp('\\b' + c + '\\b', 'i').test(clean)) || null;
+  const pincode = (clean.match(/\b([1-8]\d{5})\b/) || [])[1] || '';
+  const mobile = (clean.match(/\b(?:\+?91[\s-]*)?([6-9]\d{9})\b/) || [])[1] || '';
+  const streetText = mobile ? clean.replace(mobile, '').replace(/[,\s]+$/, '').trim() : clean;
+
+  return {
+    name: null,
+    mobile: mobile || null,
+    city,
+    pincode,
+    address: streetText,
+    flat_no: segs[0] || null,
+    area: segs[1] || city || null,
+    landmark: segs[0] || null,
+    lat: null,
+    lng: null,
+    looseTyped: true
+  };
+}
+
 // Cleanly extract structured delivery address from Swiggy native share messages, Swiggy World receipts, coordinates, or plain text
 export function parseAddressDetails(text, options = {}) {
   if (!text) return null;
