@@ -24,6 +24,7 @@ export const SIMPLE_CHAT_CALLBACKS = {
   confirmDraft: 'simple_confirm_draft',
   continueDraft: 'simple_continue',
   myOrder: 'simple_my_order',
+  loginReady: 'simple_login_ready',
   newOrder: 'simple_new_order'
 };
 
@@ -166,6 +167,27 @@ export function buildSimpleHomeScreen(draft = {}) {
     `📍 <b>Address:</b> ${addressValue}\n\n` +
     `<i>${hint}</i>`;
 
+  // ✅ Boss (30-10-2026): "address and cart paste karne ke baad bas itna bolna
+  // hai ki ID apne phone me login karne ke liye ye button dabaye" — ek hi button,
+  // koi Continue/price/extra option nahi (user confuse nahi hota).
+  if (hasCart && hasAddress && !addressUnresolved) {
+    const loginText =
+      '📱 <b>ID apne phone me login karne ke liye ye button dabayein</b>\n\n' +
+      `🛒 ${cartValue}\n` +
+      `📍 ${addressValue}\n\n` +
+      '<i>Login ho jaye to neeche wala button dabaiye — bill + QR turant aayega.</i>';
+    return {
+      text: loginText,
+      keyboard: {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '📱 Login button — dabayein', callback_data: SIMPLE_CHAT_CALLBACKS.loginReady, style: 'success' }
+          ]]
+        }
+      }
+    };
+  }
+
   const rows = [
     [{ text: '📋 Cart + Address link paste karein', callback_data: SIMPLE_CHAT_CALLBACKS.pasteLinks, style: 'success' }]
   ];
@@ -176,17 +198,40 @@ export function buildSimpleHomeScreen(draft = {}) {
       { text: '↻ Retry address', callback_data: 'simple_retry_address', style: 'primary' },
       { text: '✍️ Address type karein', callback_data: 'simple_type_address', style: 'primary' }
     ]);
-  } else if (hasCart && hasAddress) {
-    rows.unshift([{ text: '✅ Continue — check best price', callback_data: SIMPLE_CHAT_CALLBACKS.continueDraft, style: 'success' }]);
   }
-  // 🆘 Boss (30-10-2026): "usko option dena hai you can contact the admin in any
-  // issue" — aur customer ko wallet/fee jaisa kuch dikhana hi nahi hai.
-  rows.push([{ text: '🆘 Admin se baat karein', callback_data: 'support_contact_admin', style: 'primary' }]);
   if (hasCart || hasAddress) {
     rows.push([{ text: '✖ Clear', callback_data: SIMPLE_CHAT_CALLBACKS.clearDraft, style: 'danger' }]);
   }
 
   return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
+}
+
+/**
+ * ❓ Login me dikkat — chhota madad card (sirf tab jab customer poochhe).
+ * Yahan hi phone-login ke saare raste hain (check / apne phone se / bot kare).
+ */
+export function buildSimpleLoginHelpCard(order) {
+  const dlCb = deviceLoginCallbacks(order?.id);
+  const truth = order?.deviceLogin ? deviceLoginTruth(order) : null;
+  const text =
+    '❓ <b>LOGIN ME DIKKAT?</b>\n\n' +
+    (truth ? `${truth.icon} <i>${esc(truth.label)}</i>\n\n` : '') +
+    '1️⃣ Phone me Swiggy app kholo → purani ID ho to <b>Logout</b>\n' +
+    '2️⃣ Usi number se OTP daal kar login\n' +
+    '3️⃣ Cart app me khud dikhega → wahi se order\n\n' +
+    '<i>Bot phone ko dekh nahi sakta — isliye jhootha “login ho gaya” kabhi nahi bolega.</i>';
+  return {
+    text,
+    keyboard: {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '✅ Login ho gaya — check', callback_data: dlCb.check, style: 'success' }],
+          [{ text: '📱 Apne phone se order', callback_data: dlCb.choosePhone, style: 'primary' }],
+          [{ text: '🙅 OTP nahi — bot kare', callback_data: dlCb.botPlaces, style: 'primary' }]
+        ]
+      }
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -220,8 +265,10 @@ export function buildSimpleOrderCard(order) {
     const isDelivered = /delivered/i.test(String(order?.liveOrderStatus || ''));
     const statusText = String(order?.liveOrderStatus || (isDelivered ? 'Delivered' : 'Order Confirmed')).trim();
 
+    // ✅ Boss (30-10-2026): "...and then hogaya sab no other option" — yahi aakhri
+    // screen hai: ek line + tracking button.
     const lines = [
-      isDelivered ? '🍽 <b>Order Delivered! Enjoy your meal! 🎉</b>' : '✅ <b>Order confirmed</b> — Live Tracking',
+      isDelivered ? '🍽 <b>SAB HO GAYA</b> — Order Delivered! 🎉' : '✅ <b>SAB HO GAYA</b> — Order confirmed, tracking ready',
       '',
       `▤ <b>${rest}</b>`,
       swiggyId ? `◉ <b>Swiggy ID:</b> <code>${esc(swiggyId)}</code>` : '',
@@ -242,15 +289,16 @@ export function buildSimpleOrderCard(order) {
             : '<i>Swiggy link publish hote hi yahan aa jayega. Live updates yahan aate rahenge.</i>')
     ].filter((line) => line !== null && line !== undefined && line !== '');
 
-    if (partnerPhone) {
-      rows.push([{ text: `📞 Call Partner: ${partnerPhone}`, callback_data: `user_call_partner_${order.id}` }]);
+    if (trackingUrl) {
+      rows.push([{ text: '🛵 Track on Swiggy', url: trackingUrl, style: 'success' }]);
+    } else {
+      // Link abhi publish nahi hua — ek hi button (khud laayega), koi menu nahi.
+      rows.push([{ text: '🔗 Link lao', callback_data: `track_now_${order.id}`, style: 'success' }]);
     }
-    if (trackingUrl) rows.push([{ text: '🛵 Track on Swiggy', url: trackingUrl, style: 'success' }]);
-  rows.push([{ text: '🔗 Naya link lao', callback_data: `track_now_${order.id}`, style: 'primary' }]);
-    rows.push([
-      { text: '🔄 Refresh status', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
-      { text: '🏁 Finish', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder, style: 'primary' }
-    ]);
+    if (partnerPhone) {
+      rows.push([{ text: `📞 Delivery partner: ${partnerPhone}`, callback_data: `user_call_partner_${order.id}`, style: 'primary' }]);
+    }
+    rows.push([{ text: '🏁 Ho gaya', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder, style: 'primary' }]);
     return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 
@@ -277,10 +325,7 @@ export function buildSimpleOrderCard(order) {
       '\n<i>Aapka payment QR taiyar hai aur safe rakha hua hai.</i>\n' +
       '<i>Bas ek chhoti refundable verification ke baad QR khul jayega — order ke bill me ye nahi judti.</i>';
     rows.push([{ text: '🔐 Verification karein', callback_data: 'wallet_verify_pay', style: 'success' }]);
-    rows.push([
-      { text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' },
-      { text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
-    ]);
+    rows.push([{ text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }]);
     return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 
@@ -301,13 +346,8 @@ export function buildSimpleOrderCard(order) {
     if (paymentUrl && !generic) {
       rows.push([{ text: '💳 Pay on Swiggy', url: paymentUrl, style: 'success' }]);
     }
-    rows.push([{ text: '✓ I have paid — get tracking', callback_data: `user_paid_status_${order.id}`, style: 'success' }]);
-    rows.push([
-      { text: '🔁 Resend QR', callback_data: `user_resend_approved_qr_${order.id}`, style: 'primary' },
-      { text: '🔗 Link lao', callback_data: `track_now_${order.id}`, style: 'success' }
-    ]);
+    rows.push([{ text: '✓ I have paid — tracking', callback_data: `user_paid_status_${order.id}`, style: 'success' }]);
     rows.push([{ text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }]);
-    rows.push([{ text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }]);
     return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 
@@ -315,7 +355,7 @@ export function buildSimpleOrderCard(order) {
     const items = itemLines(order);
     // 📱 Customer ke phone se order (boss 29-10-2026) — sach wahi jo proof se mila.
     const dlTruth = order?.deviceLogin ? deviceLoginTruth(order) : null;
-    const dlCb = deviceLoginCallbacks(order.id);
+    const dlCb = deviceLoginCallbacks(order.id); // login help card me use hota hai (buildSimpleLoginHelpCard)
     // Bill par koi fee/verification line NAHI — customer ko lagta tha ki usse
     // order par paisa liya ja raha hai (boss 30-10-2026).
     const lines = [
@@ -328,33 +368,19 @@ export function buildSimpleOrderCard(order) {
       amount > 0 ? `₹ <b>To Pay: ₹${rupees(amount)}</b>${savings > 0 ? `  <i>(saved ₹${rupees(savings)})</i>` : ''}` : '₹ <b>Best price lag raha hai…</b>',
       dlTruth ? `${dlTruth.icon} <b>Phone:</b> ${esc(shortText(dlTruth.label, 70))}` : '',
       '',
-      '<i>Confirm dabate hi Swiggy payment QR aayega. Uske baad tracking link yahin milega.</i>'
+      '<i>“QR banao” dabate hi payment QR yahin aayega — uske baad tracking link.</i>'
     ].filter((line) => line !== null && line !== undefined);
-    rows.push([
-      {
-        text: amount > 0 ? `✅ Confirm ₹${rupees(amount)}` : '✅ Confirm order',
-        callback_data: `simple_confirm_order_${order.id}`,
-        style: 'success'
-      }
-    ]);
-    if (dlTruth) {
-      // Boss (29-10-2026): "burhe ammi se OTP kaise parhaunga" — isliye OTP-free
-      // rasta pehla button hai: bot khud order kare, ghar me kuch na karna pade.
-      rows.push(isCustomerPhonePlacement(order)
-        ? [
-            { text: '✅ Login ho gaya — check', callback_data: dlCb.check },
-            { text: '🙅 OTP nahi — bot kare', callback_data: dlCb.botPlaces }
-          ]
-        : [
-            { text: '🙅 OTP nahi — bot kare', callback_data: dlCb.botPlaces },
-            { text: '📱 Apne phone se', callback_data: dlCb.choosePhone }
-          ]);
+    // ✅ Boss (30-10-2026): bill ke baad SIRF ek option — QR banao.
+    // (Login pehle hi ho chuka hai, isliye yahan koi login/OTP/extra button nahi.)
+    rows.push([{
+      text: amount > 0 ? `✅ QR banao — ₹${rupees(amount)}` : '✅ QR banao',
+      callback_data: `simple_confirm_order_${order.id}`,
+      style: 'success'
+    }]);
+    // Login verify nahi hua to sirf tab madad dikhao (happy path me kuch nahi).
+    if (dlTruth && !dlTruth.verified) {
+      rows.push([{ text: '❓ Login me dikkat', callback_data: `simple_login_help_${order.id}`, style: 'primary' }]);
     }
-    rows.push([
-      { text: '🔄 Refresh', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
-      { text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }
-    ]);
-    rows.push([{ text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }]);
     return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 
@@ -387,7 +413,8 @@ export function buildSimpleTrackingMessage(order, { milestoneUpdate = false } = 
   const isDelivered = /delivered/i.test(String(order?.liveOrderStatus || ''));
   const statusText = String(order?.liveOrderStatus || (isDelivered ? 'Delivered' : 'Order Confirmed')).trim();
 
-  let title = '🛵 <b>Tracking link aa gaya</b>';
+  // ✅ Boss (30-10-2026): "...then hogaya sab" — yahi aakhri message hai.
+  let title = '✅ <b>SAB HO GAYA</b> · tracking link aa gaya';
   if (isDelivered) {
     title = '🍽 <b>Order Delivered Successfully! 🎉</b>';
   } else if (milestoneUpdate) {
@@ -416,7 +443,7 @@ export function buildSimpleTrackingMessage(order, { milestoneUpdate = false } = 
     rows.push([{ text: `📞 Call Partner: ${partnerPhone}`, callback_data: `user_call_partner_${order.id}` }]);
   }
   if (trackingUrl) rows.push([{ text: '🛵 Track on Swiggy', url: trackingUrl, style: 'success' }]);
-  rows.push([{ text: '🏁 Finish', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder, style: 'primary' }]);
+  rows.push([{ text: '🏁 Ho gaya — naya order', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder, style: 'primary' }]);
   return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
 }
 

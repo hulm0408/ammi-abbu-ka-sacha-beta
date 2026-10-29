@@ -207,7 +207,8 @@ const ORDER_ID = 'SIMPLE9001';
   const buttons = card.keyboard.reply_markup.inline_keyboard.flat();
   const consent = buttons.find((b) => b.callback_data === `simple_confirm_order_${ORDER_ID}`);
   check('bill card has the consent button', Boolean(consent));
-  check('consent button shows the exact payable amount', /Confirm ₹487/.test(consent?.text || ''));
+  // v76: button ka label ab "QR banao — ₹487" (boss: bill ke baad sirf QR option).
+  check('consent button shows the exact payable amount', /QR banao — ₹487/.test(consent?.text || ''));
   check('bill card shows restaurant, items and address',
     /Pizza Hut/.test(card.text) && /Margherita/.test(card.text) && /Lucknow/.test(card.text));
   check('bill card has no web app link', buttons.every((b) => !b.url));
