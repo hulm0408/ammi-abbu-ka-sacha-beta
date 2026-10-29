@@ -14340,6 +14340,21 @@ async function approveUserOrderBillActionInner(uidStr, orderId) {
   }
 
   // ── 3) QR ready → HOLD (store) — bina fee ke customer ko nahi jayega ─────
+  // 📦 OFO truth: QR bana matlab order place hua — par OFO hua ya nahi, yeh
+  // response se pata chalta hai. Jhooth nahi: jo mila wahi boss ko.
+  try {
+    const ofoLine = updated.ofoPlaced
+      ? '✅ OFO (order for others) — tracking link isi order se aayega'
+      : `❌ OFO confirm nahi hua — ${updated.ofoWarning || updated.ofoCart?.reason || 'Swiggy ne OFO flag accept nahi kiya'} → tracking link nahi aayega`;
+    for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
+      await bot.telegram.sendMessage(
+        bossId,
+        `📦 <b>ORDER PLACE</b> · <code>#${escapeHtml(String(updated.pendingSwiggyOrderId || updated.id))}</code>\n${escapeHtml(ofoLine)}`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
+  } catch { /* alert optional, order flow important */ }
+
   holdOrderQr(updated, {
     upiUri: updated.pendingSwiggyUpiUri || updated.realUpiIntentUri || '',
     paymentUrl: updated.swiggyPaymentUrl || '',

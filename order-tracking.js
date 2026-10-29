@@ -459,10 +459,16 @@ export async function extractTrackingNow(orderRef, {
   const fresh = findOrderRecord(orderRef);
   const url = fresh ? getStoredSwiggyTrackingUrl(fresh) : '';
   if (url) return { ok: true, url, source: 'VAULT_SCAN', swiggyOrderId, scanStatus: scan?.status };
+  // 📦 Boss (30-10-2026): "link kiu nahi aaraha kiuki order to ofo place nahi
+  // horaha" — jab OFO hi nahi bana to link ka intezaar jhooth hai. Wajah saaf.
+  const baseReason = scan?.status || 'NOT_FOUND';
+  const ofoBroken = fresh && fresh.ofoPlaced === false;
   return {
     ok: false,
     url: '',
-    reason: scan?.status || 'NOT_FOUND',
+    reason: ofoBroken ? 'OFO_ORDER_NAHI_BANA' : baseReason,
+    ofoPlaced: fresh?.ofoPlaced ?? null,
+    ofoReason: String(fresh?.ofoWarning || fresh?.ofoCart?.reason || '').slice(0, 180),
     swiggyOrderId,
     failures: (scan?.failures || []).slice(0, 5)
   };
