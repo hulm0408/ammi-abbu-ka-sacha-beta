@@ -239,6 +239,10 @@ export function buildBossPanelHome(db) {
       { text: '× Cancelled Orders', callback_data: 'boss_view_cancelled_orders' }
     ],
     [
+      { text: '👛 User Wallets & Fees', callback_data: 'boss_wallets' },
+      { text: '⏳ Pending UTR', callback_data: 'boss_utr_list' }
+    ],
+    [
       { text: '🎁 Claim Offers (All)', callback_data: 'boss_claim_all_event_offers' },
       { text: '🔄 Audit Sessions', callback_data: 'boss_refresh_all_accounts' }
     ],
