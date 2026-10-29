@@ -366,7 +366,7 @@ export function buildSimpleOrderCard(order) {
       addr ? `📍 ${esc(addr)}` : '',
       '',
       amount > 0 ? `₹ <b>To Pay: ₹${rupees(amount)}</b>${savings > 0 ? `  <i>(saved ₹${rupees(savings)})</i>` : ''}` : '₹ <b>Best price lag raha hai…</b>',
-      dlTruth ? `${dlTruth.icon} <b>Phone:</b> ${esc(shortText(dlTruth.label, 70))}` : '',
+      // Boss (30-10-2026): yahan koi login/OTP/status option nahi — bill bas bill.
       '',
       '<i>“QR banao” dabate hi payment QR yahin aayega — uske baad tracking link.</i>'
     ].filter((line) => line !== null && line !== undefined);
@@ -377,8 +377,8 @@ export function buildSimpleOrderCard(order) {
       callback_data: `simple_confirm_order_${order.id}`,
       style: 'success'
     }]);
-    // Login verify nahi hua to sirf tab madad dikhao (happy path me kuch nahi).
-    if (dlTruth && !dlTruth.verified) {
+    // Sirf asli FAILURE par madad ka option (happy path me kuch bhi nahi).
+    if (dlTruth && dlTruth.status === 'FAILED') {
       rows.push([{ text: '❓ Login me dikkat', callback_data: `simple_login_help_${order.id}`, style: 'primary' }]);
     }
     return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
