@@ -266,7 +266,11 @@ console.log('\n=== 5. Live probe = sach (pass ho tabhi SESSION_LIVE) ===');
   check('probe live (Swiggy ne accept kiya)', probeOk.live === true, JSON.stringify(probeOk));
   dl.applySessionProbe(order, probeOk);
   check('SESSION_LIVE', order.deviceLogin.status === dl.DEVICE_LOGIN_STATUS.SESSION_LIVE);
-  check('truth label me "order aane par pakka"', /pakka hoga/i.test(dl.deviceLoginTruth(order).label));
+  // v80 (boss 29-10-2026): server session live hone ka matlab phone me login
+  // nahi — label wahi sach bolta hai, aur pakka proof order se aata hai.
+  check('truth label me "saboot nahi / order se pakka"',
+    /saboot nahi|pakka hoga|cart dikhne/i.test(dl.deviceLoginTruth(order).label));
+  check('truth.proof batata hai ki sirf server session hai', dl.deviceLoginTruth(order).proof === 'SERVER_SESSION_ONLY');
   check('"aapke phone me login hai" ka dawa nahi', dl.deviceLoginTruth(order).verified === false);
 
   const badFetch = async () => ({ ok: false, status: 401, json: async () => ({ statusMessage: 'session expired' }) });
@@ -319,7 +323,10 @@ console.log('\n=== 6. Wiring: consent par handover, callbacks, import summary ==
   check('proof message customer + boss dono ko', /ORDER CUSTOMER KE PHONE SE PLACE HUA/.test(indexSrc));
 
   check('boss card par phone-login badge', /deviceLoginBadge\(order\)/.test(panelSrc) && /deviceLoginTruth/.test(panelSrc));
-  check('simple user card par phone status + button', /dlCb\.choosePhone/.test(chatSrc) && /dlCb\.check/.test(chatSrc) && /deviceLoginTruth/.test(chatSrc));
+  // v80: phone-login buttons ab cart-verification wale hain (asli saboot ke saath),
+  // aur choosePhone/check bhi maujood rehte hain.
+  check('simple user card par phone status + button',
+    /dlCb\.cartYes/.test(chatSrc) && /dlCb\.cartNo/.test(chatSrc) && /deviceLoginTruth/.test(chatSrc));
   check('simple card me OTP-free rasta pehle', /dlCb\.botPlaces/.test(chatSrc));
   check('PAY stage phone placement par QR note nahi', /Order aapke phone se<\/b>/.test(chatSrc));
 

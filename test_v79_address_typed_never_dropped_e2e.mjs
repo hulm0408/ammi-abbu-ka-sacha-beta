@@ -109,7 +109,7 @@ console.log('\n=== 3. Cart ke baad chhota typed address -> aage badhta hai (logi
   check('address typed mark hua', draft.addressTyped === true);
   check('addressDetails me address hai', draft.addressDetails?.address === 'B-402 Eldeco Greens');
   check('bot ne "Cart + Address link chahiye" nahi bola', !out.some((t) => /Cart \+ Address link chahiye/.test(t)));
-  check('login card aaya (yani aage badha)', out.some((t) => /login karne ke liye ye button dabayein/i.test(t)) || out.some((t) => /loginReady|Login button/i.test(t)), out.join(' | ').slice(0, 200));
+  check('aage badha (cart + address card / bill)', out.some((t) => /Cart \+ Address mil gaya/i.test(t)) || out.some((t) => /Confirm your order/i.test(t)), out.join(' | ').slice(0, 200));
 }
 
 console.log('\n=== 4. Toota address link + typed address -> typed jeetta hai ===');
@@ -124,7 +124,7 @@ console.log('\n=== 4. Toota address link + typed address -> typed jeetta hai ===
   const draft = getDraft(U);
   check('typed address ne link ko replace kiya', draft.address === 'Flat 7, Eldeco Greens', String(draft.address));
   check('purana dead link draft me nahi', !draft.addressLink);
-  check('flow aage badha', out.some((t) => /login karne ke liye ye button dabayein/i.test(t)));
+  check('flow aage badha', out.some((t) => /Cart \+ Address mil gaya/i.test(t)) || out.some((t) => /Confirm your order/i.test(t)));
 }
 
 console.log('\n=== 5. Chit-chat address nahi banti ===');

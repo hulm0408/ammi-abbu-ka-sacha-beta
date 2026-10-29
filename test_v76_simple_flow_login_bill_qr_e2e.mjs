@@ -48,9 +48,14 @@ const both = chat.buildSimpleHomeScreen({
   cartDetails: { restaurantName: 'Pizza Hut', items: [{ name: 'Margherita', qty: 1 }], subtotal: 249 },
   addressDetails: { address: '12, Gomti Nagar, Lucknow' }
 });
-check('login line dikhti hai', /login karne ke liye ye button dabayein/i.test(both.text), both.text.slice(0, 80));
-check('exactly ek button', flat(both).length === 1, String(flat(both).length));
-check('wahi button login ka hai', callbacks(both)[0] === chat.SIMPLE_CHAT_CALLBACKS.loginReady, callbacks(both)[0]);
+// v80 (boss 29-10-2026): "JSON user ke phone me login nahi ho raha" — koi
+// button kisi phone me login nahi karta, isliye jhootha label hata. Main button
+// wahi raasta hai (bill), aur phone-login ka asli raasta optional button hai.
+check('aage badhne ki line dikhti hai', /Cart \+ Address mil gaya/i.test(both.text), both.text.slice(0, 80));
+check('"phone me login ho gaya" ka jhootha dawa nahi', !/apne phone me login karne ke liye/i.test(both.text));
+check('bill ka main button + optional phone-login button', flat(both).length === 2, String(flat(both).length));
+check('main button bill ka hai', callbacks(both)[0] === chat.SIMPLE_CHAT_CALLBACKS.loginReady, callbacks(both)[0]);
+check('doosra button phone-login ka hai', callbacks(both)[1] === chat.SIMPLE_CHAT_CALLBACKS.phoneLogin, callbacks(both)[1]);
 check('koi Continue button nahi', !callbacks(both).includes(chat.SIMPLE_CHAT_CALLBACKS.continueDraft));
 check('koi clear/admin option nahi', !callbacks(both).includes(chat.SIMPLE_CHAT_CALLBACKS.clearDraft) && !callbacks(both).includes('support_contact_admin'));
 check('cart + address dikh rahe hain', /Pizza Hut/.test(both.text) && /Gomti/.test(both.text));
@@ -97,8 +102,10 @@ check('tracking message "SAB HO GAYA"', /SAB HO GAYA/.test(trackingMsg.text), tr
 
 console.log('\n5) Login help card (sirf dikkat par)');
 const help = chat.buildSimpleLoginHelpCard({ id: 'ORD1', deviceLogin: { status: 'AWAITING_LOGIN' } });
-check('madad card hai', /LOGIN ME DIKKAT/i.test(help.text));
-check('check button', flat(help).some((b) => /devlogin_check_ORD1/.test(String(b.callback_data))));
+check('madad card hai', /PHONE ME LOGIN/i.test(help.text));
+check('cart-verify buttons hain',
+  flat(help).some((b) => /devlogin_cart_yes_ORD1/.test(String(b.callback_data))) &&
+  flat(help).some((b) => /devlogin_cart_no_ORD1/.test(String(b.callback_data))));
 check('bot kare button', flat(help).some((b) => /devlogin_bot_ORD1/.test(String(b.callback_data))));
 
 console.log('\n6) Wiring');
