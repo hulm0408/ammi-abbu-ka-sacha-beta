@@ -151,7 +151,10 @@ console.log('\n--- Scenario 5: double tap on approve creates ONE payment QR ---'
         selectedAccount: 'acc_9000000123',
         userChatId: USER,
         userMessageId: 900,
-        bossMessageIds: {}
+        bossMessageIds: {},
+        // v78 (boss 30-10-2026): QR sirf Swiggy ke payment intent se — boss ki
+        // personal UPI se nahi.
+        pendingSwiggyUpiUri: 'upi://pay?pa=upiswiggy@icici&pn=SWIGGY&am=379&cu=INR&tr=V41TXN'
       }
     };
   });

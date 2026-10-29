@@ -434,6 +434,48 @@ export async function verifyUtrWithProvider({ utr, amountPaise, userId }, { fetc
 }
 
 /**
+ * 🤖 AUTO-VERIFY available hai ya nahi (boss 30-10-2026):
+ * "ek to UTR auto verify na ho raha" — jab tak koi asli auto-verify ka rasta
+ * (provider API ya gateway webhook) set nahi hai, UTR daalne ka chakkar customer
+ * par nahi daalna chahiye. Paisa aaya to webhook/provider khud confirm karega.
+ */
+export function autoVerifyConfigured() {
+  return Boolean(
+    String(process.env.UPI_UTR_VERIFY_URL || '').trim() ||
+    String(process.env.PAY_WEBHOOK_SECRET || '').trim() ||
+    String(process.env.PAY_AUTO_VERIFY || '').trim() === '1'
+  );
+}
+
+/**
+ * Fee abhi liye bina order aage badhaya — boss panel me "due" ke roop me dikhta
+ * hai (koi manual UTR queue nahi, koi customer block nahi).
+ */
+export function recordDeferredFee(order, feePaise, { at = Date.now(), reason = 'auto-verify set nahi' } = {}) {
+  if (!order) return { ok: false, code: 'NO_ORDER' };
+  const fee = Math.round(Number(feePaise) || 0);
+  if (!(fee > 0)) return { ok: false, code: 'NO_FEE' };
+  order.feeDeferredPaise = Number(order.feeDeferredPaise || 0) + fee;
+  order.feeDeferredAt = nowIso(at);
+  order.feeDeferredReason = String(reason).slice(0, 120);
+  return { ok: true, code: 'DEFERRED', feePaise: fee, totalDeferredPaise: order.feeDeferredPaise };
+}
+
+/** Deferred (baad me lene wali) fee settle — boss ne cash/UPI me le li. */
+export function settleDeferredFee(db, order, userId, { at = Date.now(), actor = 'boss' } = {}) {
+  if (!order) return { ok: false, code: 'NO_ORDER' };
+  const due = Math.round(Number(order.feeDeferredPaise || 0));
+  if (!(due > 0)) return { ok: false, code: 'NOTHING_DUE' };
+  order.feeChargedPaise = Number(order.feeChargedPaise || 0) + due;
+  order.feeChargedAt = nowIso(at);
+  order.feeWalletUserId = String(userId || '');
+  order.feeDeferredPaise = 0;
+  order.feeSettledManuallyAt = nowIso(at);
+  order.feeSettledBy = String(actor || 'boss');
+  return { ok: true, code: 'SETTLED', feePaise: due };
+}
+
+/**
  * User ne UTR daala → request banao. Duplicate UTR (kisi bhi user ka) reject.
  * Provider configured ho to usi waqt verify; warna PENDING (boss approve karega).
  */
@@ -774,6 +816,8 @@ export function feeControlSummary(db) {
     && Number(o.feeChargedPaise || 0) <= 0
     && ['QR_HELD', 'AWAITING_FEE', 'BILL_READY', 'PAYMENT_PENDING'].includes(String(o.cardStage || '').toUpperCase())
   ));
+  const deferredPaise = orders.reduce((sum, o) => sum + Number(o?.feeDeferredPaise || 0), 0);
+  const deferredOrders = orders.filter((o) => Number(o?.feeDeferredPaise || 0) > 0).length;
   const wallets = Object.values(c.wallets);
   return {
     feePaise: serviceFeePaiseFor(db),
@@ -788,6 +832,9 @@ export function feeControlSummary(db) {
     refundedPaise,
     netFeePaise: Math.max(0, grossFeePaise - refundedPaise),
     awaitingFee: awaiting.length,
+    deferredPaise,
+    deferredOrders,
+    autoVerify: autoVerifyConfigured(),
     pendingUtrs: pendingTopupCount(db)
   };
 }
@@ -805,7 +852,9 @@ export function formatFeeControlPanel({ summary = null } = {}) {
     '',
     `🧾 Orders: <b>${s.ordersTotal || 0}</b> · fee wale: <b>${s.ordersWithFee || 0}</b>`,
     `✔ Fee collected: <b>₹${rupees(s.grossFeePaise || 0)}</b> · refund: ₹${rupees(s.refundedPaise || 0)} · net <b>₹${rupees(s.netFeePaise || 0)}</b>`,
-    `⏳ Fee ka intezaar (QR held): <b>${s.awaitingFee || 0}</b> · pending UTR: <b>${s.pendingUtrs || 0}</b>`
+    `⏳ Fee ka intezaar (QR held): <b>${s.awaitingFee || 0}</b> · pending UTR: <b>${s.pendingUtrs || 0}</b>`,
+    `🧾 Baad me lene wali fee: <b>₹${rupees(s.deferredPaise || 0)}</b> (${s.deferredOrders || 0} orders)`,
+    `🤖 Auto-verify: ${s.autoVerify ? '<b>ON</b> — UTR/paisa khud confirm hota hai' : '<b>OFF</b> — fee QR ko block nahi karti (panel me due dikhti hai)'}`
   ].join('\n');
 }
 

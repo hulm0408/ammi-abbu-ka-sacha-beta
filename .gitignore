@@ -88,3 +88,4 @@ extracted_mp4_frames/
 !test_v74_tracking_id_adoption_e2e.mjs
 !test_v75_payment_upi_panel_e2e.mjs
 !test_v76_simple_flow_login_bill_qr_e2e.mjs
+!test_v78_payment_truth_e2e.mjs
