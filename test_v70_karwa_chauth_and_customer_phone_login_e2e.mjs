@@ -301,7 +301,11 @@ console.log('\n=== 6. Wiring: consent par handover, callbacks, import summary ==
 {
   const consentStart = indexSrc.indexOf('bot.action(/^simple_confirm_order_');
   const consentBlock = indexSrc.slice(consentStart, consentStart + 4000);
-  check('consent par handover jata hai', /sendDeviceLoginHandover\(order, \{ telegram: bot\.telegram/.test(consentBlock));
+  // v77: consent (QR banao) par ab koi lamba login card nahi jata — login
+  // pehle hi ho chuka hai, bas ek line. Card ab lock/handover path par short
+  // notice ke roop me jata hai.
+  check('consent par lamba login card nahi jata', !/sendDeviceLoginHandover\(order, \{ telegram: bot\.telegram/.test(consentBlock));
+  check('short notice function maujood hai', /export async function sendDeviceLoginShortNotice/.test(indexSrc));
   check('handover function ID dhoondta hai aur sach likhta hai', /export async function sendDeviceLoginHandover/.test(indexSrc) && /attachDeviceLogin\(order, acc, \{ key: accKey \}\)/.test(indexSrc));
   check('live probe se truth refresh hota hai', /export async function refreshDeviceLoginTruth/.test(indexSrc) && /verifyAccountSessionLive\(acc, \{ fetchImpl \}\)/.test(indexSrc));
   check('devlogin_check_ callback registered', /bot\.action\(\/\^devlogin_check_/.test(indexSrc));

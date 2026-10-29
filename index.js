@@ -12519,17 +12519,6 @@ bot.action(/^simple_confirm_order_([A-Za-z0-9_-]+)$/, async (ctx) => {
 
   await ctx.answerCbQuery('✅ Order confirmed').catch(() => {});
 
-  // 📱 Boss (30-10-2026): login ka rasta ab bill se PEHLE hai (ek hi button).
-  // Yahan sirf tab bhejo jab customer ne login step skip kar diya ho — warna
-  // wahi purana "extra option" wapas aa jayega.
-  if (!order.deviceLogin) {
-    try {
-      await sendDeviceLoginHandover(order, { telegram: bot.telegram, chatId: ctx.chat?.id || userId });
-    } catch (err) {
-      console.warn('[DeviceLogin] handover fail:', err?.message || err);
-    }
-  }
-
   // Bill already computed and awaiting approval -> straight to the Swiggy payment QR.
   if (order.status === 'APPROVAL_PENDING' || order.status === 'PAYMENT_PENDING') {
     const res = await approveUserOrderBillAction(String(userId), orderId);
@@ -14229,6 +14218,42 @@ export async function sendDeviceLoginHandover(order, { telegram = null, chatId =
 }
 
 /**
+ * 📱 SHORT NOTICE (boss 30-10-2026):
+ * "ye option mat de, kiu faltu experience kharab kar raha — login par click karne
+ *  se JSON active in their phone, then bill show, QR par click kare to agar QR
+ *  generate ho to fee payment karne bol, phir QR bas."
+ *
+ * Isliye lamba "optional padhiye / OTP / bot kare" card customer ko NAHI jata.
+ * Bas ek line: kaunsi ID phone par active hai. Koi button, koi option nahi.
+ */
+export async function sendDeviceLoginShortNotice(order, { telegram = null, chatId = null } = {}) {
+  if (!order) return { ok: false, reason: 'no order' };
+  const db = getDb();
+  const accKey = order.selectedAccount || order.deviceLogin?.accountKey || '';
+  const acc = accKey ? db.config?.accounts?.[accKey] : null;
+  if (acc) attachDeviceLogin(order, acc, { key: accKey });
+  const phone = String(order.deviceLogin?.phone || order.orderAccount || order.selectedAccountPhone || '').trim();
+  db.orders[order.id] = order;
+  saveDb(db);
+  const target = chatId || order.userChatId || order.userId || null;
+  const tg = telegram || (typeof bot !== 'undefined' ? bot?.telegram : null);
+  if (!tg || !target) return { ok: false, reason: 'no chat' };
+  try {
+    await tg.sendMessage(
+      target,
+      '\u2705 <b>Login ho gaya</b>\n\n' +
+      (phone ? `ID: <code>${escapeHtml(phone)}</code> aapke phone me active hai.\n\n` : '') +
+      '<i>Bill taiyar kar raha hoon \u2014 bas ek button milega: \u201cQR banao\u201d.</i>',
+      { parse_mode: 'HTML' }
+    );
+  } catch (err) {
+    return { ok: false, reason: String(err?.message || err) };
+  }
+  markHandoverSent(order, { silent: true });
+  return { ok: true, phone };
+}
+
+/**
  * Live probe chala kar order par sach likho. Return `{ probe, truth }`.
  * (Customer ke phone ko bot dekh nahi sakta — sirf session ka live sach.)
  */
@@ -14280,9 +14305,10 @@ export async function lockOrderAccountAndHandover(order, accKey = '', { telegram
   saveDb(db);
 
   // 📱 Wahi ID customer ke phone par: zero-order ID = jis par ₹50 offers lage hain.
+  // (Boss 30-10-2026: lamba optional card nahi — bas "login ho gaya, ab bill".)
   let handover = null;
   try {
-    handover = await sendDeviceLoginHandover(order, { telegram, chatId });
+    handover = await sendDeviceLoginShortNotice(order, { telegram, chatId });
   } catch (err) {
     handover = { ok: false, reason: String(err?.message || err) };
   }

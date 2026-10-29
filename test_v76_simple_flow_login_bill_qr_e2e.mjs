@@ -107,7 +107,8 @@ check('loginReady handler index me', /bot\.action\(SIMPLE_CHAT_CALLBACKS\.loginR
 check('login help handler', /simple_login_help_/.test(indexSrc));
 check('paste par simple auto-start band', !/simpleChatForUser\(userId\) && curDraft\.cart && curDraft\.address && !getActiveUserOrder\(userId\)\) \{\s*\n\s*await cleanupUserChat[\s\S]{0,600}startSimpleOrderFromDraft/.test(indexSrc));
 check('paste ke baad sirf card render', /paste hone ke baad SIRF ek message[\s\S]{0,200}renderUserCard/.test(indexSrc));
-check('confirm par handover sirf jab deviceLogin na ho', /if \(!order\.deviceLogin\) \{[\s\S]{0,300}sendDeviceLoginHandover/.test(indexSrc));
+check('confirm par koi login card nahi jata', !/bot\.action\(\/\^simple_confirm_order_\/[\s\S]{0,2500}sendDeviceLoginHandover\(/.test(indexSrc));
+check('login par sirf chhoti line (lamba card nahi)', /sendDeviceLoginShortNotice/.test(indexSrc));
 check('bill card par QR banao', /QR banao/.test(chatSrc));
 check('tracking card "SAB HO GAYA"', /SAB HO GAYA/.test(chatSrc));
 check('koi Balance/wallet button customer card par nahi', !/wallet_home/.test(chatSrc));
