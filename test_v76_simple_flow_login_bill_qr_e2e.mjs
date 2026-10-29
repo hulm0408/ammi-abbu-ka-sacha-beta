@@ -53,9 +53,10 @@ const both = chat.buildSimpleHomeScreen({
 // wahi raasta hai (bill), aur phone-login ka asli raasta optional button hai.
 check('aage badhne ki line dikhti hai', /Cart \+ Address mil gaya/i.test(both.text), both.text.slice(0, 80));
 check('"phone me login ho gaya" ka jhootha dawa nahi', !/apne phone me login karne ke liye/i.test(both.text));
-check('bill ka main button + optional phone-login button', flat(both).length === 2, String(flat(both).length));
+// v81 (boss 30-10-2026): injection hata — bas ek seedha button.
+check('sirf ek seedha button (bill)', flat(both).length === 1, String(flat(both).length));
 check('main button bill ka hai', callbacks(both)[0] === chat.SIMPLE_CHAT_CALLBACKS.loginReady, callbacks(both)[0]);
-check('doosra button phone-login ka hai', callbacks(both)[1] === chat.SIMPLE_CHAT_CALLBACKS.phoneLogin, callbacks(both)[1]);
+check('phone-login injection button nahi', !callbacks(both).includes('simple_phone_login'));
 check('koi Continue button nahi', !callbacks(both).includes(chat.SIMPLE_CHAT_CALLBACKS.continueDraft));
 check('koi clear/admin option nahi', !callbacks(both).includes(chat.SIMPLE_CHAT_CALLBACKS.clearDraft) && !callbacks(both).includes('support_contact_admin'));
 check('cart + address dikh rahe hain', /Pizza Hut/.test(both.text) && /Gomti/.test(both.text));
@@ -115,7 +116,7 @@ check('login help handler', /simple_login_help_/.test(indexSrc));
 check('paste par simple auto-start band', !/simpleChatForUser\(userId\) && curDraft\.cart && curDraft\.address && !getActiveUserOrder\(userId\)\) \{\s*\n\s*await cleanupUserChat[\s\S]{0,600}startSimpleOrderFromDraft/.test(indexSrc));
 check('paste ke baad sirf card render', /paste hone ke baad SIRF ek message[\s\S]{0,200}renderUserCard/.test(indexSrc));
 check('confirm par koi login card nahi jata', !/bot\.action\(\/\^simple_confirm_order_\/[\s\S]{0,2500}sendDeviceLoginHandover\(/.test(indexSrc));
-check('login par sirf chhoti line (lamba card nahi)', /sendDeviceLoginShortNotice/.test(indexSrc));
+check('login par koi injection notice nahi', !/sendDeviceLoginShortNotice/.test(indexSrc));
 check('bill card par QR banao', /QR banao/.test(chatSrc));
 check('tracking card "SAB HO GAYA"', /SAB HO GAYA/.test(chatSrc));
 check('koi Balance/wallet button customer card par nahi', !/wallet_home/.test(chatSrc));

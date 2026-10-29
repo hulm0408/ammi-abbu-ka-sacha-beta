@@ -889,32 +889,34 @@ export function formatOrderVerificationCard({
   orderId = '', restaurant = '', feePaise = serviceFeePaise(), upiId = '', refundable = true
 } = {}) {
   return [
-    '✅ <b>ORDER QR READY</b>',
+    '🧊 <b>AAPKA ORDER QR TAIYAR HAI</b>',
     '',
     `Order <code>#${escapeHtml(String(orderId))}</code>${restaurant ? ` · ${escapeHtml(String(restaurant).slice(0, 42))}` : ''}`,
-    'Aapka payment QR taiyar hai aur safe rakha hua hai.',
+    'QR ban gaya hai — <b>abhi aapko nahi bheja gaya</b>, safe rakha hua hai.',
     '',
-    `🔐 <b>₹${rupees(feePaise)} verification</b> — sirf ek chhoti si refundable amount:`,
+    `🔐 <b>Bas ₹${rupees(feePaise)} verification</b> — upar wala QR scan karke isi amount ka payment karein:`,
     `UPI: <code>${escapeHtml(upiId || '(admin ne UPI set nahi kiya)')}</code>`,
     '',
     refundable
-      ? '<i>Order cancel karenge to ye turant wapas mil jayegi — order ke bill me ye judti nahi.</i>'
-      : '<i>Order ke bill me ye judti nahi.</i>',
+      ? '<i>Ye order ke bill me nahi judta — order cancel karenge to turant wapas mil jayega.</i>'
+      : '<i>Ye order ke bill me nahi judta.</i>',
     '',
-    'Payment ke baad <b>UTR</b> bhejein — verify hote hi aapka QR khul jayega (koi extra step nahi).',
+    '<b>Payment auto verify hota hai</b> — verify hote hi aapka ORDER QR yahin aa jayega (koi UTR type nahi karna).',
     'Koi dikkat ho to neeche <b>Admin se baat</b> dabayein.'
   ].filter(Boolean).join('\n');
 }
 
 /** QR ban hi nahi paya — koi fee/shikayat nahi, sirf "try again". */
 export function formatQrFailedCard({ orderId = '', reason = '' } = {}) {
+  // Boss (30-10-2026): "qr generate fail then user will see something went
+  // wrong try again from beginning" — koi fee ka zikr nahi, seedha restart.
   return [
-    '⚠️ <b>QR BAN NAHI PAYA</b>',
+    '⚠️ <b>KUCH GALAT HO GAYA</b>',
     '',
     orderId ? `Order <code>#${escapeHtml(String(orderId))}</code>` : '',
-    'Aapke order ka payment QR abhi generate nahi hua — Swiggy ki taraf se jawab nahi aaya.',
+    'Aapke order ka QR ban nahi paya (Swiggy ki taraf se jawab nahi aaya).',
     '',
-    '<b>Dobara try karein</b> — neeche wala button dabaiye.',
+    '<b>Koi ₹ nahi kata.</b> Neeche button dabaiye — <b>shuru se dobara</b> try karenge.',
     reason ? `<i>${escapeHtml(String(reason).slice(0, 160))}</i>` : '',
     '',
     'Bar bar fail ho raha ho to <b>Admin se baat</b> karein.'

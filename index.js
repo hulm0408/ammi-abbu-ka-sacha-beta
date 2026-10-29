@@ -11745,6 +11745,149 @@ function supportRow() {
  * Boss (30-10-2026): "user ko feel na ho ki wo order par fees de raha" —
  * isliye bhasha refundable verification ki hai, wallet/balance ki nahi.
  */
+/**
+ * 🔐 FEE KA ASLI QR (boss 30-10-2026, naya plan)
+ *
+ * "if qr generate success the user wont receive the qr but after they pay the fee
+ *  amount on given qr and utr will auto verify and then show them qr"
+ *
+ * Matlab: order QR ban gaya to sabse pehle customer ko sirf FEE ka QR jata hai
+ * (₹15, boss ki UPI). Paisa aaya + verify hua → tab order QR jata hai.
+ * Agar QR generation fail → koi fee nahi, seedha "shuru se dobara try".
+ */
+async function sendFeeQrForHeldOrder(order, { feePaise: feeOverride = 0 } = {}) {
+  if (!order) return { ok: false, reason: 'no order' };
+  const fee = Number(feeOverride) || feePaiseNow();
+  const chatId = order.userChatId || order.userId;
+  const upi = walletUpiId();
+  const upiReady = Boolean(upi) && !isPlaceholderUpiId(upi) && isValidUpiVpa(upi);
+  order.cardStage = 'AWAITING_FEE';
+  order.feeDuePaise = fee;
+  order.feeQrSentAt = new Date().toISOString();
+  const db = getDb();
+  db.orders[order.id] = order;
+  saveDb(db);
+
+  let qrSent = false;
+  if (upiReady && fee > 0 && chatId) {
+    try {
+      const amount = (fee / 100).toFixed(2).replace(/\.00$/, '');
+      const tr = `FEE${String(order.id).replace(/[^A-Za-z0-9]/g, '').slice(-14)}`.slice(0, 35);
+      const feeUri = sanitizeUpiUriForQr(
+        `upi://pay?pa=${encodeURIComponent(upi)}&pn=${encodeURIComponent('VERIFICATION FEE')}` +
+        `&am=${amount}&cu=INR&tn=${encodeURIComponent(`Fee ${order.id}`)}&tr=${tr}`
+      );
+      const qrBuffer = await QRCode.toBuffer(feeUri, { type: 'png', width: 720, margin: 3, errorCorrectionLevel: 'M' });
+      await bot.telegram.sendPhoto(chatId, { source: qrBuffer }, {
+        caption: safeTelegramCaption(
+          `🔐 <b>₹${walletRupees(fee)} ka QR</b>\n` +
+          `<i>Ye order ka payment nahi — sirf verification. Pay karte hi order ka QR yahin aa jayega.</i>`,
+          900
+        ),
+        parse_mode: 'HTML'
+      });
+      qrSent = true;
+      order.feeQrMessageId = null;
+    } catch (err) {
+      console.warn('[FeeQr] QR image failed:', err?.message || err);
+    }
+  }
+
+  if (chatId) {
+    await bot.telegram.sendMessage(
+      chatId,
+      formatOrderVerificationCard({
+        orderId: order.id,
+        restaurant: order.restaurantName || '',
+        feePaise: fee,
+        upiId: upiReady ? upi : ''
+      }) + (upiReady ? '' : '\n\n<i>UPI abhi set nahi — admin se baat karein, wo turant set kar dega.</i>'),
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [{ text: '✅ Maine pay kar diya', callback_data: `wallet_fee_paid_${order.id}`, style: 'success' }],
+          supportRow()
+        ])
+      }
+    ).catch(() => {});
+  }
+
+  // Boss ko sach: QR ban gaya, fee ka intezaar, customer ko order QR abhi nahi gaya.
+  for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
+    await bot.telegram.sendMessage(
+      bossId,
+      `🧊 <b>ORDER QR BAN GAYA (customer ko nahi bheja)</b>\n` +
+      `Order <code>#${escapeHtml(String(order.id))}</code> · ₹${escapeHtml(String(order.finalPayable || order.subtotal || 0))}\n` +
+      `₹${walletRupees(fee)} verification ka QR customer ko bheja — pay + verify hote hi asli order QR jayega.\n` +
+      (autoVerifyConfigured()
+        ? '<i>Auto-verify ON: paisa aate hi khud release hoga.</i>'
+        : '<i>⚠️ Auto-verify OFF: 3 min me khud release ho jayega aur fee \"baad me lene wali\" me chali jayegi.</i>'),
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[{ text: '🧮 Wallet & Fee', callback_data: 'boss_fee_panel', style: 'primary' }]])
+      }
+    ).catch(() => {});
+  }
+
+  // Safety valve (thread #32 ka sach): auto-verify set na ho to customer hamesha
+  // ke liye atka nahi reh sakta — 3 min baad QR release + fee deferred.
+  if (!autoVerifyConfigured()) {
+    scheduleDeferredQrRelease(order.id, fee);
+  }
+  return { ok: true, feePaise: fee, qrSent, upiReady };
+}
+
+/** Auto-verify off hone par QR ko atka mat chhodo — 3 min baad release + fee due. */
+function scheduleDeferredQrRelease(orderId, feePaise) {
+  try {
+    const timer = setTimeout(async () => {
+      try {
+        const db = getDb();
+        const order = db.orders?.[orderId];
+        if (!order || !isOrderQrHeld(order)) return;
+        if (Number(order.feeChargedPaise || 0) > 0) return;
+        recordDeferredFee(order, Number(feePaise) || feePaiseNow(), { reason: 'auto-verify off — 3 min me fee defer' });
+        db.orders[orderId] = order;
+        saveDb(db);
+        await releaseHeldQrToCustomer(orderId, { reason: 'auto-verify off — fee baad me' });
+        for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
+          await bot.telegram.sendMessage(
+            bossId,
+            `🧾 <b>FEE BAAD ME</b> · order <code>#${escapeHtml(String(orderId))}</code>\n` +
+            `<i>Auto-verify set nahi hai, 3 min me verification nahi aayi — customer ka QR release kar diya. Due Wallet & Fee panel me hai.</i>`,
+            { parse_mode: 'HTML', ...Markup.inlineKeyboard([[{ text: '🧮 Wallet & Fee', callback_data: 'boss_fee_panel', style: 'primary' }]]) }
+          ).catch(() => {});
+        }
+      } catch (err) {
+        console.warn('[FeeQr] deferred release failed:', err?.message || err);
+      }
+    }, 3 * 60 * 1000);
+    if (typeof timer?.unref === 'function') timer.unref();
+  } catch { /* timer best-effort */ }
+}
+
+/** Fee verify hui → held QR release karke customer ko asli QR bhejo. */
+async function releaseHeldQrToCustomer(orderId, { reason = '' } = {}) {
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  if (!order) return { ok: false, code: 'NO_ORDER' };
+  if (!isOrderQrHeld(order)) return { ok: false, code: 'NOT_HELD' };
+  releaseOrderQr(order);
+  order.cardStage = 'PAYMENT_READY';
+  order.feeDuePaise = 0;
+  order.qrReleaseReason = String(reason || '').slice(0, 120);
+  order.qrReleasedForCustomerAt = new Date().toISOString();
+  db.orders[orderId] = order;
+  saveDb(db);
+  try {
+    await sendApprovedOrderPaymentToUser(String(order.userId), order);
+  } catch (err) {
+    console.warn('[FeeQr] order QR send failed:', err?.message || err);
+  }
+  await updateOrderCards(getDb().orders?.[orderId] || order).catch(() => {});
+  return { ok: true };
+}
+
 async function sendOrderVerificationCard(order, { balancePaise = 0, neededPaise = 0 } = {}) {
   const userId = walletOwnerId(order);
   if (!userId) return false;
@@ -11800,9 +11943,8 @@ async function sendQrGenerationFailedCard(order, { reason = '' } = {}) {
   await bot.telegram.sendMessage(chatId, text, {
     parse_mode: 'HTML',
     ...Markup.inlineKeyboard([
-      [{ text: '🔄 Dobara try karein', callback_data: `user_retry_qr_${order.id}`, style: 'success' }],
-      supportRow(),
-      [{ text: '❌ Cancel order', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }]
+      [{ text: '🔄 Shuru se dobara try', callback_data: `simple_restart_order_${order.id}`, style: 'success' }],
+      supportRow()
     ])
   }).catch(() => {});
   return true;
@@ -11949,6 +12091,86 @@ async function resumeOrderAfterTopup(userId) {
   const res = await approveUserOrderBillAction(userId, orderId).catch((err) => ({ ok: false, error: String(err?.message || err) }));
   return { resumed: Boolean(res?.ok), orderId, released: Boolean(res?.ok), res };
 }
+
+// ── 🔐 FEE QR ka payment aaya → auto verify → ORDER QR release ─────────────
+// Boss (30-10-2026): "after they pay the fee amount on given qr and utr will auto
+// verify and then show them qr". Customer ko koi UTR type karna hi nahi padta:
+// auto-verify (webhook / provider) paisa dekhte hi QR release kar deta hai.
+bot.action(/^wallet_fee_paid_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const orderId = String(ctx.match[1]);
+  const userId = String(ctx.from.id);
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  if (!order) return ctx.answerCbQuery('Order nahi mila').catch(() => {});
+  if (String(order.userId) !== userId && !isBoss(ctx.from.id)) {
+    return ctx.answerCbQuery('Ye aapka order nahi').catch(() => {});
+  }
+  if (!isOrderQrHeld(order)) {
+    await ctx.answerCbQuery('QR pehle hi bhej diya gaya hai').catch(() => {});
+    return releaseHeldQrToCustomer(orderId, { reason: 'customer tap (already released)' }).catch(() => {});
+  }
+  order.feePaidReportedAt = new Date().toISOString();
+  db.orders[orderId] = order;
+  saveDb(db);
+
+  // Auto-verify ON → paisa aate hi (webhook/provider) khud release hoga.
+  if (autoVerifyConfigured()) {
+    await ctx.answerCbQuery('Payment check ho raha hai…').catch(() => {});
+    await ctx.reply(
+      '⏳ <b>Payment check ho raha hai</b>\n\n<i>Verify hote hi aapka ORDER QR yahin aa jayega — kuch type nahi karna.</i>',
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[{ text: '🔄 Dobara check', callback_data: `wallet_fee_paid_${orderId}`, style: 'primary' }], supportRow()])
+      }
+    ).catch(() => {});
+    // Provider se turant ek check (agar UTR/ref diya gaya ho).
+    return;
+  }
+
+  // Auto-verify OFF → customer ko atka nahi rakhte: QR release + fee "baad me".
+  await ctx.answerCbQuery('Theek hai — QR bhej raha hoon').catch(() => {});
+  recordDeferredFee(order, Number(order.feeDuePaise || feePaiseNow()), { reason: 'auto-verify off — customer ne pay bataya' });
+  order.feeDeferredNotified = true;
+  db.orders[orderId] = order;
+  saveDb(db);
+  await releaseHeldQrToCustomer(orderId, { reason: 'customer ne fee pay bataya (auto-verify off)' }).catch(() => {});
+  for (const bossId of [...new Set((db.config?.bossIds || []).map(String).filter(Boolean))]) {
+    await bot.telegram.sendMessage(
+      bossId,
+      `🧾 <b>FEE BAAD ME</b> · order <code>#${escapeHtml(orderId)}</code>\n` +
+      `<i>Customer ne "pay kar diya" bataya. Auto-verify set nahi hai, isliye QR release kar diya — ₹${walletRupees(order.feeDeferredPaise || feePaiseNow())} panel me due hai (UPI statement me check kar lijiye).</i>`,
+      { parse_mode: 'HTML', ...Markup.inlineKeyboard([[{ text: '🧮 Wallet & Fee', callback_data: 'boss_fee_panel', style: 'primary' }]]) }
+    ).catch(() => {});
+  }
+});
+
+// ── 🔄 QR ban nahi paya → "something went wrong, shuru se dobara" ──────────
+// Boss (30-10-2026): fail par customer ko sirf restart dikhna chahiye.
+bot.action(/^simple_restart_order(_([A-Za-z0-9_-]+))?$/, async (ctx) => {
+  const userId = String(ctx.from.id);
+  const orderId = String(ctx.match[2] || '');
+  await ctx.answerCbQuery('Shuru se dobara…').catch(() => {});
+  const db = getDb();
+  const target = (orderId && db.orders?.[orderId]) || getActiveUserOrder(db, userId) || getSimpleFocusOrder(userId);
+  if (target && !['COMPLETED', 'DELIVERED'].includes(String(target.status || '').toUpperCase())) {
+    const t = db.orders?.[target.id] || target;
+    t.status = 'CANCELLED';
+    t.cancelledReason = 'QR_GENERATION_FAILED_RESTART';
+    t.cancelledAt = new Date().toISOString();
+    t.simpleCardDismissed = true;
+    db.orders[t.id] = t;
+    saveDb(db);
+    closeOrderAccountLock(t.id, { reason: 'QR fail — shuru se dobara' }).catch(() => {});
+    try { stopOrderTrackingAuto(t.id); } catch {}
+  }
+  delete userWaitState[userId];
+  clearDraft(userId);
+  await cleanupUserChat(ctx.telegram, ctx.chat?.id || userId, userId, { deleteCard: true }).catch(() => {});
+  userChatCards.delete(String(userId));
+  const screen = getUserScreen(userId, ctx.from);
+  const sent = await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard }).catch(() => null);
+  if (sent) rememberUserCard(userId, sent);
+});
 
 // ── 🔄 QR ban nahi paya → customer dobara try kare ─────────────────────────
 bot.action(/^user_retry_qr_(.+)$/, async (ctx) => {
@@ -12591,33 +12813,6 @@ bot.action(SIMPLE_CHAT_CALLBACKS.loginReady, async (ctx) => {
   await ctx.reply(card.text, { parse_mode: 'HTML', ...card.keyboard }).catch(() => {});
 });
 
-// 📱 "Phone me login karna hai?" — asli steps (bot login nahi kar sakta).
-bot.action(SIMPLE_CHAT_CALLBACKS.phoneLogin, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const userId = String(ctx.from.id);
-  const db = getDb();
-  const active = getActiveUserOrder(db, userId);
-  const accKey = active?.selectedAccount || active?.deviceLogin?.accountKey || '';
-  const acc = accKey ? db.config?.accounts?.[accKey] : null;
-  const card = buildPhoneLoginCard({ order: active || { id: 'none', userId }, account: acc, key: accKey });
-  // Order hi nahi to bhi sach + steps milne chahiye (bas order-specific buttons hata do).
-  const buttons = active
-    ? card.buttons
-    : card.buttons.filter((row) => row.some((b) => b.url));
-  await ctx.reply(card.text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) }).catch(() => {});
-  try {
-    for (const bossId of [...new Set((db.config?.bossIds || []).map(String).filter(Boolean))]) {
-      await bot.telegram.sendMessage(
-        bossId,
-        '📱 <b>Customer ne phone-login steps maange</b>' +
-        (active ? ` · order <code>#${escapeHtml(String(active.id))}</code>` : '') +
-        '\n<i>Yaad rakhein: JSON = server session. Customer ke phone me login tabhi hoga jab us phone par OTP daale.</i>',
-        { parse_mode: 'HTML' }
-      ).catch(() => {});
-    }
-  } catch {}
-});
-
 bot.action(/^simple_login_help_([A-Za-z0-9_-]+)$/, async (ctx) => {
   const orderId = String(ctx.match[1]);
   const userId = String(ctx.from.id);
@@ -12659,7 +12854,10 @@ bot.action(/^simple_confirm_order_([A-Za-z0-9_-]+)$/, async (ctx) => {
   // Bill already computed and awaiting approval -> straight to the Swiggy payment QR.
   if (order.status === 'APPROVAL_PENDING' || order.status === 'PAYMENT_PENDING') {
     const res = await approveUserOrderBillAction(String(userId), orderId);
-    if (!res?.ok) {
+    // Fee QR / fail card / retry card already apna saaf message bhej chuke hain —
+    // unke upar raw error nahi.
+    const alreadyExplained = ['SERVICE_FEE_DUE', 'QR_GENERATION_FAILED'].includes(String(res?.code || ''));
+    if (!res?.ok && !alreadyExplained) {
       await ctx.reply(`! ${escapeHtml(res?.error || 'Payment QR abhi nahi ban paya.')}`).catch(() => {});
     }
     await updateOrderCards(getDb().orders?.[orderId] || order).catch(() => {});
@@ -14162,50 +14360,20 @@ async function approveUserOrderBillActionInner(uidStr, orderId) {
     feeDb.orders[orderId] = liveOrder;
     saveDb(feeDb);
     if (!charge.ok) {
-      // 🚫 Boss (30-10-2026): "utr auto verify nahi ho raha" — jab tak
-      // koi asli auto-verify (provider API / payment webhook) set nahi hai,
-      // customer se UTR nahi maangte. Fee BAAD ME li jayegi: QR aaj hi chala
-      // jata hai, due boss ke Wallet & Fee panel me dikhta hai.
-      if (!autoVerifyConfigured()) {
-        const feeDue = Number(charge.feePaise || feePaiseNow());
-        recordDeferredFee(liveOrder, feeDue, { reason: 'auto-verify set nahi — fee baad me' });
-        liveOrder.cardStage = 'PAYMENT_READY';
-        liveOrder.feeDuePaise = 0;
-        liveOrder.feeDeferredNotified = true;
-        const defDb = getDb();
-        defDb.orders[orderId] = liveOrder;
-        saveDb(defDb);
-        for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
-          await bot.telegram.sendMessage(
-            bossId,
-            `🧾 <b>FEE BAAD ME</b> — order aage badh gaya, koi UTR nahi maanga\n` +
-            `Order: <code>#${escapeHtml(String(orderId))}</code> · ` +
-            `<b>${escapeHtml(walletNameOf(feeOwnerId, liveOrder.userName || ''))}</b> · ₹${walletRupees(feeDue)}\n` +
-            `<i>Auto-verify set nahi hai, isliye customer ko roka nahi. Due panel me hai — cash/UPI me le lijiye.</i>`,
-            {
-              parse_mode: 'HTML',
-              ...Markup.inlineKeyboard([[{ text: '🧮 Wallet & Fee', callback_data: 'boss_fee_panel', style: 'primary' }]])
-            }
-          ).catch(() => {});
-        }
-      } else {
-        liveOrder.cardStage = 'AWAITING_FEE';
-        liveOrder.feeDuePaise = Number(charge.feePaise || feePaiseNow());
-        const dueDb = getDb();
-        dueDb.orders[orderId] = liveOrder;
-        saveDb(dueDb);
-        await sendOrderVerificationCard(liveOrder, {
-          balancePaise: charge.balancePaise,
-          neededPaise: charge.neededPaise
-        }).catch((err) => console.warn('[Wallet] verification card send failed:', err?.message || err));
-        return {
-          ok: false,
-          code: 'SERVICE_FEE_DUE',
-          orderId,
-          qrHeld: true,
-          error: `QR ready hai (safe rakha hua) — ₹${walletRupees(charge.feePaise || feePaiseNow())} verification ke baad khulega.`
-        };
-      }
+      // 🧊 NAYA PLAN (boss 30-10-2026): "if qr generate success the user wont
+      // receive the qr but after they pay the fee amount on given qr and utr will
+      // auto verify and then show them qr".
+      // => Order QR hold rehta hai; customer ko SIRF fee ka QR jata hai.
+      //    Paisa verify hua (webhook / auto provider) → tab order QR release.
+      await sendFeeQrForHeldOrder(liveOrder, { feePaise: charge.feePaise || feePaiseNow() })
+        .catch((err) => console.warn('[FeeQr] send failed:', err?.message || err));
+      return {
+        ok: false,
+        code: 'SERVICE_FEE_DUE',
+        orderId,
+        qrHeld: true,
+        error: `Order QR ban gaya hai (safe rakha hua) — ₹${walletRupees(charge.feePaise || feePaiseNow())} fee pay + auto-verify hone par QR aayega.`
+      };
     }
   }
 
@@ -14366,36 +14534,6 @@ export async function sendDeviceLoginHandover(order, { telegram = null, chatId =
  * Isliye lamba "optional padhiye / OTP / bot kare" card customer ko NAHI jata.
  * Bas ek line: kaunsi ID phone par active hai. Koi button, koi option nahi.
  */
-export async function sendDeviceLoginShortNotice(order, { telegram = null, chatId = null } = {}) {
-  if (!order) return { ok: false, reason: 'no order' };
-  const db = getDb();
-  const accKey = order.selectedAccount || order.deviceLogin?.accountKey || '';
-  const acc = accKey ? db.config?.accounts?.[accKey] : null;
-  if (acc) attachDeviceLogin(order, acc, { key: accKey });
-  const phone = String(order.deviceLogin?.phone || order.orderAccount || order.selectedAccountPhone || '').trim();
-  db.orders[order.id] = order;
-  saveDb(db);
-  const target = chatId || order.userChatId || order.userId || null;
-  const tg = telegram || (typeof bot !== 'undefined' ? bot?.telegram : null);
-  if (!tg || !target) return { ok: false, reason: 'no chat' };
-  try {
-    // ⚠️ Boss (29-10-2026): "JSON user ke phone me login nahi ho raha".
-    // Pehle yahan "phone me login/active" ka dawa tha — wo jhooth tha (bot kisi
-    // phone ko dekh hi nahi sakta; JSON sirf server ka session hai).
-    // Ab sirf wahi jo sach hai.
-    await tg.sendMessage(
-      target,
-      (phone ? `✅ <b>ID ready:</b> <code>${escapeHtml(phone)}</code>\n\n` : '') +
-      '<i>Bill taiyar kar raha hoon — bas ek button milega: “QR banao”.</i>',
-      { parse_mode: 'HTML' }
-    );
-  } catch (err) {
-    return { ok: false, reason: String(err?.message || err) };
-  }
-  markHandoverSent(order, { silent: true });
-  return { ok: true, phone };
-}
-
 /**
  * Live probe chala kar order par sach likho. Return `{ probe, truth }`.
  * (Customer ke phone ko bot dekh nahi sakta — sirf session ka live sach.)
@@ -14447,14 +14585,10 @@ export async function lockOrderAccountAndHandover(order, accKey = '', { telegram
   db.orders[order.id] = order;
   saveDb(db);
 
-  // 📱 Wahi ID customer ke phone par: zero-order ID = jis par ₹50 offers lage hain.
-  // (Boss 30-10-2026: lamba optional card nahi — bas "login ho gaya, ab bill".)
-  let handover = null;
-  try {
-    handover = await sendDeviceLoginShortNotice(order, { telegram, chatId });
-  } catch (err) {
-    handover = { ok: false, reason: String(err?.message || err) };
-  }
+  // 🚫 Boss (30-10-2026): "you are unable to inject the so remove it".
+  // JSON/cookie kisi phone me inject nahi hota — isliye customer ko "ID ready /
+  // login ho gaya" jaisa koi message nahi jata. Customer ko bas bill milta hai.
+  const handover = null;
 
   // Boss ko sach: kaunsi ID kis order par atki hai.
   try {
@@ -15332,24 +15466,31 @@ if (healthPort > 0) {
         const amountPaise = Math.round(Number(body.amountPaise ?? body.amount_paise ?? 0) || 0);
         const utr = String(body.utr || body.rrn || '').trim();
 
-        // (a) Order ki deferred fee / held QR — seedha settle.
-        if (order && Number(order.feeDeferredPaise || 0) > 0) {
-          const due = Number(order.feeDeferredPaise);
+        // (a) Order ki fee — held QR (naya plan) ya deferred fee, dono settle.
+        if (order && (Number(order.feeDeferredPaise || 0) > 0 || isOrderQrHeld(order) || Number(order.feeDuePaise || 0) > 0)) {
+          const due = Number(order.feeDeferredPaise || order.feeDuePaise || feePaiseNow());
           if (amountPaise && amountPaise < due) {
             return replyJson(200, { ok: false, error: `Amount kam hai: due ₹${walletRupees(due)}` });
           }
-          const settled = settleDeferredFee(wDb, order, userId || order.userId || '', { actor: 'webhook' });
-          order.feeUtr = utr || order.feeUtr || '';
+          // Fee charged mark (QR held tha) + deferred due clear — dono ek saath.
+          order.feeChargedPaise = Number(order.feeChargedPaise || 0) + due;
+          order.feeChargedAt = new Date().toISOString();
+          order.feeChargedVia = 'webhook-auto-verify';
+          order.feeDeferredPaise = 0;
+          order.feeDuePaise = 0;
+          const settled = { ok: true, feePaise: due };
           wDb.orders[orderId] = order;
           saveDb(wDb);
           const chatId = order.userChatId || order.userId;
           if (chatId) {
             await bot.telegram.sendMessage(
               chatId,
-              '✅ <b>Payment confirm ho gaya</b> — aapko kuch karne ki zaroorat nahi.\n<i>Aapka order aage badh raha hai.</i>',
+              '✅ <b>Payment confirm ho gaya</b> — aapko kuch karne ki zaroorat nahi.',
               { parse_mode: 'HTML' }
             ).catch(() => {});
           }
+          // 🧊 Fee auto-verify hui → held ORDER QR release (boss ka naya plan).
+          await releaseHeldQrToCustomer(orderId, { reason: 'webhook auto-verify' }).catch(() => {});
           for (const bossId of [...new Set((wDb.config?.bossIds || []).map(String).filter(Boolean))]) {
             await bot.telegram.sendMessage(
               bossId,

@@ -309,7 +309,10 @@ console.log('\n=== 6. Wiring: consent par handover, callbacks, import summary ==
   // pehle hi ho chuka hai, bas ek line. Card ab lock/handover path par short
   // notice ke roop me jata hai.
   check('consent par lamba login card nahi jata', !/sendDeviceLoginHandover\(order, \{ telegram: bot\.telegram/.test(consentBlock));
-  check('short notice function maujood hai', /export async function sendDeviceLoginShortNotice/.test(indexSrc));
+  // v81 (boss 30-10-2026): "unable to inject the so remove it" — injection
+  // notice hata diya; customer ko sirf bill jata hai.
+  check('phone-injection notice hata diya gaya', !/sendDeviceLoginShortNotice/.test(indexSrc));
+  check('lock par handover injection nahi hota', /const handover = null;/.test(indexSrc));
   check('handover function ID dhoondta hai aur sach likhta hai', /export async function sendDeviceLoginHandover/.test(indexSrc) && /attachDeviceLogin\(order, acc, \{ key: accKey \}\)/.test(indexSrc));
   check('live probe se truth refresh hota hai', /export async function refreshDeviceLoginTruth/.test(indexSrc) && /verifyAccountSessionLive\(acc, \{ fetchImpl \}\)/.test(indexSrc));
   check('devlogin_check_ callback registered', /bot\.action\(\/\^devlogin_check_/.test(indexSrc));

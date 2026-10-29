@@ -25,7 +25,6 @@ export const SIMPLE_CHAT_CALLBACKS = {
   continueDraft: 'simple_continue',
   myOrder: 'simple_my_order',
   loginReady: 'simple_login_ready',
-  phoneLogin: 'simple_phone_login',
   newOrder: 'simple_new_order'
 };
 
@@ -168,9 +167,8 @@ export function buildSimpleHomeScreen(draft = {}) {
     `📍 <b>Address:</b> ${addressValue}\n\n` +
     `<i>${hint}</i>`;
 
-  // ✅ Boss (30-10-2026): "address and cart paste karne ke baad bas itna bolna
-  // hai ki ID apne phone me login karne ke liye ye button dabaye" — ek hi button,
-  // koi Continue/price/extra option nahi (user confuse nahi hota).
+  // ✅ Boss (30-10-2026): links paste hone ke baad ek hi seedha button — bill.
+  // Koi Continue/price/extra option nahi (user confuse nahi hota).
   if (hasCart && hasAddress && !addressUnresolved) {
     // ⚠️ Boss (29-10-2026): "JSON user ke phone me login nahi ho raha". Sach: JSON
     // server ka session hai — koi button kisi phone me login nahi kar sakta.
@@ -182,14 +180,12 @@ export function buildSimpleHomeScreen(draft = {}) {
       '<i>Neeche button dabaiye — bill + QR turant aayega.</i>';
     return {
       text: loginText,
+      // Boss (30-10-2026): "unable to inject — remove it". JSON kisi phone me
+      // inject nahi hota, isliye yahan sirf ek seedha button: bill dekho.
       keyboard: {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '✅ Aage badhein — bill dekhein', callback_data: SIMPLE_CHAT_CALLBACKS.loginReady, style: 'success' }],
-            // ⚠️ Boss (29-10-2026): "JSON user ke phone me login nahi ho raha".
-            // Ye optional button ASLI steps deta hai (bot kisi phone me login nahi
-            // kar sakta — OTP usi phone par daalna padta hai).
-            [{ text: '📱 Phone me login karna hai?', callback_data: 'simple_phone_login', style: 'primary' }]
+            [{ text: '✅ Aage badhein — bill dekhein', callback_data: SIMPLE_CHAT_CALLBACKS.loginReady, style: 'success' }]
           ]
         }
       }
