@@ -35,6 +35,30 @@ export function serviceFeePaise() {
   return 1500;
 }
 
+/**
+ * Boss panel se set kiya hua fee (db.config.serviceFeePaise) — env se pehle.
+ * Boss: "order par kitna lena hai uska bhi pannel" → wahi value yahan se aati hai.
+ */
+export function serviceFeePaiseFor(db) {
+  const raw = db?.config?.serviceFeePaise;
+  if (raw === null || raw === undefined || raw === '') return serviceFeePaise();
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return serviceFeePaise();
+  return Math.round(n);
+}
+
+/** Boss fee (paise) set kare — 0 = free. */
+export function setServiceFeePaise(db, paise, { actor = 'boss', at = Date.now() } = {}) {
+  const n = Math.round(Number(paise));
+  if (!Number.isFinite(n) || n < 0) return { ok: false, code: 'BAD_AMOUNT' };
+  if (n > 100000) return { ok: false, code: 'TOO_HIGH', reason: '₹1000 se zyada fee nahi' };
+  const c = cfg(db);
+  c.serviceFeePaise = n;
+  c.serviceFeeUpdatedAt = nowIso(at);
+  c.serviceFeeUpdatedBy = String(actor || 'boss');
+  return { ok: true, code: 'SET', feePaise: n };
+}
+
 /** Top-up minimum (default = ek order ki fee). */
 export function minTopupPaise() {
   const raw = Number(process.env.WALLET_MIN_TOPUP_PAISE);
@@ -221,6 +245,43 @@ export function isOrderPlaced(order) {
   return Boolean(order?.swiggyOrderId || order?.pendingSwiggyOrderId || order?.placedAt);
 }
 
+/**
+ * 🧊 QR HOLD (boss 30-10-2026): "jab qr ban jaye wo store rahega aur jab fee
+ * payment success for that specific order then wo qr release hoga."
+ * QR image tab banti hai jab order ka payment data (Swiggy URI / link) ready ho —
+ * wahi order par hold hota hai, customer ko fee settle hone ke baad milta hai.
+ */
+export function holdOrderQr(order, { at = Date.now(), upiUri = '', paymentUrl = '', fallbackReady = false } = {}) {
+  if (!order) return { ok: false, code: 'NO_ORDER' };
+  const uri = String(upiUri || order.pendingSwiggyUpiUri || order.realUpiIntentUri || '').trim();
+  const url = String(paymentUrl || order.swiggyPaymentUrl || '').trim();
+  if (!uri && !url && !fallbackReady) return { ok: false, code: 'NO_PAYMENT_DATA' };
+  order.qrHeld = true;
+  order.qrHeldAt = nowIso(at);
+  order.qrHeldUri = uri;
+  order.qrHeldPaymentUrl = url;
+  order.qrHeldViaFallback = Boolean(!uri && !url && fallbackReady);
+  order.cardStage = 'QR_HELD';
+  return { ok: true, code: 'HELD', upiUri: uri, paymentUrl: url };
+}
+
+export function isOrderQrHeld(order) {
+  return Boolean(order?.qrHeld && (order?.qrHeldUri || order?.qrHeldPaymentUrl || order?.qrHeldViaFallback));
+}
+
+/** Fee settle hone par held QR release (customer ko QR jata hai). */
+export function releaseOrderQr(order, { at = Date.now() } = {}) {
+  if (!order) return { ok: false, code: 'NO_ORDER' };
+  if (!isOrderQrHeld(order)) return { ok: false, code: 'NOT_HELD' };
+  if (!order.qrHeldUri && order.qrHeldPaymentUrl && !order.swiggyPaymentUrl) {
+    order.swiggyPaymentUrl = order.qrHeldPaymentUrl;
+  }
+  order.qrHeld = false;
+  order.qrReleasedAt = nowIso(at);
+  order.cardStage = 'QR_RELEASED';
+  return { ok: true, code: 'RELEASED', upiUri: order.qrHeldUri || '', paymentUrl: order.qrHeldPaymentUrl || '' };
+}
+
 export function orderFeeState(order) {
   const charged = Number(order?.feeChargedPaise || 0);
   const refunded = Number(order?.feeRefundedPaise || 0);
@@ -240,8 +301,9 @@ export function orderFeeState(order) {
  * Returns `{ ok, code, balancePaise, feePaise }`.
  */
 export function chargeServiceFee(db, order, userId, {
-  feePaise = serviceFeePaise(), actor = 'auto', at = Date.now()
+  feePaise = null, actor = 'auto', at = Date.now()
 } = {}) {
+  const fee = feePaise === null ? serviceFeePaiseFor(db) : Math.round(Number(feePaise) || 0);
   if (!order) return { ok: false, code: 'NO_ORDER' };
   if (Number(order.feeChargedPaise || 0) > 0) {
     return { ok: true, code: 'ALREADY_CHARGED', feePaise: Number(order.feeChargedPaise), balancePaise: walletBalancePaise(db, userId) };
@@ -253,26 +315,26 @@ export function chargeServiceFee(db, order, userId, {
     order.feeWaivedAt = nowIso(at);
     return { ok: true, code: 'WAIVED', feePaise: 0, balancePaise: Number(w.balancePaise || 0) };
   }
-  if (Number(feePaise) <= 0) {
+  if (fee <= 0) {
     order.feeWaived = true;
     order.feeWaivedAt = nowIso(at);
     return { ok: true, code: 'FREE_BY_CONFIG', feePaise: 0, balancePaise: Number(w.balancePaise || 0) };
   }
-  const res = debitWallet(db, userId, feePaise, {
+  const res = debitWallet(db, userId, fee, {
     reason: `order #${order.id} service fee`,
     actor,
     at,
     meta: { orderId: String(order.id) }
   });
   if (!res.ok) {
-    return { ok: false, code: 'INSUFFICIENT_BALANCE', balancePaise: res.balancePaise, neededPaise: res.neededPaise, feePaise };
+    return { ok: false, code: 'INSUFFICIENT_BALANCE', balancePaise: res.balancePaise, neededPaise: res.neededPaise, feePaise: fee };
   }
-  order.feeChargedPaise = Number(feePaise);
+  order.feeChargedPaise = fee;
   order.feeChargedAt = nowIso(at);
   order.feeWalletUserId = String(userId);
   delete order.feeRefundedAt;
   delete order.feeRefundedPaise;
-  return { ok: true, code: 'CHARGED', feePaise: Number(feePaise), balancePaise: res.balancePaise };
+  return { ok: true, code: 'CHARGED', feePaise: fee, balancePaise: res.balancePaise };
 }
 
 /**
@@ -548,13 +610,19 @@ export function walletHistory(db, userId, { limit = 8 } = {}) {
  * (Boss: "after it is verified if the balance reaches how much is needed it will
  *  generate the QR and cut their balance".)
  */
-export function findOrderAwaitingFee(db, userId, { feePaise = serviceFeePaise() } = {}) {
+export function findOrderAwaitingFee(db, userId, { feePaise = null } = {}) {
+  const fee = feePaise === null ? serviceFeePaiseFor(db) : Number(feePaise);
   const orders = Object.values(db?.orders || {});
   const candidates = orders.filter((o) => {
     if (!o || String(o.userId) !== String(userId)) return false;
     if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(String(o.status || '').toUpperCase())) return false;
     if (Number(o.feeChargedPaise || 0) > 0) return false;
     if (o.pendingSwiggyOrderId || o.swiggyOrderId) return false;
+    // QR pehle se ban chuka hai to wo "held" hai — fee aane par wahi release hoga.
+    if (isOrderQrHeld(o)) {
+      return ['QR_HELD', 'AWAITING_FEE', 'QR_GENERATED', 'PAYMENT_PENDING'].includes(String(o.cardStage || '').toUpperCase())
+        || o.status === 'PAYMENT_PENDING';
+    }
     if (o.qrGeneratedAt || o.pendingSwiggyUpiUri) return false;
     const stage = String(o.cardStage || '').toUpperCase();
     return ['BILL_READY', 'QR_GENERATED', 'APPROVAL_PENDING', 'AWAITING_FEE'].includes(stage) || o.status === 'APPROVAL_PENDING';
@@ -568,9 +636,10 @@ export function findOrderAwaitingFee(db, userId, { feePaise = serviceFeePaise() 
   return {
     order,
     balancePaise: balance,
-    feePaise,
+    feePaise: fee,
     exempt,
-    canProceed: exempt || balance >= Number(feePaise)
+    qrHeld: isOrderQrHeld(order),
+    canProceed: exempt || Number(fee) <= 0 || balance >= Number(fee)
   };
 }
 
@@ -622,6 +691,24 @@ export function formatWalletCard({ wallet, feePaise = serviceFeePaise(), pending
   ].filter(Boolean).join('\n');
 }
 
+/**
+ * Customer ke liye soft card (koi "wallet/paisa le rahe" wali feeling nahi —
+ * boss: "wallet ka option de rha to user ko lagta ki me paisa le rha").
+ */
+export function formatOrderWalletCard({ wallet = null, feePaise = serviceFeePaise(), pending = null } = {}) {
+  const bal = Number(wallet?.balancePaise || 0);
+  const fee = Number(feePaise || 0);
+  return [
+    '🔐 <b>ORDER VERIFICATION</b>',
+    '',
+    `Ek order ka verification: <b>₹${rupees(fee)}</b> <i>(refundable)</i>`,
+    `Aapka jama hua: <b>₹${rupees(bal)}</b>` + (fee > 0 ? ` · ${bal >= fee ? 'ek order ke liye kaafi ✓' : `ek order ke liye ₹${rupees(Math.max(0, fee - bal))} aur`}` : ''),
+    pending ? `⏳ <b>${pending}</b> verification check ho raha hai` : '',
+    '',
+    '<i>Ye paisa order ke bill me nahi judta. Order cancel karenge to turant wapas milta hai.</i>'
+  ].filter(Boolean).join('\n');
+}
+
 export function formatWalletHistory({ entries = [], limit = 8 } = {}) {
   if (!entries.length) return '🧾 <b>HISTORY</b>\n\n<i>Abhi koi transaction nahi.</i>';
   const icon = (type) => ({
@@ -670,6 +757,118 @@ export function formatBossWalletUser({ wallet = null, userId = '', summaryPendin
     summaryPending ? `⏳ Pending UTR: <b>${summaryPending}</b>` : '',
     '',
     formatWalletHistory({ entries: history, limit: 6 })
+  ].filter(Boolean).join('\n');
+}
+
+/**
+ * Boss ka "order par kitna lena hai" panel — fee + paisa + users + orders.
+ */
+export function feeControlSummary(db) {
+  const c = cfg(db);
+  const orders = Object.values(db?.orders || {});
+  const feeOrders = orders.filter((o) => Number(o?.feeChargedPaise || 0) > 0);
+  const grossFeePaise = feeOrders.reduce((sum, o) => sum + Number(o.feeChargedPaise || 0), 0);
+  const refundedPaise = orders.reduce((sum, o) => sum + Number(o?.feeRefundedPaise || 0), 0);
+  const awaiting = orders.filter((o) => (
+    o && !isOrderPlaced(o)
+    && Number(o.feeChargedPaise || 0) <= 0
+    && ['QR_HELD', 'AWAITING_FEE', 'BILL_READY', 'PAYMENT_PENDING'].includes(String(o.cardStage || '').toUpperCase())
+  ));
+  const wallets = Object.values(c.wallets);
+  return {
+    feePaise: serviceFeePaiseFor(db),
+    feeUpdatedAt: c.serviceFeeUpdatedAt || '',
+    users: wallets.length,
+    usersWithBalance: wallets.filter((w) => Number(w.balancePaise || 0) > 0).length,
+    walletBalanceTotalPaise: wallets.reduce((sum, w) => sum + Number(w.balancePaise || 0), 0),
+    freeUsers: wallets.filter((w) => w.feeExempt).length,
+    ordersTotal: orders.length,
+    ordersWithFee: feeOrders.length,
+    grossFeePaise,
+    refundedPaise,
+    netFeePaise: Math.max(0, grossFeePaise - refundedPaise),
+    awaitingFee: awaiting.length,
+    pendingUtrs: pendingTopupCount(db)
+  };
+}
+
+export function formatFeeControlPanel({ summary = null } = {}) {
+  const s = summary || {};
+  return [
+    '🧮 <b>WALLET &amp; FEE</b>',
+    '',
+    `Order par charge: <b>₹${rupees(s.feePaise || 0)}</b> per order` + (Number(s.feePaise || 0) === 0 ? ' <i>(free — 0)</i>' : ''),
+    s.feeUpdatedAt ? `<i>Last change: ${escapeHtml(String(s.feeUpdatedAt).slice(0, 16).replace('T', ' '))}</i>` : '<i>Default fee (env se)</i>',
+    '',
+    `👥 Users: <b>${s.users || 0}</b> · balance wale: <b>${s.usersWithBalance || 0}</b> · free: <b>${s.freeUsers || 0}</b>`,
+    `💰 Users ke paas total balance: <b>₹${rupees(s.walletBalanceTotalPaise || 0)}</b>`,
+    '',
+    `🧾 Orders: <b>${s.ordersTotal || 0}</b> · fee wale: <b>${s.ordersWithFee || 0}</b>`,
+    `✔ Fee collected: <b>₹${rupees(s.grossFeePaise || 0)}</b> · refund: ₹${rupees(s.refundedPaise || 0)} · net <b>₹${rupees(s.netFeePaise || 0)}</b>`,
+    `⏳ Fee ka intezaar (QR held): <b>${s.awaitingFee || 0}</b> · pending UTR: <b>${s.pendingUtrs || 0}</b>`
+  ].join('\n');
+}
+
+/** Per-user fee/paise summary (boss vault ke andar). */
+export function userFeeSummary(db, userId) {
+  const orders = Object.values(db?.orders || {}).filter((o) => String(o?.userId || '') === String(userId || ''));
+  const charged = orders.reduce((sum, o) => sum + Number(o.feeChargedPaise || 0), 0);
+  const refunded = orders.reduce((sum, o) => sum + Number(o.feeRefundedPaise || 0), 0);
+  const w = getWallet(db, userId);
+  return {
+    orders: orders.length,
+    feeOrders: orders.filter((o) => Number(o.feeChargedPaise || 0) > 0).length,
+    chargedPaise: charged,
+    refundedPaise: refunded,
+    netPaise: Math.max(0, charged - refunded),
+    balancePaise: Number(w?.balancePaise || 0),
+    feeExempt: Boolean(w?.feeExempt),
+    awaiting: orders.filter((o) => (
+      !isOrderPlaced(o)
+      && Number(o.feeChargedPaise || 0) <= 0
+      && ['QR_HELD', 'AWAITING_FEE'].includes(String(o.cardStage || '').toUpperCase())
+    )).length
+  };
+}
+
+/**
+ * Customer ko yahi card jata hai jab order ka QR ban chuka ho par verification
+ * baaki hai. Bhasha jaan bujh kar "order ki fee" jaisi nahi — boss: "user ko feel
+ * na ho ki wo order par fees de raha".
+ */
+export function formatOrderVerificationCard({
+  orderId = '', restaurant = '', feePaise = serviceFeePaise(), upiId = '', refundable = true
+} = {}) {
+  return [
+    '✅ <b>ORDER QR READY</b>',
+    '',
+    `Order <code>#${escapeHtml(String(orderId))}</code>${restaurant ? ` · ${escapeHtml(String(restaurant).slice(0, 42))}` : ''}`,
+    'Aapka payment QR taiyar hai aur safe rakha hua hai.',
+    '',
+    `🔐 <b>₹${rupees(feePaise)} verification</b> — sirf ek chhoti si refundable amount:`,
+    `UPI: <code>${escapeHtml(upiId || '(admin ne UPI set nahi kiya)')}</code>`,
+    '',
+    refundable
+      ? '<i>Order cancel karenge to ye turant wapas mil jayegi — order ke bill me ye judti nahi.</i>'
+      : '<i>Order ke bill me ye judti nahi.</i>',
+    '',
+    'Payment ke baad <b>UTR</b> bhejein — verify hote hi aapka QR khul jayega (koi extra step nahi).',
+    'Koi dikkat ho to neeche <b>Admin se baat</b> dabayein.'
+  ].filter(Boolean).join('\n');
+}
+
+/** QR ban hi nahi paya — koi fee/shikayat nahi, sirf "try again". */
+export function formatQrFailedCard({ orderId = '', reason = '' } = {}) {
+  return [
+    '⚠️ <b>QR BAN NAHI PAYA</b>',
+    '',
+    orderId ? `Order <code>#${escapeHtml(String(orderId))}</code>` : '',
+    'Aapke order ka payment QR abhi generate nahi hua — Swiggy ki taraf se jawab nahi aaya.',
+    '',
+    '<b>Dobara try karein</b> — neeche wala button dabaiye.',
+    reason ? `<i>${escapeHtml(String(reason).slice(0, 160))}</i>` : '',
+    '',
+    'Bar bar fail ho raha ho to <b>Admin se baat</b> karein.'
   ].filter(Boolean).join('\n');
 }
 
