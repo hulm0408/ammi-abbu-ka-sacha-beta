@@ -264,9 +264,12 @@ console.log('\n=== 4. Asli claim path: read-back ke bina "CLAIMED" nahi ===');
   const auto = await bridge.autoActivateEventOffers(
     { id: 'acc_claim_d', phone: '9000007777', token: 'tok', tid: jwt(FUTURE) }, { force: true }
   );
-  // success = CHAARON lage. Extra ₹50 / Weekend ka id page par nahi hota, isliye
-  // engine candidates ko live likh kar read-back se verify karta hai.
-  check('auto wrapper chaaron claim karta hai (4/4)', auto.success === true && auto.claimedCount === 4, JSON.stringify({ s: auto.success, n: auto.claimedCount }));
+  // success = SAARE lage (Karwa Chauth sameth). Extra ₹50 / Weekend / Karwa
+  // Chauth ka id page par nahi hota, isliye engine candidates ko live likh kar
+  // read-back se verify karta hai.
+  check('auto wrapper saare offer claim karta hai (5/5)',
+    auto.success === true && auto.claimedCount === auto.totalCount && auto.claimedCount === 5,
+    JSON.stringify({ s: auto.success, n: auto.claimedCount, t: auto.totalCount }));
   check('auto wrapper label ₹50-on-₹199 hi rakhta hai', /₹50/.test(auto.label), auto.label);
   check('auto wrapper bothClaimed + chaar slots deta hai', auto.offers?.bothClaimed === true && Boolean(auto.offers?.extra50) && Boolean(auto.offers?.weekend));
   check('Extra ₹50 / Weekend bhi verified', auto.offers?.extra50?.verified === true && auto.offers?.weekend?.verified === true, JSON.stringify({ x: auto.offers?.extra50?.status, w: auto.offers?.weekend?.status }));

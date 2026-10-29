@@ -342,9 +342,9 @@ export async function ingestAndPersistRawAccountTexts(
     // Immediately flush to persistent Cloud Vault (`bot-vault` branch) so Render restarts NEVER lose any file!
     await Promise.resolve(syncVaultFn(getDb())).catch(() => {});
 
-    // AUTO-ACTIVATE **CHAAR** offer links on EVERY imported ID (boss: "JAB BHI
+    // AUTO-ACTIVATE **SAARE** offer links on EVERY imported ID (boss: "JAB BHI
     // FILE BHEJU SAARE OFFER ACTIVATE HONE CHAHIYE"): Late Night, Breakfast,
-    // Extra ₹50 aur Weekend — reward option #1 = "₹50 off on ₹199".
+    // Extra ₹50, Weekend aur Karwa Chauth — reward option #1 = "₹50 off on ₹199".
     const runOfferActivation = async () => {
       const targets = savedAccounts.slice(0, 40);
       for (let i = 0; i < targets.length; i += claimConcurrency) {
@@ -365,6 +365,7 @@ export async function ingestAndPersistRawAccountTexts(
               target.hasLateNight = Boolean(claimOut.lateNight?.status === 'CLAIMED');
               target.hasExtra50 = Boolean(claimOut.extra50?.status === 'CLAIMED');
               target.hasWeekend = Boolean(claimOut.weekend?.status === 'CLAIMED');
+              target.hasKarwaChauth = Boolean(claimOut.karwaChauth?.status === 'CLAIMED');
               target.offerAutoActivation = {
                 offerValue: 1,
                 label: claimOut.label || '₹50 off on ₹199',
@@ -376,7 +377,8 @@ export async function ingestAndPersistRawAccountTexts(
                 breakfast: claimOut.breakfast || null,
                 lateNight: claimOut.lateNight || null,
                 extra50: claimOut.extra50 || null,
-                weekend: claimOut.weekend || null
+                weekend: claimOut.weekend || null,
+                karwaChauth: claimOut.karwaChauth || null
               };
               // Har sach me active offer = 1 discount. Weekend/Extra50 ab ginte hain.
               let possibleDiscounts = (target.isZeroOrderAccount || target.totalOrdersCount === 0) ? 1 : 0;
@@ -384,6 +386,7 @@ export async function ingestAndPersistRawAccountTexts(
               if (target.hasLateNight) possibleDiscounts += 1;
               if (target.hasExtra50) possibleDiscounts += 1;
               if (target.hasWeekend) possibleDiscounts += 1;
+              if (target.hasKarwaChauth) possibleDiscounts += 1;
               target.possibleDiscountsCount = possibleDiscounts;
               saveDb(freshDb);
               const saved = savedAccounts.find((x) => x.key === key);
@@ -393,6 +396,7 @@ export async function ingestAndPersistRawAccountTexts(
                 saved.hasLateNight = target.hasLateNight;
                 saved.hasExtra50 = target.hasExtra50;
                 saved.hasWeekend = target.hasWeekend;
+                saved.hasKarwaChauth = target.hasKarwaChauth;
                 saved.account = target;
               }
             } catch (err) {
@@ -407,7 +411,8 @@ export async function ingestAndPersistRawAccountTexts(
                   breakfast: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) },
                   lateNight: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) },
                   extra50: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) },
-                  weekend: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) }
+                  weekend: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) },
+                  karwaChauth: { status: 'FAILED', message: String(err?.message || err).slice(0, 120) }
                 };
               }
             }
@@ -493,7 +498,7 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
       ? (Number(acc.totalOrdersCount) === 0 ? '★ 0 orders (live)' : `▣ ${Number(acc.totalOrdersCount)} orders (live)`)
       : '⚠️ orders live-check pending';
     const act = item.offerAutoActivation || acc.offerAutoActivation || null;
-    // CHAAR offer — chaaron ka apna status (boss: "chaaro ka status dikhana hai").
+    // SAARE offer — har ek ka apna status (boss: "saare offer ka status dikhana hai").
     const slotStatus = (t) => String(act?.[t.key]?.status || acc.offers?.[t.key]?.status || '').toUpperCase();
     const cells = OFFER_TRACKS.map((t) => {
       const st = slotStatus(t);
@@ -504,7 +509,7 @@ export function formatBulkVaultImportSummaryHtml(result, filesCount = 1) {
       return `${t.emoji || ''}${mark}`;
     }).join(' ');
     const claimedN = OFFER_TRACKS.filter((t) => ['CLAIMED', 'ALREADY_CLAIMED'].includes(slotStatus(t))).length;
-    return `${idx + 1}. ✓ <code>${label}</code> (${tag}) · ₹50×4 → ${cells} (${claimedN}/4)`;
+    return `${idx + 1}. ✓ <code>${label}</code> (${tag}) · ₹50×${OFFER_TRACKS.length} → ${cells} (${claimedN}/${OFFER_TRACKS.length})`;
   }).join('\n');
   const moreNote = savedAccounts.length > 18
     ? `\n<i>...aur ${savedAccounts.length - 18} accounts bhi Vault me save ho gaye!</i>`

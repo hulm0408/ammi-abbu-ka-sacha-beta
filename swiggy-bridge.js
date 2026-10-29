@@ -435,6 +435,9 @@ export async function autoActivateEventOffers(account, { force = true, offerValu
       lateNight: failedSlot,
       extra50: failedSlot,
       weekend: failedSlot,
+      karwaChauth: failedSlot,
+      totalCount: 0,
+      claimedCount: 0,
       offers: null,
       campaigns: { ...EVENT_CAMPAIGN_URLS },
       links: EVENT_OFFER_LINKS,
@@ -461,35 +464,45 @@ export async function autoActivateEventOffers(account, { force = true, offerValu
     };
   };
 
-  const breakfast = slot(raw?.offers?.breakfast);
-  const lateNight = slot(raw?.offers?.lateNight);
-  const extra50 = slot(raw?.offers?.extra50);
-  const weekend = slot(raw?.offers?.weekend);
-  const allFour = [breakfast, lateNight, extra50, weekend];
-  const claimedCount = allFour.filter((x) => x.status === 'CLAIMED').length;
+  // Saare offer keys dynamic — naya link add karne par yahan kuch badalna nahi
+  // padta (boss 29-10-2026: Karwa Chauth paanchva offer).
+  const slotsByKey = {};
+  for (const key of EVENT_OFFER_KEYS) slotsByKey[key] = slot(raw?.offers?.[key]);
+  const breakfast = slotsByKey.breakfast || { status: 'FAILED', message: 'Swiggy se koi jawab nahi aaya' };
+  const lateNight = slotsByKey.lateNight || { status: 'FAILED', message: 'Swiggy se koi jawab nahi aaya' };
+  const extra50 = slotsByKey.extra50 || { status: 'FAILED', message: 'Swiggy se koi jawab nahi aaya' };
+  const weekend = slotsByKey.weekend || { status: 'FAILED', message: 'Swiggy se koi jawab nahi aaya' };
+  const karwaChauth = slotsByKey.karwaChauth || { status: 'FAILED', message: 'Swiggy se koi jawab nahi aaya' };
+  const allOffers = Object.values(slotsByKey);
+  const totalCount = allOffers.length;
+  const claimedCount = allOffers.filter((x) => x.status === 'CLAIMED').length;
 
   return {
     ok: claimedCount > 0,
-    success: claimedCount === 4,
-    allFourClaimed: claimedCount === 4,
+    success: totalCount > 0 && claimedCount === totalCount,
+    allFourClaimed: totalCount > 0 && claimedCount === totalCount,
+    totalCount,
     claimedCount,
     bothClaimed: breakfast.status === 'CLAIMED' && lateNight.status === 'CLAIMED',
-    alreadyClaimed: allFour.every((x) => x.alreadyActive),
+    alreadyClaimed: allOffers.every((x) => x.alreadyActive),
     offerValue: PREFERRED_EVENT_OFFER_VALUE,
     label: PREFERRED_EVENT_OFFER_LABEL,
-    sessionExpired: allFour.some((x) => /session|401|re-login/i.test(String(x.message || ''))),
-    rateLimited: allFour.some((x) => /403|429|throttle/i.test(String(x.message || ''))),
+    sessionExpired: allOffers.some((x) => /session|401|re-login/i.test(String(x.message || ''))),
+    rateLimited: allOffers.some((x) => /403|429|throttle/i.test(String(x.message || ''))),
     breakfast,
     lateNight,
     extra50,
     weekend,
+    karwaChauth,
+    slots: slotsByKey,
     // Purane callers `offers.bothClaimed` padhte the — shape bani rahe, par
-    // value asli sach se (4-offer engine) aati hai.
+    // value asli sach se (poore-offer engine) aati hai.
     offers: raw?.offers
       ? {
           ...raw.offers,
           bothClaimed: breakfast.status === 'CLAIMED' && lateNight.status === 'CLAIMED',
-          allFourClaimed: claimedCount === 4,
+          allFourClaimed: totalCount > 0 && claimedCount === totalCount,
+          totalCount,
           claimedCount
         }
       : null,

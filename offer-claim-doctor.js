@@ -23,7 +23,9 @@ export const OFFER_CAMPAIGN_URLS = {
   lateNight: 'https://events.swiggy.com/pick-your-late-night-offer?utm_source=app&utm_medium=share',
   // 26-10-2026: do naye links — Extra ₹50 + Weekend (har JSON import par activate).
   extra50: EVENT_OFFER_LINKS.extra50,
-  weekend: EVENT_OFFER_LINKS.weekend
+  weekend: EVENT_OFFER_LINKS.weekend,
+  // 29-10-2026: Karwa Chauth (Pick ₹50 cash).
+  karwaChauth: EVENT_OFFER_LINKS.karwaChauth
 };
 
 export const OFFER_OPTIONS = {
@@ -37,14 +39,14 @@ export const PREFERRED_OFFER_VALUE = 1;
 const EVENTS_API = 'https://events.swiggy.com/api/notify';
 
 /** Doctor chaaron offers dekhta hai (boss: "SAARE OFFER"). */
-export const OFFER_TRACK_KEYS = ['lateNight', 'breakfast', 'extra50', 'weekend'];
+export const OFFER_TRACK_KEYS = ['lateNight', 'breakfast', 'extra50', 'weekend', 'karwaChauth'];
 
 // Same live-page defaults as swiggy-bridge.js (test asserts they stay in sync).
 const DEFAULT_META = {
   bfPrefix: 'byo-bf-v10-', lnPrefix: 'byo-ln-v5-',
   bfBoundaries: [], lnBoundaries: [],
   // Fixed (day-number ke bina) campaigns: Extra ₹50 + Weekend.
-  x50Campaign: '', wkndCampaign: '', x50Source: 'NONE', wkndSource: 'NONE'
+  x50Campaign: '', wkndCampaign: '', kcCampaign: '', x50Source: 'NONE', wkndSource: 'NONE', kcSource: 'NONE'
 };
 
 function decodeJwtExp(jwt) {
@@ -64,7 +66,9 @@ const TRACKS = {
   lateNight: { key: 'lateNight', label: 'Late Night', isLateNight: true, cutoffH: 7.5, slotOpenH: 10, slotCloseH: 19 },
   // Fixed campaigns: koi day number / slot nahi — page ki di hui campaign id.
   extra50: { key: 'extra50', label: 'Extra ₹50', fixed: true, metaField: 'x50Campaign', sourceField: 'x50Source' },
-  weekend: { key: 'weekend', label: 'Weekend', fixed: true, metaField: 'wkndCampaign', sourceField: 'wkndSource' }
+  weekend: { key: 'weekend', label: 'Weekend', fixed: true, metaField: 'wkndCampaign', sourceField: 'wkndSource' },
+  // 29-10-2026 Karwa Chauth — "Pick ₹50 cash" (29 Oct 3PM – 30 Oct 6AM).
+  karwaChauth: { key: 'karwaChauth', label: 'Karwa Chauth', fixed: true, metaField: 'kcCampaign', sourceField: 'kcSource' }
 };
 
 /**
@@ -119,7 +123,7 @@ export async function loadOfferCampaignMeta({ force = false, fetchImpl = globalT
         return { campaign: '', source: 'PAGE_FAILED', error: String(err?.message || err).slice(0, 80) };
       }
     };
-    const [x50, wknd] = await Promise.all([fixedMeta('extra50'), fixedMeta('weekend')]);
+    const [x50, wknd, kc] = await Promise.all([fixedMeta('extra50'), fixedMeta('weekend'), fixedMeta('karwaChauth')]);
     _metaCache = {
       ...DEFAULT_META,
       bfPrefix: bf.prefix,
@@ -130,6 +134,8 @@ export async function loadOfferCampaignMeta({ force = false, fetchImpl = globalT
       wkndCampaign: wknd.campaign,
       x50Source: x50.source,
       wkndSource: wknd.source,
+      kcCampaign: kc.campaign,
+      kcSource: kc.source,
       metaSource: 'LIVE_PAGE',
       loadedAt: new Date().toISOString()
     };
@@ -703,6 +709,7 @@ export async function runOfferDoctorForAccount(key, opts = {}) {
     lateNight: report.tracks?.lateNight?.state || report.before?.tracks?.lateNight?.state || '',
     extra50: report.tracks?.extra50?.state || report.before?.tracks?.extra50?.state || '',
     weekend: report.tracks?.weekend?.state || report.before?.tracks?.weekend?.state || '',
+    karwaChauth: report.tracks?.karwaChauth?.state || report.before?.tracks?.karwaChauth?.state || '',
     verdict: (report.verdict || []).slice(0, 4),
     fixed: Boolean(opts.fix)
   });

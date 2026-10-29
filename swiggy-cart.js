@@ -10,6 +10,7 @@ import { classifySwiggyAccountFailure, isAccountSuspended, markAccountSuspended,
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken } from './swiggy-bridge.js';
+import { OFFER_TRACKS } from './account-views.js';
 
 const CHROME_PATH = findChromePath();
 const PUPPETEER_HEADLESS = (process.platform === 'linux' || process.env.RAILWAY_ENVIRONMENT || process.env.HEADLESS === 'true') ? 'new' : false;
@@ -5875,15 +5876,13 @@ function fourOfferSummaryFor(account, claim) {
     const saved = String(stored?.[k]?.status || act?.[k]?.status || '').toUpperCase();
     return saved;
   };
-  const four = {
-    lateNight: pick('lateNight'),
-    breakfast: pick('breakfast'),
-    extra50: pick('extra50'),
-    weekend: pick('weekend')
-  };
-  four.claimedCount = ['lateNight', 'breakfast', 'extra50', 'weekend']
-    .filter((k) => four[k] === 'CLAIMED' || four[k] === 'ALREADY_CLAIMED').length;
-  four.score = `${four.claimedCount}/4`;
+  // Saare offer tracks (naya link = naya track) — ginti hardcoded nahi.
+  const four = {};
+  for (const track of OFFER_TRACKS) four[track.key] = pick(track.key);
+  four.claimedCount = OFFER_TRACKS
+    .filter((t) => four[t.key] === 'CLAIMED' || four[t.key] === 'ALREADY_CLAIMED').length;
+  four.total = OFFER_TRACKS.length;
+  four.score = `${four.claimedCount}/${OFFER_TRACKS.length}`;
   return four;
 }
 
@@ -8383,6 +8382,25 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
   if (order && (order.status === 'PAID' || order.status === 'COMPLETED' || order.paymentVerified === true)) {
     const err = new Error('Paid is final. Retry tracking only — never create another payment QR.');
     err.diag = { code: 'PAID_IS_FINAL_NO_NEW_QR', stage: 'GENERATE_REAL_QR' };
+    throw err;
+  }
+
+  // 📱 CUSTOMER PHONE PLACEMENT (boss 29-10-2026): customer ne kaha "order main
+  // apne phone se karunga". Tab bot apni taraf se place NAHI karta — warna
+  // double order ban jata hai aur order Saudi/server IP se chala jata hai
+  // (isi wajah se ₹50 cash / night offer asli me lagta nahi tha).
+  const customerPhoneHold = String(order?.placementMode || '').toUpperCase() === 'CUSTOMER_PHONE'
+    && !(isWrapped && accountOrOpts.allowCustomerPhonePlacement === true);
+  if (customerPhoneHold) {
+    const err = new Error(
+      `Order customer ke phone se place hoga (Swiggy ID ${order?.deviceLogin?.phone || order?.orderAccount || '—'}). ` +
+      `Bot ne apni taraf se place nahi kiya — app me cart khol kar order karein, tracking khud aa jayegi.`
+    );
+    err.diag = {
+      code: 'CUSTOMER_PHONE_PLACEMENT_PENDING',
+      stage: 'GENERATE_REAL_QR',
+      accountPhone: order?.deviceLogin?.phone || order?.orderAccount || ''
+    };
     throw err;
   }
 

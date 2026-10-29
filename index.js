@@ -101,6 +101,25 @@ import {
   portableSessionJsonText,
   buildPortableSessionJson
 } from './account-views.js';
+import {
+  DEVICE_LOGIN_STATUS,
+  PLACEMENT_MODE,
+  accountPhone as deviceAccountPhone,
+  attachDeviceLogin,
+  markHandoverSent,
+  customerChoseOwnPhone,
+  isCustomerPhonePlacement,
+  markCustomerSaidLoggedIn,
+  verifyAccountSessionLive,
+  applySessionProbe,
+  noteCustomerPlacedOrder,
+  deviceLoginTruth,
+  deviceLoginCallbacks,
+  buildDeviceLoginHandover,
+  buildDeviceLoginStatusText,
+  buildDeviceLoginHelpText,
+  placementHoldMessage
+} from './customer-device-login.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { scanFailuresLine } from './scan-diagnostics.js';
 import * as wafPool from './waf-pool.js';
@@ -3190,6 +3209,7 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
         accTarget.hasLateNight = Boolean(slots.lateNight?.status === 'CLAIMED' || slots.lateNight?.verified);
         accTarget.hasExtra50 = Boolean(slots.extra50?.status === 'CLAIMED' || slots.extra50?.verified);
         accTarget.hasWeekend = Boolean(slots.weekend?.status === 'CLAIMED' || slots.weekend?.verified);
+        accTarget.hasKarwaChauth = Boolean(slots.karwaChauth?.status === 'CLAIMED' || slots.karwaChauth?.verified);
         accTarget.offerAutoActivation = {
           offerValue: 1,
           label: '₹50 off on ₹199',
@@ -3201,13 +3221,15 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
           breakfast: slots.breakfast || null,
           lateNight: slots.lateNight || null,
           extra50: slots.extra50 || null,
-          weekend: slots.weekend || null
+          weekend: slots.weekend || null,
+          karwaChauth: slots.karwaChauth || null
         };
         if (!accInfo.offers) accInfo.offers = {};
         accInfo.offers.lateNight = slots.lateNight;
         accInfo.offers.breakfast = slots.breakfast;
         accInfo.offers.extra50 = slots.extra50;
         accInfo.offers.weekend = slots.weekend;
+        accInfo.offers.karwaChauth = slots.karwaChauth;
         saveDb(db);
       }
     } catch (e) {}
@@ -3272,7 +3294,7 @@ async function sendAccountLoginAndOffersCard(ctx, accInfo, userId, orderId) {
     `▣ <b>OFFERS STATUS:</b>\n` +
     `• ◷ <b>Swiggy Late Night:</b> ${lateNightStatusText}\n` +
     `• • <b>Swiggy Breakfast:</b> ${breakfastStatusText}\n\n` +
-    `🎁 <b>CHAAR OFFER — har ek ₹50 (option 1):</b>\n` +
+    `🎁 <b>SAARE ${OFFER_TRACKS.length} OFFER — har ek ₹50 (option 1):</b>\n` +
     `${fourOfferStatusLines(portableSource, { escape: (v) => escapeHtml(String(v ?? '')) }).join('\n')}\n` +
     `${fourOfferScoreLine(portableSource)}\n\n` +
     (bothClaimed
@@ -3671,7 +3693,7 @@ async function sendOfferDoctorCard(ctx, key, { fix = false, edit = false } = {})
   } catch (err) {
     report = { ok: false, verdict: [`Doctor fail: ${String(err?.message || err).slice(0, 150)}`] };
   }
-  // Status pehle: chaaron offer, har ek ₹50 — phir live doctor detail.
+  // Status pehle: saare offer, har ek ₹50 — phir live doctor detail.
   const statusBlock = fourOfferStatusBlock(acc, { escape: (v) => escapeHtml(String(v ?? '')) });
   const text = statusBlock + '\n\n' +
     formatOfferDoctorReport(report?.ok === false && report?.before ? report.before : report, {
@@ -3759,7 +3781,7 @@ bot.action(/^boss_retry_claim_(.+)$/, async (ctx) => {
   const acc = db.config.accounts?.[accKey];
   if (!acc) return ctx.reply('× Account not found.');
 
-  const retryWait = await ctx.reply(`◷ <i>Chaaron offer (Morning / Night / Extra ₹50 / Weekend) claim kar raha hoon for <b>${escapeHtml(acc.name || accKey)}</b> — har ek par ₹50 (option 1)...</i>`, { parse_mode: 'HTML' });
+  const retryWait = await ctx.reply(`◷ <i>Saare ${OFFER_TRACKS.length} offer (Morning / Night / Extra ₹50 / Weekend / Karwa Chauth) claim kar raha hoon for <b>${escapeHtml(acc.name || accKey)}</b> — har ek par ₹50 (option 1)...</i>`, { parse_mode: 'HTML' });
   // CHAARON offers ek hi engine se — `force: false` isliye ki 6h ledger ke andar
   // dobara claim na ho (boss: "2 times claim ho rha tha").
   const claimRes = await autoActivateEventOffers(acc, {
@@ -3774,6 +3796,7 @@ bot.action(/^boss_retry_claim_(.+)$/, async (ctx) => {
   acc.hasLateNight = slotClaimed('lateNight');
   acc.hasExtra50 = slotClaimed('extra50');
   acc.hasWeekend = slotClaimed('weekend');
+  acc.hasKarwaChauth = slotClaimed('karwaChauth');
   acc.offerAutoActivation = {
     offerValue: 1,
     label: '₹50 off on ₹199',
@@ -3785,7 +3808,8 @@ bot.action(/^boss_retry_claim_(.+)$/, async (ctx) => {
     breakfast: slots.breakfast || null,
     lateNight: slots.lateNight || null,
     extra50: slots.extra50 || null,
-    weekend: slots.weekend || null
+    weekend: slots.weekend || null,
+    karwaChauth: slots.karwaChauth || null
   };
   saveDb(db);
   try { await bot.telegram.deleteMessage(ctx.chat.id, retryWait.message_id); } catch (e) {}
@@ -3794,7 +3818,7 @@ bot.action(/^boss_retry_claim_(.+)$/, async (ctx) => {
   await ctx.reply(
     `${fourOfferStatusBlock(acc, { escape: (v) => escapeHtml(String(v ?? '')) })}\n\n` +
     `<i>${claimRes?.allFourClaimed
-      ? 'Chaaron offer me ₹50 lag gaya — ₹200 tak free cash.'
+      ? `Saare ${OFFER_TRACKS.length} offer me ₹50 lag gaya — ₹${OFFER_TRACKS.length * 50} tak free cash.`
       : 'Jo nahi laga uska asli reason upar likha hai. “🔧 Fix ₹50 ab” dabaiye — read-back ke baad hi ✓ milta hai.'}</i>`,
     {
       parse_mode: 'HTML',
@@ -7686,7 +7710,7 @@ const bulkAccountDocCollector = createBulkDocumentBatchCollector({
         const a = liveDb.config?.accounts?.[k];
         if (!a) return `${i + 1}. × <code>${k}</code> — save fail`;
         const act = a.offerAutoActivation || {};
-        // Chaaron offer ka sach: ✓ = ₹50 free cash read-back se verify hua,
+        // Har offer ka sach: ✓ = ₹50 free cash read-back se verify hua,
         // ⏳ = pre-lock, 🟡 = Swiggy ne doosra reward rakha, ✕ = nahi hua.
         const mark = (st) => {
           const v = String(st || '').toUpperCase();
@@ -7697,7 +7721,7 @@ const bulkAccountDocCollector = createBulkDocumentBatchCollector({
         };
         const cells = OFFER_TRACKS.map((t) => `${t.emoji || ''}${mark(act[t.key]?.status)}`).join(' ');
         const claimedN = OFFER_TRACKS.filter((t) => ['CLAIMED', 'ALREADY_CLAIMED'].includes(String(act[t.key]?.status || '').toUpperCase())).length;
-        return `${i + 1}. 🟢 <code>${a.phone || k}</code> · ${truthLine(a)} · ₹50×4 → ${cells} (${claimedN}/4)`;
+        return `${i + 1}. 🟢 <code>${a.phone || k}</code> · ${truthLine(a)} · ₹50×${OFFER_TRACKS.length} → ${cells} (${claimedN}/${OFFER_TRACKS.length})`;
       }).join('\n');
       await lastCtx.reply(
         `<blockquote>✓ <b>ALL FILE ACCOUNTS PROCESSED ONE BY ONE</b></blockquote>\n\n` +
@@ -11426,6 +11450,90 @@ bot.action('simple_retry_address', async (ctx) => {
   if (!started) await renderUserCard(ctx, ctx.from.id, { notice: 'Abhi bhi nahi mila — thodi der baad try karein' }).catch(() => {});
 });
 
+// ── 📱 CUSTOMER PHONE LOGIN HANDOVER (boss 29-10-2026) ──────────────────────
+// Customer ke phone par wahi ID login ho aur order wahin se ho. Bot jhooth nahi
+// bolta: "login ho gaya" sirf tab jab Swiggy ka live check pass ho, aur "pakka"
+// tab jab us ID par naya order dikhe.
+async function loadDeviceLoginOrder(ctx) {
+  const orderId = String(ctx.match?.[1] || '');
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  if (!order) {
+    await ctx.answerCbQuery('Order nahi mila.', { show_alert: true }).catch(() => {});
+    return null;
+  }
+  if (!isOrderCustomer(order, ctx.from.id) && !isBoss(ctx.from.id)) {
+    await ctx.answerCbQuery('Ye order aapka nahi hai.', { show_alert: true }).catch(() => {});
+    return null;
+  }
+  return order;
+}
+
+bot.action(/^devlogin_check_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const order = await loadDeviceLoginOrder(ctx);
+  if (!order) return;
+  await ctx.answerCbQuery('Swiggy se live check kar raha hoon…').catch(() => {});
+  // Customer ka bayan note karo — par "verified" tabhi jab probe pass ho.
+  markCustomerSaidLoggedIn(order);
+  const res = await refreshDeviceLoginTruth(order.id).catch((err) => ({ ok: false, reason: err?.message || 'probe fail' }));
+  const fresh = getDb().orders?.[order.id] || order;
+  const text = res?.ok
+    ? buildDeviceLoginStatusText({ order: fresh, probe: res.probe, escape: escapeHtml })
+    : `❌ <b>CHECK FAIL</b>\n<i>${escapeHtml(String(res?.reason || 'verify nahi ho paya'))}</i>`;
+  const cb = deviceLoginCallbacks(order.id);
+  await ctx.reply(text, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [{ text: '🔁 Dobara check', callback_data: cb.check }, { text: '❓ Madad', callback_data: cb.help }]
+    ])
+  }).catch(() => {});
+  try { await updateOrderCards(getDb().orders?.[order.id] || order); } catch {}
+});
+
+bot.action(/^devlogin_phone_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const order = await loadDeviceLoginOrder(ctx);
+  if (!order) return;
+  await ctx.answerCbQuery('Theek hai — order aapke phone se hoga').catch(() => {});
+  const db = getDb();
+  const accKey = order.selectedAccount || order.deviceLogin?.accountKey || '';
+  const acc = accKey ? db.config?.accounts?.[accKey] : null;
+  if (acc) attachDeviceLogin(order, acc, { key: accKey });
+  customerChoseOwnPhone(order);
+  db.orders[order.id] = order;
+  saveDb(db);
+
+  const res = await refreshDeviceLoginTruth(order.id).catch(() => ({ ok: false }));
+  const fresh = getDb().orders?.[order.id] || order;
+  const cb = deviceLoginCallbacks(order.id);
+  // Boss ko bhi (standing rule: har cheez dono ko) — customer reply mirror se
+  // jata hai, par yeh decision boss ke apne panel me bhi dikhna chahiye.
+  for (const bossId of [...new Set((db.config?.bossIds || []).map(String).filter(Boolean))]) {
+    if (String(bossId) === String(ctx.chat?.id)) continue;
+    await bot.telegram.sendMessage(
+      bossId,
+      `📱 <b>CUSTOMER PHONE PLACEMENT ON</b> · order <code>#${escapeHtml(String(order.id))}</code>\n` +
+      `Swiggy ID: <code>${escapeHtml(String(fresh.deviceLogin?.phone || order.orderAccount || ''))}</code>\n` +
+      `<i>Ab bot apni taraf se place nahi karega — order customer ke phone se hoga (offers usi ID par lage hain).</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+  }
+  await ctx.reply(buildDeviceLoginStatusText({ order: fresh, probe: res?.probe || null, escape: escapeHtml }), {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [{ text: '✅ Login ho gaya — check karo', callback_data: cb.check }],
+      [{ text: '❓ Madad', callback_data: cb.help }]
+    ])
+  }).catch(() => {});
+  try { await updateOrderCards(getDb().orders?.[order.id] || order); } catch {}
+});
+
+bot.action(/^devlogin_help_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const order = await loadDeviceLoginOrder(ctx);
+  if (!order) return;
+  await ctx.answerCbQuery().catch(() => {});
+  await ctx.reply(buildDeviceLoginHelpText({ order }), { parse_mode: 'HTML' }).catch(() => {});
+});
+
 bot.action(SIMPLE_CHAT_CALLBACKS.myOrder, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await handlePreviousOrder(ctx);
@@ -11457,6 +11565,14 @@ bot.action(/^simple_confirm_order_([A-Za-z0-9_-]+)$/, async (ctx) => {
   }
 
   await ctx.answerCbQuery('✅ Order confirmed').catch(() => {});
+
+  // 📱 Boss (29-10-2026): "ID unke phone me login ho, order unke phone se ho" —
+  // isliye bill approve hote hi customer ko ID handover card jata hai.
+  try {
+    await sendDeviceLoginHandover(order, { telegram: bot.telegram, chatId: ctx.chat?.id || userId });
+  } catch (err) {
+    console.warn('[DeviceLogin] handover fail:', err?.message || err);
+  }
 
   // Bill already computed and awaiting approval -> straight to the Swiggy payment QR.
   if (order.status === 'APPROVAL_PENDING' || order.status === 'PAYMENT_PENDING') {
@@ -13025,6 +13141,63 @@ export function injectAccountSessionIntoOrder(order, preferredAccKey = null) {
   return order.injectedSession;
 }
 
+/**
+ * 📱 CUSTOMER PHONE HANDOVER (boss 29-10-2026):
+ * jis ID par ₹50 offers lock hue hain wahi ID customer ke phone par login ho, aur
+ * order wahi se ho. Isse Swiggy ko Indian device/IP dikhta hai, isliye night cash
+ * aur offers asli me lagte hain (Saudi/server se place karne par nahi lagte the).
+ *
+ * Card customer ko jata hai (boss-mirror se boss ko bhi), aur `order.deviceLogin`
+ * par sirf utna likha jata hai jitna proof se pata chala.
+ */
+export async function sendDeviceLoginHandover(order, { telegram = null, chatId = null } = {}) {
+  if (!order) return { ok: false, reason: 'no order' };
+  const db = getDb();
+  const accKey = order.selectedAccount || order.injectedSession?.accountKey || '';
+  const acc = accKey ? db.config?.accounts?.[accKey] : null;
+  if (!acc) return { ok: false, reason: 'ID nahi mili (account vault me nahi)' };
+  const phone = deviceAccountPhone(acc, accKey);
+  if (!phone) return { ok: false, reason: 'ID me phone number nahi — handover possible nahi' };
+
+  attachDeviceLogin(order, acc, { key: accKey });
+  const card = buildDeviceLoginHandover({ order, account: acc, key: accKey });
+
+  const target = chatId || order.userChatId || order.userId || null;
+  const tg = telegram || (typeof bot !== 'undefined' ? bot?.telegram : null);
+  let sent = false;
+  if (tg && target) {
+    try {
+      await tg.sendMessage(target, card.text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(card.buttons) });
+      sent = true;
+    } catch (err) {
+      console.warn('[DeviceLogin] handover card send fail:', err?.message || err);
+    }
+  }
+  if (sent) markHandoverSent(order);
+  db.orders[order.id] = order;
+  saveDb(db);
+  return { ok: true, sent, phone, text: card.text, buttons: card.buttons, deviceLogin: order.deviceLogin };
+}
+
+/**
+ * Live probe chala kar order par sach likho. Return `{ probe, truth }`.
+ * (Customer ke phone ko bot dekh nahi sakta — sirf session ka live sach.)
+ */
+export async function refreshDeviceLoginTruth(orderId, { fetchImpl = globalThis.fetch } = {}) {
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  if (!order) return { ok: false, reason: 'order nahi mila' };
+  const accKey = order.selectedAccount || order.deviceLogin?.accountKey || '';
+  const acc = accKey ? db.config?.accounts?.[accKey] : null;
+  if (!acc) return { ok: false, reason: 'ID nahi mili' };
+  attachDeviceLogin(order, acc, { key: accKey });
+  const probe = await verifyAccountSessionLive(acc, { fetchImpl });
+  applySessionProbe(order, probe);
+  db.orders[orderId] = order;
+  saveDb(db);
+  return { ok: true, probe, truth: deviceLoginTruth(order), order };
+}
+
 export function releaseAndExportInjectedSessionOnDelivery(orderId) {
   const db = getDb();
   const order = db.orders?.[orderId];
@@ -13410,6 +13583,19 @@ async function checkOrderPaidStatusOnly(orderId) {
   if (order.selectedAccount) releaseSwiggyAccountReservation(order.selectedAccount, order.id);
   order.status = 'COMPLETED';
   order.swiggyOrderId = check.swiggyOrderId || order.pendingSwiggyOrderId || order.swiggyOrderId || '';
+  // 📱 Agar customer ne apne phone se order kiya tha, to usi ID par aaya yeh
+  // order hi PAKKA proof hai (bot ka jhootha "login ho gaya" nahi).
+  if (order.swiggyOrderId && noteCustomerPlacedOrder(order, order.swiggyOrderId)) {
+    try {
+      const bossIds = [...new Set((db.config?.bossIds || []).map(String).filter(Boolean))];
+      const proofText = `✅ <b>ORDER CUSTOMER KE PHONE SE PLACE HUA</b>\n` +
+        `Order: <code>#${escapeHtml(String(order.swiggyOrderId))}</code> · Swiggy ID: <code>${escapeHtml(String(order.deviceLogin?.phone || order.orderAccount || ''))}</code>\n` +
+        `<i>Usi ID par order dikha — phone login confirm.</i>`;
+      for (const chatId of [String(order.userChatId || order.userId || ''), ...bossIds].filter(Boolean)) {
+        bot.telegram.sendMessage(chatId, proofText, { parse_mode: 'HTML' }).catch(() => {});
+      }
+    } catch { /* proof likhna important hai, message nahi */ }
+  }
   order.liveOrderStatus = check.orderStatus || order.liveOrderStatus || 'Order Confirmed';
   const trackingCandidate = check.nativeShareUrl || check.swiggyWebTrackUrl || '';
   const providerTrackingUrl = trackingCandidate

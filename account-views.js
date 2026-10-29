@@ -23,16 +23,23 @@ export const OFFER_CAMPAIGN_URLS = {
   lateNight: 'https://events.swiggy.com/pick-your-late-night-offer?utm_source=app&utm_medium=share',
   // 26-10-2026: boss ne do aur link diye — dono har JSON import par activate hote hain.
   extra50: 'https://events.swiggy.com/pick-your-offer?utm_source=app&utm_medium=share',
-  weekend: 'https://events.swiggy.com/byo-weekend?utm_source=app&utm_medium=share'
+  weekend: 'https://events.swiggy.com/byo-weekend?utm_source=app&utm_medium=share',
+  // 29-10-2026: boss ka naya link — Karwa Chauth "Pick ₹50 cash".
+  karwaChauth: 'https://events.swiggy.com/karwa-chauth-byo?utm_source=app&utm_medium=share'
 };
 
-/** Chaaron offers ka order + boss ke naam (UI me isi order me dikhte hain). */
+/** Saare offers ka order + boss ke naam (UI me isi order me dikhte hain). */
 export const OFFER_TRACKS = [
   { key: 'lateNight', bossLabel: 'Morning Link', label: 'Late night (9PM–6AM)', emoji: '🌙' },
   { key: 'breakfast', bossLabel: 'Night Link', label: 'Breakfast (7AM–11AM)', emoji: '☀️' },
   { key: 'extra50', bossLabel: 'Extra ₹50', label: 'Extra ₹50 offer', emoji: '💸' },
-  { key: 'weekend', bossLabel: 'Weekend', label: 'Weekend offer', emoji: '🎉' }
+  { key: 'weekend', bossLabel: 'Weekend', label: 'Weekend offer', emoji: '🎉' },
+  // 29-10-2026: Karwa Chauth (29 Oct 3PM – 30 Oct 6AM) — Pick ₹50 cash.
+  { key: 'karwaChauth', bossLabel: 'Karwa Chauth', label: 'Karwa Chauth (29 Oct 3PM – 30 Oct 6AM)', emoji: '🪔' }
 ];
+
+/** Kitne offer tracks hain — koi bhi hardcoded "4" nahi (naya link = naya track). */
+export const OFFER_TRACK_COUNT = OFFER_TRACKS.length;
 
 /**
  * Chaar offer ka status kaise dikhega. Har line par ₹50 likha jata hai kyunki
@@ -180,22 +187,29 @@ export function offerClaimTruth(acc) {
     };
   };
 
-  const breakfast = describe('breakfast');
-  const lateNight = describe('lateNight');
-  const extra50 = describe('extra50');
-  const weekend = describe('weekend');
+  // Har track ka sach — ginti OFFER_TRACKS se, isliye naya offer khud jud jata hai.
+  const slots = {};
+  for (const track of OFFER_TRACKS) slots[track.key] = describe(track.key);
+  const breakfast = slots.breakfast;
+  const lateNight = slots.lateNight;
+  const extra50 = slots.extra50;
+  const weekend = slots.weekend;
+  const karwaChauth = slots.karwaChauth;
   const both = breakfast.claimed && lateNight.claimed;
-  const allFour = both && extra50.claimed && weekend.claimed;
+  const allFour = OFFER_TRACKS.every((t) => slots[t.key].claimed);
   return {
+    ...slots,
     breakfast,
     lateNight,
     extra50,
     weekend,
+    karwaChauth,
     both,
     allFour,
-    claimedCount: [breakfast, lateNight, extra50, weekend].filter((x) => x.claimed).length,
-    preLockedCount: [breakfast, lateNight, extra50, weekend].filter((x) => x.preLocked).length,
-    isNew: !pick('breakfast') && !pick('lateNight') && !pick('extra50') && !pick('weekend'),
+    totalTracks: OFFER_TRACK_COUNT,
+    claimedCount: OFFER_TRACKS.filter((t) => slots[t.key].claimed).length,
+    preLockedCount: OFFER_TRACKS.filter((t) => slots[t.key].preLocked).length,
+    isNew: OFFER_TRACKS.every((t) => !pick(t.key)),
     offerLabel: activation?.label || stored?.offerLabel || PREFERRED_OFFER_LABEL,
     offerValue: Number(activation?.offerValue || stored?.offerValue || PREFERRED_OFFER_VALUE),
     autoActivatedAt: activation?.at || '',
@@ -232,18 +246,19 @@ export function fourOfferStatusLines(acc, { escape = (v) => String(v ?? ''), sho
   });
 }
 
-/** "2/4 claimed · ₹100 pakka / ₹200 possible" — jhooth nahi, sirf ginti. */
+/** "2/5 claimed · ₹100 pakka / ₹250 possible" — jhooth nahi, sirf ginti. */
 export function fourOfferScoreLine(acc) {
   const truth = offerClaimTruth(acc || {});
   const each = 50;
-  return `📊 Score: <b>${truth.claimedCount}/4 claimed</b> · ₹${truth.claimedCount * each} pakka / ₹${4 * each} possible` +
+  const total = Number(truth.totalTracks || OFFER_TRACK_COUNT);
+  return `📊 Score: <b>${truth.claimedCount}/${total} claimed</b> · ₹${truth.claimedCount * each} pakka / ₹${total * each} possible` +
     (truth.preLockedCount ? ` · ⏳ ${truth.preLockedCount} pre-locked` : '');
 }
 
 /** Poora chaar-offer status block (boss card, user card, import summary — sab jagah). */
 export function fourOfferStatusBlock(acc, { escape = (v) => String(v ?? ''), header = '' } = {}) {
   return [
-    header || '🎁 <b>CHAAR OFFER — har ek ₹50 (option 1: ₹50 off on ₹199)</b>',
+    header || `🎁 <b>SAARE ${OFFER_TRACK_COUNT} OFFER — har ek ₹50 (option 1: ₹50 off on ₹199)</b>`,
     ...fourOfferStatusLines(acc, { escape }),
     fourOfferScoreLine(acc)
   ].join('\n');
@@ -265,11 +280,12 @@ export function compactAccountLine(acc, key, { activeKey = '', index = 1 } = {})
     : 'ord ?';
   const claim = offerClaimTruth(src);
   // Chaaron offers ka sach: 4/4 par hi "✓", warna kitne lage (jhooth nahi).
+  const claimTotal = Number(claim.totalTracks || OFFER_TRACK_COUNT);
   const claimBit = claim.allFour
-    ? '₹50 ✓ 4/4'
+    ? `₹50 ✓ ${claimTotal}/${claimTotal}`
     : claim.isNew
       ? '₹50 new'
-      : `₹50 ${claim.claimedCount}/4${claim.preLockedCount ? ' ⏳' : ''}`;
+      : `₹50 ${claim.claimedCount}/${claimTotal}${claim.preLockedCount ? ' ⏳' : ''}`;
   const name = String(src.name || '').trim();
   const expiredBit = src.sessionExpired ? ' · ⚠️ session expired' : '';
   const suspendBit = suspended ? ` · ⛔ suspended` : '';
@@ -316,13 +332,14 @@ export function accountDetailText({ acc, key, activeKey = '', orderLines = [] } 
       ? `   ▪ Active orders: <b>${truth.activeOrders === null ? '—' : truth.activeOrders}</b>`
       : '   ▪ <i>File me jo order count likha ho wo nahi maana jata — sirf live check.</i>',
     '',
-    `🎁 <b>CHAAR OFFER (${escapeLight(claim.offerLabel)}) — har ek ₹50:</b>`,
+    `🎁 <b>SAARE ${OFFER_TRACK_COUNT} OFFER (${escapeLight(claim.offerLabel)}) — har ek ₹50:</b>`,
     ...fourOfferStatusLines(src, { escape: escapeLight }),
     `   ▪ ${fourOfferScoreLine(src)}`,
     claim.autoActivatedAt ? `   ▪ Auto-activated: ${escapeLight(claim.autoActivatedAt.slice(0, 19).replace('T', ' '))}` : '',
     src.offerDoctor
       ? `   ▪ 🎁 Doctor: LN <b>${escapeLight(String(src.offerDoctor.lateNight || '?'))}</b> · BF <b>${escapeLight(String(src.offerDoctor.breakfast || '?'))}</b>` +
         ` · ₹50 <b>${escapeLight(String(src.offerDoctor.extra50 || '?'))}</b> · WKND <b>${escapeLight(String(src.offerDoctor.weekend || '?'))}</b>` +
+        ` · KC <b>${escapeLight(String(src.offerDoctor.karwaChauth || '?'))}</b>` +
         (Array.isArray(src.offerDoctor.verdict) && src.offerDoctor.verdict[0] ? `\n     <i>${escapeLight(String(src.offerDoctor.verdict[0]).slice(0, 110))}</i>` : '')
       : '',
     ...(orderLines.length ? ['', `▤ <b>Previous orders:</b>`, ...orderLines] : []),

@@ -1,6 +1,9 @@
 /**
  * event-offers.js — Swiggy ke CHAAR offer links, har JSON import par activate.
  *
+ * Boss (29-10-2026) ne paanchva link diya — Karwa Chauth (`karwa-chauth-byo`),
+ * "Pick ₹50 cash" — 29 Oct 3 PM se 30 Oct 6 AM tak.
+ *
  * Boss (26-10-2026 raat) ne chaar link diye:
  *   1. pick-your-late-night-offer   (boss: "Morning Link")
  *   2. book-your-offer              (boss: "Night Link")
@@ -19,6 +22,9 @@
  *     sab ek hi promise share karte hain),
  *   • jo nahi hua, uska asli reason deta hai (koi jhoota "✓ sab ho gaya" nahi).
  *
+ * Naya offer add karna = yahan ek entry. Engine, cards, import summary sab
+ * `EVENT_OFFER_KEYS` / `OFFER_TRACKS` se ginti karte hain (hardcoded 4 nahi).
+ *
  * Pure-ish: fetch inject kiya ja sakta hai (`fetchImpl`) — tests offline chalti hain.
  */
 
@@ -34,7 +40,34 @@ export const EVENT_OFFER_OPTIONS = {
 };
 
 /**
- * Chaar offers. `windowed` = campaign id me day number hota hai (aaj + kal
+ * Slug se plausible campaign ids. Fixed-offer pages (pick-your-offer,
+ * byo-weekend, karwa-chauth-byo) apni campaign id HTML me nahi deti — in
+ * candidates ko LIVE likh kar read-back se verify kiya jata hai, isliye "guess"
+ * kabhi sach nahi banta. Sirf naye link ke liye nayi entry chahiye, code nahi.
+ */
+export function slugCampaignCandidates(slug, day) {
+  const parts = String(slug || '').split('-').filter(Boolean);
+  const bare = parts.filter((p) => p !== 'byo').join('-');
+  if (!bare) return [];
+  // Order matters: ladder sirf 3-4 id par likhti hai (WAF limit), isliye
+  // sabse sambhavit shapes pehle — plain slug, phir versioned + day-number.
+  const out = [
+    String(slug),
+    `byo-${bare}-v1-${day}`,
+    `byo-${bare}-${day}`,
+    `byo-${bare}`,
+    `byo-${bare}-v1`,
+    `byo-${bare}-v2-${day}`,
+    `byo-${bare}-v2`,
+    `${slug}-${day}`,
+    `${slug}-v1`,
+    `byo-${bare}-v1-day-${day}`
+  ];
+  return [...new Set(out.map((x) => String(x).toLowerCase()))];
+}
+
+/**
+ * Offers. `windowed` = campaign id me day number hota hai (aaj + kal
  * pre-lock); warna page se mila fixed campaign id hi chalta hai.
  */
 export const EVENT_OFFERS = [
@@ -103,6 +136,22 @@ export const EVENT_OFFERS = [
       `byo-weekend-v2-${day}`,
       `byo-wknd-v1`
     ]
+  },
+  {
+    // 29-10-2026: boss ka naya link — "Karwa Chauth · Pick 50 cash".
+    // 29 Oct 3 PM → 30 Oct 6 AM. Page par campaign id nahi hoti, isliye
+    // slug-candidates live verify hote hain (jo verify ho wahi asli id).
+    key: 'karwaChauth',
+    bossLabel: 'Karwa Chauth',
+    name: 'Karwa Chauth (Pick ₹50 cash)',
+    url: 'https://events.swiggy.com/karwa-chauth-byo?utm_source=app&utm_medium=share',
+    slug: 'karwa-chauth-byo',
+    prefixHint: '',
+    windowed: false,
+    windowLabel: '29 Oct 3PM – 30 Oct 6AM',
+    windowStart: '2026-10-29T15:00:00+05:30',
+    windowEnd: '2026-10-30T06:00:00+05:30',
+    candidates: (day) => slugCampaignCandidates('karwa-chauth-byo', day)
   }
 ];
 
@@ -342,7 +391,9 @@ export function campaignIdsForOffer(offerKey, meta, nowMs = Date.now()) {
 const resolvedFixedIds = new Map(); // `${offerKey}|${day}` -> { id, at, source, tried }
 const FIXED_ID_TTL_MS = 6 * 60 * 60 * 1000;
 const FIXED_ID_NEGATIVE_TTL_MS = 10 * 60 * 1000;
-const MAX_LADDER_WRITES = 3;
+// Har write ke saath 2-3 GET jata hai (WAF <40 req/10s) — 4 write safe hai aur
+// naye offers ke id-shapes cover karta hai. Discovery 6h cache hoti hai.
+const MAX_LADDER_WRITES = 4;
 
 /** Pehle se resolved fixed campaign id (agar cache fresh hai). */
 export function cachedFixedCampaignId(offerKey, nowMs = Date.now()) {
@@ -1039,7 +1090,8 @@ export async function activateAllEventOffers(account, {
       breakfast: offers.breakfast || null,
       lateNight: offers.lateNight || null,
       extra50: offers.extra50 || null,
-      weekend: offers.weekend || null
+      weekend: offers.weekend || null,
+      karwaChauth: offers.karwaChauth || null
     };
   })();
 

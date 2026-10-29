@@ -108,7 +108,7 @@ console.log('\n=== 4. Summary card: har file ka hisaab + file-fail list ===');
   const src = fs.readFileSync('./index.js', 'utf8');
   check('"Files received" line hai (jhoothi total nahi)', /Files received: <b>\$\{filesCount \|\|/.test(src));
   check('file fail count + naam dikhte hain', /File errors:/.test(src) && /dlErrors\.slice\(0, 6\)/.test(src));
-  check('per-account chaaron offer (n/4)', /₹50×4 → \$\{cells\} \(\$\{claimedN\}\/4\)/.test(src));
+  check('per-account saare offer (n/N dynamic)', /₹50×\$\{OFFER_TRACKS\.length\} → \$\{cells\} \(\$\{claimedN\}\/\$\{OFFER_TRACKS\.length\}\)/.test(src));
 }
 
 console.log('\n=== 5. WRONG REWARD ab CLAIMED nahi (asli jhooth ka fix) ===');
