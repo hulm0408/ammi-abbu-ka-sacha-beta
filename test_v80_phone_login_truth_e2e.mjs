@@ -43,7 +43,9 @@ console.log('\n=== 1. Phone me login ka jhootha dawa nahi ===');
 {
   const allSrc = indexSrc + chatSrc + deviceSrc;
   check('"phone me active/login hai" ka dawa kahin nahi', !/aapke phone me (?:active|login) hai/i.test(allSrc));
-  check('short notice me sirf "ID ready" (dawa nahi)', /ID ready:<\/b> <code>/.test(indexSrc));
+  // v81 (boss 30-10-2026): "unable to inject — remove it" — notice hi hata diya.
+  check('phone-injection notice hata diya gaya', !/sendDeviceLoginShortNotice/.test(indexSrc));
+  check('lock par customer ko koi handover message nahi', /const handover = null;/.test(indexSrc));
   check('SESSION_LIVE label sach bolta hai', /SERVER_SESSION_ONLY/.test(deviceSrc));
   check('help card me saaf likha: JSON = server session',
     /JSON\/cookie = bot ke server ka session/.test(chatSrc));
@@ -141,8 +143,8 @@ console.log('\n=== 6. Home card jhooth nahi bolta, par login ka raasta maujood =
   check('home card "phone me active hai" jaisa dawa nahi', !/phone me active/i.test(home.text));
   check('"login karne ke liye ye button" jaisa jhootha label nahi', !/login karne ke liye ye button/i.test(home.text + JSON.stringify(buttons)));
   check('bill ka main button maujood', buttons.some((b) => b.callback_data === chat.SIMPLE_CHAT_CALLBACKS.loginReady));
-  check('phone login ka optional button maujood', buttons.some((b) => b.callback_data === chat.SIMPLE_CHAT_CALLBACKS.phoneLogin));
-  check('index.js simple_phone_login handle karta hai', /bot\.action\(SIMPLE_CHAT_CALLBACKS\.phoneLogin/.test(indexSrc));
+  check('phone-login injection button hata diya', !buttons.some((b) => b.callback_data === 'simple_phone_login'));
+  check('index.js me simple_phone_login handler nahi', !/SIMPLE_CHAT_CALLBACKS\.phoneLogin/.test(indexSrc));
 
   const help = chat.buildSimpleLoginHelpCard({ id: 'V80F', deviceLogin: { phone: '9876543210', status: 'FAILED' } });
   const helpCbs = help.keyboard.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);

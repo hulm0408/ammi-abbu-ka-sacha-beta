@@ -64,8 +64,10 @@ console.log('\n=== 2. Auto-verify ka rasta asli hai (UTR type karne ka nahi) ===
 
   check('/pay/webhook route index.js me hai', /reqUrl\.pathname === '\/pay\/webhook'/.test(indexSrc));
   check('webhook secret check karta hai', /givenSecret !== configuredSecret/.test(indexSrc));
-  check('webhook Order ki deferred fee settle karta hai',
-    /settleDeferredFee\(wDb, order, userId \|\| order\.userId \|\| '', \{ actor: 'webhook' \}\)/.test(indexSrc));
+  // v81 (boss 30-10-2026, naya plan): webhook fee charge karke held ORDER QR release karta hai.
+  check('webhook fee settle + held QR release karta hai',
+    /order\.feeChargedVia = 'webhook-auto-verify'/.test(indexSrc) &&
+    /releaseHeldQrToCustomer\(orderId, \{ reason: 'webhook auto-verify' \}\)/.test(indexSrc));
   check('webhook wallet top-up bhi khud approve karta hai',
     /approveTopupRequest\(wDb, created\.request\.id, \{ actor: 'webhook'/.test(indexSrc));
   check('auto-verify OFF ho to UTR card customer ko nahi jata',
@@ -101,16 +103,22 @@ console.log('\n=== 3. Deferred fee: QR block nahi hota, due panel me dikhta hai 
   check('panel me auto-verify status line hai', /Auto-verify:/.test(panel));
   check('panel me deferred amount dikhta hai', /₹20/.test(panel) || /₹15/.test(panel), panel.split('\n').pop());
 
-  check('index.js deferred fee record karta hai', /recordDeferredFee\(liveOrder, feeDue/.test(indexSrc));
+  // v81: defer ab auto-verify OFF safety valves me hota hai (3 min timeout /
+  // "pay kar diya" tap) — QR turant nahi jata.
+  check('index.js deferred fee safety valve me record karta hai',
+    /recordDeferredFee\(order, Number\(order\.feeDuePaise/.test(indexSrc) &&
+    /scheduleDeferredQrRelease\(order\.id, fee\)/.test(indexSrc));
   check('boss ko "FEE BAAD ME" alert jata hai', /FEE BAAD ME/.test(indexSrc));
   check('boss ek tap me due clear kar sakta hai', /boss_fee_deferred_ok_/.test(indexSrc));
 }
 
 console.log('\n=== 4. Fee deferred hone par customer ki bhasha saaf ===');
 {
-  check('customer card me QR block ka koi "UTR" button nahi (auto-verify off path)',
-    /if \(!autoVerifyConfigured\(\)\) \{[\s\S]{0,600}cardStage = 'PAYMENT_READY'/.test(indexSrc));
-  check('payment ready hone par feeDuePaise 0 hota hai', /liveOrder\.feeDuePaise = 0;/.test(indexSrc));
+  // v81: fee QR ke baad customer ke paas sirf "Maine pay kar diya" + admin hai
+  // (koi UTR type nahi), aur release par feeDuePaise 0 hota hai.
+  check('fee QR par UTR button ki jagah "Maine pay kar diya"',
+    /wallet_fee_paid_\$\{order\.id\}/.test(indexSrc));
+  check('release par feeDuePaise 0 hota hai', /order\.feeDuePaise = 0;/.test(indexSrc));
   check('wallet.js me UTR provider wala verification bacha hua hai (jab set ho)',
     /export async function verifyUtrWithProvider/.test(walletSrc));
 }

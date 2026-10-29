@@ -95,7 +95,8 @@ check('charged order ab awaiting me nahi', w.findOrderAwaitingFee(db, U, { feePa
 
 console.log('\n5) QR fail card — koi fee nahi, sirf try again');
 const failCard = w.formatQrFailedCard({ orderId: 'o1', reason: 'swiggy timeout' });
-check('fail card me "try" hai', /try karein/i.test(failCard));
+// v81 (boss 30-10-2026): fail par "kuch galat ho gaya — shuru se dobara try".
+check('fail card me restart ka message hai', /shuru se dobara/i.test(failCard) && /kuch galat ho gaya/i.test(failCard));
 check('fail card me fee/balance ka zikr nahi', !/fee|balance|₹15/i.test(failCard));
 check('fail card me admin option', /Admin se baat/i.test(failCard));
 const verifyCard = w.formatOrderVerificationCard({ orderId: 'o1', restaurant: 'Pizza', feePaise: 1500, upiId: 'boss@upi' });
