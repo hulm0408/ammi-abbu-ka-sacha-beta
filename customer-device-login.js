@@ -121,6 +121,31 @@ export function customerChoseOwnPhone(order, { nowMs = Date.now() } = {}) {
   return order.deviceLogin;
 }
 
+/**
+ * "OTP nahi ho payega — bot khud order kare" (boss 29-10-2026: "itni burhe ammi se
+ * OTP kaise parhaunga"). Bot wapas apni taraf se place karta hai: customer ko
+ * kuch nahi karna, sirf payment/QR. Offers usi ID par lage rehte hain.
+ */
+export function chooseBotPlacement(order, { nowMs = Date.now(), reason = 'customer_needs_no_otp' } = {}) {
+  if (!order) return null;
+  order.placementMode = PLACEMENT_MODE.BOT;
+  if (order.deviceLogin) {
+    order.deviceLogin.placementMode = PLACEMENT_MODE.BOT;
+    order.deviceLogin.botPlacesOrder = true;
+    order.deviceLogin.otpSkippedAt = new Date(nowMs).toISOString();
+    order.deviceLogin.lastReason = reason === 'customer_needs_no_otp'
+      ? 'OTP ki zarurat nahi — bot khud order karta hai (customer ko kuch nahi karna)'
+      : String(reason);
+    // Verify ka dawa wapas: bot place karega to "phone login pending" jaisa
+    // adhoora status dikhane ka matlab nahi.
+    if ([DEVICE_LOGIN_STATUS.AWAITING_LOGIN, DEVICE_LOGIN_STATUS.SELF_REPORTED].includes(order.deviceLogin.status)) {
+      order.deviceLogin.status = DEVICE_LOGIN_STATUS.NOT_REQUESTED;
+    }
+    order.deviceLogin.updatedAt = new Date(nowMs).toISOString();
+  }
+  return order.deviceLogin || null;
+}
+
 export function isCustomerPhonePlacement(order) {
   return String(order?.placementMode || '').toUpperCase() === PLACEMENT_MODE.CUSTOMER_PHONE;
 }
@@ -288,7 +313,7 @@ export function deviceLoginTruth(order) {
         icon: '⏳',
         label: mode === PLACEMENT_MODE.CUSTOMER_PHONE
           ? 'Customer apne phone se login/order karega (bot place nahi karega)'
-          : 'Login hone ka wait',
+          : 'Bot khud order karega — customer ko kuch nahi karna (OTP optional)',
         verified: false,
         mode,
         placedOrderId: ''
@@ -311,7 +336,8 @@ export function deviceLoginCallbacks(orderId) {
   return {
     choosePhone: `devlogin_phone_${id}`,
     check: `devlogin_check_${id}`,
-    help: `devlogin_help_${id}`
+    help: `devlogin_help_${id}`,
+    botPlaces: `devlogin_bot_${id}`
   };
 }
 
@@ -324,21 +350,29 @@ export function buildDeviceLoginHandover({ order, account, key = '', nowMs = Dat
   const name = String(account?.name || '').slice(0, 40);
   const cb = deviceLoginCallbacks(order?.id);
   const phoneText = phone ? `<code>${esc(phone)}</code>` : '<i>(ID me phone number nahi hai)</i>';
+  // Boss (29-10-2026): "itni burhe ammi se OTP kaise parhaunga" — isliye yeh
+  // card OPTIONAL hai, aur pehla rasta wahi hai jisme kisi ko kuch nahi karna.
   const text = [
-    '📱 <b>ORDER AAPKE PHONE SE — SWIGGY ID HANDOVER</b>',
+    '🎁 <b>ORDER — BAS EK BAAR PADHIYE (optional)</b>',
     '',
-    `Swiggy ID: ${phoneText}${name ? ` · ${esc(name)}` : ''}`,
-    '<i>(yeh wahi ID hai jis par ₹50 cash + saare offer already lock hain)</i>',
+    `<b>Zaroori nahi:</b> default me bot khud order karta hai — Ammi/Abbu ko <b>kuch nahi karna</b>,`,
+    'na OTP, na login, na app. Bas payment/QR aap kar dena.',
     '',
-    '<b>Aapko bas 3 step karne hain:</b>',
-    '1️⃣ Phone me Swiggy app kholo → agar koi aur ID logged in hai to <b>Logout</b>',
-    `2️⃣ Usi number ${phoneText} se <b>OTP</b> daal kar login karo`,
-    '3️⃣ App me <b>Cart</b> khud dikhega (bot ne bana diya hai) → <b>order place</b> karo',
+    `Swiggy ID: ${phoneText}${name ? ` · ${esc(name)}` : ''} <i>(isi par ₹50 cash + saare offer lage hain)</i>`,
     '',
-    '⬇️ Neeche <b>“Login ho gaya — check karo”</b> dabaiye, bot Swiggy se live check karke sach batayega.',
-    '<i>Bot aapke phone ko dekh nahi sakta — isliye jhootha “login ho gaya” kabhi nahi bolega. Pakka proof tab jab isi ID par aapka order dikhega.</i>'
+    '<b>Ye card sirf TAB kaam ka hai jab aap chahein ki order unke hi phone se ho.</b>',
+    'Us case me (ek hi baar, ~30 din tak chalta hai — roz OTP nahi):',
+    '1️⃣ Phone me Swiggy app → purani ID ho to <b>Logout</b>',
+    `2️⃣ Usi number ${phoneText} se OTP daal kar login`,
+    '3️⃣ App me <b>Cart</b> khud dikhega (bot ne bana diya) → place order',
+    '',
+    '⬇️ <b>“Login ho gaya — check karo”</b> dabaiye to bot Swiggy se live check karke sach batayega.',
+    '<i>Bot phone ko dekh nahi sakta — isliye jhootha “login ho gaya” kabhi nahi bolega.</i>',
+    '',
+    '🙅 <b>OTP nahi kar sakte?</b> “OTP nahi — bot khud kare” dabaiye, sab pehle jaisa chal jayega.'
   ].join('\n');
   const buttons = [
+    [{ text: '🙅 OTP nahi — bot khud order kare', callback_data: cb.botPlaces }],
     [{ text: '📲 Swiggy app kholo', url: SWIGGY_HOME }],
     [{ text: '✅ Login ho gaya — check karo', callback_data: cb.check }],
     [{ text: '📱 Order main apne phone se karunga', callback_data: cb.choosePhone }],
@@ -385,14 +419,21 @@ export function placementHoldMessage(order) {
 export function buildDeviceLoginHelpText({ order } = {}) {
   const phone = order?.deviceLogin?.phone || order?.orderAccount || '';
   return [
-    '❓ <b>PHONE LOGIN — MADAD</b>',
+    '❓ <b>PHONE LOGIN — MADAD (aur “OTP kaise bachayein”)</b>',
     '',
-    `1. Swiggy app → <b>Account</b> → Logout (purani ID hat jaye)`,
-    `2. Login me number daalo: <code>${esc(phone)}</code>`,
-    '3. OTP apne phone par aayega — daal do',
-    '4. App → <b>Cart</b> → items aur ₹50 cash already laga hua dikhega',
-    '5. Place order → bot tracking link + delivery OTP bhej dega',
+    '<b>1) Ammi/Abbu se OTP ki zarurat NAHI:</b>',
+    '   • Bot khud order karta hai — ghar me kisi ko phone chhune ki zarurat nahi.',
+    '   • “🙅 OTP nahi — bot khud order kare” dabaiye, bas.',
     '',
-    '<i>Agar OTP nahi aaya ya number galat hai to bot me “📱 ID switch” dabaiye — dusri ID mil jayegi.</i>'
+    '<b>2) Agar order unke hi phone se karana ho:</b>',
+    `   • Number: <code>${esc(phone)}</code> · Swiggy app me logout → usi number se login`,
+    '   • OTP <b>sirf ek baar</b> — session ~30 din chalta hai, roz nahi.',
+    '',
+    '<b>3) OTP unke phone par hi aata hai aur wo padh nahi paate?</b>',
+    '   • Wahi number bot me “☎ Login with Number” se khud daal do — OTP bot me type karo,',
+    '     ID login ho jayegi. Ammi ko kuch nahi karna (bas OTP jo phone par aaye, wo bata dena).',
+    '   • Ya ghar par kisi ek baar madad kar de — phir ~30 din tak kuch nahi chahiye.',
+    '',
+    '<i>Number badalna ho to bot me “📱 ID switch” dabaiye — dusri ID mil jayegi.</i>'
   ].join('\n');
 }
