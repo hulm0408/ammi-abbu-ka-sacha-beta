@@ -23,6 +23,7 @@ import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from '.
 import { validateUpiIntentForQr, describeQrRef, shouldReusePendingQr } from './payment-qr-guard.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { OFFER_TRACKS } from './account-views.js';
+import { lockAccountToOrder, releaseAccountLock } from './order-account-lock.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
 import { startOrderTrackingAuto, ensureOrderTracking, isTerminalDeliveryStatus } from './order-tracking.js';
@@ -3408,7 +3409,18 @@ export function registerForwardedOrderHandlers(bot, {
     }
 
     const prevKey = order.selectedAccount ? String(order.selectedAccount) : '';
-    if (prevKey && prevKey !== target.key) releaseSwiggyAccountReservation(prevKey, order.id);
+    if (prevKey && prevKey !== target.key) {
+      releaseSwiggyAccountReservation(prevKey, order.id);
+      // 🔒 Purani ID ka durable lock bhi chhodo — warna wo ID hamesha atki rahegi.
+      try {
+        const lockDb = getDb();
+        const prevAcc = lockDb.config?.accounts?.[prevKey];
+        if (prevAcc?.orderLock && String(prevAcc.orderLock.orderId) === String(order.id)) {
+          releaseAccountLock(lockDb, prevKey, { orderId: order.id, reason: 'ID switch (naya ID chuna)' });
+          saveDb(lockDb);
+        }
+      } catch {}
+    }
     order.usedAccountKeys = [...new Set([...(Array.isArray(order.usedAccountKeys) ? order.usedAccountKeys : []), prevKey].filter(Boolean))];
     order.selectedAccount = target.key;
     order.orderAccount = target.phone;
@@ -3421,6 +3433,12 @@ export function registerForwardedOrderHandlers(bot, {
     order.pendingSwiggyUpiUri = '';
     order.pendingSwiggyOrderId = '';
     order.pendingSwiggyPaasId = '';
+    // 🔒 Nayi ID is order ke naam par lock — deliver/cancel tak kisi aur ko nahi.
+    try {
+      const lockDb = getDb();
+      const res = lockAccountToOrder(lockDb, target.key, order, { phone: target.phone });
+      if (res && !res.conflict) saveDb(lockDb);
+    } catch {}
     upsertOrder(order.id, order);
 
     // Card updates IMMEDIATELY (before any network call) — the switch is instant.

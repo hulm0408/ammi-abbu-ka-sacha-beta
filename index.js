@@ -90,6 +90,18 @@ import {
   buildExportPayload
 } from './delivery-release.js';
 import {
+  ACCOUNT_LOCK_TTL_MS,
+  lockAccountToOrder,
+  releaseAccountLock,
+  accountLockOf,
+  isAccountLockedForOtherOrder,
+  lockedKeysForOtherOrders,
+  sweepAccountLocks,
+  planAccountReturnOnClose,
+  lockStatusLine,
+  isTerminalOrderStatus
+} from './order-account-lock.js';
+import {
   compactAccountListText,
   accountDetailText,
   liveOrderTruth,
@@ -2025,6 +2037,22 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
     delete order.autoOptimizeError;
     db.orders[key] = order;
     saveDb(db);
+
+    // 🔒 Ye ID ab SIRF is order ki — deliver/cancel tak kisi doosre order (Abbu ka
+    // bhi) ko nahi milegi; aur wahi zero-order ID customer ke phone par handover
+    // hoti hai taaki bill → QR → link → updates usi ID se chalein.
+    try {
+      const lockRes = await lockOrderAccountAndHandover(order, order.selectedAccount || best.winningKey, {
+        telegram: bot.telegram,
+        chatId: order.userChatId || order.userId
+      });
+      if (lockRes?.ok === false && lockRes?.code === 'ACCOUNT_LOCKED_FOR_OTHER_ORDER') {
+        console.warn(`[AccountLock] ${lockRes.reason}`);
+      }
+      order = getDb().orders?.[key] || order;
+    } catch (lockErr) {
+      console.warn('[AccountLock] lock/handover failed:', lockErr?.message || lockErr);
+    }
 
     // One-time max-discount bill summary -> customer approves -> QR is generated.
     let summarySent = false;
@@ -8209,6 +8237,8 @@ bot.action(/^boss_action_cancel_(.+)$/, async (ctx) => {
   if (freedAccKey) {
     try { releaseSwiggyAccountReservation(freedAccKey, order.id); } catch {}
   }
+  // 2b. 🔒 Durable lock bhi chhodo — ID turant naye order ke liye free.
+  try { await closeOrderAccountLock(order.id, { reason: 'boss ne order cancel kiya', telegram: bot.telegram }); } catch {}
 
   // 3. Stop auto tracking and payment pollers
   try { stopOrderTrackingAuto(order.id); } catch {}
@@ -13110,6 +13140,8 @@ async function rejectUserOrderBillAction(uidStr, orderId) {
   order.status = 'CANCELLED';
   order.cancelledReason = 'USER_SOMETHING_IS_WRONG';
   saveDb(db);
+  // 🔒 ID wapas vault me — deliver/cancel dono par lock chhutna chahiye.
+  closeOrderAccountLock(order.id, { reason: 'customer ne bill cancel kiya' }).catch(() => {});
   try { stopOrderTrackingAuto(order.id); } catch {}
   updateDraft(uidStr, {
     cart: order.cart || '',
@@ -13228,10 +13260,197 @@ export async function refreshDeviceLoginTruth(orderId, { fetchImpl = globalThis.
   return { ok: true, probe, truth: deviceLoginTruth(order), order };
 }
 
+// ── 🔒 ORDER ACCOUNT LOCK (boss 29-10-2026) ────────────────────────────────
+// "jo ID zero order wali hogi uska JSON Ammi ke phone se login hoga → bill → QR →
+//  link → updates. After deliver ya cancel, account wapas mere vault me — tab tak
+//  wo Abbu ko bhi assign na ho."
+//
+// Lock disk par rehta hai (`acc.orderLock`), selection usko busy maanti hai, aur
+// order band hone par (deliver/cancel) lock chhoot kar ID wapas pool me aa jati hai.
+
+/** Selected ID ko is order ke naam par lock karo + customer ke phone par handover. */
+export async function lockOrderAccountAndHandover(order, accKey = '', { telegram = null, chatId = null } = {}) {
+  if (!order?.id) return { ok: false, reason: 'no order' };
+  const key = String(accKey || order.selectedAccount || '').trim();
+  if (!key) return { ok: false, reason: 'koi ID select nahi hui' };
+  const db = getDb();
+  const acc = db.config?.accounts?.[key];
+  if (!acc) return { ok: false, reason: 'ID vault me nahi' };
+
+  const res = lockAccountToOrder(db, key, order, { phone: acc.phone || acc.mobile || '' });
+  if (res?.conflict) {
+    saveDb(db);
+    return {
+      ok: false,
+      code: 'ACCOUNT_LOCKED_FOR_OTHER_ORDER',
+      reason: `ID ${acc.phone || key} pehle se order #${res.lock?.orderId} par locked hai — us order ke deliver/cancel hone tak nahi milegi`,
+      orderId: res.lock?.orderId
+    };
+  }
+  order.accountLockedAt = res?.lock?.at || new Date().toISOString();
+  order.lockedAccount = key;
+  db.orders[order.id] = order;
+  saveDb(db);
+
+  // 📱 Wahi ID customer ke phone par: zero-order ID = jis par ₹50 offers lage hain.
+  let handover = null;
+  try {
+    handover = await sendDeviceLoginHandover(order, { telegram, chatId });
+  } catch (err) {
+    handover = { ok: false, reason: String(err?.message || err) };
+  }
+
+  // Boss ko sach: kaunsi ID kis order par atki hai.
+  try {
+    const bossIds = [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))];
+    for (const bossId of bossIds) {
+      bot.telegram.sendMessage(
+        bossId,
+        `🔒 <b>ID LOCKED TO ORDER</b>\n` +
+        `▪ Order: <code>#${escapeHtml(String(order.id))}</code> (${escapeHtml(String(order.customerName || order.userName || order.userId || 'Customer'))})\n` +
+        `▪ ID: <code>${escapeHtml(String(acc.phone || key))}</code>${acc.isZeroOrderAccount ? ' · ★ 0-order' : ''}\n` +
+        `▪ Ab yeh ID kisi aur order (Abbu ka bhi) ko nahi milegi — deliver/cancel hone par wapas vault me.`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
+  } catch { /* message optional, lock important */ }
+  return { ok: true, locked: true, accountKey: key, handover, lock: res?.lock || null };
+}
+
+/**
+ * Order band hua (deliver / cancel) → lock chhodo, aur zarurat ho to JSON boss ko
+ * export karke customer ke phone se logout karo. Return me asli sach.
+ */
+export async function closeOrderAccountLock(orderId, { reason = '', telegram = null } = {}) {
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  if (!order) return { ok: false, reason: 'order nahi mila' };
+  const plan = planAccountReturnOnClose(order);
+  if (!plan.shouldRelease) return { ok: false, reason: plan.reason, plan };
+  // Delivery wala auto-export pehle ho chuka ho to file dobara nahi bhejte.
+  if (plan.shouldExport && order.autoExportDoneAt) {
+    plan.shouldExport = false;
+    plan.shouldLogout = false;
+    plan.alreadyExportedAt = order.autoExportDoneAt;
+    plan.reason = `${plan.reason} (export pehle ho chuka ${String(order.autoExportDoneAt).slice(0, 19)})`;
+  }
+
+  const key = plan.accountKey;
+  let released = null;
+  if (key) {
+    released = releaseAccountLock(db, key, {
+      orderId: order.id,
+      reason: reason || plan.reason
+    });
+    // Purani in-memory 90s reservation bhi chhodo.
+    try { releaseSwiggyAccountReservation(key, order.id); } catch {}
+  }
+  order.accountLockReleasedAt = new Date().toISOString();
+  order.accountLockReleaseReason = reason || plan.reason;
+  db.orders[orderId] = order;
+  saveDb(db);
+
+  let exported = null;
+  if (plan.shouldExport && key) {
+    exported = await exportAndLogoutClosedOrder(orderId, { key, plan, telegram }).catch((err) => ({ exported: false, reason: String(err?.message || err) }));
+  }
+  return { ok: true, plan, released, exported };
+}
+
+/**
+ * Cancelled order ke liye export + logout (delivered wale se alag, kyunki wahan
+ * `planDeliveryExport` delivery maangta hai). File PEHLE boss ko, logout baad me.
+ */
+async function exportAndLogoutClosedOrder(orderId, { key, plan, telegram = null }) {
+  const db = getDb();
+  const order = db.orders?.[orderId];
+  const acc = db.config?.accounts?.[key];
+  const tg = telegram || bot?.telegram;
+  const bossIds = [...new Set((db.config?.bossIds || []).map(String).filter(Boolean))];
+  const bossChatId = bossIds[0] || Number(process.env.BOSS_ID || 0);
+  if (!order || !acc || !bossChatId || !tg) {
+    return { exported: false, reason: 'order/ID/boss chat nahi mila' };
+  }
+  const payload = buildExportPayload(acc, key, {
+    orderCount: Number(acc.totalOrdersCount) || 0,
+    prefix: `⇧ AUTO EXPORT (${plan.status.toLowerCase()})`
+  });
+  let sent = false;
+  try {
+    await tg.sendDocument(
+      bossChatId,
+      { source: Buffer.from(payload.jsonText, 'utf8'), filename: payload.fileName },
+      { caption: payload.caption, parse_mode: 'HTML' }
+    );
+    sent = true;
+  } catch (err) {
+    return { exported: false, reason: `Telegram: ${String(err?.message || err).slice(0, 120)}` };
+  }
+  // File boss ke paas pahunch gayi — ab customer ke phone se session band.
+  let loggedOut = false;
+  if (plan.shouldLogout) {
+    try {
+      await deactivateSwiggyAccountViaBridge(bossChatId, key, true);
+      loggedOut = true;
+    } catch { loggedOut = false; }
+    try {
+      permanentLogoutAccount(key, { purgeVault: true });
+      deleteAccount(key, { purgeVault: true });
+    } catch {}
+  }
+  const freshDb = getDb();
+  const freshOrder = freshDb.orders?.[orderId];
+  if (freshOrder) {
+    freshOrder.autoExportDoneAt = new Date().toISOString();
+    freshOrder.autoExportAccountKey = key;
+    freshOrder.autoExportFile = payload.fileName;
+    saveDb(freshDb);
+  }
+  try {
+    await tg.sendMessage(
+      bossChatId,
+      `<blockquote>⇧ <b>AUTO EXPORT &amp; LOGOUT — ${escapeHtml(String(plan.status))}</b></blockquote>\n` +
+      `▪ Order: <code>#${escapeHtml(String(orderId))}</code>${order.swiggyOrderId ? ` (Swiggy <code>${escapeHtml(String(order.swiggyOrderId))}</code>)` : ''}\n` +
+      `▪ Account: <code>${escapeHtml(payload.phone)}</code> · vault: ${loggedOut ? '✓ logged out &amp; removed' : '⚠️ logout confirm nahi'}\n` +
+      `▪ File: <code>${escapeHtml(payload.fileName)}</code>\n` +
+      `<i>${escapeHtml(plan.reason)}</i>`,
+      { parse_mode: 'HTML' }
+    );
+  } catch {}
+  return { exported: sent, loggedOut, phone: payload.phone, fileName: payload.fileName };
+}
+
+/**
+ * Terminal orders ke adhoore locks ka sweep (bot restart / missed callback ke
+ * baad bhi ID vault me wapas aani chahiye). Har 10 min + boot par chalta hai.
+ */
+export function runAccountLockSweep({ limit = 6 } = {}) {
+  const db = getDb();
+  let changed = false;
+  const swept = sweepAccountLocks(db);
+  if (swept.released.length) changed = true;
+  if (changed) saveDb(db);
+
+  // Jo terminal order abhi tak close-handle nahi hue, unhe abhi handle karo.
+  const pending = Object.values(getDb().orders || {})
+    .filter((o) => o && o.id && isTerminalOrderStatus(o.status) && !o.accountLockReleasedAt)
+    .filter((o) => o.selectedAccount || o.lockedAccount || o.injectedSession?.accountKey)
+    .slice(0, limit);
+  for (const o of pending) {
+    closeOrderAccountLock(o.id, { reason: 'sweep: order band ho chuka hai' }).catch(() => {});
+  }
+  return { swept: swept.released, pending: pending.map((o) => o.id) };
+}
+
 export function releaseAndExportInjectedSessionOnDelivery(orderId) {
   const db = getDb();
   const order = db.orders?.[orderId];
   if (!order) return false;
+  // 🔒 Delivered — lock chhod do (ID wapas vault pool me).
+  try {
+    const accKeyForLock = order.selectedAccount || order.injectedSession?.accountKey;
+    if (accKeyForLock) releaseAccountLock(db, accKeyForLock, { orderId, reason: 'order delivered' });
+  } catch {}
 
   const accKey = order.selectedAccount || order.injectedSession?.accountKey;
   order.injectedSessionStatus = 'DELIVERED_RELEASED';
@@ -14543,6 +14762,9 @@ function resumeAutoTrackingForRecentOrders() {
         for (const o of pending) {
           autoExportDeliveredOrder(o.id).catch(() => {});
         }
+        // 🔒 Terminal orders ke locks bhi saaf karo (bot restart ke baad bhi ID
+        // vault me wapas aaye — koi ID hamesha ke liye atki na rahe).
+        try { runAccountLockSweep(); } catch (err) { console.warn('[AccountLock] sweep failed:', err?.message || err); }
       } catch { /* never crash the bot */ }
     };
     setTimeout(runDeliveredExportSweep, 30_000).unref?.();

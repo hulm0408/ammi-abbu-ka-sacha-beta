@@ -287,9 +287,12 @@ export function compactAccountLine(acc, key, { activeKey = '', index = 1 } = {})
       ? '₹50 new'
       : `₹50 ${claim.claimedCount}/${claimTotal}${claim.preLockedCount ? ' ⏳' : ''}`;
   const name = String(src.name || '').trim();
+  // 🔒 Order lock (boss 29-10-2026): ID kis order par atki hai — sach, chhupaya nahi.
+  const lock = (src.orderLock && typeof src.orderLock === 'object' && src.orderLock.orderId) ? src.orderLock : null;
+  const lockBit = lock ? ` · 🔒 #${escapeLight(String(lock.orderId))}` : '';
   const expiredBit = src.sessionExpired ? ' · ⚠️ session expired' : '';
   const suspendBit = suspended ? ` · ⛔ suspended` : '';
-  return `${index}. ${icon} <code>${maskPhone(src.phone || src.mobile || key)}</code>${name ? ` ${escapeLight(name)}` : ''} · ${orders} · ${claimBit}${expiredBit}${suspendBit}`;
+  return `${index}. ${icon} <code>${maskPhone(src.phone || src.mobile || key)}</code>${name ? ` ${escapeLight(name)}` : ''} · ${orders} · ${claimBit}${lockBit}${expiredBit}${suspendBit}`;
 }
 
 export function compactAccountListText(accounts = {}, { activeKey = '', header = '' } = {}) {
@@ -326,6 +329,13 @@ export function accountDetailText({ acc, key, activeKey = '', orderLines = [] } 
   const lines = [
     `◉ <b>${escapeLight(src.name || key)}</b>${String(key) === String(activeKey) ? ' ★ <b>[ACTIVE]</b>' : ''}`,
     `☎ <code>${String(src.phone || src.mobile || 'not set')}</code> · ◈ ${statusText}`,
+    // 🔒 Kis order par locked hai — deliver/cancel hone tak ID kisi aur ko nahi milegi.
+    (src.orderLock && typeof src.orderLock === 'object' && src.orderLock.orderId)
+      ? `🔒 <b>Locked</b> to order <code>#${escapeLight(String(src.orderLock.orderId))}</code>` +
+        ` · ${escapeLight(String(src.orderLock.holder || 'Customer'))}` +
+        ` · ${escapeLight(String(src.orderLock.stage || ''))}` +
+        `\n   <i>Deliver ya cancel hone par apne aap free hogi (warna max 6h).</i>`
+      : '',
     '',
     `📦 <b>Orders:</b> ${truth.label}`,
     truth.verified
