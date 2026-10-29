@@ -194,6 +194,7 @@ import {
   isSimpleChatEnabled,
   buildSimpleHomeScreen,
   buildSimpleOrderCard,
+  buildSimpleLoginHelpCard,
   buildSimpleTrackingMessage,
   buildConsentPatch,
   simpleTrackingUrl,
@@ -10811,13 +10812,10 @@ bot.on('text', async (ctx, next) => {
       );
     }
     if (simpleChatForUser(userId) && curDraft.cart && curDraft.address && !getActiveUserOrder(userId)) {
-      await cleanupUserChat(ctx.telegram, ctx.chat?.id || userId, userId, {
-        deleteIncomingId: ctx.message?.message_id || null
-      }).catch(() => {});
-      const started = await startSimpleOrderFromDraft(ctx, userId);
-      if (!started) {
-        await renderUserCard(ctx, userId, { deleteIncoming: true, notice: honestNotice });
-      }
+      // ✅ Boss (30-10-2026): links paste hone ke baad SIRF ek message —
+      // "ID apne phone me login karne ke liye ye button dabaye". Order tab
+      // shuru hota hai jab wo button dabta hai (bill + QR uske baad).
+      await renderUserCard(ctx, userId, { deleteIncoming: true });
       return;
     }
 
@@ -12446,6 +12444,56 @@ bot.action(SIMPLE_CHAT_CALLBACKS.myOrder, async (ctx) => {
 
 // CONSENT: this single tap is the customer's approval. It is stored on the order
 // (who / when / amount / channel) before any payment QR is created.
+// 📱 LOGIN BUTTON (boss 30-10-2026) — cart+address paste ke baad customer ko
+// sirf yahi ek button dikhta hai: "ID apne phone me login karne ke liye ye
+// button dabaye". Dabate hi ID handover record hoti hai aur BILL + QR ka option
+// aata hai. Iske baad sirf: bill → QR (fee) → "sab ho gaya".
+bot.action(SIMPLE_CHAT_CALLBACKS.loginReady, async (ctx) => {
+  const userId = String(ctx.from.id);
+  await ctx.answerCbQuery('Bill taiyar kar raha hoon…').catch(() => {});
+  const db = getDb();
+  const draft = getDraft(userId);
+  const active = getActiveUserOrder(db, userId);
+  if (!active) {
+    if (!draft?.cart || !draft?.address) {
+      return renderUserCard(ctx, userId).catch(() => {});
+    }
+    // Login ho gaya → ab order/bill shuru (aur uske baad sirf QR).
+    const started = await startSimpleOrderFromDraft(ctx, userId);
+    const fresh2 = started ? getActiveUserOrder(getDb(), userId) : null;
+    if (!fresh2) return renderUserCard(ctx, userId).catch(() => {});
+    return;
+  }
+
+  // Customer ke phone par wahi ID login hui — record karo (jhooth nahi: sirf note).
+  const accKey = active.selectedAccount || active.deviceLogin?.accountKey || '';
+  const acc = accKey ? db.config?.accounts?.[accKey] : null;
+  if (acc) {
+    attachDeviceLogin(active, acc, { key: accKey });
+    customerChoseOwnPhone(active);
+    const fresh = getDb();
+    fresh.orders[active.id] = active;
+    saveDb(fresh);
+  }
+
+  // Bill ready? Seedha bill card (bill + "✅ QR banao") — koi extra screen nahi.
+  const card = buildSimpleOrderCard(getDb().orders?.[active.id] || active);
+  await ctx.reply(card.text, { parse_mode: 'HTML', ...card.keyboard }).catch(() => {});
+});
+
+bot.action(/^simple_login_help_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const orderId = String(ctx.match[1]);
+  const userId = String(ctx.from.id);
+  const order = getDb().orders?.[orderId];
+  if (!order) return ctx.answerCbQuery('Order nahi mila').catch(() => {});
+  if (!isOrderCustomer(order, userId) && !isBoss(userId)) {
+    return ctx.answerCbQuery('Ye aapka order nahi').catch(() => {});
+  }
+  await ctx.answerCbQuery().catch(() => {});
+  const help = buildSimpleLoginHelpCard(order);
+  await ctx.reply(help.text, { parse_mode: 'HTML', ...help.keyboard }).catch(() => {});
+});
+
 bot.action(/^simple_confirm_order_([A-Za-z0-9_-]+)$/, async (ctx) => {
   const orderId = ctx.match[1];
   const userId = ctx.from.id;
@@ -12471,12 +12519,15 @@ bot.action(/^simple_confirm_order_([A-Za-z0-9_-]+)$/, async (ctx) => {
 
   await ctx.answerCbQuery('✅ Order confirmed').catch(() => {});
 
-  // 📱 Boss (29-10-2026): "ID unke phone me login ho, order unke phone se ho" —
-  // isliye bill approve hote hi customer ko ID handover card jata hai.
-  try {
-    await sendDeviceLoginHandover(order, { telegram: bot.telegram, chatId: ctx.chat?.id || userId });
-  } catch (err) {
-    console.warn('[DeviceLogin] handover fail:', err?.message || err);
+  // 📱 Boss (30-10-2026): login ka rasta ab bill se PEHLE hai (ek hi button).
+  // Yahan sirf tab bhejo jab customer ne login step skip kar diya ho — warna
+  // wahi purana "extra option" wapas aa jayega.
+  if (!order.deviceLogin) {
+    try {
+      await sendDeviceLoginHandover(order, { telegram: bot.telegram, chatId: ctx.chat?.id || userId });
+    } catch (err) {
+      console.warn('[DeviceLogin] handover fail:', err?.message || err);
+    }
   }
 
   // Bill already computed and awaiting approval -> straight to the Swiggy payment QR.
