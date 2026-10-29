@@ -11,6 +11,7 @@ import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken } from './swiggy-bridge.js';
 import { OFFER_TRACKS } from './account-views.js';
+import { lockedKeysForOtherOrders, isAccountLockedForOtherOrder } from './order-account-lock.js';
 
 const CHROME_PATH = findChromePath();
 const PUPPETEER_HEADLESS = (process.platform === 'linux' || process.env.RAILWAY_ENVIRONMENT || process.env.HEADLESS === 'true') ? 'new' : false;
@@ -7245,6 +7246,13 @@ export function describeAccountRotation(order, { excludeKeys = [] } = {}) {
     if (!isLive) continue;
     busyWith.set(String(o.selectedAccount), String(o.id));
   }
+  // 🔒 Durable lock: poore order ke dauraan (bill → QR → payment → delivery) ID
+  // kisi doosre order ko nahi — rotation me bhi BUSY dikhti hai.
+  try {
+    for (const [lockKey, info] of lockedKeysForOtherOrders(db, orderId)) {
+      if (!busyWith.has(lockKey)) busyWith.set(lockKey, info.orderId);
+    }
+  } catch {}
 
   const rows = [];
   for (const [key, acc] of Object.entries(accounts)) {
@@ -7684,6 +7692,14 @@ export function getBusySwiggyAccountsMap(db, excludeOrderId = null) {
   const busy = new Map();
   const now = Date.now();
   const orders = db?.orders || {};
+  // 🔒 DURABLE LOCK (boss 29-10-2026): jo ID kisi chalte order ki hai, wo poore
+  // order ke dauraan (bill → QR → delivery) reserved rehti hai — 20 minute ke
+  // baad ya doosre order ko nahi milti. Deliver/cancel par lock chhoot jata hai.
+  try {
+    for (const [lockKey, info] of lockedKeysForOtherOrders(db, excludeOrderId, { nowMs: now })) {
+      if (!busy.has(lockKey)) busy.set(lockKey, info.lock && { id: info.orderId, cardStage: 'LOCKED', orderLock: info.lock });
+    }
+  } catch { /* lock module fail ho to bhi selection na ruke */ }
   for (const o of Object.values(orders)) {
     if (!o || (excludeOrderId && o.id === excludeOrderId)) continue;
     if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status)) continue;
@@ -7922,7 +7938,11 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
     return {
       success: false,
       code: 'ALL_ACCOUNTS_BUSY',
-      error: `Saari ${busyEntries.length} Swiggy ID abhi kisi doosre order par kaam kar rahi hain — 15-20 second me dobara tap karein (koi ID logout nahi hui).`,
+      error: (() => {
+        const lockedNow = [...lockedKeysForOtherOrders(db, orderId || '')].map(([k, v]) => `${db?.config?.accounts?.[k]?.phone || k} → #${v.orderId}`);
+        return `Saari ${busyEntries.length} Swiggy ID abhi kisi doosre order par kaam kar rahi hain — 15-20 second me dobara tap karein (koi ID logout nahi hui).`
+          + (lockedNow.length ? ` 🔒 Locked: ${lockedNow.join(', ')} (deliver/cancel hone par free hongi).` : '');
+      })(),
       busyKeys: busyEntries
     };
   }

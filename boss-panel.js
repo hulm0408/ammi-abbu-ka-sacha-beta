@@ -406,6 +406,10 @@ export function buildBossOrderCard(order, db = getDb()) {
     `<b>Placed from:</b> ${placedFrom ? `<code>${esc(placedFrom)}</code>` : '<i>account not selected</i>'}`,
     // 📱 Customer ke phone se order? Sach wahi jo proof se mila (jhooth nahi).
     ...(order.deviceLogin ? [`<b>Phone login:</b> ${deviceLoginBadge(order)}`] : []),
+    // 🔒 Ye ID is order par locked hai — deliver/cancel tak kisi aur order ko nahi milegi.
+    ...(order.accountLockedAt && !order.accountLockReleasedAt
+      ? [`<b>ID lock:</b> 🔒 <code>${esc(String(order.orderAccount || order.selectedAccount || ''))}</code> — this order only (deliver/cancel par free)`]
+      : []),
     ...(displayLiveStatus ? [`<b>Swiggy status:</b> <code>${esc(displayLiveStatus)}</code>`] : []),
     `<b>Tracking:</b> ${trackingUrl
       ? `<a href="${esc(trackingUrl)}">Open live Swiggy tracking</a>`
