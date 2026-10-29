@@ -9277,7 +9277,7 @@ bot.on('text', async (ctx, next) => {
 
   // 0: Check if Boss is typing a new account name
   // Boss apna asli payment UPI set kar raha hai (invalid/placeholder reject).
-  if (state && state.action === 'waiting_boss_upi') {
+  if (isBoss(userId) && state && state.action === 'waiting_boss_upi') {
     delete userWaitState[userId];
     const candidate = String(rawText || '').trim().split(/\s+/)[0] || '';
     if (isPlaceholderUpiId(candidate)) {
@@ -9292,12 +9292,13 @@ bot.on('text', async (ctx, next) => {
     }
     const upiDb = getDb();
     upiDb.config.bossUpiId = candidate;
+    upiDb.config.bossUpiUpdatedAt = new Date().toISOString();
     saveDb(upiDb);
-    return ctx.reply(
-      `✓ <b>Payment UPI set:</b> <code>${escapeHtml(candidate)}</code>\n` +
-      `<i>Ab jab Swiggy payment intent nahi degA tab bhi valid QR banega — placeholder se nahi.</i>`,
-      { parse_mode: 'HTML' }
-    ).catch(() => {});
+    // Wahi panel wapas — boss ko turant dikhe ki paisa kahan aayega.
+    return sendPaymentUpiPanel(ctx, {
+      notice: `✓ <b>UPI SAVE HO GAYA:</b> <code>${escapeHtml(candidate)}</code>\n` +
+        `<i>Ab order QR ka fallback aur ₹${walletRupees(feePaiseNow())} verification — dono isi UPI par.</i>`
+    }).catch(() => {});
   }
 
   if (state && state.action === 'waiting_new_acc_name') {
@@ -11710,7 +11711,10 @@ bot.action('simple_retry_address', async (ctx) => {
 // judta hai → QR khud ban jata hai. Cancel (place hone se pehle) → refund.
 
 function walletUpiId() {
-  return String(getDb().config?.bossUpiId || '').trim();
+  // Boss panel se set ki hui UPI; na ho to env fallback (BOSS_UPI_ID / UPI_ID).
+  const fromDb = String(getDb().config?.bossUpiId || '').trim();
+  if (fromDb) return fromDb;
+  return String(process.env.BOSS_UPI_ID || process.env.UPI_ID || '').trim();
 }
 
 function walletOwnerId(order, fallback = '') {
@@ -11746,12 +11750,13 @@ async function sendOrderVerificationCard(order, { balancePaise = 0, neededPaise 
   ensureWallet(db, userId, { name: walletNameOf(userId, order.userName || '') });
   saveDb(db);
   const upi = walletUpiId();
+  const upiReady = Boolean(upi) && !isPlaceholderUpiId(upi) && isValidUpiVpa(upi);
   const card = formatOrderVerificationCard({
     orderId: order.id,
     restaurant: order.restaurantName || '',
     feePaise: fee,
-    upiId: upi
-  });
+    upiId: upiReady ? upi : ''
+  }) + (upiReady ? '' : '\n\n<i>UPI abhi set nahi — admin se baat karein, wo turant set kar dega.</i>');
   const kb = Markup.inlineKeyboard([
     [{ text: '🔐 Maine pay kiya — UTR daalein', callback_data: `wallet_utr_${fee}`, style: 'success' }],
     supportRow(),
@@ -11766,11 +11771,15 @@ async function sendOrderVerificationCard(order, { balancePaise = 0, neededPaise 
       `🧊 <b>QR HELD — verification pending</b>\n` +
       `User: <b>${escapeHtml(walletNameOf(userId, order.userName || ''))}</b> · <code>${escapeHtml(userId)}</code>\n` +
       `Order: <code>#${escapeHtml(String(order.id))}</code> · fee ₹${walletRupees(fee)} · balance ₹${walletRupees(balancePaise || 0)}\n` +
-      `<i>QR ban chuka hai aur safe rakha hai — paisa verify hote hi customer ko release ho jayega.</i>`,
+      (upiReady
+        ? `<i>QR ban chuka hai aur safe rakha hai — paisa verify hote hi customer ko release ho jayega.</i>`
+        : `❌ <b>UPI set nahi hai — customer paisa bhej hi nahi sakta. Pehle UPI daalein.</b>`),
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
-          [{ text: '💳 Fee & Wallet', callback_data: 'boss_fee_panel', style: 'primary' }],
+          upiReady
+            ? [{ text: '💳 Fee & Wallet', callback_data: 'boss_fee_panel', style: 'primary' }]
+            : [{ text: '💳 Payment UPI set karein', callback_data: 'boss_upi_change', style: 'success' }],
           [{ text: '⏳ Pending UTR', callback_data: 'boss_utr_list', style: 'success' }]
         ])
       }
@@ -12083,6 +12092,71 @@ bot.action(/^boss_wallet_free_(\d+)$/, async (ctx) => {
   ).catch(() => {});
 });
 
+// ── 💳 BOSS: PAYMENT UPI PANEL (boss 30-10-2026) ────────────────────────────
+// "upi id add karne ka option to de, kaha payment lunga?"
+// Ek jagah sab: kaunsi UPI par paisa aayega, set hai ya nahi, aur set/change.
+function upiStatusLine() {
+  const upi = walletUpiId();
+  const fromEnv = !String(getDb().config?.bossUpiId || '').trim() && upi;
+  if (!upi) return '⚠️ <b>UPI set nahi hai</b> — QR / verification ka paisa kisi par nahi aa sakta.';
+  if (isPlaceholderUpiId(upi)) return `❌ <b>${escapeHtml(upi)}</b> placeholder hai — is QR par paisa nahi aayega. Badlein.`;
+  if (!isValidUpiVpa(upi)) return `❌ <b>${escapeHtml(upi)}</b> ka format galat hai — badlein.`;
+  return `✅ <b>${escapeHtml(upi)}</b>${fromEnv ? ' <i>(env se — panel me save karo)</i>' : ''}`;
+}
+
+function paymentUpiPanelText() {
+  const upi = walletUpiId();
+  const setOk = Boolean(upi) && !isPlaceholderUpiId(upi) && isValidUpiVpa(upi);
+  return [
+    '💳 <b>PAYMENT UPI</b>',
+    '',
+    `Abhi: ${upiStatusLine()}`,
+    '',
+    '<b>Is UPI par paisa aata hai:</b>',
+    '• Order ka payment QR (jab Swiggy apna QR/UPI nahi deta, fallback)',
+    `• Order verification ₹${walletRupees(feePaiseNow())} (refundable)`,
+    '',
+    setOk
+      ? '<i>Paisa seedha isi UPI par aayega. Change karna ho to neeche badlein.</i>'
+      : '<i>Pehle apni asli UPI daalein — jaise name@okaxis ya name@ybl.</i>'
+  ].join('\n');
+}
+
+function paymentUpiPanelKeyboard() {
+  return Markup.inlineKeyboard([
+    [{ text: '✍️ UPI set / change karein', callback_data: 'boss_upi_change', style: 'success' }],
+    [{ text: '🧾 UTR & Wallet', callback_data: 'boss_wallets', style: 'primary' }],
+    [
+      { text: '🧮 Fee & Prices', callback_data: 'boss_fee_panel', style: 'primary' },
+      { text: '◀ Boss Panel', callback_data: 'boss_panel_home', style: 'primary' }
+    ]
+  ]);
+}
+
+async function sendPaymentUpiPanel(ctx, { notice = '' } = {}) {
+  const text = (notice ? `${notice}\n\n` : '') + paymentUpiPanelText();
+  return ctx.reply(text, { parse_mode: 'HTML', ...paymentUpiPanelKeyboard() }).catch(() => {});
+}
+
+bot.action('boss_upi_panel', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  await sendPaymentUpiPanel(ctx);
+});
+
+bot.action('boss_upi_change', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[ctx.from.id] = { action: 'waiting_boss_upi', setAt: Date.now() };
+  await ctx.reply(
+    '💳 <b>UPI ID DAALEIN</b>\n\n' +
+    `Abhi: ${upiStatusLine()}\n\n` +
+    'Apni asli UPI bhejein — jaise <code>name@okaxis</code> / <code>name@ybl</code> / <code>98765xxxxx@paytm</code>.\n' +
+    '<i>Swiggy ka merchant ID / placeholder reject ho jayega (us QR par paisa nahi aata).</i>',
+    { parse_mode: 'HTML', reply_markup: { force_reply: true, input_field_placeholder: 'name@okaxis' } }
+  ).catch(() => {});
+});
+
 // ── 🧮 BOSS: FEE & PRICES PANEL (boss 30-10-2026) ──────────────────────────
 // "mujhe order par kitna lena hai uska bhi pannel — ek button wallet and fee,
 //  jab uspar click karu to sab dikh jaye: order kitne ka rakha hu, change karna
@@ -12090,7 +12164,8 @@ bot.action(/^boss_wallet_free_(\d+)$/, async (ctx) => {
 async function sendBossFeePanel(ctx, { notice = '' } = {}) {
   const db = getDb();
   const summary = feeControlSummary(db);
-  const text = (notice ? `${notice}\n\n` : '') + formatFeeControlPanel({ summary });
+  const text = (notice ? `${notice}\n\n` : '') + formatFeeControlPanel({ summary }) +
+    `\n\n💳 <b>Payment UPI:</b> ${upiStatusLine()}`;
   const presets = [0, 500, 1000, 1500, 2000, 5000];
   const rows = [];
   for (let i = 0; i < presets.length; i += 3) {
@@ -12100,7 +12175,10 @@ async function sendBossFeePanel(ctx, { notice = '' } = {}) {
       style: Number(summary.feePaise) === paise ? 'success' : 'primary'
     })));
   }
-  rows.push([{ text: '✍️ Apni fee likho', callback_data: 'boss_fee_custom', style: 'success' }]);
+  rows.push([
+    { text: '✍️ Apni fee likho', callback_data: 'boss_fee_custom', style: 'success' },
+    { text: '💳 Payment UPI', callback_data: 'boss_upi_panel', style: 'primary' }
+  ]);
   rows.push([
     { text: '👥 Users', callback_data: 'boss_wallets', style: 'primary' },
     { text: '⏳ Pending UTR', callback_data: 'boss_utr_list', style: 'success' }
@@ -15500,6 +15578,19 @@ async function setupBotMenu() {
 }
 
 // Launch bot with retry resilience for cloud container handover
+// 💳 Payment UPI: env se seed karo (agar panel me kuch set nahi hai), taaki
+// order QR fallback aur ₹ verification dono ek hi UPI par jaayein.
+try {
+  const bootUpiDb = getDb();
+  const envUpi = String(process.env.BOSS_UPI_ID || process.env.UPI_ID || '').trim();
+  if (!String(bootUpiDb.config?.bossUpiId || '').trim() && envUpi && isValidUpiVpa(envUpi) && !isPlaceholderUpiId(envUpi)) {
+    bootUpiDb.config.bossUpiId = envUpi;
+    bootUpiDb.config.bossUpiSeededFromEnv = true;
+    saveDb(bootUpiDb);
+    console.log('› Payment UPI (env se seed):', envUpi);
+  }
+} catch {}
+
 console.log('› Connecting to Telegram Bot API...');
 // A bad/revoked token will never fix itself — retrying makes no sense.
 export function isFatalTelegramAuthError(err) {

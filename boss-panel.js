@@ -240,6 +240,9 @@ export function buildBossPanelHome(db) {
     ],
     [
       { text: '🧮 Wallet & Fee', callback_data: 'boss_fee_panel' },
+      { text: '💳 Payment UPI', callback_data: 'boss_upi_panel' }
+    ],
+    [
       { text: '⏳ Pending UTR', callback_data: 'boss_utr_list' }
     ],
     [

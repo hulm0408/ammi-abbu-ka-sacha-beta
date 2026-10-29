@@ -61,7 +61,8 @@ const TESTS = [
   "test_v71_order_account_lock_e2e.mjs",
   "test_v72_wallet_fee_e2e.mjs",
   "test_v73_qr_hold_release_and_fee_panel_e2e.mjs",
-  "test_v74_tracking_id_adoption_e2e.mjs"
+  "test_v74_tracking_id_adoption_e2e.mjs",
+  "test_v75_payment_upi_panel_e2e.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];
