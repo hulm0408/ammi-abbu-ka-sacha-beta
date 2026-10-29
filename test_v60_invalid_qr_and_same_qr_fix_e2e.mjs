@@ -140,7 +140,10 @@ console.log('\n=== 5. index.js: koi QR placeholder se nahi banta ===');
 {
   const src = fs.readFileSync('./index.js', 'utf8');
   check('no remaining `bossUpiId || \'swiggy@icici\'` fallback', !/bossUpiId \|\| 'swiggy@icici'/.test(src));
-  check('sendApprovedOrderPaymentToUser uses buildFallbackUpiIntent', /const fb = buildFallbackUpiIntent\(\{/.test(src));
+  // v78 (boss 30-10-2026): order ka QR SIRF Swiggy ka — boss ki UPI se fallback
+  // QR banake bhejna band (paisa boss ko, order Swiggy par unpaid reh jata tha).
+  check('sendApprovedOrderPaymentToUser me boss-UPI fallback nahi',
+    !/const fb = buildFallbackUpiIntent\(\{/.test(src) && /qrBlockedReason = 'Swiggy ne is order ke liye payment QR/.test(src));
   check('customer QR path gates on validateUpiIntentForQr', /const gate = validateUpiIntentForQr\(upiUri, \{ amount \}\)/.test(src));
   check('blocked QR explains itself to the customer', /QR abhi nahi bheja gaya/.test(src));
   check('boss gets a "QR blocked" alert with a Set-UPI button', /Payment QR blocked/.test(src) && /boss_set_payment_upi/.test(src));

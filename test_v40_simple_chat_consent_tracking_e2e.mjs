@@ -369,8 +369,10 @@ console.log('\n--- Scenario 8: consent + ready bill -> QR without a second tap -
   const { autoApproveConsentedSimpleOrder } = await import('./index.js');
   const CONSENTED_ID = 'SIMPLE9002';
   mutateDb((d) => {
-    // v60: QR sirf ek real (non-placeholder) UPI se banta hai.
+    // v60: boss ki UPI panel/wallet ke liye set rehti hai.
     d.config.bossUpiId = 'ammi.family@okaxis';
+    // v78 (boss 30-10-2026): order ka QR SIRF Swiggy ke payment intent se banta
+    // hai — boss ki personal UPI "Swiggy ka QR" ban ke nahi jati.
     d.orders[CONSENTED_ID] = {
       id: CONSENTED_ID,
       userId: CUSTOMER,
@@ -393,7 +395,8 @@ console.log('\n--- Scenario 8: consent + ready bill -> QR without a second tap -
       customerConsentAmount: 379,
       userChatId: CUSTOMER,
       userMessageId: 778,
-      bossMessageIds: {}
+      bossMessageIds: {},
+      pendingSwiggyUpiUri: 'upi://pay?pa=upiswiggy@icici&pn=SWIGGY&am=379&cu=INR&tr=V40TXN'
     };
   });
 

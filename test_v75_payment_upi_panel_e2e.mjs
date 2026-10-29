@@ -45,8 +45,11 @@ check('change handler banaya', /bot\.action\('boss_upi_change'/.test(indexSrc));
 check('fee panel par UPI status line', /Payment UPI:<\/b> \$\{upiStatusLine\(\)\}/.test(indexSrc));
 
 console.log('\n2) Panel batata hai paisa kahan aayega');
-check('order QR fallback mention', /Order ka payment QR/.test(indexSrc));
-check('verification ₹ mention', /Order verification ₹\$\{walletRupees\(feePaiseNow\(\)\)\}/.test(indexSrc));
+// v78 (boss 30-10-2026): panel saaf batata hai ki order ka food payment is UPI
+// par NAHI aata — sirf verification fee / top-up. Personal UPI ko Swiggy order ka
+// QR bana ke bhejna band.
+check('panel me saaf likha hai order ka payment yahan nahi aata', /Order ka food payment is UPI par NAHI aata/.test(indexSrc));
+check('verification ₹ mention', /order verification/.test(indexSrc));
 check('current UPI dikhta hai', /Abhi: \$\{upiStatusLine\(\)\}/.test(indexSrc));
 check('set na ho to warning', /UPI set nahi hai/.test(indexSrc));
 

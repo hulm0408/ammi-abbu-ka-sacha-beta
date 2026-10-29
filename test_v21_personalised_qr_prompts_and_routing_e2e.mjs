@@ -103,7 +103,10 @@ console.log('\n--- Scenario 1: personalised payment QR is delivered ---');
     finalPayable: 73,
     billApprovedByUser: true,
     userChatId: CUSTOMER,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    // v78 (boss 30-10-2026): order ka QR SIRF Swiggy ke payment intent se banta
+    // hai — boss ki personal UPI se nahi (paisa Swiggy tak nahi pahunchta).
+    pendingSwiggyUpiUri: 'upi://pay?pa=upiswiggy@icici&pn=SWIGGY&am=73&cu=INR&tr=V21TXN'
   };
   saveDb(db);
 
@@ -131,6 +134,22 @@ console.log('\n--- Scenario 1: personalised payment QR is delivered ---');
   check('official Swiggy UPI intent is used when available',
     getDb().orders.V21_QR2.paymentQrKind === 'SWIGGY_PERSONALISED');
   check('exactly one QR photo is sent (no duplicates)', calls('sendPhoto').length === 1);
+
+  // v78: boss ki personal UPI kabhi "Swiggy ka QR" ban ke nahi jata.
+  const db3 = getDb();
+  db3.config.bossUpiId = '6296591407@ybl';
+  db3.orders.V21_NOSWIGGY = {
+    id: 'V21_NOSWIGGY', userId: CUSTOMER, userName: 'Ammi', type: 'SWIGGY_ORDER',
+    status: 'PAYMENT_PENDING', restaurantName: 'Mouj Mela', finalPayable: 73,
+    billApprovedByUser: true, userChatId: CUSTOMER, createdAt: new Date().toISOString()
+  };
+  saveDb(db3);
+  reset();
+  const noQr = await sendApprovedOrderPaymentToUser(String(CUSTOMER), getDb().orders.V21_NOSWIGGY, { force: true });
+  check('Swiggy data na ho to QR nahi jata (boss UPI se nahi)', noQr === false && calls('sendPhoto').length === 0);
+  const honest = JSON.stringify(calls('sendMessage').map((c) => c.payload?.text || ''));
+  check('customer ko sach bataya jata hai', /Swiggy.*payment QR|QR abhi nahi bheja gaya/i.test(honest));
+  check('customer ke chat me boss ki UPI kabhi nahi', !honest.includes('6296591407@ybl'));
 }
 
 // ---------------------------------------------------------------------------
