@@ -70,6 +70,19 @@ Object.getPrototypeOf(bot.telegram).callApi = fakeCallApi;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const USER = 6060601;
+
+// v72: ₹15/order service fee QR se pehle wallet se kati jati hai — test customer
+// ko balance de do (bina balance QR nahi banta, yehi asli behaviour hai).
+{
+  const { ensureWallet, creditWallet } = await import('./user-wallet.js');
+  mutateDb((d) => {
+    for (const uid of [String(USER)]) {
+      ensureWallet(d, uid, { name: 'test customer' });
+      creditWallet(d, uid, 200000, { reason: 'v72 test seed', actor: 'test' });
+    }
+  });
+}
+
 mutateDb((d) => { d.orders = {}; d.drafts = {}; });
 
 // ---------------------------------------------------------------------------

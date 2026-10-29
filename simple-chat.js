@@ -179,6 +179,8 @@ export function buildSimpleHomeScreen(draft = {}) {
   } else if (hasCart && hasAddress) {
     rows.unshift([{ text: '✅ Continue — check best price', callback_data: SIMPLE_CHAT_CALLBACKS.continueDraft, style: 'success' }]);
   }
+  // 👛 Balance / order fee (₹15 per order) — customer khud dekh/adjust kar sake.
+  rows.push([{ text: '👛 Balance & Fees', callback_data: 'wallet_home', style: 'primary' }]);
   if (hasCart || hasAddress) {
     rows.push([{ text: '✖ Clear', callback_data: SIMPLE_CHAT_CALLBACKS.clearDraft, style: 'danger' }]);
   }
@@ -280,6 +282,12 @@ export function buildSimpleOrderCard(order) {
     // 📱 Customer ke phone se order (boss 29-10-2026) — sach wahi jo proof se mila.
     const dlTruth = order?.deviceLogin ? deviceLoginTruth(order) : null;
     const dlCb = deviceLoginCallbacks(order.id);
+    // 🧾 Fee ka sach — bill par hi dikhta hai (QR stage par hi kati jayegi).
+    const feeLine = order?.feeWaived
+      ? '🧾 <b>Order fee:</b> free (aapke liye fee nahi)'
+      : (Number(order?.feeChargedPaise || 0) > 0
+        ? `🧾 <b>Order fee:</b> ₹${(Number(order.feeChargedPaise) / 100).toFixed(0)} ✓ paid`
+        : '🧾 <b>Order fee:</b> ₹15 — QR banane se pehle (balance se)');
     const lines = [
       '🧾 <b>Confirm your order</b>',
       '',
@@ -289,6 +297,7 @@ export function buildSimpleOrderCard(order) {
       '',
       amount > 0 ? `₹ <b>To Pay: ₹${rupees(amount)}</b>${savings > 0 ? `  <i>(saved ₹${rupees(savings)})</i>` : ''}` : '₹ <b>Best price lag raha hai…</b>',
       dlTruth ? `${dlTruth.icon} <b>Phone:</b> ${esc(shortText(dlTruth.label, 70))}` : '',
+      feeLine,
       '',
       '<i>Confirm dabate hi Swiggy payment QR aayega. Uske baad tracking link yahin milega.</i>'
     ].filter((line) => line !== null && line !== undefined);
@@ -313,9 +322,10 @@ export function buildSimpleOrderCard(order) {
           ]);
     }
     rows.push([
-      { text: '🔄 Refresh', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
-      { text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
+      { text: '👛 Balance', callback_data: 'wallet_home', style: 'primary' },
+      { text: '🔄 Refresh', callback_data: `user_refresh_status_${order.id}`, style: 'primary' }
     ]);
+    rows.push([{ text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }]);
     return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 

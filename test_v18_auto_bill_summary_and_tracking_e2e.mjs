@@ -92,6 +92,19 @@ mutateDb((d) => {
 });
 
 const CUSTOMER_ID = '424242';
+
+// v72: ₹15/order service fee QR se pehle wallet se kati jati hai — test customer
+// ko balance de do (bina balance QR nahi banta, yehi asli behaviour hai).
+{
+  const { ensureWallet, creditWallet } = await import('./user-wallet.js');
+  mutateDb((d) => {
+    for (const uid of [String(CUSTOMER_ID)]) {
+      ensureWallet(d, uid, { name: 'test customer' });
+      creditWallet(d, uid, 200000, { reason: 'v72 test seed', actor: 'test' });
+    }
+  });
+}
+
 const bossCount = () => sentMessages.filter((m) => m.chatId === CUSTOMER_ID).length;
 // Messages are indexed by total length; bossCount() only counts customer traffic.
 const since = (mark) => sentMessages.slice(mark);
