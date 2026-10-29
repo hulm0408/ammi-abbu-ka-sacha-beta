@@ -220,7 +220,18 @@ export async function verifyAccountSessionLive(account, { fetchImpl = globalThis
   if (!json || typeof json !== 'object') {
     return { live: false, httpStatus, reason: 'Swiggy ka jawab samajh nahi aaya (JSON nahi)', checkedAt };
   }
-  return { live: true, httpStatus, reason: 'Swiggy ne session accept kiya (live order-history check)', checkedAt, ordersSeen: Array.isArray(json?.data?.orders) ? json.data.orders.length : null };
+  return {
+    live: true,
+    httpStatus,
+    // ⚠️ Yeh SIRF bot ke paas rakha JSON/cookie session ka sach hai. Iska matlab
+    // kabhi nahi ki customer ke PHONE me wahi ID login hai (boss 29-10-2026:
+    // "JSON user ke phone me login nahi ho raha, mere phone me ho raha").
+    scope: 'SERVER_SESSION',
+    phoneProven: false,
+    reason: 'Bot ke paas rakha session chal raha hai (server se order-history check pass)',
+    checkedAt,
+    ordersSeen: Array.isArray(json?.data?.orders) ? json.data.orders.length : null
+  };
 }
 
 /** Live probe ka nateeja order par likho — jhooth nahi, sirf probe ka sach. */
@@ -229,6 +240,10 @@ export function applySessionProbe(order, probe, { nowMs = Date.now() } = {}) {
   const iso = new Date(nowMs).toISOString();
   order.deviceLogin.sessionCheckedAt = probe?.checkedAt || iso;
   order.deviceLogin.sessionLive = probe?.live === true;
+  // Server session aur phone login do alag cheezein hain — dono ko alag rakho.
+  order.deviceLogin.serverSessionLive = probe?.live === true;
+  order.deviceLogin.sessionScope = 'SERVER_SESSION';
+  order.deviceLogin.phoneProven = order.deviceLogin.status === DEVICE_LOGIN_STATUS.VERIFIED_BY_ORDER;
   order.deviceLogin.lastReason = String(probe?.reason || '').slice(0, 160);
   if (probe?.live === true) {
     // Session live hai, par "phone me login" ka pakka proof tab jab order aaye.
@@ -275,6 +290,7 @@ export function deviceLoginTruth(order) {
       icon: '⚪',
       label: 'Phone handover nahi hua',
       verified: false,
+      proof: 'NONE',
       mode,
       placedOrderId: ''
     };
@@ -286,6 +302,7 @@ export function deviceLoginTruth(order) {
         icon: '✅',
         label: `Customer ke phone se order #${dl.placedOrderId} place hua (us ID par dikha)`,
         verified: true,
+        proof: 'CUSTOMER_PHONE_PROVEN',
         mode,
         placedOrderId: dl.placedOrderId || ''
       };
@@ -293,8 +310,12 @@ export function deviceLoginTruth(order) {
       return {
         status: dl.status,
         icon: '🟢',
-        label: `Session live (Swiggy ne accept kiya${dl.sessionCheckedAt ? ` · ${String(dl.sessionCheckedAt).slice(11, 16)} UTC` : ''}) — order aane par pakka hoga`,
+        // ⚠️ Boss (29-10-2026): "JSON user ke phone me login nahi ho raha".
+        // Sach: JSON/cookie bot ke server ka session hai — uska phone se koi
+        // rishta nahi. Isliye yahan phone-login ka dawa KABHI nahi.
+        label: `Bot ke paas ID ka session chal raha hai (server check${dl.sessionCheckedAt ? ` · ${String(dl.sessionCheckedAt).slice(11, 16)} UTC` : ''}) — aapke phone me login ka saboot nahi; wo cart dikhne/order se milta hai`,
         verified: false,
+        proof: 'SERVER_SESSION_ONLY',
         mode,
         placedOrderId: ''
       };
@@ -302,8 +323,9 @@ export function deviceLoginTruth(order) {
       return {
         status: dl.status,
         icon: '🟡',
-        label: 'Customer ne bola login ho gaya — bot verify kar raha hai',
+        label: 'Customer ne bola login ho gaya — bot ke paas sirf unka bayan hai (pakka saboot nahi)',
         verified: false,
+        proof: 'SELF_REPORTED',
         mode,
         placedOrderId: ''
       };
@@ -315,6 +337,7 @@ export function deviceLoginTruth(order) {
           ? 'Customer apne phone se login/order karega (bot place nahi karega)'
           : 'Bot khud order karega — customer ko kuch nahi karna (OTP optional)',
         verified: false,
+        proof: 'NONE',
         mode,
         placedOrderId: ''
       };
@@ -324,6 +347,7 @@ export function deviceLoginTruth(order) {
         icon: '❌',
         label: `Login verify nahi hua${dl.lastReason ? ` — ${dl.lastReason}` : ''}`,
         verified: false,
+        proof: 'NONE',
         mode,
         placedOrderId: ''
       };
@@ -337,7 +361,10 @@ export function deviceLoginCallbacks(orderId) {
     choosePhone: `devlogin_phone_${id}`,
     check: `devlogin_check_${id}`,
     help: `devlogin_help_${id}`,
-    botPlaces: `devlogin_bot_${id}`
+    botPlaces: `devlogin_bot_${id}`,
+    // Phone me login hua ya nahi — cart dikhne se pata chalta hai (self-report).
+    cartYes: `devlogin_cart_yes_${id}`,
+    cartNo: `devlogin_cart_no_${id}`
   };
 }
 
@@ -384,6 +411,77 @@ export function buildDeviceLoginHandover({ order, account, key = '', nowMs = Dat
   return { text, buttons, phone, name, callbacks: cb, at: new Date(nowMs).toISOString() };
 }
 
+/**
+ * Customer ne apne phone me cart DEKHA — matlab us phone me wahi ID login hai.
+ * Ye customer ka bayan hai (bot phone dekh nahi sakta), isliye "self-report"
+ * rakha jata hai; pakka proof tab bhi us ID par naye order se milta hai.
+ */
+export function notePhoneCartSeen(order, { nowMs = Date.now() } = {}) {
+  if (!order?.deviceLogin) return null;
+  const iso = new Date(nowMs).toISOString();
+  order.deviceLogin.phoneCartSeenAt = iso;
+  order.deviceLogin.phoneConfirmedByCustomer = true;
+  order.deviceLogin.status = DEVICE_LOGIN_STATUS.SELF_REPORTED;
+  order.deviceLogin.lastReason = 'customer ne apne phone me cart dekha (self-report — pakka saboot order se)';
+  order.deviceLogin.updatedAt = iso;
+  return order.deviceLogin;
+}
+
+/** Customer ne kaha cart nahi dikha — phone me login nahi hua (saaf sach). */
+export function notePhoneCartMissing(order, { nowMs = Date.now(), reason = '' } = {}) {
+  if (!order?.deviceLogin) return null;
+  const iso = new Date(nowMs).toISOString();
+  order.deviceLogin.phoneCartMissingAt = iso;
+  order.deviceLogin.phoneConfirmedByCustomer = false;
+  order.deviceLogin.status = DEVICE_LOGIN_STATUS.FAILED;
+  order.deviceLogin.lastReason = String(reason || 'customer ke phone me cart nahi dikha — us phone me login nahi hua').slice(0, 160);
+  order.deviceLogin.updatedAt = iso;
+  return order.deviceLogin;
+}
+
+/**
+ * 📱 PHONE ME LOGIN — SACH WALA CARD (boss 29-10-2026)
+ *
+ * Boss: "JSON user ke phone me login nahi ho raha, mere phone me login ho raha
+ * bas udhar show ho raha." Wajah: JSON = cookie session = BOT ke server ki
+ * login. Woh kisi phone me login nahi karta. Customer ke phone me login sirf
+ * tab hota hai jab us phone par OTP daala jaye.
+ *
+ * Isliye yeh card jhooth nahi bolta — number deta hai, steps deta hai, aur
+ * saboot poochhta hai (cart dikh raha hai?).
+ */
+export function buildPhoneLoginCard({ order, account = null, key = '' } = {}) {
+  const phone = accountPhone(account, key || order?.deviceLogin?.accountKey || order?.selectedAccount || order?.orderAccount || '') ||
+    String(order?.deviceLogin?.phone || order?.orderAccount || '').trim();
+  const cb = deviceLoginCallbacks(order?.id);
+  const phoneText = phone ? `<code>${esc(phone)}</code>` : '<i>(ID me number nahi hai — admin se poochhein)</i>';
+  const text = [
+    '📱 <b>APNE PHONE ME LOGIN — SACH BAAT</b>',
+    '',
+    '<i>Bot kisi phone me login nahi kar sakta. Jo JSON/cookie import hota hai wo</i> <b>server ka session</b> <i>hai — us se order chal jata hai, par aapke phone me ID tabhi login hoti hai jab usi phone par OTP daala jaye.</i>',
+    '',
+    `Swiggy ID / number: ${phoneText}`,
+    '',
+    '<b>Phone me login (ek hi baar, ~30 din chalta hai):</b>',
+    '1️⃣ Swiggy app kholo (neeche button)',
+    '2️⃣ Purani ID ho to <b>Logout</b> → usi number se login',
+    '3️⃣ OTP us number wale phone par aayega — wahi daalna hai',
+    '',
+    '<b>Login hua ya nahi — yeh saboot se pata chalega:</b>',
+    '• App me <b>cart dikh raha hai</b> = us phone me ID login hai',
+    '• Cart nahi dikha = login nahi hua (phir se try karein)',
+    '• Us ID par naya order aa gaya = <b>pakka</b>'
+  ].join('\n');
+  const buttons = [
+    [{ text: '📲 Swiggy app kholo', url: SWIGGY_HOME }],
+    [{ text: '✅ Cart dikh raha hai — login ho gaya', callback_data: cb.cartYes }],
+    [{ text: '❌ Cart nahi dikha — dobara karna hai', callback_data: cb.cartNo }],
+    [{ text: '🙅 OTP nahi / kisi ko nahi parhna — bot khud kare', callback_data: cb.botPlaces }],
+    [{ text: '📦 Meri orders', url: SWIGGY_ORDERS }]
+  ];
+  return { text, buttons, phone, callbacks: cb };
+}
+
 /** Probe ke baad customer ko sach (aur boss ko mirror). */
 export function buildDeviceLoginStatusText({ order, probe = null, escape = esc } = {}) {
   const truth = deviceLoginTruth(order);
@@ -395,7 +493,9 @@ export function buildDeviceLoginStatusText({ order, probe = null, escape = esc }
     escape(truth.label)
   ].filter(Boolean);
   if (probe?.live === true) {
-    lines.push('', '<i>Ab app me cart + ₹50 offer dono dikhega. Aap order place karo — bot tracking khud laga dega.</i>');
+    // ⚠️ Yeh server session ka sach hai — phone ka nahi. Isliye app me
+    // kya dikhega, uska wada nahi. Wahi sach jo probe ke baad pata hai.
+    lines.push('', '<i>Bot ke paas ID ka session chal raha hai. Aapke phone me login hua hai ya nahi — app me cart khol kar dekhein; cart dikhe to login hai. Order place ho jaye to pakka.</i>');
   } else if (probe && probe.live === false) {
     lines.push('', `<i>Wajah: ${escape(String(probe.reason || 'verify nahi hua'))}</i>`);
     lines.push('<i>Swiggy me logout karke usi number se dobara login karo, phir <b>“Login ho gaya — check karo”</b> dabaiye.</i>');

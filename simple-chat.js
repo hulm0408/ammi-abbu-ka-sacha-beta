@@ -25,6 +25,7 @@ export const SIMPLE_CHAT_CALLBACKS = {
   continueDraft: 'simple_continue',
   myOrder: 'simple_my_order',
   loginReady: 'simple_login_ready',
+  phoneLogin: 'simple_phone_login',
   newOrder: 'simple_new_order'
 };
 
@@ -171,18 +172,25 @@ export function buildSimpleHomeScreen(draft = {}) {
   // hai ki ID apne phone me login karne ke liye ye button dabaye" — ek hi button,
   // koi Continue/price/extra option nahi (user confuse nahi hota).
   if (hasCart && hasAddress && !addressUnresolved) {
+    // ⚠️ Boss (29-10-2026): "JSON user ke phone me login nahi ho raha". Sach: JSON
+    // server ka session hai — koi button kisi phone me login nahi kar sakta.
+    // Isliye yahan jhootha dawa nahi; bill ka raasta saaf.
     const loginText =
-      '📱 <b>ID apne phone me login karne ke liye ye button dabayein</b>\n\n' +
+      '✅ <b>Cart + Address mil gaya</b>\n\n' +
       `🛒 ${cartValue}\n` +
       `📍 ${addressValue}\n\n` +
-      '<i>Login ho jaye to neeche wala button dabaiye — bill + QR turant aayega.</i>';
+      '<i>Neeche button dabaiye — bill + QR turant aayega.</i>';
     return {
       text: loginText,
       keyboard: {
         reply_markup: {
-          inline_keyboard: [[
-            { text: '📱 Login button — dabayein', callback_data: SIMPLE_CHAT_CALLBACKS.loginReady, style: 'success' }
-          ]]
+          inline_keyboard: [
+            [{ text: '✅ Aage badhein — bill dekhein', callback_data: SIMPLE_CHAT_CALLBACKS.loginReady, style: 'success' }],
+            // ⚠️ Boss (29-10-2026): "JSON user ke phone me login nahi ho raha".
+            // Ye optional button ASLI steps deta hai (bot kisi phone me login nahi
+            // kar sakta — OTP usi phone par daalna padta hai).
+            [{ text: '📱 Phone me login karna hai?', callback_data: 'simple_phone_login', style: 'primary' }]
+          ]
         }
       }
     };
@@ -213,20 +221,23 @@ export function buildSimpleHomeScreen(draft = {}) {
 export function buildSimpleLoginHelpCard(order) {
   const dlCb = deviceLoginCallbacks(order?.id);
   const truth = order?.deviceLogin ? deviceLoginTruth(order) : null;
+  const phone = String(order?.deviceLogin?.phone || order?.orderAccount || '').trim();
   const text =
-    '❓ <b>LOGIN ME DIKKAT?</b>\n\n' +
+    '❓ <b>PHONE ME LOGIN — SACH</b>\n\n' +
     (truth ? `${truth.icon} <i>${esc(truth.label)}</i>\n\n` : '') +
-    '1️⃣ Phone me Swiggy app kholo → purani ID ho to <b>Logout</b>\n' +
-    '2️⃣ Usi number se OTP daal kar login\n' +
-    '3️⃣ Cart app me khud dikhega → wahi se order\n\n' +
+    '<i>Bot kisi phone me login nahi kar sakta. JSON/cookie = bot ke server ka session; aapke phone me login tabhi hoga jab usi phone par OTP daala jaye.</i>\n\n' +
+    (phone ? `Swiggy number: <code>${esc(phone)}</code>\n` : '') +
+    '1️⃣ Swiggy app kholo → purani ID ho to <b>Logout</b>\n' +
+    '2️⃣ Usi number se login → OTP us number wale phone par aayega\n' +
+    '3️⃣ App me <b>cart dikhe = login ho gaya</b>\n\n' +
     '<i>Bot phone ko dekh nahi sakta — isliye jhootha “login ho gaya” kabhi nahi bolega.</i>';
   return {
     text,
     keyboard: {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '✅ Login ho gaya — check', callback_data: dlCb.check, style: 'success' }],
-          [{ text: '📱 Apne phone se order', callback_data: dlCb.choosePhone, style: 'primary' }],
+          [{ text: '✅ Cart dikh raha hai — login ho gaya', callback_data: dlCb.cartYes, style: 'success' }],
+          [{ text: '❌ Cart nahi dikha', callback_data: dlCb.cartNo, style: 'danger' }],
           [{ text: '🙅 OTP nahi — bot kare', callback_data: dlCb.botPlaces, style: 'primary' }]
         ]
       }

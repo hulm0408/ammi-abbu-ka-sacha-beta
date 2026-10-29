@@ -131,7 +131,10 @@ import {
   buildDeviceLoginHandover,
   buildDeviceLoginStatusText,
   buildDeviceLoginHelpText,
-  placementHoldMessage
+  placementHoldMessage,
+  buildPhoneLoginCard,
+  notePhoneCartSeen,
+  notePhoneCartMissing
 } from './customer-device-login.js';
 import {
   serviceFeePaise,
@@ -12434,6 +12437,12 @@ bot.action(/^devlogin_phone_([A-Za-z0-9_-]+)$/, async (ctx) => {
       { parse_mode: 'HTML' }
     ).catch(() => {});
   }
+  // 📱 Asli steps jo phone me login karate hain (bot khud login nahi kar sakta).
+  const loginCard = buildPhoneLoginCard({ order: fresh, account: acc, key: accKey });
+  await ctx.reply(loginCard.text, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard(loginCard.buttons)
+  }).catch(() => {});
   await ctx.reply(buildDeviceLoginStatusText({ order: fresh, probe: res?.probe || null, escape: escapeHtml }), {
     parse_mode: 'HTML',
     ...Markup.inlineKeyboard([
@@ -12449,6 +12458,68 @@ bot.action(/^devlogin_help_([A-Za-z0-9_-]+)$/, async (ctx) => {
   if (!order) return;
   await ctx.answerCbQuery().catch(() => {});
   await ctx.reply(buildDeviceLoginHelpText({ order }), { parse_mode: 'HTML' }).catch(() => {});
+});
+
+// 📱 Phone me login hua ya nahi — cart dikhne se pata chalta hai.
+// Bot phone ko dekh nahi sakta, isliye "self-report" hi rakha jata hai (jhooth
+// nahi: pakka saboot us ID par naye order se milta hai).
+function mirrorPhoneLoginToBoss(order, line) {
+  try {
+    const db = getDb();
+    for (const bossId of [...new Set((db.config?.bossIds || []).map(String).filter(Boolean))]) {
+      bot.telegram.sendMessage(
+        bossId,
+        line +
+        `\n▪ Order: <code>#${escapeHtml(String(order.id))}</code> · ID: <code>${escapeHtml(String(order.deviceLogin?.phone || order.orderAccount || ''))}</code>`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
+  } catch { /* mirror optional, sach important */ }
+}
+
+bot.action(/^devlogin_cart_yes_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const order = await loadDeviceLoginOrder(ctx);
+  if (!order) return;
+  await ctx.answerCbQuery('Theek hai — aapke phone me cart dikh raha hai').catch(() => {});
+  const db = getDb();
+  notePhoneCartSeen(order);
+  db.orders[order.id] = order;
+  saveDb(db);
+  await ctx.reply(
+    '✅ <b>Aapke phone me cart dikh raha hai</b> (aapne bataya — login ho gaya).\n\n' +
+    '<i>Ab app se cart khol kar order place kar dein — us ID par order aate hi bot tracking + OTP khud laga dega.</i>\n\n' +
+    '<i>Bot ka pakka saboot us ID par naye order se milega.</i>',
+    { parse_mode: 'HTML', ...Markup.inlineKeyboard([[{ text: '📦 Meri orders', url: 'https://www.swiggy.com/my-account/orders' }]]) }
+  ).catch(() => {});
+  mirrorPhoneLoginToBoss(order, '✅ <b>CUSTOMER PHONE LOGIN — CART DIKHA</b>\n<i>Sach: customer ne apne phone me cart dekha (self-report). Pakka proof us ID par naye order se.</i>');
+  try { await updateOrderCards(getDb().orders?.[order.id] || order); } catch {}
+});
+
+bot.action(/^devlogin_cart_no_([A-Za-z0-9_-]+)$/, async (ctx) => {
+  const order = await loadDeviceLoginOrder(ctx);
+  if (!order) return;
+  await ctx.answerCbQuery('Koi baat nahi — chalo dobara').catch(() => {});
+  const db = getDb();
+  notePhoneCartMissing(order);
+  db.orders[order.id] = order;
+  saveDb(db);
+  const accKey = order.selectedAccount || order.deviceLogin?.accountKey || '';
+  const acc = accKey ? db.config?.accounts?.[accKey] : null;
+  const card = buildPhoneLoginCard({ order, account: acc, key: accKey });
+  await ctx.reply(
+    '❌ <b>Cart nahi dikha = us phone me login nahi hua.</b>\n\n' +
+    '<i>Wajah aam taur par: purani ID pehle se login hai, ya OTP wale number wala phone paas nahi hai.</i>\n\n' +
+    '<b>Sabse aasan:</b> “🙅 OTP nahi — bot khud kare” dabaiye — bot order khud place kar dega, aapko kuch nahi karna.',
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [{ text: '🙅 OTP nahi — bot khud kare', callback_data: card.callbacks.botPlaces, style: 'success' }],
+        [{ text: '📲 Swiggy app kholo', url: 'https://www.swiggy.com/' }]
+      ])
+    }
+  ).catch(() => {});
+  mirrorPhoneLoginToBoss(order, '❌ <b>CUSTOMER PHONE LOGIN — CART NAHI DIKHA</b>\n<i>Us phone me login nahi hua. Bot khud place kar sakta hai.</i>');
+  try { await updateOrderCards(getDb().orders?.[order.id] || order); } catch {}
 });
 
 // 🙅 "OTP nahi ho payega" — sabse aam case (burhe Ammi/Abbu, boss bahar).
@@ -12499,12 +12570,17 @@ bot.action(SIMPLE_CHAT_CALLBACKS.loginReady, async (ctx) => {
     return;
   }
 
-  // Customer ke phone par wahi ID login hui — record karo (jhooth nahi: sirf note).
+  // ⚠️ Boss (29-10-2026): "JSON user ke phone me login nahi ho raha, mere phone me
+  // login ho raha" — pehle yahan `customerChoseOwnPhone()` lagta tha, jisse
+  // placementMode CUSTOMER_PHONE ho jata tha aur payment stage "order aapke phone
+  // se karo" bolta tha (jabki phone me login hua hi nahi tha) → order kahin nahi
+  // jata tha. Ab: yeh button SIRF handover note karta hai; order bot hi place
+  // karega (default, bina OTP). Customer khud karna chahe to uska alag button hai.
   const accKey = active.selectedAccount || active.deviceLogin?.accountKey || '';
   const acc = accKey ? db.config?.accounts?.[accKey] : null;
   if (acc) {
     attachDeviceLogin(active, acc, { key: accKey });
-    customerChoseOwnPhone(active);
+    markHandoverSent(active);
     const fresh = getDb();
     fresh.orders[active.id] = active;
     saveDb(fresh);
@@ -12513,6 +12589,33 @@ bot.action(SIMPLE_CHAT_CALLBACKS.loginReady, async (ctx) => {
   // Bill ready? Seedha bill card (bill + "✅ QR banao") — koi extra screen nahi.
   const card = buildSimpleOrderCard(getDb().orders?.[active.id] || active);
   await ctx.reply(card.text, { parse_mode: 'HTML', ...card.keyboard }).catch(() => {});
+});
+
+// 📱 "Phone me login karna hai?" — asli steps (bot login nahi kar sakta).
+bot.action(SIMPLE_CHAT_CALLBACKS.phoneLogin, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const userId = String(ctx.from.id);
+  const db = getDb();
+  const active = getActiveUserOrder(db, userId);
+  const accKey = active?.selectedAccount || active?.deviceLogin?.accountKey || '';
+  const acc = accKey ? db.config?.accounts?.[accKey] : null;
+  const card = buildPhoneLoginCard({ order: active || { id: 'none', userId }, account: acc, key: accKey });
+  // Order hi nahi to bhi sach + steps milne chahiye (bas order-specific buttons hata do).
+  const buttons = active
+    ? card.buttons
+    : card.buttons.filter((row) => row.some((b) => b.url));
+  await ctx.reply(card.text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) }).catch(() => {});
+  try {
+    for (const bossId of [...new Set((db.config?.bossIds || []).map(String).filter(Boolean))]) {
+      await bot.telegram.sendMessage(
+        bossId,
+        '📱 <b>Customer ne phone-login steps maange</b>' +
+        (active ? ` · order <code>#${escapeHtml(String(active.id))}</code>` : '') +
+        '\n<i>Yaad rakhein: JSON = server session. Customer ke phone me login tabhi hoga jab us phone par OTP daale.</i>',
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
+  } catch {}
 });
 
 bot.action(/^simple_login_help_([A-Za-z0-9_-]+)$/, async (ctx) => {
@@ -14276,11 +14379,14 @@ export async function sendDeviceLoginShortNotice(order, { telegram = null, chatI
   const tg = telegram || (typeof bot !== 'undefined' ? bot?.telegram : null);
   if (!tg || !target) return { ok: false, reason: 'no chat' };
   try {
+    // ⚠️ Boss (29-10-2026): "JSON user ke phone me login nahi ho raha".
+    // Pehle yahan "phone me login/active" ka dawa tha — wo jhooth tha (bot kisi
+    // phone ko dekh hi nahi sakta; JSON sirf server ka session hai).
+    // Ab sirf wahi jo sach hai.
     await tg.sendMessage(
       target,
-      '\u2705 <b>Login ho gaya</b>\n\n' +
-      (phone ? `ID: <code>${escapeHtml(phone)}</code> aapke phone me active hai.\n\n` : '') +
-      '<i>Bill taiyar kar raha hoon \u2014 bas ek button milega: \u201cQR banao\u201d.</i>',
+      (phone ? `✅ <b>ID ready:</b> <code>${escapeHtml(phone)}</code>\n\n` : '') +
+      '<i>Bill taiyar kar raha hoon — bas ek button milega: “QR banao”.</i>',
       { parse_mode: 'HTML' }
     );
   } catch (err) {
@@ -14359,7 +14465,8 @@ export async function lockOrderAccountAndHandover(order, accKey = '', { telegram
         `🔒 <b>ID LOCKED TO ORDER</b>\n` +
         `▪ Order: <code>#${escapeHtml(String(order.id))}</code> (${escapeHtml(String(order.customerName || order.userName || order.userId || 'Customer'))})\n` +
         `▪ ID: <code>${escapeHtml(String(acc.phone || key))}</code>${acc.isZeroOrderAccount ? ' · ★ 0-order' : ''}\n` +
-        `▪ Ab yeh ID kisi aur order (Abbu ka bhi) ko nahi milegi — deliver/cancel hone par wapas vault me.`,
+        `▪ Ab yeh ID kisi aur order (Abbu ka bhi) ko nahi milegi — deliver/cancel hone par wapas vault me.\n` +
+        `\u26A0\uFE0F <i>Sach: JSON/cookie = bot ke server ka session. Isse order chalta hai, par customer ke phone me login NAHI hota — wo sirf us phone par OTP daalne se hota hai. Customer ko asli steps dene ke liye uska “📱 Phone me login karna hai?” button dabaiye.</i>`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
     }
