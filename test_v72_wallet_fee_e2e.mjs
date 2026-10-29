@@ -236,7 +236,7 @@ check('wallet imports index.js me', /from '\.\/user-wallet\.js'/.test(indexSrc))
 check('approve bill me chargeServiceFee', /chargeServiceFee\(/.test(indexSrc));
 check('SERVICE_FEE_DUE code use hua', /SERVICE_FEE_DUE/.test(indexSrc));
 check('fee fail par AWAITING_FEE cardStage', /AWAITING_FEE/.test(indexSrc));
-check('fee due card bhejta hai', /sendServiceFeeDueCard/.test(indexSrc));
+check('verification card bhejta hai', /sendOrderVerificationCard/.test(indexSrc));
 check('close/cancel par refundServiceFee', /refundServiceFee\(/.test(indexSrc));
 check('refund ke baad customer ko message', /order fee wapas/.test(indexSrc));
 check('UTR text state', /waiting_wallet_utr/.test(indexSrc));
@@ -249,9 +249,9 @@ check('boss_utr_ok approve', /boss_utr_ok_/.test(indexSrc));
 check('boss_utr_no reject', /boss_utr_no_/.test(indexSrc));
 check('boss_wallet_free toggle', /boss_wallet_free_/.test(indexSrc));
 check('approve ke baad auto resume', /resumeOrderAfterTopup/.test(indexSrc));
-check('customer home par wallet button', /wallet_home/.test(chatSrc));
-check('bill card par fee line', /Order fee:/.test(chatSrc));
-check('boss panel me wallets row', /boss_wallets/.test(bossPanelSrc));
+check('customer home par admin button (wallet nahi)', /support_contact_admin/.test(chatSrc) && !/wallet_home/.test(chatSrc));
+check('bill card par koi fee line nahi', !/<b>Order fee:<\/b>/.test(chatSrc));
+check('boss panel me fee panel row', /boss_fee_panel/.test(bossPanelSrc));
 check('boss panel me pending UTR row', /boss_utr_list/.test(bossPanelSrc));
 check('user-wallet.js me UTR duplicate guard', /DUPLICATE_UTR/.test(fs.readFileSync('./user-wallet.js', 'utf8')));
 

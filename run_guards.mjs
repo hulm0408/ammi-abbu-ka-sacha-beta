@@ -59,7 +59,8 @@ const TESTS = [
   "test_v69_bulk_files_and_honest_claim_e2e.mjs",
   "test_v70_karwa_chauth_and_customer_phone_login_e2e.mjs",
   "test_v71_order_account_lock_e2e.mjs",
-  "test_v72_wallet_fee_e2e.mjs"
+  "test_v72_wallet_fee_e2e.mjs",
+  "test_v73_qr_hold_release_and_fee_panel_e2e.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];

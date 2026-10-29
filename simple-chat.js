@@ -179,8 +179,9 @@ export function buildSimpleHomeScreen(draft = {}) {
   } else if (hasCart && hasAddress) {
     rows.unshift([{ text: '✅ Continue — check best price', callback_data: SIMPLE_CHAT_CALLBACKS.continueDraft, style: 'success' }]);
   }
-  // 👛 Balance / order fee (₹15 per order) — customer khud dekh/adjust kar sake.
-  rows.push([{ text: '👛 Balance & Fees', callback_data: 'wallet_home', style: 'primary' }]);
+  // 🆘 Boss (30-10-2026): "usko option dena hai you can contact the admin in any
+  // issue" — aur customer ko wallet/fee jaisa kuch dikhana hi nahi hai.
+  rows.push([{ text: '🆘 Admin se baat karein', callback_data: 'support_contact_admin', style: 'primary' }]);
   if (hasCart || hasAddress) {
     rows.push([{ text: '✖ Clear', callback_data: SIMPLE_CHAT_CALLBACKS.clearDraft, style: 'danger' }]);
   }
@@ -252,6 +253,36 @@ export function buildSimpleOrderCard(order) {
     return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 
+  // 🔐 QR READY / VERIFICATION / RETRY — QR pehle banta hai, phir chhoti refundable
+  // verification, phir QR release. Fail hone par sirf "try again".
+  const heldStage = String(order?.cardStage || '').toUpperCase();
+  if (heldStage === 'QR_RETRY') {
+    const text =
+      '⚠️ <b>QR ban nahi paya</b>\n\n' +
+      `▤ <b>${rest}</b>\n\n` +
+      '<i>Swiggy ki taraf se payment QR nahi aaya. Koi paisa nahi kata. Dobara try karein.</i>';
+    rows.push([{ text: '🔄 Dobara try karein', callback_data: `user_retry_qr_${order.id}`, style: 'success' }]);
+    rows.push([
+      { text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' },
+      { text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
+    ]);
+    return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
+  }
+  if (heldStage === 'AWAITING_FEE' || heldStage === 'QR_HELD') {
+    const text =
+      '🔐 <b>Order QR ready hai</b>\n\n' +
+      `▤ <b>${rest}</b>\n` +
+      (amount > 0 ? `₹ <b>To Pay:</b> ₹${rupees(amount)}\n` : '') +
+      '\n<i>Aapka payment QR taiyar hai aur safe rakha hua hai.</i>\n' +
+      '<i>Bas ek chhoti refundable verification ke baad QR khul jayega — order ke bill me ye nahi judti.</i>';
+    rows.push([{ text: '🔐 Verification karein', callback_data: 'wallet_verify_pay', style: 'success' }]);
+    rows.push([
+      { text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' },
+      { text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
+    ]);
+    return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
+  }
+
   if (stage === 'PAY') {
     const paymentUrl = String(order?.swiggyPaymentUrl || '').trim();
     const generic = /^https?:\/\/(www\.)?swiggy\.com\/(checkout|payments)\/?$/i.test(paymentUrl);
@@ -272,8 +303,9 @@ export function buildSimpleOrderCard(order) {
     rows.push([{ text: '✓ I have paid — get tracking', callback_data: `user_paid_status_${order.id}`, style: 'success' }]);
     rows.push([
       { text: '🔁 Resend QR', callback_data: `user_resend_approved_qr_${order.id}`, style: 'primary' },
-      { text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
+      { text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }
     ]);
+    rows.push([{ text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }]);
     return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 
@@ -282,12 +314,8 @@ export function buildSimpleOrderCard(order) {
     // 📱 Customer ke phone se order (boss 29-10-2026) — sach wahi jo proof se mila.
     const dlTruth = order?.deviceLogin ? deviceLoginTruth(order) : null;
     const dlCb = deviceLoginCallbacks(order.id);
-    // 🧾 Fee ka sach — bill par hi dikhta hai (QR stage par hi kati jayegi).
-    const feeLine = order?.feeWaived
-      ? '🧾 <b>Order fee:</b> free (aapke liye fee nahi)'
-      : (Number(order?.feeChargedPaise || 0) > 0
-        ? `🧾 <b>Order fee:</b> ₹${(Number(order.feeChargedPaise) / 100).toFixed(0)} ✓ paid`
-        : '🧾 <b>Order fee:</b> ₹15 — QR banane se pehle (balance se)');
+    // Bill par koi fee/verification line NAHI — customer ko lagta tha ki usse
+    // order par paisa liya ja raha hai (boss 30-10-2026).
     const lines = [
       '🧾 <b>Confirm your order</b>',
       '',
@@ -297,7 +325,6 @@ export function buildSimpleOrderCard(order) {
       '',
       amount > 0 ? `₹ <b>To Pay: ₹${rupees(amount)}</b>${savings > 0 ? `  <i>(saved ₹${rupees(savings)})</i>` : ''}` : '₹ <b>Best price lag raha hai…</b>',
       dlTruth ? `${dlTruth.icon} <b>Phone:</b> ${esc(shortText(dlTruth.label, 70))}` : '',
-      feeLine,
       '',
       '<i>Confirm dabate hi Swiggy payment QR aayega. Uske baad tracking link yahin milega.</i>'
     ].filter((line) => line !== null && line !== undefined);
@@ -322,8 +349,8 @@ export function buildSimpleOrderCard(order) {
           ]);
     }
     rows.push([
-      { text: '👛 Balance', callback_data: 'wallet_home', style: 'primary' },
-      { text: '🔄 Refresh', callback_data: `user_refresh_status_${order.id}`, style: 'primary' }
+      { text: '🔄 Refresh', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
+      { text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }
     ]);
     rows.push([{ text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }]);
     return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
