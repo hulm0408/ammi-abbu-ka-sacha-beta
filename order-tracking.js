@@ -629,8 +629,32 @@ export async function ensureOrderTracking(orderRef, {
     return { ...scan, orderId: order.id, trackingUrl: finalUrl || scan.trackingUrl || '' };
   })().finally(() => inflightScans.delete(inflightKey));
 
+  try { run.__startedAt = Date.now(); } catch {}
   inflightScans.set(inflightKey, run);
   return run;
+}
+
+/**
+ * 🩺 MAINTENANCE (boss 30-10-2026: "bot hang hogaya hai"): koi tracking scan
+ * phans gaya ho to uska inflight entry hata do, taaki usi order ka scan dobara
+ * shuru ho sake. Sirf purani entries (default 60s+) hatti hain.
+ */
+export function resetStuckScans({ olderThanMs = 60_000 } = {}) {
+  const limit = Math.max(1_000, Number(olderThanMs) || 60_000);
+  const now = Date.now();
+  const reset = [];
+  for (const key of Array.from(inflightScans.keys())) {
+    const startedAt = Number(inflightScans.get(key)?.__startedAt || 0);
+    // Purani entries ka timestamp nahi hota — unhe safe side par reset karo.
+    if (startedAt && now - startedAt <= limit) continue;
+    inflightScans.delete(key);
+    reset.push(key);
+  }
+  return { at: new Date().toISOString(), reset: reset.length, keys: reset.slice(0, 10) };
+}
+
+export function getInflightScanCount() {
+  return inflightScans.size;
 }
 
 export function stopOrderTrackingAuto(orderId) {

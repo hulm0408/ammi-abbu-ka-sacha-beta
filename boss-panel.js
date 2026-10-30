@@ -250,7 +250,10 @@ export function buildBossPanelHome(db) {
       { text: '🔄 Audit Sessions', callback_data: 'boss_refresh_all_accounts' }
     ],
     [
-      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' },
+      { text: '🩺 Maintenance', callback_data: 'boss_maintenance' },
+      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' }
+    ],
+    [
       { text: '× Close', callback_data: 'close_menu' }
     ]
   ]);

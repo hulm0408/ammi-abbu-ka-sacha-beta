@@ -7433,6 +7433,9 @@ export function isSwiggyAccountBusy(accountOrKey) {
   return swiggyAccountLocks.has(lockId);
 }
 
+// Har lock kab se pakda hua hai — maintenance isi se atke locks dhoondta hai.
+const swiggyAccountLockMeta = new Map(); // lockId -> { since, waitedMs }
+
 export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = 25_000 } = {}) {
   const lockId = resolveAccountLockId(accountOrKey);
   const heldSet = heldAccountLocksAls.getStore();
@@ -7470,14 +7473,80 @@ export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = 25_0
 
   const nextHeld = new Set(heldSet || []);
   nextHeld.add(lockId);
+  swiggyAccountLockMeta.set(lockId, { since: Date.now(), waitedMs: 0 });
   try {
     return await heldAccountLocksAls.run(nextHeld, fn);
   } finally {
     release();
+    swiggyAccountLockMeta.delete(lockId);
     if (swiggyAccountLocks.get(lockId) === tail) {
       swiggyAccountLocks.delete(lockId);
     }
   }
+}
+
+/**
+ * 🩺 MAINTENANCE (boss 30-10-2026: "bot ko maintenance kar, hang hogaya hai"):
+ * kaun-kaun se Swiggy ID abhi lock me hain aur kitni der se.
+ */
+export function getAccountLockStats() {
+  const now = Date.now();
+  const locks = [];
+  for (const [id, meta] of swiggyAccountLockMeta.entries()) {
+    locks.push({ id, ageMs: now - Number(meta.since || now) });
+  }
+  locks.sort((a, b) => b.ageMs - a.ageMs);
+  return { at: new Date().toISOString(), count: locks.length, locks };
+}
+
+/**
+ * Sirf wo locks chhodo jo `olderThanMs` se zyada purane hain (default 45s).
+ * Jo abhi sach me kaam kar raha hai use haath nahi lagate — warna order beech
+ * me toot jayega. Return me sach: kitne chhode, kitne chhode nahi.
+ */
+export async function releaseStaleAccountLocks({ olderThanMs = 45_000 } = {}) {
+  const now = Date.now();
+  const limit = Math.max(1_000, Number(olderThanMs) || 45_000);
+  const released = [];
+  let kept = 0;
+  for (const [id, meta] of Array.from(swiggyAccountLockMeta.entries())) {
+    const ageMs = now - Number(meta.since || now);
+    if (ageMs <= limit) { kept += 1; continue; }
+    // Lock ka tail hata do — agla waiter turant aage badh jayega.
+    swiggyAccountLocks.delete(id);
+    swiggyAccountLockMeta.delete(id);
+    released.push({ id, ageMs, ageSec: Math.round(ageMs / 1000) });
+  }
+  return { at: new Date().toISOString(), released, kept };
+}
+
+/**
+ * Purani in-flight reservations (90s TTL) free karo — order cancel ho gaya ho
+ * ya job mar gaya ho to ID hamesha ke liye "busy" na rahe.
+ */
+export function releaseStaleReservations({ olderThanMs = RESERVATION_TTL_MS } = {}) {
+  const now = Date.now();
+  const limit = Math.max(1_000, Number(olderThanMs) || RESERVATION_TTL_MS);
+  const released = [];
+  for (const [accKey, entry] of Array.from(inFlightAccountReservations.entries())) {
+    const ageMs = now - Number(entry?.reservedAt || now);
+    if (ageMs <= limit) continue;
+    inFlightAccountReservations.delete(accKey);
+    released.push({ key: accKey, orderId: String(entry?.orderId || ''), ageMs, ageSec: Math.round(ageMs / 1000) });
+  }
+  if (released.length > 0) notifyAccountReleased();
+  return { at: new Date().toISOString(), released };
+}
+
+/** Kya abhi koi ID reserved hai (maintenance/health ke liye). */
+export function getReservationStats() {
+  const now = Date.now();
+  const rows = Array.from(inFlightAccountReservations.entries()).map(([key, entry]) => ({
+    key,
+    orderId: String(entry?.orderId || ''),
+    ageMs: now - Number(entry?.reservedAt || now)
+  }));
+  return { at: new Date().toISOString(), count: rows.length, rows };
 }
 
 // Atomic in-memory reservation registry so 10+ concurrent orders starting in the exact same millisecond
@@ -7565,7 +7634,18 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     };
   }
 
-  if (!acc || !acc.isLoggedIn || acc.isLoggedOut || acc.sessionExpired || (!acc.cookies && !acc.tid && !acc.jwtTid && !acc.token)) {
+  // 🩺 MAINTENANCE (boss 30-10-2026: "0 order wali ID ko scan nahi kar pa raha"):
+  // SCAN ko sirf SESSION chahiye — `isLoggedIn` flag ki zaroorat nahi. Pehle
+  // `isLoggedIn` undefined/false hone par hi ID ko "logged out" maan liya jata
+  // tha, isliye fresh 0-order ID kabhi scan hi nahi hoti thi. Ab session
+  // material (cookies/tid/token) ho aur explicit logout/expiry na ho to scan
+  // hoga, aur flag khud theek ho jayega.
+  const hasSessionMaterial = Boolean(acc?.cookies || acc?.tid || acc?.jwtTid || acc?.token);
+  const explicitlyOut = Boolean(acc?.isLoggedOut || acc?.sessionExpired);
+  if (acc && hasSessionMaterial && !explicitlyOut && acc.isLoggedIn !== true && !acc.hardLoggedOut) {
+    acc.isLoggedIn = true;
+  }
+  if (!acc || !hasSessionMaterial || explicitlyOut) {
     return {
       key: accKey,
       valid: false,
@@ -7618,7 +7698,19 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
     return profile;
   }
 
-  const auth = await getSwiggySessionAuth(acc, false).catch(() => null);
+  let auth = await getSwiggySessionAuth(acc, false).catch(() => null);
+  // 🩺 Ek fail pura scan nahi rukna chahiye: pehle session refresh, phir
+  // Android token -> web session bootstrap (~200ms). Isse 0-order ID bhi scan
+  // hoti hai jab uska sirf web cookie stale ho gaya ho.
+  if (!auth?.userId || String(auth.userId) === '0') {
+    const retryAuth = await getSwiggySessionAuth(acc, true).catch(() => null);
+    if (retryAuth?.userId && String(retryAuth.userId) !== '0') {
+      auth = retryAuth;
+    } else if (!acc?.sessionExpired) {
+      const boot = await bootstrapSwiggyWebSessionFromAndroidTokens(acc, { force: true }).catch(() => null);
+      if (boot) auth = await getSwiggySessionAuth(acc, false).catch(() => null) || auth;
+    }
+  }
   if (!auth?.userId || String(auth.userId) === '0') {
     const isWaf = Boolean(auth?.isWaf || auth?.wafBlocked || /waf|challenge|captcha|cloudflare/i.test(String(auth?.statusMessage || '')));
     const reason = auth?.sessionExpired ? 'SESSION_EXPIRED' : (isWaf ? 'WAF_CHALLENGE' : 'AUTH_FAILED');
@@ -7634,6 +7726,10 @@ export async function inspectAccountOrderHistoryAndOffers(accKey, acc, { force =
       totalOrdersCount: typeof acc?.totalOrdersCount === 'number' && acc.ordersVerifiedLive && acc.totalOrdersCount !== 999999 ? acc.totalOrdersCount : 999999,
       isZeroOrderAccount: false,
       ordersVerifiedLive: false,
+      // Soft fail = ID zinda hai, Swiggy ne jawab nahi diya (WAF/network).
+      // UI ko isse "dead session" kehna mana hai.
+      softFail: !auth?.sessionExpired,
+      retryable: !auth?.sessionExpired,
       liveActiveOrdersCount: 0,
       hasZeroActiveOrders: true,
       superStatus: 'UNKNOWN',
@@ -8039,9 +8135,44 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
       }
     })
   );
-  const validPool = profilesList.filter(x => x.profile.valid && !x.acc?.sessionExpired && !x.acc?.isLoggedOut);
+  let validPool = profilesList.filter(x => x.profile.valid && !x.acc?.sessionExpired && !x.acc?.isLoggedOut);
+
+  // 🩺 MAINTENANCE (boss 30-10-2026): "0 order wali ID scan nahi ho rahi".
+  // Soft fail (WAF/network/timeout) ka matlab ID mari nahi hai — sirf jawab
+  // nahi mila. Aise IDs ko ek baar dobara scan karte hain (max 3), warna
+  // fresh 0-order ID chup-chaap pool se bahar ho jati thi.
+  {
+    const softFailEntries = profilesList
+      .map((x, idx) => ({ x, idx }))
+      .filter(({ x }) => x && !x.profile.valid && x.profile.softFail === true && !x.acc?.sessionExpired && !x.acc?.isLoggedOut)
+      .slice(0, 3);
+    for (const { x, idx } of softFailEntries) {
+      await new Promise((r) => setTimeout(r, 250));
+      const retried = await inspectAccountOrderHistoryAndOffers(x.key, x.acc, { force: true }).catch(() => null);
+      if (retried?.valid) {
+        profilesList[idx] = { key: x.key, acc: x.acc, profile: retried, retriedAfterSoftFail: true };
+      } else if (retried) {
+        profilesList[idx] = { ...x, profile: { ...retried, softFail: true, retryable: true } };
+      }
+    }
+    validPool = profilesList.filter(x => x.profile.valid && !x.acc?.sessionExpired && !x.acc?.isLoggedOut);
+  }
+
   if (validPool.length === 0) {
     const expiredPhones = profilesList.map(x => x.acc.phone || x.key).filter(Boolean);
+    const softCount = profilesList.filter(x => x.profile?.softFail === true).length;
+    if (softCount > 0) {
+      // Sach: ID zinda hai, Swiggy ne jawab nahi diya. "Expired" kehna jhooth hoga.
+      return {
+        success: false,
+        code: 'SCAN_SOFT_FAILED',
+        softFail: true,
+        retryable: true,
+        error: `Swiggy ne ${softCount} ID(s) par jawab nahi diya (WAF/network timeout) — ID mari nahi hai. ` +
+          `60 second baad dobara "Re-Scan" karein; bar-bar try karne se WAF aur sakht ho jata hai. ` +
+          `IDs: ${expiredPhones.join(', ') || 'vault'}`
+      };
+    }
     return {
       success: false,
       code: 'ALL_SESSIONS_EXPIRED',
@@ -8609,8 +8740,10 @@ export async function ensureOfoCartMode(account, order, {
         return out;
       }
     }
-    // Push ke baad LIVE cart padho — asli saboot yahi hai.
-    const readback = await swiggyCartGet(account, { lat: lat || '26.8658609', lng: lng || '80.9307755', timeoutMs: 6000 }).catch(() => null);
+    // Push ke baad LIVE cart padho — asli saboot yahi hai (response ka echo
+    // proof nahi, cart ka state proof hai). Timeout chhota rakha hai taaki
+    // bot kabhi na atke.
+    const readback = await swiggyCartGet(account, { lat: lat || '26.8658609', lng: lng || '80.9307755', timeoutMs: 3500 }).catch(() => null);
     const rbEcho = echoIn(readback?.json);
     const rbTotal = Number(readback?.json?.data?.cartMeta?.order_total || readback?.json?.data?.order_total || 0);
     if (rbEcho.length) {
