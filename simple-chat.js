@@ -25,7 +25,8 @@ export const SIMPLE_CHAT_CALLBACKS = {
   continueDraft: 'simple_continue',
   myOrder: 'simple_my_order',
   loginReady: 'simple_login_ready',
-  newOrder: 'simple_new_order'
+  newOrder: 'simple_new_order',
+  orderForOthers: 'simple_order_for_others'
 };
 
 /**
@@ -193,7 +194,8 @@ export function buildSimpleHomeScreen(draft = {}) {
   }
 
   const rows = [
-    [{ text: '📋 Cart + Address link paste karein', callback_data: SIMPLE_CHAT_CALLBACKS.pasteLinks, style: 'success' }]
+    [{ text: '📋 Cart + Address link paste karein', callback_data: SIMPLE_CHAT_CALLBACKS.pasteLinks, style: 'success' }],
+    [{ text: '👤 Order for Someone Else', callback_data: SIMPLE_CHAT_CALLBACKS.orderForOthers, style: 'primary' }]
   ];
   if (addressUnresolved) {
     // Fix it right here — the customer should never have to press Continue only
@@ -271,6 +273,8 @@ export function buildSimpleOrderCard(order) {
     const eta = String(order?.etaMinutes || '').trim();
     const isDelivered = /delivered/i.test(String(order?.liveOrderStatus || ''));
     const statusText = String(order?.liveOrderStatus || (isDelivered ? 'Delivered' : 'Order Confirmed')).trim();
+    const recipientName = String(order?.recipientName || order?.addressDetails?.name || '').trim();
+    const recipientMobile = String(order?.recipientMobile || order?.addressDetails?.mobile || '').replace(/\D/g, '').slice(-10);
 
     // ✅ Boss (30-10-2026): "...and then hogaya sab no other option" — yahi aakhri
     // screen hai: ek line + tracking button.
@@ -278,6 +282,7 @@ export function buildSimpleOrderCard(order) {
       isDelivered ? '🍽 <b>SAB HO GAYA</b> — Order Delivered! 🎉' : '✅ <b>SAB HO GAYA</b> — Order confirmed, tracking ready',
       '',
       `▤ <b>${rest}</b>`,
+      recipientName ? `👤 <b>Order for:</b> ${esc(shortText(recipientName, 40))}${recipientMobile ? ` · 📞 ${esc(recipientMobile)}` : ''}` : '',
       swiggyId ? `◉ <b>Swiggy ID:</b> <code>${esc(swiggyId)}</code>` : '',
       `◉ <b>Status:</b> <b>${esc(shortText(statusText, 45))}</b>`,
       partnerName ? `🛵 <b>Delivery Partner:</b> ${esc(partnerName)}` : '',
@@ -365,10 +370,13 @@ export function buildSimpleOrderCard(order) {
     const dlCb = deviceLoginCallbacks(order.id); // login help card me use hota hai (buildSimpleLoginHelpCard)
     // Bill par koi fee/verification line NAHI — customer ko lagta tha ki usse
     // order par paisa liya ja raha hai (boss 30-10-2026).
+    const recipientName = String(order?.recipientName || order?.addressDetails?.name || '').trim();
+    const recipientMobile = String(order?.recipientMobile || order?.addressDetails?.mobile || '').replace(/\D/g, '').slice(-10);
     const lines = [
       '🧾 <b>Confirm your order</b>',
       '',
       `▤ <b>${rest}</b>`,
+      recipientName ? `👤 <b>Order for:</b> ${esc(shortText(recipientName, 40))}${recipientMobile ? ` · 📞 ${esc(recipientMobile)}` : ''}` : '',
       ...items,
       addr ? `📍 ${esc(addr)}` : '',
       '',
@@ -419,6 +427,8 @@ export function buildSimpleTrackingMessage(order, { milestoneUpdate = false } = 
   const eta = String(order?.etaMinutes || '').trim();
   const isDelivered = /delivered/i.test(String(order?.liveOrderStatus || ''));
   const statusText = String(order?.liveOrderStatus || (isDelivered ? 'Delivered' : 'Order Confirmed')).trim();
+  const recipientName = String(order?.recipientName || order?.addressDetails?.name || '').trim();
+  const recipientMobile = String(order?.recipientMobile || order?.addressDetails?.mobile || '').replace(/\D/g, '').slice(-10);
 
   // ✅ Boss (30-10-2026): "...then hogaya sab" — yahi aakhri message hai.
   let title = '✅ <b>SAB HO GAYA</b> · tracking link aa gaya';
@@ -432,6 +442,7 @@ export function buildSimpleTrackingMessage(order, { milestoneUpdate = false } = 
     title,
     '',
     `▤ <b>${rest}</b>`,
+    recipientName ? `👤 <b>Order for:</b> ${esc(shortText(recipientName, 40))}${recipientMobile ? ` · 📞 ${esc(recipientMobile)}` : ''}` : '',
     swiggyId ? `◉ <b>Order:</b> <code>${esc(swiggyId)}</code>` : '',
     `◉ <b>Status:</b> <b>${esc(shortText(statusText, 45))}</b>`,
     partnerName ? `🛵 <b>Delivery Partner:</b> ${esc(partnerName)}` : '',

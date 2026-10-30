@@ -95,3 +95,4 @@ extracted_mp4_frames/
 !test_v82_ofo_placement.mjs
 !test_v83_ofo_proof_and_early_mode.mjs
 !test_v84_maintenance_and_zero_order_scan.mjs
+!test_v85_order_for_someone_else_e2e.mjs

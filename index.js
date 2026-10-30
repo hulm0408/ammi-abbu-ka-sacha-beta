@@ -1381,6 +1381,7 @@ function getUserScreen(userId, user) {
   const inlineButtons = [
     ...buildTopicNavKeyboardRows(1, 'draft'),
     [cartBtn, addressBtn],
+    [{ text: '👤 Order for Someone Else', callback_data: 'action_order_for_others', style: 'primary' }],
     [{ text: '🚀 Send to Beta', callback_data: 'action_send_to_boss', style: bothReady ? 'success' : 'primary' }],
     [{ text: '🆘 Admin se baat karein', callback_data: 'support_contact_admin', style: 'primary' }],
     [
@@ -9095,18 +9096,32 @@ bot.on('text', async (ctx, next) => {
     }
   }
 
+  if (state?.action === 'waiting_recipient_name' && !isBoss(userId)) {
+    const recipientName = rawText.trim().slice(0, 60);
+    if (!recipientName || recipientName.length < 2 || /^(cancel|close|back)$/i.test(recipientName)) {
+      delete userWaitState[userId];
+      await ctx.reply('✖ Naam sahi likhein (jaise: Rahul, Abbu, Sir):', { parse_mode: 'HTML' });
+      return;
+    }
+    const draft = getDraft(userId);
+    updateDraft(userId, { recipientName });
+    userWaitState[userId] = { action: 'waiting_recipient_mobile' };
+    await ctx.reply(
+      `✅ <b>${escapeHtml(recipientName)}</b> ke liye order\n\n` +
+      '<i>Uska <b>10-digit mobile number</b> bhejein — Swiggy tracking link + SMS isi number par aayega:</i>',
+      { parse_mode: 'HTML', reply_markup: { force_reply: true, selective: true, input_field_placeholder: '10-digit mobile number...' } }
+    ).catch(() => null);
+    return;
+  }
+
   if (state?.action === 'waiting_recipient_mobile' && !isBoss(userId)) {
     const recipientMobile = extractStandaloneMobileNumber(rawText);
     if (recipientMobile) {
       recordUserPhone(userId, recipientMobile);
       const draft = getDraft(userId);
-      if (!draft.addressDetails?.address) {
-        delete userWaitState[userId];
-        await ctx.reply('🟠 Pehle <b>Address link</b> ya Location bhejein 👇', { parse_mode: 'HTML' });
-        return;
-      }
-      const addressDetails = { ...draft.addressDetails, mobile: recipientMobile };
-      updateDraft(userId, { addressDetails });
+      const addressDetails = { ...(draft.addressDetails || {}), mobile: recipientMobile };
+      const recipientName = draft.recipientName || draft.addressDetails?.name || '';
+      updateDraft(userId, { addressDetails, recipientMobile, recipientName });
       delete userWaitState[userId];
       const updatedDraft = getDraft(userId);
       await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Mobile saved' });
@@ -11505,6 +11520,16 @@ async function handleSendToBoss(ctx) {
     newOrder.recipientMobile = newOrder.addressDetails.mobile;
     newOrder.deliveryPhone = newOrder.addressDetails.mobile;
   }
+  // 👤 ORDER FOR SOMEONE ELSE (professor 30-10-2026): draft se recipient details
+  // order par attach hote hain — tracking link + SMS recipient ke number par.
+  if (draft.recipientName) newOrder.recipientName = draft.recipientName;
+  if (draft.recipientMobile) {
+    newOrder.recipientMobile = draft.recipientMobile;
+    newOrder.deliveryPhone = draft.recipientMobile;
+    if (newOrder.addressDetails) {
+      newOrder.addressDetails = { ...newOrder.addressDetails, mobile: draft.recipientMobile, name: draft.recipientName || newOrder.addressDetails?.name || '' };
+    }
+  }
 
   // Loophole fix: block ₹0 empty orders (e.g. tracking link mis-parsed as cart)
   const hasItems = Array.isArray(newOrder.items) && newOrder.items.length > 0;
@@ -11690,6 +11715,28 @@ bot.action(SIMPLE_CHAT_CALLBACKS.pasteLinks, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await promptSimpleBothLinks(ctx);
 });
+
+// ── 👤 ORDER FOR SOMEONE ELSE (professor 30-10-2026) ─────────────────────────
+// "uspar click karne par uska name and mobile number daalne ka option aata".
+// Pehle naam, phir mobile — dono draft me save hote hain. Order creation par
+// recipientName/recipientMobile attach hote hain, jisse OFO cart mode (tracking
+// link) aur SMS recipient ke number par jaati hai.
+async function startOrderForSomeoneElse(ctx) {
+  const userId = ctx.from.id;
+  delete userWaitState[userId];
+  userWaitState[userId] = { action: 'waiting_recipient_name' };
+  await ctx.reply(
+    '👤 <b>Order for Someone Else</b>\n\n' +
+    '<i>Kaun ke liye order hai? Naam likhein (jaise: Rahul, Abbu, Sir):</i>',
+    {
+      parse_mode: 'HTML',
+      reply_markup: { force_reply: true, selective: true, input_field_placeholder: 'Recipient name...' }
+    }
+  ).catch(() => null);
+}
+
+bot.action('action_order_for_others', startOrderForSomeoneElse);
+bot.action(SIMPLE_CHAT_CALLBACKS.orderForOthers, startOrderForSomeoneElse);
 
 bot.action(SIMPLE_CHAT_CALLBACKS.continueDraft, async (ctx) => {
   await ctx.answerCbQuery('Bill check kar raha hoon…').catch(() => {});
