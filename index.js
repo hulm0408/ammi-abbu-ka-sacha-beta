@@ -189,7 +189,7 @@ import { scanFailuresLine } from './scan-diagnostics.js';
 import * as wafPool from './waf-pool.js';
 import * as cart from './swiggy-cart.js';
 import * as tracking from './order-tracking.js';
-import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
+import { sendPaymentLinkSms } from './sms-notify.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, autoActivateEventOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
   getOrderCurrentTopic,
@@ -1381,6 +1381,7 @@ function getUserScreen(userId, user) {
   const inlineButtons = [
     ...buildTopicNavKeyboardRows(1, 'draft'),
     [cartBtn, addressBtn],
+    [{ text: '👤 Order for Someone Else', callback_data: 'action_order_for_others', style: 'primary' }],
     [{ text: '🚀 Send to Beta', callback_data: 'action_send_to_boss', style: bothReady ? 'success' : 'primary' }],
     [{ text: '🆘 Admin se baat karein', callback_data: 'support_contact_admin', style: 'primary' }],
     [
@@ -9095,18 +9096,32 @@ bot.on('text', async (ctx, next) => {
     }
   }
 
+  if (state?.action === 'waiting_recipient_name' && !isBoss(userId)) {
+    const recipientName = rawText.trim().slice(0, 60);
+    if (!recipientName || recipientName.length < 2 || /^(cancel|close|back)$/i.test(recipientName)) {
+      delete userWaitState[userId];
+      await ctx.reply('✖ Naam sahi likhein (jaise: Rahul, Abbu, Sir):', { parse_mode: 'HTML' });
+      return;
+    }
+    const draft = getDraft(userId);
+    updateDraft(userId, { recipientName });
+    userWaitState[userId] = { action: 'waiting_recipient_mobile' };
+    await ctx.reply(
+      `✅ <b>${escapeHtml(recipientName)}</b> ke liye order\n\n` +
+      '<i>Uska <b>10-digit mobile number</b> bhejein — Swiggy tracking link + SMS isi number par aayega:</i>',
+      { parse_mode: 'HTML', reply_markup: { force_reply: true, selective: true, input_field_placeholder: '10-digit mobile number...' } }
+    ).catch(() => null);
+    return;
+  }
+
   if (state?.action === 'waiting_recipient_mobile' && !isBoss(userId)) {
     const recipientMobile = extractStandaloneMobileNumber(rawText);
     if (recipientMobile) {
       recordUserPhone(userId, recipientMobile);
       const draft = getDraft(userId);
-      if (!draft.addressDetails?.address) {
-        delete userWaitState[userId];
-        await ctx.reply('🟠 Pehle <b>Address link</b> ya Location bhejein 👇', { parse_mode: 'HTML' });
-        return;
-      }
-      const addressDetails = { ...draft.addressDetails, mobile: recipientMobile };
-      updateDraft(userId, { addressDetails });
+      const addressDetails = { ...(draft.addressDetails || {}), mobile: recipientMobile };
+      const recipientName = draft.recipientName || draft.addressDetails?.name || '';
+      updateDraft(userId, { addressDetails, recipientMobile, recipientName });
       delete userWaitState[userId];
       const updatedDraft = getDraft(userId);
       await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Mobile saved' });
@@ -10562,8 +10577,8 @@ bot.on('text', async (ctx, next) => {
           ...Markup.inlineKeyboard([[Markup.button.url('Open Swiggy tracking', trackingUrl)]])
         }
       );
-      // Also trigger SMS to recipient's phone (mirrors Telegram notification)
-      sendParentSmsNotification(order, trackingUrl).catch(() => {});
+      // 📱 SMS band — Swiggy khud recipient ke number par SMS + tracking link bhejta hai
+      // (OFO order hone par). Bot false claim nahi karega.
       await ctx.reply(`✓ <b>Swiggy tracking link sent to ${escapeHtml(order.userName || 'customer')}.</b>`, { parse_mode: 'HTML' });
     } catch (err) {
       await ctx.reply(`! Failed to send tracking: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
@@ -11409,7 +11424,15 @@ async function handleSendToBoss(ctx) {
     }
   }
   if (explicitRecipientMobile) deliveryDetails.mobile = explicitRecipientMobile;
-  updateDraft(userId, { addressDetails: deliveryDetails });
+  // 👤 AUTO-FILL FROM ADDRESS LINK (professor 30-10-2026): "order for others
+  // wali field address link se auto fill hoga" — jab address link resolve
+  // hota hai to recipient name + mobile draft me save hote hain (Agar user
+  // ne pehle se "Order for Someone Else" flow se fill nahi kara).
+  const autoRecipient = {
+    ...(deliveryDetails.name && !draft.recipientName ? { recipientName: deliveryDetails.name } : {}),
+    ...(deliveryDetails.mobile && !draft.recipientMobile ? { recipientMobile: deliveryDetails.mobile } : {})
+  };
+  updateDraft(userId, { addressDetails: deliveryDetails, ...autoRecipient });
   draft = getDraft(userId);
 
   const db = getDb();
@@ -11504,6 +11527,16 @@ async function handleSendToBoss(ctx) {
   if (newOrder.addressDetails?.mobile) {
     newOrder.recipientMobile = newOrder.addressDetails.mobile;
     newOrder.deliveryPhone = newOrder.addressDetails.mobile;
+  }
+  // 👤 ORDER FOR SOMEONE ELSE (professor 30-10-2026): draft se recipient details
+  // order par attach hote hain — tracking link + SMS recipient ke number par.
+  if (draft.recipientName) newOrder.recipientName = draft.recipientName;
+  if (draft.recipientMobile) {
+    newOrder.recipientMobile = draft.recipientMobile;
+    newOrder.deliveryPhone = draft.recipientMobile;
+    if (newOrder.addressDetails) {
+      newOrder.addressDetails = { ...newOrder.addressDetails, mobile: draft.recipientMobile, name: draft.recipientName || newOrder.addressDetails?.name || '' };
+    }
   }
 
   // Loophole fix: block ₹0 empty orders (e.g. tracking link mis-parsed as cart)
@@ -11690,6 +11723,42 @@ bot.action(SIMPLE_CHAT_CALLBACKS.pasteLinks, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await promptSimpleBothLinks(ctx);
 });
+
+// ── 👤 ORDER FOR SOMEONE ELSE (professor 30-10-2026) ─────────────────────────
+// "uspar click karne par uska name and mobile number daalne ka option aata".
+// Pehle naam, phir mobile — dono draft me save hote hain. Order creation par
+async function startOrderForSomeoneElse(ctx) {
+  const userId = ctx.from.id;
+  const draft = getDraft(userId);
+  // 👤 AUTO-FILL FROM ADDRESS LINK: agar address link se recipient name +
+  // mobile pehle se draft me hain, to puchna skip karo aur cart bhejne ko bolo.
+  if (draft.recipientName && draft.recipientMobile) {
+    delete userWaitState[userId];
+    await ctx.reply(
+      `👤 <b>Order for Someone Else</b>\n\n` +
+      `<i>Address link se auto-fill hua hai:</i>\n\n` +
+      `<b>Naam:</b> ${escapeHtml(draft.recipientName)}\n` +
+      `<b>Mobile:</b> ${escapeHtml(draft.recipientMobile)}\n\n` +
+      '<i>Cart link bhejein:</i>',
+      { parse_mode: 'HTML' }
+    ).catch(() => null);
+    return;
+  }
+  // Pehle naam, phir mobile — dono draft me save hote hain. Order creation par
+  delete userWaitState[userId];
+  userWaitState[userId] = { action: 'waiting_recipient_name' };
+  await ctx.reply(
+    '👤 <b>Order for Someone Else</b>\n\n' +
+    '<i>Kaun ke liye order hai? Naam likhein (jaise: Rahul, Abbu, Sir):</i>',
+    {
+      parse_mode: 'HTML',
+      reply_markup: { force_reply: true, selective: true, input_field_placeholder: 'Recipient name...' }
+    }
+  ).catch(() => null);
+}
+
+bot.action('action_order_for_others', startOrderForSomeoneElse);
+bot.action(SIMPLE_CHAT_CALLBACKS.orderForOthers, startOrderForSomeoneElse);
 
 bot.action(SIMPLE_CHAT_CALLBACKS.continueDraft, async (ctx) => {
   await ctx.answerCbQuery('Bill check kar raha hoon…').catch(() => {});

@@ -43,6 +43,7 @@ try {
     isLoggedIn: true,
     totalOrdersCount: 0,
     cachedTotalOrdersCount: 0,
+    ordersVerifiedLive: true,
     cookies: '_session_tid=fake_session; token=fake_token;',
     token: 'fake_token'
   };
@@ -60,6 +61,7 @@ try {
     isLoggedIn: true,
     totalOrdersCount: 5,
     cachedTotalOrdersCount: 5,
+    ordersVerifiedLive: true,
     cookies: '_session_tid=fake_session; token=fake_token;',
     token: 'fake_token'
   };
@@ -86,10 +88,10 @@ try {
   const mockOrderProfileFn = async (accKey, accObj) => {
     orderProfileCallArgs = { accKey, accObj };
     if (accObj.phone === '9111111111') {
-      return { valid: true, totalOrdersCount: 0, isZeroOrderAccount: true };
+      return { valid: true, totalOrdersCount: 0, isZeroOrderAccount: true, ordersVerifiedLive: true };
     }
     if (accObj.phone === '9222222222') {
-      return { valid: true, totalOrdersCount: 3, isZeroOrderAccount: false };
+      return { valid: true, totalOrdersCount: 3, isZeroOrderAccount: false, ordersVerifiedLive: true };
     }
     return { valid: false, reason: 'SESSION_EXPIRED', error: 'Swiggy session expired' };
   };

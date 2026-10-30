@@ -25,7 +25,7 @@ import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { OFFER_TRACKS } from './account-views.js';
 import { lockAccountToOrder, releaseAccountLock } from './order-account-lock.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
-import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
+import { sendPaymentLinkSms } from './sms-notify.js';
 import { startOrderTrackingAuto, ensureOrderTracking, isTerminalDeliveryStatus } from './order-tracking.js';
 import {
   detectRecipientRole,
@@ -1770,15 +1770,13 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
     db.orders[order.id] = order;
     saveDb(db);
     if (trackingUrl || order.swiggyOrderId || order.id) {
-      sendParentSmsNotification(order, trackingUrl).catch(() => {});
-      sendDirectOrderSms(order).catch(()=>{});
+      // 📱 SMS band — Swiggy khud recipient ke number par SMS + tracking link bhejta hai.
+      // Bot SMS gateway use nahi karta (false claim nahi).
     }
     return true;
   } catch {
-    // SMS fallback
-    if (trackingUrl || order.swiggyOrderId) {
-      sendParentSmsNotification(order, trackingUrl).catch(() => {});
-    }
+    // SMS fallback — band (Swiggy khud bhejega)
+
     return false;
   }
 }
@@ -2948,9 +2946,8 @@ export async function handleBossForwardedOrderInput(
               targetOrder.shareTrackUrl = '';
               if (!targetOrder.swiggyOrderId && targetOrder.pendingSwiggyOrderId) targetOrder.swiggyOrderId = targetOrder.pendingSwiggyOrderId;
               upsertOrder(targetOrder.id, targetOrder);
-              // Send SMS only to recipient — Telegram DM disabled per user request
-              sendParentSmsNotification(targetOrder, trackingUrl).catch(()=>{});
-              sendDirectOrderSms(targetOrder).catch(()=>{});
+              // SMS band — Swiggy khud recipient ke number par bhejta hai
+
               try {
                 await ctx.reply(`✓ Tracking link attached to ${targetOrder.id} — SMS sent to recipient (Telegram disabled).`).catch(()=>{});
               } catch(e){}
@@ -3082,7 +3079,7 @@ export async function handleBossForwardedOrderInput(
         const freshDb = getDb();
         await postOrReplaceForwardedCard(ctx.telegram, ctx.chat.id, order, freshDb, formatOrderBodyFn);
         // Direct SMS to registered mobile on order creation (rare bot feature)
-        sendDirectOrderSms(order).catch(()=>{});
+        // SMS band — Swiggy khud bhejega
         const targetOrderId = order.id;
         const targetChatId = ctx.chat.id;
         try {
