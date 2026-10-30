@@ -187,6 +187,8 @@ import {
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { scanFailuresLine } from './scan-diagnostics.js';
 import * as wafPool from './waf-pool.js';
+import * as cart from './swiggy-cart.js';
+import * as tracking from './order-tracking.js';
 import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, autoActivateEventOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
@@ -254,6 +256,13 @@ import {
   getOfoResolutionFailureReason,
   clearOfoResolutionFailures
 } from './swiggy-cart.js';
+import {
+  runMaintenance,
+  getMaintenanceSnapshot,
+  formatMaintenanceCard,
+  startMaintenanceLoop,
+  getEventLoopLagMs
+} from './bot-maintenance.js';
 import {
   extractForwardSenderInfo,
   looksLikeBossOrderInput,
@@ -2524,6 +2533,52 @@ bot.command('waf', async (ctx) => {
     (s.cooldownMin > 0 ? `▪ Cooldown: <b>${s.cooldownMin} min</b> (scans paused, phir khud resume honge)` : '▪ Cooldown: nahi (scans active)'),
     { parse_mode: 'HTML' }
   );
+});
+
+// ---------------------------------------------------------------------------
+// 🩺 MAINTENANCE (boss 30-10-2026: "bot ko maintenance kar jaldi se hang hogaya hai")
+// ---------------------------------------------------------------------------
+async function runMaintenanceForBoss(ctx, { dryRun = false } = {}) {
+  const report = await runMaintenance({ cart, tracking }, { reason: 'BOSS_TAP', dryRun }).catch(() => null);
+  const snapshot = getMaintenanceSnapshot();
+  const text = [
+    formatMaintenanceCard(snapshot),
+    '',
+    report ? `◉ <b>Abhi:</b> ${[
+      report.locksReleased?.length ? `${report.locksReleased.length} lock free` : '',
+      report.reservationsReleased?.length ? `${report.reservationsReleased.length} ID reservation free` : '',
+      report.scansReset ? `${report.scansReset} scan reset` : ''
+    ].filter(Boolean).join(' · ') || 'kuch atka nahi mila'}` : '⚠ Report nahi bana',
+    dryRun ? '<i>(sirf check — kuch change nahi kiya)</i>' : ''
+  ].filter(Boolean).join('\n');
+  return { text, keyboard: { inline_keyboard: [[
+    { text: '🧹 Clean Up Now', callback_data: 'boss_maintenance_heal', style: 'primary' },
+    { text: '↻ Refresh', callback_data: 'boss_maintenance' }
+  ], [
+    { text: '★ Boss Panel', callback_data: 'boss_panel_home' }
+  ]] } };
+}
+
+bot.command(['maintenance', 'maintain', 'heal'], async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.reply('Unauthorized: Boss only');
+  const out = await runMaintenanceForBoss(ctx, { dryRun: false });
+  return ctx.reply(out.text, { parse_mode: 'HTML', reply_markup: out.keyboard }).catch(() => {});
+});
+
+bot.action('boss_maintenance', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+  const out = await runMaintenanceForBoss(ctx, { dryRun: false });
+  await ctx.answerCbQuery('Maintenance checked').catch(() => {});
+  return ctx.reply(out.text, { parse_mode: 'HTML', reply_markup: out.keyboard }).catch(() => {});
+});
+
+bot.action('boss_maintenance_heal', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+  const report = await runMaintenance({ cart, tracking }, { reason: 'BOSS_HEAL' }).catch(() => null);
+  const freed = (report?.locksReleased?.length || 0) + (report?.reservationsReleased?.length || 0) + (report?.scansReset || 0);
+  await ctx.answerCbQuery(freed > 0 ? `${freed} atki cheez free ki` : 'Kuch atka nahi tha').catch(() => {});
+  const out = await runMaintenanceForBoss(ctx, { dryRun: true });
+  return ctx.reply(out.text, { parse_mode: 'HTML', reply_markup: out.keyboard }).catch(() => {});
 });
 
 bot.command('help', async (ctx) => {
@@ -16106,6 +16161,27 @@ async function startBotWithRetry() {
         console.log('⚙ Telegram Swiggy Real OTP Flow Bot is running live!');
         startWafKeepWarmLoop();
         startAutoEventOffersPrebookLoop();
+        // 🩺 Maintenance loop: bot khud ko sambhalta rahe — atke locks,
+        // purani reservations aur phansi scans har 60s me saaf.
+        startMaintenanceLoop({ cart, tracking, db: getDb, saveDb }, {
+          intervalMs: 60_000,
+          onReport: async (report) => {
+            const freed = (report.locksReleased?.length || 0) + (report.reservationsReleased?.length || 0) + (report.scansReset || 0);
+            if (freed <= 0) return;
+            for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
+              await bot.telegram.sendMessage(
+                bossId,
+                `🧹 <b>MAINTENANCE</b> — bot ne khud ${freed} atki cheez free ki:\n` +
+                [
+                  report.locksReleased?.length ? `• ${report.locksReleased.length} ID lock` : '',
+                  report.reservationsReleased?.length ? `• ${report.reservationsReleased.length} ID reservation` : '',
+                  report.scansReset ? `• ${report.scansReset} tracking scan` : ''
+                ].filter(Boolean).join('\n'),
+                { parse_mode: 'HTML' }
+              ).catch(() => {});
+            }
+          }
+        });
         if (process.env.PREWARM_CHROME === 'true') {
           console.log('! Priming pre-warmed Chrome for instant OTP in background...');
           prewarmBrowser().catch(e => console.log('Prewarm init note:', e.message));

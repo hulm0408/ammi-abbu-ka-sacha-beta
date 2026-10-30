@@ -69,7 +69,8 @@ const TESTS = [
   "test_v80_phone_login_truth_e2e.mjs",
   "test_v81_fee_qr_then_order_qr_e2e.mjs",
   "test_v82_ofo_placement.mjs",
-  "test_v83_ofo_proof_and_early_mode.mjs"
+  "test_v83_ofo_proof_and_early_mode.mjs",
+  "test_v84_maintenance_and_zero_order_scan.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];
