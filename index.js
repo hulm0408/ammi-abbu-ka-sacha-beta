@@ -189,7 +189,7 @@ import { scanFailuresLine } from './scan-diagnostics.js';
 import * as wafPool from './waf-pool.js';
 import * as cart from './swiggy-cart.js';
 import * as tracking from './order-tracking.js';
-import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
+import { sendPaymentLinkSms } from './sms-notify.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, autoActivateEventOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
   getOrderCurrentTopic,
@@ -10577,8 +10577,8 @@ bot.on('text', async (ctx, next) => {
           ...Markup.inlineKeyboard([[Markup.button.url('Open Swiggy tracking', trackingUrl)]])
         }
       );
-      // Also trigger SMS to recipient's phone (mirrors Telegram notification)
-      sendParentSmsNotification(order, trackingUrl).catch(() => {});
+      // 📱 SMS band — Swiggy khud recipient ke number par SMS + tracking link bhejta hai
+      // (OFO order hone par). Bot false claim nahi karega.
       await ctx.reply(`✓ <b>Swiggy tracking link sent to ${escapeHtml(order.userName || 'customer')}.</b>`, { parse_mode: 'HTML' });
     } catch (err) {
       await ctx.reply(`! Failed to send tracking: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
@@ -11424,7 +11424,15 @@ async function handleSendToBoss(ctx) {
     }
   }
   if (explicitRecipientMobile) deliveryDetails.mobile = explicitRecipientMobile;
-  updateDraft(userId, { addressDetails: deliveryDetails });
+  // 👤 AUTO-FILL FROM ADDRESS LINK (professor 30-10-2026): "order for others
+  // wali field address link se auto fill hoga" — jab address link resolve
+  // hota hai to recipient name + mobile draft me save hote hain (Agar user
+  // ne pehle se "Order for Someone Else" flow se fill nahi kara).
+  const autoRecipient = {
+    ...(deliveryDetails.name && !draft.recipientName ? { recipientName: deliveryDetails.name } : {}),
+    ...(deliveryDetails.mobile && !draft.recipientMobile ? { recipientMobile: deliveryDetails.mobile } : {})
+  };
+  updateDraft(userId, { addressDetails: deliveryDetails, ...autoRecipient });
   draft = getDraft(userId);
 
   const db = getDb();
@@ -11719,10 +11727,24 @@ bot.action(SIMPLE_CHAT_CALLBACKS.pasteLinks, async (ctx) => {
 // ── 👤 ORDER FOR SOMEONE ELSE (professor 30-10-2026) ─────────────────────────
 // "uspar click karne par uska name and mobile number daalne ka option aata".
 // Pehle naam, phir mobile — dono draft me save hote hain. Order creation par
-// recipientName/recipientMobile attach hote hain, jisse OFO cart mode (tracking
-// link) aur SMS recipient ke number par jaati hai.
 async function startOrderForSomeoneElse(ctx) {
   const userId = ctx.from.id;
+  const draft = getDraft(userId);
+  // 👤 AUTO-FILL FROM ADDRESS LINK: agar address link se recipient name +
+  // mobile pehle se draft me hain, to puchna skip karo aur cart bhejne ko bolo.
+  if (draft.recipientName && draft.recipientMobile) {
+    delete userWaitState[userId];
+    await ctx.reply(
+      `👤 <b>Order for Someone Else</b>\n\n` +
+      `<i>Address link se auto-fill hua hai:</i>\n\n` +
+      `<b>Naam:</b> ${escapeHtml(draft.recipientName)}\n` +
+      `<b>Mobile:</b> ${escapeHtml(draft.recipientMobile)}\n\n` +
+      '<i>Cart link bhejein:</i>',
+      { parse_mode: 'HTML' }
+    ).catch(() => null);
+    return;
+  }
+  // Pehle naam, phir mobile — dono draft me save hote hain. Order creation par
   delete userWaitState[userId];
   userWaitState[userId] = { action: 'waiting_recipient_name' };
   await ctx.reply(

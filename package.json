@@ -1,7 +1,7 @@
 {
   "name": "ammi-abbu-ka-sacha-beta",
   "version": "2.0.0",
-  "description": "Ammi Abbu Ka Sacha Beta \u2014 Live Swiggy Address Fetching, Cart Sync & Slot Order Bot",
+  "description": "Ammi Abbu Ka Sacha Beta — Live Swiggy Address Fetching, Cart Sync & Slot Order Bot",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -16,7 +16,7 @@
   "dependencies": {
     "dotenv": "^16.4.7",
     "jsqr": "^1.4.0",
-    "puppeteer-core": "^25.14.0",
+    "puppeteer-core": "^25.16.0",
     "qrcode": "^1.5.4",
     "telegraf": "^4.16.3"
   },
