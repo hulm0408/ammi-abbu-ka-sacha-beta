@@ -63,11 +63,15 @@ const makeOrder = (over = {}) => ({
 let cartTotal = 523;
 let cartFail = null;
 let lastCartBody = null;
+let echoOfo = false;
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
   if (u.includes('/cart/client')) {
-    if (opts.body) lastCartBody = JSON.parse(opts.body);
+    if (opts.body) {
+      lastCartBody = JSON.parse(opts.body);
+      echoOfo = Boolean(lastCartBody.is_order_for_someone_else);
+    }
     const json = cartFail
       ? { statusCode: Number(cartFail.code || 1), statusMessage: String(cartFail.message || 'cart failed') }
       : {
@@ -77,7 +81,9 @@ globalThis.fetch = async (url, opts = {}) => {
           cartMeta: {
             order_total: cartTotal,
             cart_menu_items: [{ menu_item_id: 11, quantity: 2 }],
-            cart_total_count: 2
+            cart_total_count: 2,
+            // Swiggy OFO accept kare to cart me markers wapas aate hain (asli proof)
+            ...(echoOfo ? { is_order_for_someone_else: true, alternate_mobile: '9123456780' } : {})
           }
         }
       };

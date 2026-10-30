@@ -14343,9 +14343,16 @@ async function approveUserOrderBillActionInner(uidStr, orderId) {
   // 📦 OFO truth: QR bana matlab order place hua — par OFO hua ya nahi, yeh
   // response se pata chalta hai. Jhooth nahi: jo mila wahi boss ko.
   try {
+    const proof = String(updated.ofoCart?.proof || 'NONE');
+    const proofHinglish = {
+      CART_READBACK: 'live cart ne OFO wapas dikhaya (pakka)',
+      PUSH_ECHO: 'Swiggy ne response me OFO echo kiya',
+      NONE: 'koi OFO saboot nahi',
+      REVERTED: 'bill badhne se revert kiya'
+    }[proof] || proof;
     const ofoLine = updated.ofoPlaced
-      ? '✅ OFO (order for others) — tracking link isi order se aayega'
-      : `❌ OFO confirm nahi hua — ${updated.ofoWarning || updated.ofoCart?.reason || 'Swiggy ne OFO flag accept nahi kiya'} → tracking link nahi aayega`;
+      ? `✅ OFO (order for others) — ${proofHinglish}. Tracking link isi order se aayega`
+      : `❌ OFO confirm nahi hua (${proofHinglish}) — ${updated.ofoWarning || updated.ofoCart?.reason || 'Swiggy ne OFO flag accept nahi kiya'} → tracking link nahi aayega`;
     for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
       await bot.telegram.sendMessage(
         bossId,
