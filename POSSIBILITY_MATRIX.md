@@ -385,3 +385,32 @@ alerts, `safetyLine`), `identity-snapshot.js` (`reviveDead` option), `swiggy-pro
 badalna**, warna backup khud ruk jayega (data mitega nahi, par naya backup nahi jayega).
 
 **Test:** `test_v113_no_data_erase.mjs` — **17/17**.
+
+---
+
+## N. Sirf UTR se poori payment detail (Round 25)
+
+**Boss:** "UPI payment agar me track karna chahta ... bas usse UTR lunga aur UTR se sab details
+nikaalunga — isne pay kia abhi ya old, ya kisi aur ko, aur kitna."
+
+User se sirf **UTR** liya jata hai. Us UTR par server khud ye sab nikaalta hai (`utr-truth.js`):
+
+| Cheez | Kaise nikalti hai |
+|---|---|
+| **Kitna** | provider/statement ka asli amount (`amountPaise`), ₹ text me — user ka likha amount alag column me |
+| **Kab (abhi ya old)** | payment ka asli timestamp → `JUST_NOW` (<5 min) / `RECENT` / `TODAY` / `DAYS` / `OLD` (>7 din) / `UNKNOWN` + "2 min pehle", "30 din pehle" |
+| **Kisko** | payee naam + VPA ko boss ke naam/VPA (`mius@ybl`) se match — "paisa humein aaya" ya "kisi AUR ko gaya (naam/VPA)" |
+| **Kaun bheja** | payer ka naam/VPA (provider de to), warna `missing` me "payer chahiye" |
+| **Status** | SUCCESS / PENDING / FAILED / reversal — asli shabd ke saath |
+| **Pehle use hua?** | global UTR ledger se — kis user ke hisaab me, kab |
+| **Faisla** | wahi round-20 policy (`evaluateUtrCredit`): CREDIT / PENDING / REJECT + kyun |
+| **Kya kya chahiye** | jo field provider ne nahi di (time/payer/payee/amount/provider URL) — saaf list |
+
+Kahan dikhta hai:
+* **Claim response** — `utrTruth` (amount, asked, when, payee, payer, status, verdict, checklist rows).
+* **Boss panel → "UTR se payment track"** — koi bhi UTR daalo, poora sach + faisla + kya chahiye.
+* **`POST /pro/api/boss/utr`** (sirf boss) — `{utr}` ya `?utr=`; `{truth, bossLine, ledger, claim,
+  history, lastTrackedAt}`.
+* Har lookup `config.utrLookups` me yaad rehta hai (500 tak) — baad me bhi poochha ja sake.
+
+**Test:** `test_v114_utr_truth.mjs` — **17/17**.

@@ -29,6 +29,7 @@
  */
 import { evaluateUtrCredit } from './upi-credit-policy.js';
 import { fetchUtrPaymentDetails, describeLookup } from './utr-lookup.js';
+import { describeUtrPayment } from './utr-truth.js';
 
 /** ₹15 default; env se badla ja sakta hai (`SERVICE_FEE_PAISE=1500`). */
 export function serviceFeePaise() {
@@ -651,6 +652,23 @@ export async function submitTopupRequest(db, {
       at
     });
     req.paymentEvidence = payment ? { source: payment.source || '', amountPaise: Number(payment.amountPaise) || 0, payee: payment.payeeName || payment.payeeVpa || '', ref: payment.ref || '' } : null;
+    // Round 25 (boss): "UTR SE SAB DETAILS NIKAALUNGA — ABHI YA OLD, KISI AUR KO,
+    // AUR KITNA". Poora sach request par hi rehta hai (kitna aaya, kab, kisko,
+    // kaun bheja, status, kya kya chahiye).
+    const truth = describeUtrPayment({
+      utr: checked.utr, payment, lookup, intent: { amountPaise: amount, createdAt: Date.parse(req.at || '') || at },
+      claimedPaise: amount, now: at, autoMaxPaise
+    });
+    req.utrTruth = {
+      amountPaise: truth.amountPaise, amountLine: truth.amountLine,
+      askedPaise: truth.askedPaise, askedLine: truth.askedLine,
+      paidAt: truth.paidAt, freshness: truth.freshness, whenLine: truth.whenLine,
+      payeeLine: truth.payee.line, payeeOurs: truth.payee.isOurs,
+      payerLine: truth.payer.line, statusLine: truth.statusLine,
+      verdictAction: truth.verdict.action, verdictCode: truth.verdict.code,
+      summaryLine: truth.summaryLine, bossLine: truth.bossLine,
+      checklist: truth.checklist, missing: truth.missing
+    };
     if (decision.action === 'CREDIT') {
       const credit = creditWallet(db, userId, decision.creditedPaise, {
         reason: `Top-up verified: UTR ${checked.utr} — ${decision.reason}`.slice(0, 240),
@@ -675,7 +693,7 @@ export async function submitTopupRequest(db, {
       req.reason = decision.reason;
       return {
         ok: true, code: 'AUTO_VERIFIED', request: req, balancePaise: credit.balancePaise,
-        verifiedBy: decision.verifiedBy, creditedPaise: decision.creditedPaise
+        verifiedBy: decision.verifiedBy, creditedPaise: decision.creditedPaise, utrTruth: req.utrTruth
       };
     }
     if (decision.action === 'REJECT') {
@@ -687,13 +705,13 @@ export async function submitTopupRequest(db, {
       req.reviewedBy = 'verify';
       req.reason = decision.reason;
       req.providerReason = decision.reason;
-      return { ok: false, code: decision.code, reason: decision.reason, request: req, balancePaise: walletBalancePaise(db, userId) };
+      return { ok: false, code: decision.code, reason: decision.reason, request: req, balancePaise: walletBalancePaise(db, userId), utrTruth: req.utrTruth };
     }
     req.providerReason = decision.reason;
     req.verifyPendingReason = decision.reason;
   }
 
-  return { ok: true, code: 'PENDING', request: req, balancePaise: walletBalancePaise(db, userId) };
+  return { ok: true, code: 'PENDING', request: req, balancePaise: walletBalancePaise(db, userId), utrTruth: req.utrTruth || null };
 }
 
 /** Boss ne UTR approve kiya → balance jama. Idempotent. */

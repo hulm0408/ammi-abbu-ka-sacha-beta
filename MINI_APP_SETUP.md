@@ -682,3 +682,34 @@ git history me hamesha pada rehta hai.
 `test_v113_no_data_erase.mjs` **17 checks** (pure faisla 5, network push/restore 9, workspace guard 3,
 boss API 1). Sweep: guards **81/81 (162s)**, `npm test` **132/132**, `test:pro` **41/41**,
 v111 17/17, v112 12/12.
+
+## Round 25 (31-10-2026): UTR se sab details — "abhi ya old, kisi aur ko, kitna"
+
+Boss: *"UPI payment agar me track karna chahta like user ne kitna pay kia ... bas usse UTR lunga
+and UTR se sab details nikaalunga."*
+
+Naya module **`utr-truth.js`** (pure): `describeUtrPayment()` ek UTR ke payment se poora sach
+banata hai —
+* kitna aaya + user ne kitna bola tha (dono alag),
+* kab aaya (`JUST_NOW` / `RECENT` / `TODAY` / `DAYS` / `OLD` / `UNKNOWN`, "2 min pehle" style),
+* kisko aaya (payee naam + VPA match → "humein aaya" / "kisi AUR ko gaya"),
+* kaun bheja (payer naam/VPA),
+* status (SUCCESS/PENDING/FAILED),
+* ye UTR pehle use hua ya nahi (ledger + kis user ke hisaab me),
+* faisla (`evaluateUtrCredit` wahi round-20 policy) aur **kya kya chahiye** list.
+
+Wiring:
+* `user-wallet.js` — har claim par `req.utrTruth` (amount/asked/when/payee/payer/status/verdict/checklist).
+* `swiggy-pro-api.js` — claim response me `utrTruth`; naya boss endpoint `POST /pro/api/boss/utr`
+  (GET `?utr=` bhi), har lookup `config.utrLookups` me yaad.
+* `swiggy-pro-app.js` — boss ke Tools me **"UTR se payment track"** card (12-digit UTR + button +
+  checklist rows + faisla pill + "chahiye" line); claim ke baad user ko bhi summary line.
+* `utr-lookup.js` — provider ke `payerVpa` bhi padhe jate hain.
+
+### Boss ke liye
+Kuch add nahi karna — jo UTR set hai wahi. Bas panel me UTR daal kar dekho: kitna, kab, kisko,
+kaun bheja, credit hoga ya nahi.
+
+### Tests
+`test_v114_utr_truth.mjs` **17 checks**. Sweep: guards **82/82 (148s)**, `npm test` **132/132**,
+`test:pro` **41/41**, v112 12/12, v113 17/17.

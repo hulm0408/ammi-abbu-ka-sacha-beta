@@ -16,6 +16,7 @@
     track: null, trackData: null, trackError: '', trackBusy: false,
     // Boss (31-10-2026, round 11): wallet ₹15 gate + UPI top-up.
     wallet: null, walletTopup: null, walletSheet: false, walletClaimBusy: false, walletUpiEdit: false,
+    utrTrack: null, utrTrackBusy: false, walletClaimTruth: null,
     // Boss (31-10-2026, round 13): 2 minute idle → draft order band.
     idle: null, idleClosed: null
   };
@@ -842,6 +843,27 @@
       <form data-form="statement" novalidate><div class="input-wrap"><textarea name="text" rows="4" placeholder="UPI/bank statement ki lines paste karein — jaise: 31-10-2026 UPI/CR/123456789012/MISBAHUL ISLAM/₹15.00"></textarea></div><button class="button primary block" type="submit">Statement import karein ${icon('arrow')}</button></form>
       <p class="hint">Jis UTR ka paisa Misbahul Islam ke account (mius@ybl) me aaya hai, sirf utna hi amount judega — chhota ya random UTR credit nahi hoga.</p></div>`;
   }
+  /**
+   * Boss (31-10-2026, round 25): "UPI PAYMENT AGAR ME TRACK KARNA CHAHTA ...
+   * BAS USSE UTR LUNGA AUR UTR SE SAB DETAILS NIKAALUNGA — ABHI YA OLD, KISI
+   * AUR KO, AUR KITNA".
+   *
+   * Yahan boss koi bhi UTR daal kar poora sach dekhta hai: kitna aaya, kab
+   * aaya, kisko aaya, kaun bheja, status, pehle use hua ya nahi — aur credit
+   * ka faisla + kya kya chahiye.
+   */
+  function renderUtrTrackCard() {
+    if (!state.user?.isBoss) return '';
+    const t = state.utrTrack;
+    const verdictPill = t?.truth?.verdict?.action === 'CREDIT' ? 'green' : t?.truth?.verdict?.action === 'REJECT' ? 'red' : 'amber';
+    const verdictLabel = t?.truth?.verdict?.action === 'CREDIT' ? 'CREDIT HOGA' : t?.truth?.verdict?.action === 'REJECT' ? 'REJECT' : 'PENDING';
+    const rows = (t?.truth?.rows || []).map(r => `<div class="bill-row"><span>${esc(r.label)}</span><strong class="${r.ok ? 'free' : ''}">${esc(r.value)}</strong></div>`).join('');
+    const missing = (t?.truth?.missing || []).length
+      ? `<div class="warning">Chahiye: ${esc((t.truth.missing || []).map(m => m.line).join('; '))}</div>` : '';
+    return `<div class="card"><div class="card-title">${tile('receipt')}<span class="title-copy">UTR se payment track<small>Sirf UTR daalein — baaki sab server khud nikaalta hai.</small></span></div>
+      <form data-form="utr-track" novalidate><div class="input-wrap">${icon('search')}<input name="utr" inputmode="numeric" maxlength="12" placeholder="12 digit UTR" value="${esc(t?.utr || '')}" required></div><button class="button primary block" type="submit" ${state.utrTrackBusy ? 'disabled' : ''}>${state.utrTrackBusy ? 'Details nikaal rahe hain…' : 'UTR ki poori detail nikaalein'}</button></form>
+      ${t ? `<div class="divider"></div><div class="bill-row"><span>Faisla</span><strong><span class="pill ${verdictPill}">${esc(verdictLabel)}</span></strong></div>${rows}${missing}<p class="hint">${esc(t.bossLine || '')}</p>${t.claim ? `<p class="hint">Claim: ${esc(String(t.claim.status || ''))} · user ${esc(String(t.claim.userId || ''))} · ₹${(Number(t.claim.claimedPaise || 0) / 100).toFixed(2)}</p>` : ''}` : '<p class="hint">Koi bhi UTR daal kar dekhein: kitna aaya, kab aaya, kisko aaya, kaun bheja.</p>'}</div>`;
+  }
   function renderTools() {
     // Boss (31-10-2026): "NIGHT OFFER AND BREAKFAST AND WEEKEND WALA OFFER
     // ACTIVE KARDO CLAIM KARNE KE LIYE." Ab yahan se seedha claim hota hai —
@@ -861,7 +883,7 @@
       return `<div class="card"><div class="card-title">${tile('tools')}<span class="title-copy">${esc(a.name)}<small>${a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned'} · ${a.owner === 'operator' ? 'Operator' : 'Aapka'}</small></span></div>${tracks}${claimButton}</div>`;
     }).join('');
     const result = state.claimResult ? `<div class="card"><div class="card-title">${icon('check')} Claim ka sach</div>${(state.claimResult.tracks || []).map(t => `<div class="offer-row"><span class="offer-emoji">${t.emoji || '🎁'}</span><span class="row-content"><strong>${esc(t.label)}</strong><p>${esc(t.message || '')}</p></span><span class="pill ${t.verified ? 'green' : 'amber'}">${esc(String(t.status || '').replace(/_/g, ' '))}</span></div>`).join('')}<p class="hint">Do baar claim nahi hota — pehle se laga ho to ALREADY ACTIVE dikhta hai.</p></div>` : '';
-    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${renderWalletCard()}${accounts}${renderIdentitiesCard()}${renderStatementCard()}${renderLiveOrderCard()}${renderBackupCard()}`;
+    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${renderWalletCard()}${accounts}${renderIdentitiesCard()}${renderStatementCard()}${renderUtrTrackCard()}${renderLiveOrderCard()}${renderBackupCard()}`;
   }
   function renderConnection() {
     if (!initData) return `${head('TELEGRAM MINI APP', 'Open in Telegram', 'Your private account space needs a Telegram session.')}<div class="card connection-card"><strong>Browser preview only</strong><p>Open this app from your bot using Open App or /pro. No account data is shown here.</p></div>`;
@@ -1188,9 +1210,19 @@
         try {
           const out = await api('wallet/claim', 'POST', payload);
           merge(out); state.walletTopup = null; state.walletSheet = false;
-          state.walletClaimNote = out.lookupLine || '';
+          // Round 25: user ko bhi poora sach — kitna aaya, kab, kisko.
+          state.walletClaimNote = out.utrTruth?.summaryLine || out.lookupLine || '';
           toast(out.message || 'UTR ki payment fetch hui — jitna aaya utna juda.');
         } finally { state.walletClaimBusy = false; render(); }
+      } else if (type === 'utr-track') {
+        const utr = String(data.get('utr') || '').trim().replace(/\s+/g, '');
+        if (!/^\d{12}$/.test(utr)) { toast('Poora 12-digit UTR daaliye.'); return; }
+        state.utrTrackBusy = true; render();
+        try {
+          const out = await api('boss/utr', 'POST', { utr });
+          state.utrTrack = out; render();
+          toast(out.truth?.summaryLine || 'UTR ki detail aa gayi.');
+        } finally { state.utrTrackBusy = false; render(); }
       } else if (type === 'statement') {
         const text = String(data.get('text') || '').trim();
         if (text.length < 10) { toast('Statement ki lines paste karein (UTR + amount).'); return; }

@@ -26,6 +26,8 @@ import { describeAccountForPicker } from './mini-app.js';
 import { proProvider } from './swiggy-pro-provider.js';
 import { backupProWorkspaceNow, cloudBackupEnabled, ensureProWorkspaceHydrated, proBackupStatus, readProWorkspace, writeProWorkspace, withProWorkspaceLock } from './swiggy-pro-store.js';
 import { describeIdleClosure, idleTimeoutMs, planIdleExpiry, touchActivity } from './order-idle-expiry.js';
+import { fetchUtrPaymentDetails } from './utr-lookup.js';
+import { describeUtrPayment, utrTruthRows } from './utr-truth.js';
 
 const ASSETS = {
   '/pro': ['text/html; charset=utf-8', new URL('./swiggy-pro.html', import.meta.url)],
@@ -575,6 +577,95 @@ function markTopupIntentUsed(db, intentId, requestId = '') {
  * ledger me CLAIMED likha rehta hai (jhootha "verified" nahi). UTR/provider
  * mila to wahi paisa asli mana jaata hai.
  */
+/**
+ * Round 25: boss ka UTR tracker — "UTR SE SAB DETAILS".
+ * Har lookup db me yaad rehta hai (`config.utrLookups`), taaki baad me bhi
+ * poochha ja sake: kab aaya, kisko, kitna, kis user ne daala.
+ */
+function rememberUtrLookup(db, { utr, userId = '', name = '', truth = null, request = null, at = Date.now() } = {}) {
+  const key = String(utr || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!key) return null;
+  if (!db.config.utrLookups || typeof db.config.utrLookups !== 'object') db.config.utrLookups = {};
+  const row = {
+    utr: key,
+    at: new Date(at).toISOString(),
+    userId: String(userId || ''),
+    name: String(name || '').slice(0, 60),
+    claimId: String(request?.id || ''),
+    found: Boolean(truth?.found ?? request?.lookup?.found),
+    amountPaise: Number(truth?.amountPaise || 0),
+    askedPaise: Number(truth?.askedPaise || 0),
+    paidAt: String(truth?.paidAt || ''),
+    freshness: String(truth?.freshness || ''),
+    payeeOurs: truth?.payeeOurs === true,
+    payeeLine: String(truth?.payeeLine || '').slice(0, 160),
+    verdictAction: String(truth?.verdictAction || ''),
+    verdictCode: String(truth?.verdictCode || ''),
+    summaryLine: String(truth?.summaryLine || '').slice(0, 240)
+  };
+  db.config.utrLookups[key] = row;
+  const keys = Object.keys(db.config.utrLookups);
+  if (keys.length > 500) {
+    keys.sort((a, b) => String(db.config.utrLookups[a]?.at || '').localeCompare(String(db.config.utrLookups[b]?.at || '')));
+    for (const old of keys.slice(0, keys.length - 500)) delete db.config.utrLookups[old];
+  }
+  return row;
+}
+
+/** Boss ko UTR ki poori detail — pehle db/ledger, phir live provider. */
+async function utrTruthForBoss(user, body = {}) {
+  const db = getDb();
+  const raw = String(body?.utr || '').trim();
+  const checked = validateUtr(raw);
+  if (!raw) {
+    const e = error(400, 'UTR daalein — 12 digit ka UPI reference number.');
+    e.code = 'UTR_REQUIRED';
+    throw e;
+  }
+  if (!checked.ok) {
+    const e = error(400, `UTR galat hai (${checked.reason}).`);
+    e.code = 'UTR_INVALID';
+    throw e;
+  }
+  const utr = checked.utr;
+  const cached = db.config?.utrLookups?.[utr] || null;
+  const statementEntry = db.config?.upiStatement?.[utr] || null;
+  let lookup = { configured: true, found: false, payment: null, reason: '' };
+  const wantsLive = body?.refresh !== false;
+  if (wantsLive) {
+    lookup = await fetchUtrPaymentDetails(utr, { userId: `boss:${user.id}` })
+      .catch((err) => ({ configured: false, found: false, payment: null, reason: String(err?.message || err), tried: [] }));
+  }
+  const statementPayment = statementEntry ? { ...statementEntry, source: statementEntry.source || 'statement' } : null;
+  const payment = statementPayment || (lookup.found ? { ...lookup.payment, utr, source: 'provider' } : null);
+  const usedUtr = findUsedUtr(db, utr) || null;
+  const claim = Object.values(db.config?.topupRequests || {})
+    .find((row) => String(row?.utr || '').toUpperCase() === utr) || null;
+  const truth = describeUtrPayment({
+    utr, payment, lookup, usedUtr, claimedPaise: Number(body?.amountPaise || 0), now: Date.now()
+  });
+  if (wantsLive) {
+    rememberUtrLookup(db, {
+      utr, userId: `boss:${user.id}`, name: 'boss',
+      truth: { ...truth, found: Boolean(payment) }, request: claim
+    });
+    saveDb(db);
+  }
+  return {
+    ok: true,
+    utr,
+    truth: { ...truth, rows: utrTruthRows(truth) },
+    bossLine: truth.bossLine,
+    ledger: usedUtr ? { status: usedUtr.status, userId: usedUtr.userId, at: usedUtr.at, amountPaise: usedUtr.amountPaise } : null,
+    lastTrackedAt: cached?.at || '',
+    claim: claim ? { id: claim.id, userId: claim.userId, status: claim.status, claimedPaise: claim.claimedPaise, approvedPaise: claim.approvedPaise, at: claim.at } : null,
+    history: Object.values(db.config?.utrLookups || {})
+      .filter((row) => String(row.utr) === utr)
+      .sort((a, b) => String(b.at).localeCompare(String(a.at)))
+      .slice(0, 10)
+  };
+}
+
 async function claimWalletTopup(user, body) {
   const db = getDb();
   ensureWallet(db, user.id, { name: user.firstName || '' });
@@ -686,6 +777,10 @@ async function claimWalletTopup(user, body) {
   if (request) db.config.topupClaims[request.id] = { ...request, creditedPaise: creditPaise, utr };
   saveDb(db);
   const wallet = walletView(user, { history: true });
+  const utrTruth = request?.utrTruth || null;
+  // Boss (round 25): "UTR SE SAB DETAILS" — har lookup yaad rehta hai, taaki
+  // baad me bhi poochha ja sake ki kab/kisko/kitna aaya tha.
+  rememberUtrLookup(db, { utr, userId: user.id, name: user.firstName || '', truth: utrTruth, request });
   return {
     wallet,
     verified,
@@ -693,6 +788,7 @@ async function claimWalletTopup(user, body) {
     pending,
     verifyNote: String(request?.verifyPendingReason || request?.reason || ''),
     lookupLine: String(request?.lookup?.line || ''),
+    utrTruth: utrTruth ? { ...utrTruth, rows: utrTruthRows({ checklist: utrTruth.checklist }) } : null,
     message: pending
       ? `${request?.lookup?.line ? `${request.lookup.line} ` : ''}Abhi balance ₹${wallet.balance} hai — jitna paisa sach me aayega utna hi judega. ${String(request?.verifyPendingReason || '').slice(0, 140)}`.trim()
       : (wallet.ready
@@ -1038,6 +1134,16 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           settled: imported.settled,
           statement: statementStatus(db)
         });
+        return;
+      }
+      // ── Round 25: UTR se poori payment detail (boss) ────────────────────
+      // Boss: "UPI PAYMENT AGAR ME TRACK KARNA CHAHTA ... BAS USSE UTR LUNGA
+      // AUR UTR SE SAB DETAILS NIKAALUNGA — ABHI YA OLD, KISI AUR KO, KITNA".
+      if (route === '/pro/api/boss/utr' && (req.method === 'POST' || req.method === 'GET')) {
+        if (!isBoss(user.id)) throw error(403, 'UTR ki detail sirf boss dekh sakta hai.');
+        const body = req.method === 'POST' ? await bodyJson(req) : Object.fromEntries(new URL(req.url, 'http://x').searchParams);
+        const out = await utrTruthForBoss(user, body);
+        json(res, 200, out);
         return;
       }
       // ── Round 22: login IDs ka data deploy par bachega ya nahi ──────────
