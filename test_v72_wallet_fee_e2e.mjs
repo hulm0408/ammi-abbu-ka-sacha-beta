@@ -142,26 +142,27 @@ check('sirf letters reject', w.validateUtr('ABCDEFGHIJ').ok === false);
 check('12-digit UTR ok', w.validateUtr('123456789012').ok === true);
 check('normalize lowercase+space', w.normalizeUtr(' ab 12-34 ') === 'AB1234');
 
-// Round 12 (boss): "UTR AUTO VERIFY NAHI HO RAHA" — provider set nahi ho to
-// bhi UTR unique hone par credit turant hota hai, aur record me saaf likha
-// rehta hai ki verify user ke claim se hua (jhootha provider verify nahi).
+// Round 20 (boss): "JAB CHOTA AMOUNT DAAL KAR RANDOM KOI BHI UTR DAALTA WO ADD
+// HO JATA" — ab bina asli payment saboot (statement/provider) credit NAHI hota.
+// Chhota UTR bhi PENDING rehta hai, wallet me kuch nahi judta.
 db = makeDb();
 const sub = await w.submitTopupRequest(db, { userId: USER, utr: '123456789012', amountPaise: 1500, name: 'Ammi' });
-check('provider na ho to bhi UTR auto credit', sub.ok && sub.code === 'AUTO_VERIFIED', sub.code);
-check('auto credit se balance 1500', w.walletBalancePaise(db, USER) === 1500, String(w.walletBalancePaise(db, USER)));
-check('verifiedBy user-claim (jhooth nahi)', sub.request?.verifiedBy === 'user-claim', String(sub.request?.verifiedBy));
-check('auto credit ke baad pending 0', w.pendingTopupCount(db) === 0, String(w.pendingTopupCount(db)));
+check('bina saboot random UTR → PENDING (credit nahi)', sub.ok && sub.code === 'PENDING', String(sub.code || sub.reason));
+check('bina saboot balance 0 hi rehta hai', w.walletBalancePaise(db, USER) === 0, String(w.walletBalancePaise(db, USER)));
+check('pending me chala gaya', w.pendingTopupCount(db) === 1, String(w.pendingTopupCount(db)));
+check('pending ki wajah saaf likhi hai', /statement|verify/i.test(String(sub.request?.verifyPendingReason || '')), String(sub.request?.verifyPendingReason));
 
-// Strict mode (UPI_REQUIRE_PROVIDER_VERIFY=1) — purana behaviour wapas.
+// Strict mode (UPI_REQUIRE_PROVIDER_VERIFY=1) — behaviour same: PENDING.
 process.env.UPI_REQUIRE_PROVIDER_VERIFY = '1';
 const strict = await w.submitTopupRequest(db, { userId: USER, utr: '666677778888', amountPaise: 1500 });
 check('strict mode me provider na ho to PENDING', strict.ok && strict.code === 'PENDING', strict.code);
-check('strict mode me balance nahi bada', w.walletBalancePaise(db, USER) === 1500);
+check('strict mode me balance nahi bada', w.walletBalancePaise(db, USER) === 0);
 delete process.env.UPI_REQUIRE_PROVIDER_VERIFY;
 
+const beforeDup = Object.keys(db.config.topupRequests).length;
 const dup = await w.submitTopupRequest(db, { userId: USER2, utr: '123456789012', amountPaise: 1500 });
 check('wahi UTR dobara → DUPLICATE_UTR', dup.ok === false && dup.code === 'DUPLICATE_UTR', dup.code);
-check('duplicate se naya request nahi bana', Object.keys(db.config.topupRequests).length === 2);
+check('duplicate se naya request nahi bana', Object.keys(db.config.topupRequests).length === beforeDup);
 
 const lowAmt = await w.submitTopupRequest(db, { userId: USER, utr: '555566667777', amountPaise: 100 });
 check('min se kam amount reject', lowAmt.ok === false && lowAmt.code === 'AMOUNT_TOO_LOW', lowAmt.code);
@@ -169,12 +170,18 @@ check('min se kam amount reject', lowAmt.ok === false && lowAmt.code === 'AMOUNT
 const badUtr = await w.submitTopupRequest(db, { userId: USER, utr: 'abc', amountPaise: 1500 });
 check('galat UTR reject', badUtr.ok === false && badUtr.code === 'INVALID_UTR', badUtr.code);
 
-// Fake provider: verified:true → auto credit
+// Fake provider: verified + payee Misbahul Islam + asli amount → auto credit.
 process.env.UPI_UTR_VERIFY_URL = 'https://provider.test/utr';
-const fakeFetch = async () => ({ ok: true, json: async () => ({ verified: true, ref: 'PR1' }) });
+const fakeFetch = async () => ({ ok: true, json: async () => ({ verified: true, ref: 'PR1', amountPaise: 1500, payeeName: 'MISBAHUL ISLAM', payeeVpa: 'mius@ybl', status: 'SUCCESS' }) });
 const auto = await w.submitTopupRequest(db, { userId: USER, utr: '987654321012', amountPaise: 1500, fetchImpl: fakeFetch });
 check('provider verified → AUTO_VERIFIED', auto.ok && auto.code === 'AUTO_VERIFIED', auto.code);
-check('auto verified par balance 3000 (1500 pehle + 1500 provider)', w.walletBalancePaise(db, USER) === 3000, String(w.walletBalancePaise(db, USER)));
+check('provider verified par balance 1500 (asli amount)', w.walletBalancePaise(db, USER) === 1500, String(w.walletBalancePaise(db, USER)));
+
+// Provider ne ''verified'' bola par payee boss nahi → credit nahi.
+const fakeWrongPayee = async () => ({ ok: true, json: async () => ({ verified: true, ref: 'PR2', amountPaise: 1500, payeeName: 'RAHUL KUMAR', status: 'SUCCESS' }) });
+const wrongPayee = await w.submitTopupRequest(db, { userId: USER, utr: '987654321013', amountPaise: 1500, fetchImpl: fakeWrongPayee });
+check('galat payee → credit nahi', wrongPayee.ok === false && wrongPayee.code === 'PAYEE_MISMATCH', String(wrongPayee.code));
+check('galat payee par balance wahi 1500', w.walletBalancePaise(db, USER) === 1500, String(w.walletBalancePaise(db, USER)));
 
 // Provider available par 'verified' false → PENDING hi
 const fakeNo = async () => ({ ok: true, json: async () => ({ verified: false, reason: 'not found' }) });

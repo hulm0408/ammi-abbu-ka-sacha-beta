@@ -28,6 +28,7 @@ const { handleSwiggyProHttp } = await import('./swiggy-pro-api.js');
 const { readProWorkspace, writeProWorkspace } = await import('./swiggy-pro-store.js');
 const { proProvider } = await import('./swiggy-pro-provider.js');
 const { getDb, saveDb } = await import('./store.js');
+const { recordStatementPayment } = await import('./upi-statement.js');
 const { walletBalancePaise, walletUpiId } = await import('./user-wallet.js');
 
 const db = getDb();
@@ -133,6 +134,13 @@ function sign(userId) {
   params.set('hash', crypto.createHmac('sha256', key).update(check).digest('hex'));
   return params.toString();
 }
+
+/** Round 20: credit ke liye asli payment saboot chahiye (statement entry). */
+function verifiedPayment(utr, amountPaise) {
+  const db = getDb();
+  recordStatementPayment(db, { utr, amountPaise, payeeName: 'MISBAHUL ISLAM', payeeVpa: 'mius@ybl', status: 'SUCCESS', source: 'statement', at: Date.now() }, { actor: 'test' });
+  saveDb(db);
+}
 async function req(userId, route, payload) {
   const response = await fetch(base + '/pro/api/' + route, {
     method: payload === undefined ? 'GET' : 'POST',
@@ -220,12 +228,14 @@ test('wallet: ₹10 top-up + UTR → ₹10 credit, ₹5 aur maango; phir ₹5 �
   seed(9943);
   // Round 16: credit sirf top-up QR ke amount par, UTR zaroori.
   const t1 = await req(9943, 'wallet/topup', { amountPaise: 1000 });
+  verifiedPayment('909090909090', 1000);
   const first = await req(9943, 'wallet/claim', { topupId: t1.body.topup.topupId, amountRupees: 10, utr: '909090909090' });
   assert.equal(first.status, 200);
   assert.equal(first.body.wallet.balancePaise, 1000);
   assert.equal(first.body.wallet.ready, false);
   assert.match(first.body.message, /₹5/);
   const t2 = await req(9943, 'wallet/topup', { amountPaise: 500 });
+  verifiedPayment('909090909091', 500);
   const second = await req(9943, 'wallet/claim', { topupId: t2.body.topup.topupId, amountRupees: 5, utr: '909090909091' });
   assert.equal(second.body.wallet.balancePaise, 1500);
   assert.equal(second.body.wallet.ready, true);
@@ -267,6 +277,7 @@ test('wallet: balance kam par order nahi jaata — asli wajah + kitna add karna 
 test('wallet: balance poora par fee katti hai; order place na ho to refund', async () => {
   seed(9947);
   const topup = await req(9947, 'wallet/topup', { amountPaise: 1500 });
+  verifiedPayment('919191919191', 1500);
   await req(9947, 'wallet/claim', { topupId: topup.body.topup.topupId, amountRupees: 15, utr: '919191919191' });
   checkoutImpl = async () => { throw new Error('Swiggy cart nahi diya'); };
   const ws = readProWorkspace('9947');

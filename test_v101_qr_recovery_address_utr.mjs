@@ -57,6 +57,7 @@ const { proProvider } = await import('./swiggy-pro-provider.js');
 const { addressTextHints, saveAddressToAccount } = await import('./swiggy-cart.js');
 const { getDb, saveDb } = await import('./store.js');
 const { walletBalancePaise } = await import('./user-wallet.js');
+const { recordStatementPayment } = await import('./upi-statement.js');
 
 const db = getDb();
 db.config.accounts = {}; db.config.bossIds = ['9000'];
@@ -155,6 +156,13 @@ async function req(userId, route, payload) {
   });
   return { status: response.status, body: await response.json() };
 }
+
+/** Round 20: credit sirf asli payment saboot (statement) par. */
+function verifiedPayment(utr, amountPaise) {
+  const db = getDb();
+  recordStatementPayment(db, { utr, amountPaise, payeeName: 'MISBAHUL ISLAM', payeeVpa: 'mius@ybl', status: 'SUCCESS', source: 'statement', at: Date.now() }, { actor: 'test' });
+  saveDb(db);
+}
 function seed(userId) {
   writeProWorkspace(String(userId), {
     version: 1,
@@ -218,11 +226,12 @@ test('address: usi receiver ka saved address 40m ke andar ho to wahi use hota ha
 });
 
 // ── 4. UTR auto verify (mini app claim) ───────────────────────────────────
-test('utr: top-up QR + UTR se auto credit (provider set nahi ho to bhi)', async () => {
+test('utr: top-up QR + UTR se auto credit (statement me paisa aaya hua)', async () => {
   seed(9952);
   const topup = await req(9952, 'wallet/topup', { amountPaise: 1500 });
   assert.equal(topup.status, 200);
   assert.ok(topup.body.topup.topupId, 'top-up intent bana');
+  verifiedPayment('123456789012', 1500);
   const out = await req(9952, 'wallet/claim', { topupId: topup.body.topup.topupId, amountPaise: 1500, utr: '123456789012' });
   assert.equal(out.status, 200);
   assert.equal(out.body.verified, true);
@@ -230,7 +239,7 @@ test('utr: top-up QR + UTR se auto credit (provider set nahi ho to bhi)', async 
   assert.equal(out.body.wallet.ready, true);
   const claim = Object.values(getDb().config.topupClaims || {}).find(c => c.userId === '9952');
   assert.equal(claim?.status, 'AUTO_VERIFIED');
-  assert.equal(claim?.verifiedBy, 'user-claim');
+  assert.equal(claim?.verifiedBy, 'statement');
 });
 test('utr: wahi UTR dobara nahi chalta (dusre user ke liye bhi)', async () => {
   seed(9953);
