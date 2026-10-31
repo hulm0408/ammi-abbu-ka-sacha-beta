@@ -221,6 +221,16 @@ function invalidateAccountDependentState(ws) {
   ws.menu = null;
   if (ws.cart) ws.cart.quote = null;
 }
+/** JWT ke andar se sirf asli numeric user id — kuch invent nahi. */
+function jwtIdentity(token) {
+  try {
+    const payload = String(token || '').split('.')[1];
+    if (!payload) return '';
+    const claims = JSON.parse(Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    const id = String(claims?.user_id ?? claims?.customer_id ?? claims?.uid ?? '');
+    return /^\d{2,20}$/.test(id) && id !== '0' && id !== '-1' ? id : '';
+  } catch { return ''; }
+}
 function cleanAddress(a) {
   return {
     name: String(a?.name || '').slice(0, 120), mobile: normalizeIndianMobileNumber(a?.mobile || '') || '',
@@ -554,9 +564,27 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         }
         const now = Date.now();
         if (now - (otpRequestedAt.get(user.id) || 0) < 30_000) throw error(429, 'Please wait 30 seconds before requesting another OTP.');
+        // Boss (31-10-2026): "KOI NAYA ACCOUNT HAI TO LOGIN HI NAHI HOTA." Naya
+        // number = Swiggy par account hi nahi. Chat flow ki tarah app bhi
+        // signup kar sakta hai — bas pehle user se saaf confirm karwa ke.
+        const signup = body.signup === true;
+        const result = await otp.request(`pro_${user.id}`, phone, `private_${user.id}`, user.firstName || 'Swiggy User', {
+          persistAccount: false, allowSignup: signup, claimOffers: false
+        });
+        if (!result?.success) {
+          const notRegistered = result?.code === 'SWIGGY_ACCOUNT_NOT_REGISTERED' || /not registered|create your account/i.test(String(result?.message || ''));
+          if (notRegistered) {
+            const e = error(409, signup
+              ? 'Swiggy ne is number ka naya account nahi banaya. Ek baar Swiggy app se account bana kar phir OTP dabaiye.'
+              : 'Ye number Swiggy par naya hai. Naya Swiggy account banayein? Har number par ek hi account banta hai.');
+            e.code = 'SWIGGY_ACCOUNT_NOT_REGISTERED';
+            throw e;
+          }
+          throw error(502, result?.message || 'Swiggy did not confirm that an OTP was sent.');
+        }
+        // Cooldown sirf SUCCESS par — warna naya number "account banayein?"
+        // ke baad 30 second tak retry hi nahi kar paata (asli bug tha).
         otpRequestedAt.set(user.id, now);
-        const result = await otp.request(`pro_${user.id}`, phone, `private_${user.id}`, user.firstName || 'Swiggy User', { persistAccount: false, allowSignup: false, claimOffers: false });
-        if (!result?.success) throw error(502, result?.message || 'Swiggy did not confirm that an OTP was sent.');
         ws.otpPhone = phone;
         otpAttempts.delete(user.id);
         writeProWorkspace(user.id, ws);
@@ -574,8 +602,18 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (!result?.success || !result.exportJson) throw error(400, result?.message || 'Swiggy did not verify this OTP.');
         const session = normalizeSwiggySessionPayload(result.exportJson);
         if (!session || normalizeIndianMobileNumber(result.phone) !== ws.otpPhone) throw error(502, 'Swiggy returned an unexpected account; nothing was saved.');
-        const live = await provider.verifySession({ ...session, __proPrivate: true });
-        if (!live?.valid || !live.customerId) throw error(502, 'OTP was accepted, but Swiggy did not confirm the account session. Nothing was saved; request a fresh OTP and retry.');
+        let live = await provider.verifySession({ ...session, __proPrivate: true }).catch(() => null);
+        // Brand-new account par profile/cart kabhi kabhi customer id nahi deta —
+        // OTP to Swiggy ne khud verify kiya hai, isliye session ke andar se
+        // identity nikaal lete hain (jhoothi ID nahi, wahi token).
+        const identity = String(live?.customerId || '').trim() || jwtIdentity(session.tid || session.jwtTid || '') || String(session.customerId || '').trim();
+        if (!identity) {
+          const e = error(502, 'Swiggy ne is OTP ke baad account ki identity nahi di. Naya OTP maangein — kuch bhi save nahi hua.');
+          e.code = 'OTP_IDENTITY_MISSING';
+          throw e;
+        }
+        if (!live?.valid) live = { valid: true, customerId: identity, phone: '', name: '', liveTid: session.tid || '' };
+        else live.customerId = identity;
         const profilePhone = normalizeIndianMobileNumber(live.phone || '');
         if (profilePhone && profilePhone !== ws.otpPhone) throw error(502, 'Swiggy returned a different account phone. Nothing was saved.');
         storeAccount(user, ws, {
@@ -975,7 +1013,13 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         writeProWorkspace(user.id, ws);
         const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon);
         ws.selectedAddress = cleanAddress(quote.address);
-        ws.cart.quote = { ...billBreakdown(quote.bill), ofoConfirmed: quote.ofoConfirmed === true, fetchedAt: new Date().toISOString() };
+        ws.cart.quote = {
+          ...billBreakdown(quote.bill),
+          // Asli coupon code (billBreakdown discount na hone par isse clear kar
+          // deta hai) — checkout isi se Swiggy ka live coupon match karta hai.
+          couponCode: String(quote.bill?.coupon || '').toUpperCase(),
+          ofoConfirmed: quote.ofoConfirmed === true, fetchedAt: new Date().toISOString()
+        };
         // Bill ke saath outlet ka sach bhi — header/outlet row ke liye.
         if (ws.menu?.restaurant && String(ws.menu.restaurant.id) === String(ws.cart.restaurantId)) {
           Object.assign(ws.cart, {
@@ -1084,9 +1128,28 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
             return;
           }
           ws.checkout = null;
+          // Bill/coupon badal gaya par items+address wahi hain: Swiggy ka naya
+          // bill save karke dikhate hain, taaki user use dekh kar dobara Pay
+          // dabaye. Order tabhi jaata hai jab user naya amount khud dekhe.
+          if (err?.code === 'BILL_CHANGED' && err?.diag?.freshBill && ws.cart) {
+            ws.cart.quote = {
+              ...billBreakdown(err.diag.freshBill),
+              couponCode: String(err.diag.freshBill.coupon || '').toUpperCase(),
+              ofoConfirmed: false, fetchedAt: new Date().toISOString()
+            };
+            writeProWorkspace(user.id, ws);
+            const changed = error(409, String(err.message || 'Bill badal gaya — naya bill dekh kar dobara Pay dabaiye.'));
+            changed.code = 'BILL_CHANGED';
+            throw changed;
+          }
           if (ws.cart) ws.cart.quote = null;
           writeProWorkspace(user.id, ws);
-          throw error(Number(err?.statusCode) || 502, String(err?.message || 'Checkout could not be prepared. No order was placed.'));
+          const detail = Array.isArray(err?.diag?.problems) && err.diag.problems.length
+            ? ` Wajah: ${err.diag.problems.map(p => p.message).join(' ')}`
+            : '';
+          const failure = error(Number(err?.statusCode) || 502, `${String(err?.message || 'Checkout could not be prepared. No order was placed.')}${detail}`);
+          failure.code = String(err?.code || '');
+          throw failure;
         }
         json(res, 200, { ok: true, checkout: publicCheckout(ws.checkout, { restricted: isSharedAccountFor(user, ws, ws.checkout.accountKey) }) });
         return;
@@ -1138,7 +1201,16 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
     } catch (err) {
       const status = Number(err?.statusCode) || 500;
       // Do not log inputs, tokens, addresses, or raw Swiggy errors.
-      const code = ['PRO_VAULT_NOT_CONFIGURED', 'PRO_VAULT_DECRYPT_FAILED', 'ACCOUNT_NEEDS_CONFIRM', 'ADDRESS_INCOMPLETE', 'SHARED_ACCOUNT_RESTRICTED'].includes(err?.code) ? err.code : undefined;
+      // Boss (31-10-2026): app ko asli wajah ke saath code chahiye — warna wo
+      // "outcome unknown" ka darr dikha deta hai jabki kuch bhi place nahi hua.
+      const KNOWN_CODES = new Set([
+        'PRO_VAULT_NOT_CONFIGURED', 'PRO_VAULT_DECRYPT_FAILED', 'ACCOUNT_NEEDS_CONFIRM', 'ADDRESS_INCOMPLETE',
+        'SHARED_ACCOUNT_RESTRICTED', 'BILL_CHANGED', 'CART_ITEMS', 'CART_FETCH', 'CART_PARSE', 'CART_ID',
+        'ADDRESS', 'OFO', 'COUPON', 'AMOUNT', 'AMOUNT_MISSING', 'RESTAURANT', 'GROUP_CART_EXPIRED',
+        'GROUP_CART_PLACED', 'GROUP_CART_BUSY', 'GROUP_CART_FETCH_FAILED', 'SWIGGY_ACCOUNT_NOT_REGISTERED',
+        'OTP_IDENTITY_MISSING'
+      ]);
+      const code = KNOWN_CODES.has(String(err?.code || '')) ? err.code : undefined;
       json(res, status, {
         ok: false,
         error: status >= 500 && status !== 501 && status !== 502 && status !== 503 ? 'Unable to complete this request. Please retry.' : String(err?.message || 'Request failed.'),

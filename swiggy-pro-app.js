@@ -859,7 +859,20 @@
     const type = form.dataset.form; const data = new FormData(form); const button = form.querySelector('button[type="submit"],button:not([type])');
     run(async () => {
       if (type === 'send-otp') {
-        await api('accounts/send-otp', 'POST', { phone: data.get('phone') }); state.otpSent = true; render(); toast('OTP request accepted by Swiggy.');
+        const phone = String(data.get('phone') || '').trim();
+        try {
+          await api('accounts/send-otp', 'POST', { phone });
+        } catch (e) {
+          if (e.code !== 'SWIGGY_ACCOUNT_NOT_REGISTERED') throw e;
+          // Boss (31-10-2026): "NAYA ACCOUNT HAI TO LOGIN HI NAHI HOTA."
+          if (!await confirmInApp({
+            title: 'Naya Swiggy account banayein?',
+            message: `${phone} Swiggy par naya number hai. Isi number se naya Swiggy account banega (naam: ${state.user?.name || 'aapka naam'}), phir OTP aayega. Aage ke order isi account se honge.`,
+            confirmText: 'Account banayein'
+          })) return;
+          await api('accounts/send-otp', 'POST', { phone, signup: true });
+        }
+        state.otpSent = true; render(); toast('OTP request accepted by Swiggy.');
       } else if (type === 'verify-otp') {
         const out = await api('accounts/verify-otp', 'POST', { otp: data.get('otp') }); merge(out); state.otpSent = false; state.addresses = []; state.orders = null; render(); toast('Account added.');
       } else if (type === 'import') {
@@ -1101,6 +1114,16 @@
           merge(out); render();
           toast(out.checkout?.status === 'PAYMENT_PENDING' ? 'Payment details returned. Verify before paying.' : 'Check Swiggy My Orders; do not retry.');
         } catch (e) {
+          // Boss (31-10-2026): "PAY PAR CLICK KARTA HU TO ... COULD NOT BE
+          // CONFIRMED" — ab har wajah alag dikhti hai. Bill badla ho to naya
+          // bill save ho chuka hai; order nahi gaya, dobara Pay dabaiye.
+          const prePlacement = ['BILL_CHANGED', 'CART_ITEMS', 'ADDRESS', 'OFO', 'CART_FETCH', 'CART_PARSE', 'COUPON', 'AMOUNT', 'AMOUNT_MISSING', 'CART_ID', 'RESTAURANT'].includes(String(e.code || ''));
+          if (prePlacement) {
+            try { merge(await api('bootstrap')); } catch {}
+            render();
+            toast(e.message || 'Order place nahi hua — naya bill dekh kar dobara Pay dabaiye.');
+            return;
+          }
           // A lost browser response is not proof that the server never sent the
           // request. Hide retry until an authenticated bootstrap resolves it.
           state.checkout = { status: 'OUTCOME_UNKNOWN', message: 'The response was lost. Check Swiggy My Orders; do not place another order.' };
