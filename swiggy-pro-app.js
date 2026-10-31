@@ -163,7 +163,7 @@
     return result;
   }
   function merge(data) {
-    for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled','checkoutBlockReason','ordersDetailAllowed','adminContact','backup','wallet']) if (Object.hasOwn(data, key)) state[key] = data[key];
+    for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled','checkoutBlockReason','ordersDetailAllowed','adminContact','backup','wallet','statement','identities','liveOrder','durability']) if (Object.hasOwn(data, key)) state[key] = data[key];
     if (data.idle) { state.idle = data.idle; if (data.idle.closed) state.idleClosed = data.idle.closed; }
     if (Array.isArray(data.accounts)) {
       state.cachedAccounts = data.accounts.map(a => ({ key: a.key, name: a.name, phoneMasked: a.phoneMasked || '', owner: a.owner || 'self' }));
@@ -786,6 +786,33 @@
    * Boss (31-10-2026, round 21): "NO SMS RECEIVED" — SMS ka asli rasta ya
    * pehle se band? Ye card wahi sach dikhata hai (boss only).
    */
+  /**
+   * Boss (31-10-2026, round 22): "JITNE BHI LOGIN ID HOTE HAIN KISKA DATA NAHI
+   * BACHTA WO KISLIYE AND KYA SOLUTION HAI" — jawab yahan: har ID ka session
+   * saved hai ya nahi, cloud backup chalu hai ya nahi, aur Restore/Backup buttons.
+   */
+  function renderIdentitiesCard() {
+    if (!state.user?.isBoss) return '';
+    const id = state.identities;
+    if (!id) return '';
+    const rows = (id.accounts || []).map(a => {
+      const badge = a.status === 'LOGGED_IN' ? 'green' : a.status === 'EXPIRED' ? 'amber' : 'grey';
+      const label = a.status === 'LOGGED_IN' ? 'Session saved' : a.status === 'EXPIRED' ? 'Expired' : a.status === 'NO_SESSION' ? 'Session nahi' : 'Logout';
+      return `<div class="offer-row"><span class="offer-emoji">${a.status === 'LOGGED_IN' ? '✅' : '⚠️'}</span><span class="row-content"><strong>${esc(a.name || a.key)}</strong><p>${a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'number nahi'}${a.savedAt ? ' · saved ' + esc(new Date(a.savedAt).toLocaleString('en-IN')) : ''}${a.restoredFromSnapshot ? ' · deploy ke baad wapas aaya' : ''}</p></span><span class="pill ${badge}">${esc(label)}</span></div>`;
+    }).join('') || '<p class="hint">Koi login ID saved nahi hai — pehle ID add karein.</p>';
+    return `<div class="card"><div class="card-title">${tile('store')}<span class="title-copy">Login ID ka data<small>Deploy ke baad kaunsi ID bachegi — yahan sach dikhta hai.</small></span></div>
+      <div class="bill-row"><span>IDs saved</span><strong>${Number(id.total || 0)} (${Number(id.live || 0)} live)</strong></div>
+      <div class="bill-row"><span>Mini-app workspaces</span><strong>${Number(id.workspaceCount || 0)}</strong></div>
+      <div class="bill-row"><span>Cloud backup</span><strong class="${id.cloud ? 'free' : ''}">${id.cloud ? 'ON' : 'OFF'}</strong></div>
+      ${id.lastPushAt ? `<div class="bill-row"><span>Last backup</span><strong>${esc(new Date(id.lastPushAt).toLocaleString('en-IN'))}</strong></div>` : ''}
+      ${id.restoredAt ? `<div class="bill-row"><span>Deploy ke baad restore</span><strong>${esc(new Date(id.restoredAt).toLocaleString('en-IN'))}</strong></div>` : ''}
+      <div class="warning">${esc(id.line || '')}</div>
+      ${rows}
+      <button class="button primary block" type="button" data-action="identities-backup" ${state.identityBusy ? 'disabled' : ''}>${state.identityBusy ? 'Backup ho raha hai…' : 'Sab ID abhi backup karein'}</button>
+      <button class="button soft block" type="button" data-action="identities-verify" ${state.identityBusy ? 'disabled' : ''}>${state.identityBusy ? 'Check ho raha hai…' : 'Sessions Swiggy par check karein'}</button>
+      ${state.identityNote ? `<p class="hint">${esc(state.identityNote)}</p>` : ''}
+      <p class="hint">Har ID ka session encrypted hi save hota hai (cookies kahin plaintext me nahi). Deploy par disk khali ho jaye to yahi backup se wapas aata hai.</p></div>`;
+  }
   function renderLiveOrderCard() {
     const live = state.liveOrder;
     if (!state.user?.isBoss || !live) return '';
@@ -829,7 +856,7 @@
       return `<div class="card"><div class="card-title">${tile('tools')}<span class="title-copy">${esc(a.name)}<small>${a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned'} · ${a.owner === 'operator' ? 'Operator' : 'Aapka'}</small></span></div>${tracks}${claimButton}</div>`;
     }).join('');
     const result = state.claimResult ? `<div class="card"><div class="card-title">${icon('check')} Claim ka sach</div>${(state.claimResult.tracks || []).map(t => `<div class="offer-row"><span class="offer-emoji">${t.emoji || '🎁'}</span><span class="row-content"><strong>${esc(t.label)}</strong><p>${esc(t.message || '')}</p></span><span class="pill ${t.verified ? 'green' : 'amber'}">${esc(String(t.status || '').replace(/_/g, ' '))}</span></div>`).join('')}<p class="hint">Do baar claim nahi hota — pehle se laga ho to ALREADY ACTIVE dikhta hai.</p></div>` : '';
-    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${renderWalletCard()}${accounts}${renderStatementCard()}${renderLiveOrderCard()}${renderBackupCard()}`;
+    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${renderWalletCard()}${accounts}${renderIdentitiesCard()}${renderStatementCard()}${renderLiveOrderCard()}${renderBackupCard()}`;
   }
   function renderConnection() {
     if (!initData) return `${head('TELEGRAM MINI APP', 'Open in Telegram', 'Your private account space needs a Telegram session.')}<div class="card connection-card"><strong>Browser preview only</strong><p>Open this app from your bot using Open App or /pro. No account data is shown here.</p></div>`;
@@ -1316,6 +1343,26 @@
           const out = await api('offers/claim', 'POST', { key });
           merge(out); state.claimResult = out.claim || null; toast('Claim ka result aa gaya.');
         } finally { state.claimBusyKey = ''; render(); }
+      } else if (action === 'identities-backup' || action === 'identities-verify') {
+        const verify = action === 'identities-verify';
+        state.identityBusy = true; state.identityNote = ''; render();
+        try {
+          const out = await api('boss/identities', 'POST', verify ? { verify: true } : {});
+          if (out.identities) state.identities = out.identities;
+          if (verify) {
+            const rows = out.results || [];
+            const dead = rows.filter(r => !r.valid);
+            state.identityNote = rows.length
+              ? `${rows.length} ID check hui — ${rows.length - dead.length} live, ${dead.length} ka session Swiggy par khatam.${dead.length ? ' ' + dead.map(d => d.name || d.key).join(', ') + ' ko dobara login karein.' : ''}`
+              : (out.note || '');
+            toast(dead.length ? `${dead.length} ID ka session khatam — dobara login karein.` : 'Saari IDs live hain.');
+          } else {
+            state.identityNote = out.message || '';
+            toast(out.message || 'Backup ho gaya.');
+          }
+        } finally { state.identityBusy = false; render(); }
+      } else if (action === 'identities-refresh') {
+        const out = await api('boss/identities'); state.identities = out.identities || null; render();
       } else if (action === 'backup-now') {
         state.backupBusy = true; render();
         try {
