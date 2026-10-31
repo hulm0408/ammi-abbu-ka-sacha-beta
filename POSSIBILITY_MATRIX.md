@@ -232,3 +232,41 @@ Format kuch bhi chalta hai jisme 12-digit UTR + ₹amount ho, jaise
 
 Badalne wale env: `UPI_PAYEE_NAME` (default `MISBAHUL ISLAM`), `UPI_PAYEE_VPA` (default `mius@ybl`),
 `UPI_UTR_VERIFY_URL` + `UPI_UTR_VERIFY_TOKEN` (provider verify), `WALLET_AUTO_CREDIT_MAX_PAISE`.
+
+---
+
+## J. Tracking aur SMS ka sach (Round 21)
+
+Boss: *"NO SMS RECEIVED AND NO TRACKING IS AVAILABLE"*.
+
+### J — tracking (har rasta, phir bhi na mile to sach)
+
+| # | Case | Behaviour |
+|---|---|---|
+| J1 | `trackV4` me `fyi_details[].cta_link` | link mila, `via: FYI_CTA` |
+| J2 | trackV4 khaali, `order/details` me link | link mila, `via: ORDER_DETAILS` |
+| J3 | DAPI dono khaali, Swiggy order page (`__NEXT_DATA__`) | link mila, `via: WEB_PAGE_SHARE` |
+| J4 | `swiggy://share?text=<https…>` share URI | https link nikaal kar diya |
+| J5 | 3 try ke baad bhi kuch nahi | `TRACKING_NOT_PUBLISHED` + `tried[]` + asli wajah |
+| J6 | Operator/shared ID | link + status + ETA; OTP/rider/naam chhupe |
+| J7 | Doosre order ka link | `safeTrackingUrl` reject |
+| J8 | App: order kholte hi | tracking khud load (Refresh dabana nahi) |
+| J9 | App: link na mile | "kya try hua" + Refresh ka asli reason |
+
+### J — SMS (jhooth bina)
+
+| # | Case | Behaviour |
+|---|---|---|
+| J10 | Swiggy payload me `sms_sent: true` (ya `SMS_SENT`) | `SENT` + evidence path |
+| J11 | `sms_sent: false` / `SMS_FAILED` | `NOT_SENT` + evidence |
+| J12 | Koi flag nahi | `UNKNOWN` — "proof nahi", jhootha "bhej diya" nahi |
+| J13 | Receiver ka number = account ka number | saaf: Swiggy alag SMS nahi bhejta |
+| J14 | Order "someone else" ke roop me nahi gaya | saaf: recipient SMS ka wada nahi |
+| J15 | OFO bheja par Swiggy ne confirm nahi kiya | saaf wajah (SMS/link isi wajah se nahi) |
+| J16 | OFO confirm par koi SMS flag nahi | `UNKNOWN` + wajah |
+| J17 | Environment me live order band (`SWIGGY_BLOCK_LIVE_ORDER_PLACE=1` / sandbox) | boss card me "Live order BAND" + wajah |
+| J18 | Receiver ka number hi nahi mila | "number hi wapas nahi diya" |
+
+Har order par `receiverPhone`, `forSomeoneElse` checkout ke waqt hi yaad rakhe jaate hain
+(`ws.checkout.receiverPhone`), isliye SMS ka sach baad me bhi asli number par banta hai.
+UI me `receiverMasked` hi dikhta hai (`79••••9775`), poora number nahi.

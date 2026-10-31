@@ -9,6 +9,7 @@
     "test": "node test_comprehensive_audit_suite.mjs",
     "test:round19": "node test_v108_deployproof_tracking_autopay.mjs",
     "test:round20": "node test_v109_utr_asli_paisa.mjs",
+    "test:round21": "node test_v110_tracking_and_sms_truth.mjs",
     "test:live": "node test_live_address_and_cart_e2e.mjs",
     "test:guards": "node run_guards.mjs",
     "test:pro": "node --test test_v87_miniapp_security_and_flow.mjs test_v88_checkout_safety.mjs test_v89_provider_faults.mjs test_v90_miniapp_ui.mjs",
