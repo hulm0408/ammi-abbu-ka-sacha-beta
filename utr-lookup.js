@@ -96,6 +96,7 @@ export function parseUtrLookup(json, { expectUtr = '', source = 'lookup' } = {})
     const payeeName = text(node.payeeName || node.payee_name || node.payee || node.beneficiary || node.beneficiaryName || node.receiverName || node.creditedTo || node.to);
     const payeeVpa = text(node.payeeVpa || node.payee_vpa || node.vpa || node.toVpa || node.creditedVpa || node.beneficiaryVpa);
     const payerName = text(node.payerName || node.payer || node.remitterName || node.senderName || node.from);
+    const payerVpa = text(node.payerVpa || node.payer_vpa || node.fromVpa || node.remitterVpa || node.senderVpa || node.debitedFromVpa);
     const at = text(node.paidAt || node.at || node.timestamp || node.txnTime || node.transactionTime || node.date);
     const atMs = Date.parse(at) || 0;
     const candidate = {
@@ -104,6 +105,7 @@ export function parseUtrLookup(json, { expectUtr = '', source = 'lookup' } = {})
       payeeName,
       payeeVpa,
       payerName,
+      payerVpa,
       status: status || 'UNKNOWN',
       at: atMs || 0,
       ref: text(node.ref || node.reference || node.rrn || node.providerRef || node.transactionId || node.txnId).slice(0, 60),
