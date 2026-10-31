@@ -588,12 +588,25 @@ export const proProvider = {
       return {
         address: confirmedAddress,
         bill: {
-          itemTotal: returnedNumber(meta.item_total, meta.cart_subtotal),
-          deliveryFee: returnedNumber(meta.positiveDeliveryChargesExclusive, meta.delivery_charges),
-          packingCharges: returnedNumber(meta.total_packing_charges, meta.restaurant_packing_charges),
-          taxes: returnedNumber(meta.taxesAndCharges, meta.total_tax),
-          discount: parsed.couponCode ? returnedNumber(meta.coupon_discount_total, meta.coupon_discount_effective) : null,
-          coupon: String(parsed.couponCode || ''), total
+          // Boss (31-10-2026, round 9): "BILL SUMMARY ME ITNA AYEGA" — wahi
+          // lines jo Swiggy dikhata hai: Coupon, Extra Discount (Free Cash),
+          // Swiggy One Lite Membership, FREE delivery (kitna bacha),
+          // Packing, GST & Other, Total Savings, To Pay.
+          itemTotal: returnedNumber(parsed?.itemTotal, meta.item_total, meta.cart_subtotal),
+          deliveryFee: returnedNumber(parsed?.deliveryFee, meta.positiveDeliveryChargesExclusive, meta.delivery_charges),
+          deliverySaved: parsed?.freeDeliveryDiscount ?? null,
+          deliveryFree: Number(parsed?.deliveryFee ?? 0) <= 0,
+          packingCharges: returnedNumber(parsed?.packingCharges, meta.total_packing_charges, meta.restaurant_packing_charges),
+          taxes: returnedNumber(parsed?.taxesAndCharges, meta.taxesAndCharges, meta.total_tax),
+          discount: parsed?.couponCode ? returnedNumber(parsed.discountAmount, meta.coupon_discount_total, meta.coupon_discount_effective) : null,
+          coupon: String(parsed?.couponCode || ''),
+          freeCash: parsed?.freeCashApplied ?? null,
+          freeCashWallet: parsed?.walletSplitPayAmount ?? null,
+          tradeDiscount: parsed?.merchantTradeDiscount ?? null,
+          oneMembershipFee: parsed?.swiggyOneMembershipFee ?? null,
+          oneApplied: parsed?.swiggyOneApplied === true,
+          totalSavings: parsed?.totalSavings ?? null,
+          total
         },
         // Sending OFO fields is not proof that Swiggy accepted OFO placement.
         ofoConfirmed: false
