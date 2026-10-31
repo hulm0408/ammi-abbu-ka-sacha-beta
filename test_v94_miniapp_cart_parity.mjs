@@ -219,10 +219,11 @@ test('DOM: cart Swiggy jaisa — restaurant head, outlet dropdown, FREE delivery
     assert.match(text, /Pizza Junction/);
     assert.match(text, /Kothrud · 25 min/);
     assert.ok(app.document.querySelector('[data-action="cart-clear"]'), 'cart clear button');
-    // Group cart collapsed by default (Swiggy jaisa), tap par khulta hai.
-    assert.equal(app.document.querySelector('form[data-form="group-cart"]'), null);
-    app.document.querySelector('[data-action="toggle-group-cart"]').click();
-    await waitFor(() => app.document.querySelector('form[data-form="group-cart"]'), 'group cart form');
+    // Boss (31-10-2026): group cart ka input + button HAMESHA saamne — koi
+    // dropdown nahi jo pehle kholna pade.
+    assert.ok(app.document.querySelector('form[data-form="group-cart"]'), 'group cart form khula hai');
+    assert.equal(app.document.querySelector('[data-action="toggle-group-cart"]'), null, 'dropdown gaya');
+    assert.match(app.document.querySelector('form[data-form="group-cart"] button[type="submit"]').textContent, /Cart parse karein/);
     // Item row: veg mark + line total.
     assert.ok(app.document.querySelector('.veg-mark'));
     assert.match(text, /₹274/);

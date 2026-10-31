@@ -12,7 +12,7 @@ import { OFFER_TRACKS } from './account-views.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { describeAccountForPicker } from './mini-app.js';
 import { proProvider } from './swiggy-pro-provider.js';
-import { ensureProWorkspaceHydrated, readProWorkspace, writeProWorkspace, withProWorkspaceLock } from './swiggy-pro-store.js';
+import { backupProWorkspaceNow, cloudBackupEnabled, ensureProWorkspaceHydrated, proBackupStatus, readProWorkspace, writeProWorkspace, withProWorkspaceLock } from './swiggy-pro-store.js';
 
 const ASSETS = {
   '/pro': ['text/html; charset=utf-8', new URL('./swiggy-pro.html', import.meta.url)],
@@ -346,6 +346,20 @@ function offerClaimSummary(result) {
   });
 }
 
+/**
+ * Backup ka sach: boss ko poora detail (kahan fail hua), user ko bas itna ki
+ * uska data mirror me hai ya nahi. Jhooth nahi — jo hai wahi.
+ */
+function userBackupView(user) {
+  const status = proBackupStatus();
+  if (isBoss(user.id)) return status;
+  return {
+    cloud: { enabled: cloudBackupEnabled() },
+    dbMirror: { enabled: true, rows: status.dbMirror.rows },
+    restored: { count: status.restored.count, lastAt: status.restored.lastAt }
+  };
+}
+
 function checkoutEnabled() {
   if (process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE === '1') return false;
   return process.env.PRO_ENABLE_CHECKOUT !== '0';
@@ -494,7 +508,15 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           ws.cart.quote = null;
           writeProWorkspace(user.id, ws);
         }
-        json(res, 200, { ok: true, ...publicState(user, ws) });
+        json(res, 200, { ok: true, ...publicState(user, ws), backup: userBackupView(user) });
+        return;
+      }
+      if (route === '/pro/api/backup' && req.method === 'POST') {
+        // Boss (31-10-2026): "DATA TO ERASE HOJATA." Ab backup ka asli sach +
+        // ek button jo turant backup kar ke result dikhata hai.
+        if (!isBoss(user.id)) throw error(403, 'Backup sirf boss kar sakta hai.');
+        const result = await backupProWorkspaceNow(user.id);
+        json(res, 200, { ok: true, result, backup: userBackupView(user) });
         return;
       }
       if (route === '/pro/api/accounts/send-otp' && req.method === 'POST') {

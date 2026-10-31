@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getDataDir } from './store.js';
+import { getDataDir, getDb, saveDb } from './store.js';
 import { proWorkspaceVaultPath, pullVaultTextFile, pushVaultTextFile } from './vault-sync.js';
 
 // The chat bot's shared vault must not contain the Mini App's private users.
@@ -194,6 +194,10 @@ export function writeProWorkspace(userId, workspace) {
     try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
     const parentFd = fs.openSync(path.dirname(dir), 'r');
     try { fs.fsyncSync(parentFd); } finally { fs.closeSync(parentFd); }
+    // Do jagah backup: (1) encrypted mirror bot ke db.json me — token ki
+    // zaroorat nahi, ephemeral disk par bhi bachta hai jab bot ka db bachta
+    // hai; (2) cloud vault (jab token/git available ho).
+    scheduleProWorkspaceMirror(userId, envelope);
     scheduleProWorkspaceBackup(userId);
   } finally {
     if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
@@ -209,9 +213,128 @@ export function writeProWorkspace(userId, workspace) {
 // isliye blob wapas aane par data waisa hi khulta hai.
 const hydratedUsers = new Set();
 const backupTimers = new Map();
+const mirrorTimers = new Map();
+
+/**
+ * Boss (31-10-2026): "TU BAAR BAAR KEHTA HAI DATA SAFE HAI BUT DATA TO ERASE
+ * HOJATA." Ab backup ka sach do jagah dikhta hai:
+ *   • `dbMirror` — encrypted blob bot ke `db.json` me (koi token nahi chahiye).
+ *   • `cloud`    — `bot-vault` branch (GITHUB_VAULT_TOKEN ya git creds hone par).
+ * Dono ki asli haalat `/pro/api/backup` aur bootstrap ke `backup` field me aati
+ * hai; fail hone par error chhupta nahi.
+ */
+export const proBackupState = {
+  cloud: { enabled: true, lastOkAt: '', lastError: '', pushed: 0 },
+  mirror: { lastAt: '', rows: 0, wrote: 0 },
+  restored: { count: 0, lastAt: '', lastFrom: '' }
+};
 
 export function cloudBackupEnabled() {
   return process.env.PRO_VAULT_CLOUD_BACKUP !== '0';
+}
+
+// getDb() har call par file se fresh object deta hai — isliye likhne ke liye
+// wahi object pakadna padta hai (warna mirror chup-chaap gayab ho jata hai).
+function mirrorOn(db) {
+  if (!db.config) db.config = {};
+  if (!db.config.proWorkspaceMirror || typeof db.config.proWorkspaceMirror !== 'object' || Array.isArray(db.config.proWorkspaceMirror)) {
+    db.config.proWorkspaceMirror = {};
+  }
+  return db.config.proWorkspaceMirror;
+}
+function mirrorRows() {
+  try { return getDb().config?.proWorkspaceMirror || {}; } catch { return {}; }
+}
+
+function mirrorRowKey(userId) {
+  return crypto.createHash('sha256').update(`mirror:${userId}`).digest('hex');
+}
+
+/** Encrypted workspace ko bot ke db me rakh do — token ki zaroorat nahi. */
+export function writeProWorkspaceMirror(userId, envelope) {
+  try {
+    const db = getDb();
+    const bucket = mirrorOn(db);
+    bucket[mirrorRowKey(userId)] = {
+      v: 1, userId: String(userId), savedAt: new Date().toISOString(),
+      checksum: crypto.createHash('sha256').update(String(envelope)).digest('hex').slice(0, 32),
+      envelope: String(envelope)
+    };
+    // Bahut zyada rows na hon — purane (sabse chhote savedAt) hata do.
+    const keys = Object.keys(bucket);
+    if (keys.length > 300) {
+      keys.sort((a, b) => String(bucket[a]?.savedAt || '').localeCompare(String(bucket[b]?.savedAt || '')));
+      for (const stale of keys.slice(300)) delete bucket[stale];
+    }
+    const saved = saveDb(db);
+    proBackupState.mirror.lastAt = new Date().toISOString();
+    proBackupState.mirror.wrote += 1;
+    proBackupState.mirror.rows = Object.keys(bucket).length;
+    // saveDb false bhi de sakta hai (read-only disk) — jhooth nahi bolte.
+    return saved !== false;
+  } catch (err) {
+    console.warn('[MiniAppVault] db mirror save fail:', err?.message || err);
+    return false;
+  }
+}
+
+function readProWorkspaceMirror(userId) {
+  try {
+    const row = mirrorRows()[mirrorRowKey(userId)];
+    if (!row?.envelope) return null;
+    const sum = crypto.createHash('sha256').update(String(row.envelope)).digest('hex').slice(0, 32);
+    if (row.checksum && row.checksum !== sum) return null;
+    return { envelope: String(row.envelope), savedAt: row.savedAt || '' };
+  } catch { return null; }
+}
+
+function scheduleProWorkspaceMirror(userId, envelope) {
+  const key = String(userId);
+  if (mirrorTimers.has(key)) return;
+  const timer = setTimeout(() => {
+    mirrorTimers.delete(key);
+    writeProWorkspaceMirror(key, envelope);
+  }, 1500);
+  if (typeof timer.unref === 'function') timer.unref();
+  mirrorTimers.set(key, timer);
+}
+
+/** Boss ke "Abhi backup karein" button ke liye — turant, debounce ke bina. */
+export async function backupProWorkspaceNow(userId) {
+  const key = String(userId);
+  const file = workspacePath(key);
+  if (!fs.existsSync(file)) throw Object.assign(new Error('Is user ka workspace file server par nahi hai.'), { statusCode: 404 });
+  const envelope = fs.readFileSync(file, 'utf8');
+  const mirrored = writeProWorkspaceMirror(key, envelope);
+  let cloud = { ok: false, skipped: true };
+  if (cloudBackupEnabled()) {
+    try {
+      await pushVaultTextFile(proWorkspaceVaultPath(path.basename(file)), envelope);
+      proBackupState.cloud.lastOkAt = new Date().toISOString();
+      proBackupState.cloud.lastError = '';
+      proBackupState.cloud.pushed += 1;
+      cloud = { ok: true, skipped: false };
+    } catch (err) {
+      proBackupState.cloud.lastError = String(err?.message || err).slice(0, 300);
+      cloud = { ok: false, skipped: false, error: proBackupState.cloud.lastError };
+    }
+  }
+  return { mirrored, cloud };
+}
+
+export function proBackupStatus() {
+  let rows = 0;
+  try { rows = Object.keys(mirrorRows()).length; } catch {}
+  return {
+    cloud: {
+      enabled: cloudBackupEnabled(),
+      lastOkAt: proBackupState.cloud.lastOkAt,
+      lastError: proBackupState.cloud.lastError
+    },
+    dbMirror: { enabled: true, rows, lastAt: proBackupState.mirror.lastAt },
+    restored: { ...proBackupState.restored },
+    vaultSource: getProVaultSource()
+  };
 }
 
 function scheduleProWorkspaceBackup(userId) {
@@ -224,7 +347,13 @@ function scheduleProWorkspaceBackup(userId) {
       const file = workspacePath(key);
       if (!fs.existsSync(file)) return;
       await pushVaultTextFile(proWorkspaceVaultPath(path.basename(file)), fs.readFileSync(file, 'utf8'));
-    } catch { /* best effort — local file hi asli hai */ }
+      proBackupState.cloud.lastOkAt = new Date().toISOString();
+      proBackupState.cloud.lastError = '';
+      proBackupState.cloud.pushed += 1;
+    } catch (err) {
+      // Boss: chup-chaap fail nahi — asli wajah rakho.
+      proBackupState.cloud.lastError = String(err?.message || err).slice(0, 300);
+    }
   }, 6000);
   if (typeof timer.unref === 'function') timer.unref();
   backupTimers.set(key, timer);
@@ -235,24 +364,48 @@ function scheduleProWorkspaceBackup(userId) {
  * Sirf tab likhta hai jab local file bilkul nahi hai — chalta hua data kabhi
  * overwrite nahi hota.
  */
+function validEnvelopeText(text) {
+  const value = String(text || '');
+  if (!value.trim().startsWith('{') || value.length > 2_000_000) return false;
+  try { JSON.parse(value); return true; } catch { return false; }
+}
+
 export async function ensureProWorkspaceHydrated(userId) {
   const key = String(userId);
   if (hydratedUsers.has(key)) return false;
   hydratedUsers.add(key);
-  if (!cloudBackupEnabled()) return false;
+  const file = workspacePath(key);
   try {
-    const file = workspacePath(key);
     if (fs.existsSync(file)) return false;
-    const text = await pullVaultTextFile(proWorkspaceVaultPath(path.basename(file)));
-    if (!text || !text.trim().startsWith('{') || text.length > 2_000_000) return false;
-    JSON.parse(text); // sirf valid envelope likho
+  } catch { return false; }
+
+  let text = '';
+  let from = '';
+  // 1) Cloud vault (jab token/git available ho).
+  if (cloudBackupEnabled()) {
+    try {
+      const pulled = await pullVaultTextFile(proWorkspaceVaultPath(path.basename(file)));
+      if (validEnvelopeText(pulled)) { text = pulled; from = 'cloud'; }
+    } catch (err) {
+      proBackupState.cloud.lastError = String(err?.message || err).slice(0, 300);
+    }
+  }
+  // 2) Bot ke db.json ka encrypted mirror — token ke bina bhi chalta hai.
+  if (!from) {
+    const mirrored = readProWorkspaceMirror(key);
+    if (mirrored && validEnvelopeText(mirrored.envelope)) { text = mirrored.envelope; from = 'db-mirror'; }
+  }
+  if (!from) return false;
+  try {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     const tmp = `${file}.${process.pid}.restore.tmp`;
     fs.writeFileSync(tmp, text, { mode: 0o600 });
     fs.renameSync(tmp, file);
-    console.log('[MiniAppVault] encrypted workspace cloud vault se wapas aaya (redeploy recovery).');
+    proBackupState.restored = { count: proBackupState.restored.count + 1, lastAt: new Date().toISOString(), lastFrom: from };
+    console.log(`[MiniAppVault] workspace ${from} se wapas aaya (redeploy recovery).`);
     return true;
-  } catch {
+  } catch (err) {
+    console.warn('[MiniAppVault] restore fail:', err?.message || err);
     return false;
   }
 }
@@ -262,6 +415,13 @@ export function resetProWorkspaceHydrationCache() {
   hydratedUsers.clear();
   for (const timer of backupTimers.values()) clearTimeout(timer);
   backupTimers.clear();
+  for (const timer of mirrorTimers.values()) clearTimeout(timer);
+  mirrorTimers.clear();
+}
+
+/** Tests ke liye — mirror timers ko turant chalane ki ummeed nahi karte. */
+export function flushProWorkspaceMirror(userId, envelope) {
+  return writeProWorkspaceMirror(userId, envelope);
 }
 
 const locks = new Map();

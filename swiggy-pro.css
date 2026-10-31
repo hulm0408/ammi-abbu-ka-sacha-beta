@@ -250,3 +250,17 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
+
+/* ── 31-10-2026 round 6: group cart hamesha khula — koi dropdown nahi ───── */
+.group-cart-card { padding: 18px 16px; }
+.group-cart-card .card-title { margin-bottom: 12px; }
+.group-cart-form { display: flex; flex-direction: column; gap: 10px; }
+.group-cart-form .input-wrap { width: 100%; }
+.group-cart-form .input-wrap .icon { color: var(--muted); flex-shrink: 0; }
+.group-cart-form .button { width: 100%; min-height: 46px; }
+.group-cart-card .hint { margin-top: 10px; }
+@media (min-width: 480px) {
+  .group-cart-form { flex-direction: row; align-items: stretch; }
+  .group-cart-form .input-wrap { flex: 1; }
+  .group-cart-form .button { width: auto; white-space: nowrap; }
+}
