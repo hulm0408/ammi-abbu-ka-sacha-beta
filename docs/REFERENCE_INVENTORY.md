@@ -172,3 +172,12 @@ bar). Har async ka end: success / error / retry — koi infinite spinner nahi.
 | Restaurant image | photo | icon tile (jab image na aaye) | demo data me image nahi; asli data me `<img>` aata hai |
 | Coupon sheet ka exact height | ~86% | 88dvh max | 390×844 par same feel, chhote phone par scroll |
 | Swiggy ka exact 12px grid | ~4px grid | 4px grid | naap match, values tokenized |
+
+## 9. Round 32 — payment verify + share link
+
+| Cheez | Reference (Swiggy) | Yahan |
+|---|---|---|
+| Payment ke baad check | Swiggy khud status poll karta hai | hum 5:00 tak har 5s par `/checkout/status` — countdown ke saath |
+| Verify hone par | order My Orders me khulta hai | tabhi wahi hota hai: My Orders → order detail khud khulta hai |
+| Share | order ke three-dot → Share se `swiggy.com/ofo/track/<token>` | wahi link `.share-card` me: Copy + Telegram share |
+| 5 minute baad | — | saaf likha "5 minute poore ho gaye" + Payment check button (spinner nahi) |

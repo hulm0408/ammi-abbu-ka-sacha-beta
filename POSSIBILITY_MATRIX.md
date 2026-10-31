@@ -563,3 +563,22 @@ response me aata hi nahi. Copy fail ho to laal toast, chup-chaap success nahi.
 
 **Guards:** `test_v120_accounts_reference_and_copy_json.mjs` 12 checks; sweep **88/88**,
 `npm test` **132/132**, `test:pro` **41/41**.
+
+## U. QR ke baad poore 5 minute verify, phir My Orders + Swiggy ka share link (Round 32)
+
+**Boss (31-10-2026):** "QR aane par 5 minute tak payment verify chalta rahe; verify hote hi
+My Orders par jaye, order khole, aur Share link de."
+
+| Cheez | Kaise | Proof |
+|---|---|---|
+| Verify window | `PAY_WINDOW_MS = 5*60*1000`, `PAY_POLL_MS = 5000` — pehla check 5s par, phir har 5s, poore 5:00 | `test_v121` (7 checks) |
+| Countdown | `[data-pay-clock]` par `m:ss` — sirf `textContent` badalta hai, re-render nahi, isliye QR flash nahi karta | v121 + screenshot `screenshots/14-qr-verify-5min.png` |
+| Kitni baar check hua | strip par `N×` (`state.payTicks`) — chhupa hua kaam nahi | v121 |
+| 5 minute poore | strip `.expired`: "5 minute poore ho gaye" + Payment check button. Spinner nahi — sach | v121 |
+| Verify hote hi | `openOrdersForOrder(id, { share: true })` → My Orders tab + wahi order khulta hai + `loadOrderTracking` | v121 |
+| Share link | `.share-card` — readonly input me Swiggy ka asli link + "Copy link" + "Telegram par share" (`t.me/share/url`) | v121, `screenshots/15-share-link.png` |
+| Link na mile | "Swiggy ne is order ka share link nahi diya… Hum apna link nahi banate" + Refresh. Jhoothi link kabhi nahi | v121 |
+
+**Kya nahi kiya (sach):** Swiggy app ke andar ke "three dot → Share" par hum khud tap nahi
+karte (wo unki app hai, hamare control me nahi). Wahi link Swiggy ke `trackV4 cta_link` se
+aata hai — wahi yahan dikhta hai. Polling 5 minute ke baad band ho jati hai (battery/rate limit).

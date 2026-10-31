@@ -134,6 +134,7 @@ extracted_mp4_frames/
 !test_v118_one_page_no_lecture.mjs
 !test_v119_visual_qa_fixes.mjs
 !test_v120_accounts_reference_and_copy_json.mjs
+!test_v121_five_minute_verify_and_share_link.mjs
 
 # Screenshot QA (local only) — generated PNGs aur browser libs commit nahi
 screenshots/

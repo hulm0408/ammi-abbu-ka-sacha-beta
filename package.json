@@ -20,6 +20,7 @@
     "test:round29": "node test_v118_one_page_no_lecture.mjs",
     "test:round30": "node test_v119_visual_qa_fixes.mjs",
     "test:round31": "node test_v120_accounts_reference_and_copy_json.mjs",
+    "test:round32": "node test_v121_five_minute_verify_and_share_link.mjs",
     "preview:miniapp": "node preview-miniapp.mjs",
     "shots:miniapp": "node tools/screenshot-miniapp.mjs",
     "test:live": "node test_live_address_and_cart_e2e.mjs",

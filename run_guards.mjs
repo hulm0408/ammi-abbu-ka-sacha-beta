@@ -100,7 +100,8 @@ const TESTS = [
   "test_v117_reference_visual_system.mjs",
   "test_v118_one_page_no_lecture.mjs",
   "test_v119_visual_qa_fixes.mjs",
-  "test_v120_accounts_reference_and_copy_json.mjs"
+  "test_v120_accounts_reference_and_copy_json.mjs",
+  "test_v121_five_minute_verify_and_share_link.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];

@@ -19,6 +19,15 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '0.0.0.0';
 
+// Demo QR — sirf screenshot ke liye. Asli app me QR Swiggy se aata hai.
+// Asli PNG chahiye (app `data:image/png;base64,` hi leta hai), isliye qrcode
+// package se banate hain; na mile to scene me QR nahi dikhega (jhooth nahi).
+let DEMO_QR = '';
+try {
+  const QR = (await import('qrcode')).default;
+  DEMO_QR = await QR.toDataURL('upi://pay?pa=swiggy@icici&pn=Swiggy&am=402&cu=INR', { margin: 1, width: 320 });
+} catch { DEMO_QR = ''; }
+
 const now = new Date();
 const demoState = {
   ok: true,
@@ -83,6 +92,11 @@ const previewBoot = `<script>
     const json = (body, status = 200) => ({ ok: status < 400, status, json: async () => body });
     if (target.includes('/bootstrap')) return json(STATE);
     if (target.includes('/coupons')) return json({ ok: true, coupons: STATE.coupons, note: '' });
+    if (target.includes('/orders/tracking')) {
+      const id = new URL(target, 'http://x').searchParams.get('id') || '';
+      const o = (STATE.orders || []).find(x => String(x.id) === String(id)) || {};
+      return json({ ok: true, sms: null, tracking: { orderId: id, status: o.status || '', eta: '', trackingUrl: o.trackingUrl || '', via: o.trackingUrl ? 'FYI_CTA' : '', tried: [], deliveryPartner: { name: '', phone: '' }, note: o.trackingUrl ? '' : 'Preview: is scene me Swiggy ne link nahi diya.' } });
+    }
     if (target.includes('/orders')) return json({ ok: true, orders: STATE.orders || [] });
     if (target.includes('/accounts/session')) {
       const key = new URL(target, 'http://x').searchParams.get('key') || '';
@@ -98,6 +112,28 @@ const TYPES = {
   '.html': 'text/html; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png'
 };
 
+/**
+ * QA scenes (?scene=…) — sirf screenshot/demo ke liye, production par asar nahi.
+ *   paypending : QR aaya hua hai (5-minute verify strip dikhe)
+ *   share      : order ke saath Swiggy jaisa share link
+ */
+function sceneState(scene) {
+  const state = JSON.parse(JSON.stringify(demoState));
+  if (scene === 'paypending') {
+    state.checkout = {
+      status: 'PAYMENT_PENDING', orderId: '252355785108792', amount: 402, accountPhone: '9031204105',
+      qrDataUrl: DEMO_QR, upiIntentUrl: 'upi://pay?pa=swiggy@icici&pn=Swiggy&am=402&cu=INR',
+      paymentVerified: false, message: 'QR Swiggy se aaya hai — scan karke pay karein.',
+      tracking: null, sms: null, qrSource: 'SWIGGY'
+    };
+  }
+  if (scene === 'share') {
+    for (const o of state.orders) o.trackingUrl = 'https://www.swiggy.com/ofo/track/demo-token-9f2a';
+    state.orderTracking = { orderId: '252355785108792', status: 'Delivered', trackingUrl: 'https://www.swiggy.com/ofo/track/demo-token-9f2a', via: 'FYI_CTA', tried: [], deliveryPartner: { name: '', phone: '' } };
+  }
+  return state;
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   const send = (status, type, body) => {
@@ -107,8 +143,10 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/pro/style.css') return send(200, TYPES['.css'], fs.readFileSync(path.join(ROOT, 'swiggy-pro.css')));
   if (url.pathname === '/pro/app.js') return send(200, TYPES['.js'], fs.readFileSync(path.join(ROOT, 'swiggy-pro-app.js')));
   if (url.pathname === '/' || url.pathname === '/pro' || url.pathname === '/pro/' || url.pathname === '/swiggy-pro.html') {
+    const scene = url.searchParams.get('scene') || '';
+    const boot = scene ? previewBoot.replace(JSON.stringify(demoState), JSON.stringify(sceneState(scene))) : previewBoot;
     const html = fs.readFileSync(path.join(ROOT, 'swiggy-pro.html'), 'utf8')
-      .replace('<body>', `<body>${previewBoot}`);
+      .replace('<body>', `<body>${boot}`);
     return send(200, TYPES['.html'], html);
   }
   if (url.pathname === '/healthz') return send(200, 'text/plain', 'ok');
