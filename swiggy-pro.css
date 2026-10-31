@@ -264,3 +264,126 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
   .group-cart-form .input-wrap { flex: 1; }
   .group-cart-form .button { width: auto; white-space: nowrap; }
 }
+
+/* ── 31-10-2026 round 7: Swiggy ke screenshots jaisa cart, coupon,
+      complete-your-meal, outlet sheet aur order tracking ──────────────────── */
+.savings-banner {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 12px 14px;
+  border: 1px solid #bde7cd; border-radius: 14px; background: #e9f9ef; color: #0f7a3d;
+  font-size: 13px; font-weight: 700; letter-spacing: .01em;
+}
+.section-title { margin: 16px 0 8px; font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.cart-actions-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.chip-action {
+  display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit;
+  font-size: 13px; font-weight: 600; cursor: pointer; transition: border-color .16s ease, box-shadow .16s ease;
+}
+.chip-action .icon { width: 15px; height: 15px; }
+.chip-action:hover { border-color: #b7dbe7; box-shadow: 0 6px 16px rgba(25, 48, 67, .08); }
+.rating-chip { display: inline-flex; align-items: center; gap: 2px; padding: 2px 7px; border-radius: 999px; background: #0f8a4a; color: #fff; font-size: 11px; font-weight: 800; }
+
+/* Savings corner */
+.savings-corner { padding: 16px; }
+.savings-corner .card-title { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 800; letter-spacing: .09em; color: var(--muted); }
+.saving-row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.saving-row:last-of-type { border-bottom: 0; }
+.saving-icon {
+  flex-shrink: 0; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px;
+  background: #fff2ec; color: #e2542a; font-size: 13px; font-weight: 900;
+}
+.saving-icon.one { background: #ffe9e4; color: #d63a1f; font-size: 10px; }
+.saving-row .row-content strong { font-size: 13.5px; }
+.saving-row .row-content small { display: block; font-size: 11.5px; color: var(--muted); }
+.saving-badge { flex-shrink: 0; font-size: 11.5px; font-weight: 800; color: var(--muted); }
+.saving-badge.on { color: #0f8a4a; }
+.saving-row .text-button { font-size: 12px; color: #d63a1f; }
+
+/* Complete your meal rail */
+.meal-rail { margin: 6px 0 14px; }
+.meal-track { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 6px; scroll-snap-type: x mandatory; }
+.meal-card {
+  position: relative; flex: 0 0 128px; padding: 8px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--surface); scroll-snap-align: start; text-align: left;
+}
+.meal-thumb { display: block; width: 100%; aspect-ratio: 1 / 1; border-radius: 10px; overflow: hidden; background: #eef3f7; }
+.meal-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.meal-thumb .icon { width: 22px; height: 22px; margin: 34% auto; display: block; color: var(--muted); }
+.meal-card strong { display: block; margin-top: 6px; font-size: 12px; line-height: 1.25; max-height: 2.5em; overflow: hidden; }
+.meal-card small { font-size: 12px; font-weight: 700; color: var(--ink); }
+.meal-plus {
+  position: absolute; right: 10px; top: 10px; width: 28px; height: 28px; border-radius: 9px;
+  border: 1px solid #b7e6c8; background: #fff; color: #0f8a4a; font-size: 17px; font-weight: 800;
+  line-height: 1; cursor: pointer; box-shadow: 0 2px 6px rgba(15, 138, 74, .18);
+}
+.meal-plus:disabled { opacity: .5; }
+
+/* Outlet sheet jaisa inline list */
+.outlet-list-wrap { margin-top: 8px; }
+.outlet-list-title { margin: 10px 0 6px; font-size: 12px; font-weight: 800; letter-spacing: .06em; color: var(--muted); }
+.outlet-option.current { border-color: #f0a58e; background: #fff3ee; }
+.outlet-option .outlet-check { color: #e2542a; display: inline-flex; }
+.outlet-option .outlet-check .icon { width: 18px; height: 18px; }
+
+/* Coupon page */
+.coupon-input-card { padding: 14px; }
+.coupon-input-card form { display: flex; gap: 8px; align-items: stretch; }
+.coupon-input-card .input-wrap { flex: 1; }
+.coupon-input-card .button { white-space: nowrap; }
+.coupon-tile {
+  display: flex; gap: 0; margin: 0 0 12px; border: 1px solid var(--line); border-radius: 16px;
+  background: var(--surface); overflow: hidden; box-shadow: 0 6px 18px rgba(25, 48, 67, .05);
+}
+.coupon-tile.applied { border-color: #f2c3b2; }
+.coupon-tile.muted { opacity: .72; }
+.coupon-ribbon {
+  flex: 0 0 74px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px; padding: 14px 6px; background: linear-gradient(160deg, #ff6a3d, #f0410f); color: #fff;
+  font-size: 15px; font-weight: 900; text-align: center; line-height: 1.05;
+}
+.coupon-tile.muted .coupon-ribbon { background: linear-gradient(160deg, #b9c2cb, #98a4b0); }
+.coupon-ribbon small { font-size: 10px; letter-spacing: .12em; font-weight: 800; }
+.coupon-body { flex: 1; padding: 12px 14px; min-width: 0; }
+.coupon-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.coupon-head strong { font-size: 15px; letter-spacing: .01em; }
+.coupon-cta {
+  border: 0; background: none; padding: 4px 2px; color: #e2542a; font: inherit; font-size: 12px;
+  font-weight: 800; letter-spacing: .06em; cursor: pointer;
+}
+.coupon-cta.off { color: #9aa6b2; }
+.coupon-line { margin: 4px 0 2px; font-size: 13px; font-weight: 700; color: #0f8a4a; }
+.coupon-tile.muted .coupon-line { color: var(--muted); }
+.coupon-desc { margin: 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
+
+/* Pay bar — Swiggy jaisa */
+.pay-bar { gap: 10px; align-items: center; }
+.pay-bar .pay-now { order: 2; flex: 1; min-height: 50px; border-radius: 14px; font-size: 15px; font-weight: 800; }
+.pay-bar .pay-left { order: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.pay-bar .pay-left strong { font-size: 20px; letter-spacing: -.02em; }
+.pay-bar .pay-left small { font-size: 10px; letter-spacing: .08em; font-weight: 800; color: var(--muted); }
+.link-button { font-size: 12px; font-weight: 700; color: #0f8a4a; text-decoration: underline; cursor: pointer; }
+.link-button:hover { color: #0b6b39; }
+
+/* Payment screen + tracking */
+.pay-screen .payment-qr { margin: 10px auto; }
+.pay-screen .button { margin-top: 8px; }
+.track-card .track-steps { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 10px; }
+.track-steps li { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.track-steps li.done { color: var(--ink); font-weight: 600; }
+.track-steps li.current { color: #0f8a4a; font-weight: 800; }
+.track-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #cfd9e2; background: #fff; flex-shrink: 0; }
+.track-steps li.done .track-dot { border-color: #0f8a4a; background: #0f8a4a; }
+.track-steps li.current .track-dot { border-color: #0f8a4a; background: #c8f0d8; box-shadow: 0 0 0 3px rgba(15, 138, 74, .16); }
+.track-actions { display: grid; gap: 8px; margin-top: 12px; }
+.spinner {
+  display: inline-block; width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid #cfd9e2; border-top-color: #0f8a4a; animation: spin .8s linear infinite;
+}
+.spinner.right { margin-left: auto; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (min-width: 520px) {
+  .pay-bar .pay-now { flex: 0 0 240px; }
+}
+
+/* Pay bar ke neeche payment band hone ki asli wajah */
+.pay-blocked { margin: 8px 0 0; font-size: 12px; }
