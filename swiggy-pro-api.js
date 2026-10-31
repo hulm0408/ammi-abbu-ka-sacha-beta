@@ -100,6 +100,11 @@ function currentAccount(user, workspace) {
   // this Mini App session's phone, even when it is a boss's own account.
   return { ...map[key], __proPrivate: true };
 }
+function requireEditableCart(ws) {
+  if (ws.checkout && ws.checkout.status !== 'PAID') {
+    throw error(409, 'Resolve the existing Swiggy checkout before changing the draft cart or receiver.');
+  }
+}
 function invalidateAccountDependentState(ws) {
   ws.selectedAddress = null;
   ws.addressCandidates = [];
@@ -159,13 +164,33 @@ function checkoutAccount(user, ws) {
   const map = accountMap(user, ws);
   const account = Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
   if (!account?.isLoggedIn || account.isLoggedOut) throw error(409, 'The original Swiggy account is unavailable. Reconnect that account before checking this order.');
+  const originalId = String(ws.checkout?.accountCustomerId || '').trim();
+  if (originalId && String(account.customerId || '').trim() !== originalId) throw error(409, 'The saved account no longer matches the original checkout account. Check Swiggy My Orders.');
   return { ...account, __proPrivate: true };
+}
+function orderHistoryAccount(user, ws, scope) {
+  if (scope === 'checkout') {
+    if (!ws.checkout) throw error(404, 'No Mini App checkout exists.');
+    return checkoutAccount(user, ws);
+  }
+  if (scope !== 'active') throw error(400, 'Invalid order history scope.');
+  return currentAccount(user, ws);
+}
+function requireOriginalReconnect(user, ws, key, incoming) {
+  if (!ws.checkout || ws.checkout.status === 'PAID') return;
+  const saved = accountMap(user, ws)[ws.checkout.accountKey];
+  const originalId = String(ws.checkout.accountCustomerId || saved?.customerId || '').trim();
+  if (key !== ws.checkout.accountKey || !originalId || String(incoming.customerId || '').trim() !== originalId) {
+    throw error(409, 'Only the verified original checkout account can be reconnected while its outcome is unresolved.');
+  }
 }
 function storeAccount(user, ws, incoming) {
   const phone = normalizeIndianMobileNumber(incoming.phone || incoming.mobile || '') || '';
+  const unresolved = Boolean(ws.checkout && ws.checkout.status !== 'PAID');
   if (isBoss(user.id)) {
     if (!phone) throw error(400, 'Swiggy did not return an account phone number.');
     const key = `acc_${phone}`;
+    requireOriginalReconnect(user, ws, key, incoming);
     updateAccount(key, { ...incoming, phone, mobile: phone, isLoggedIn: true });
     ws.activeAccountKey = key;
   } else {
@@ -174,10 +199,13 @@ function storeAccount(user, ws, incoming) {
       (incoming.customerId && String(a.customerId || '') === String(incoming.customerId))
     );
     const key = match?.[0] || `private_${crypto.randomUUID()}`;
+    requireOriginalReconnect(user, ws, key, incoming);
     ws.accounts[key] = { ...incoming, phone, mobile: phone, isLoggedIn: true };
     ws.activeAccountKey = key;
   }
-  invalidateAccountDependentState(ws);
+  // Refreshing the original session must not erase the pending order's receiver
+  // and cart. A different account is blocked above until the checkout resolves.
+  if (!unresolved) invalidateAccountDependentState(ws);
 }
 
 export async function handleSwiggyProHttp(req, res, { provider = proProvider, otp = defaultOtp, authorizeUser = null } = {}) {
@@ -241,6 +269,10 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const body = await bodyJson(req);
         const phone = normalizeIndianMobileNumber(body.phone);
         if (!phone) throw error(400, 'Enter a valid 10-digit Indian mobile number.');
+        if (ws.checkout && ws.checkout.status !== 'PAID') {
+          const original = normalizeIndianMobileNumber(ws.checkout.accountPhone || '');
+          if (!original || phone !== original) throw error(409, 'Only the original checkout account can be reconnected while its outcome is unresolved.');
+        }
         const now = Date.now();
         if (now - (otpRequestedAt.get(user.id) || 0) < 30_000) throw error(429, 'Please wait 30 seconds before requesting another OTP.');
         otpRequestedAt.set(user.id, now);
@@ -304,7 +336,11 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const key = String(body.key || '');
         const map = accountMap(user, ws);
         if (!Object.prototype.hasOwnProperty.call(map, key) || !map[key]?.isLoggedIn || map[key]?.isLoggedOut) throw error(404, 'Account not found.');
-        if (ws.activeAccountKey !== key) { ws.activeAccountKey = key; invalidateAccountDependentState(ws); }
+        if (ws.activeAccountKey !== key) {
+          if (ws.checkout && ws.checkout.status !== 'PAID') throw error(409, 'Resolve the existing Swiggy checkout before switching accounts.');
+          ws.activeAccountKey = key;
+          invalidateAccountDependentState(ws);
+        }
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
@@ -334,6 +370,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/addresses/select' && req.method === 'POST') {
+        requireEditableCart(ws);
         const body = await bodyJson(req);
         currentAccount(user, ws);
         const address = ws.addressCandidates.find(a => a.ref === String(body.ref || ''));
@@ -345,6 +382,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/addresses/update-contact' && req.method === 'POST') {
+        requireEditableCart(ws);
         const body = await bodyJson(req);
         currentAccount(user, ws);
         if (!ws.selectedAddress) throw error(400, 'Select an address first.');
@@ -358,6 +396,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/addresses/resolve' && req.method === 'POST') {
+        requireEditableCart(ws);
         const body = await bodyJson(req);
         const account = currentAccount(user, ws);
         if (typeof body.url !== 'string' || body.url.length > 2000) throw error(400, 'Paste a Swiggy address link.');
@@ -368,6 +407,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/addresses/confirm' && req.method === 'POST') {
+        requireEditableCart(ws);
         const body = await bodyJson(req);
         currentAccount(user, ws);
         if (!ws.pendingAddress) throw error(400, 'Resolve an address link first.');
@@ -398,6 +438,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/cart/add' && req.method === 'POST') {
+        requireEditableCart(ws);
         const body = await bodyJson(req);
         currentAccount(user, ws);
         const menu = ws.menu;
@@ -419,6 +460,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/cart/quantity' && req.method === 'POST') {
+        requireEditableCart(ws);
         const body = await bodyJson(req);
         const item = ws.cart?.items?.find(i => i.lineKey === String(body.lineKey || ''));
         const qty = Number(body.qty);
@@ -432,6 +474,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/cart/import-group' && req.method === 'POST') {
+        requireEditableCart(ws);
         const body = await bodyJson(req);
         const account = currentAccount(user, ws);
         if (ws.cart && body.replace !== true) throw error(409, 'Confirm replacing your current cart.');
@@ -445,7 +488,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
       }
       if (route === '/pro/api/cart/sync' && req.method === 'POST') {
         const body = await bodyJson(req);
-        if (ws.checkout && ws.checkout.status !== 'PAID') throw error(409, 'Resolve the existing Swiggy checkout before changing its account cart.');
+        requireEditableCart(ws);
         const account = currentAccount(user, ws);
         if (body.confirmReplaceSwiggyCart !== true) throw error(400, 'Confirm that the existing Swiggy cart may be replaced.');
         if (!ws.cart?.items?.length || !ws.selectedAddress) throw error(400, 'Add items and select an address first.');
@@ -462,14 +505,15 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/orders' && req.method === 'GET') {
-        const orders = await provider.orders(currentAccount(user, ws));
+        const account = orderHistoryAccount(user, ws, url.searchParams.get('scope') || 'active');
+        const orders = await provider.orders(account);
         json(res, 200, { ok: true, orders });
         return;
       }
       if (route === '/pro/api/orders/tracking' && req.method === 'GET') {
         const id = normalizeSwiggyOrderId(url.searchParams.get('id'));
         if (!id) throw error(400, 'Invalid Swiggy order ID.');
-        const account = currentAccount(user, ws);
+        const account = orderHistoryAccount(user, ws, url.searchParams.get('scope') || 'active');
         const orders = await provider.orders(account);
         if (!orders.some(o => String(o.id) === id)) throw error(404, 'Order was not returned for this Swiggy account.');
         const tracking = await provider.tracking(account, id);
@@ -487,6 +531,8 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (process.env.PRO_ENABLE_CHECKOUT !== '1') throw error(503, 'Experimental in-app checkout is disabled. Review and pay in Swiggy instead.');
         if (ws.checkout) throw error(409, 'A checkout is already pending or unresolved. Check its status; do not place another order.');
         const account = currentAccount(user, ws);
+        const customerId = String(account.customerId || '').trim();
+        if (!customerId) throw error(409, 'Reconnect this Swiggy account before checkout so its identity can be verified for recovery.');
         const quote = ws.cart?.quote;
         const quotedAt = Date.parse(quote?.fetchedAt || '');
         const total = Number(quote?.total);
@@ -506,6 +552,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const placementKey = `pro:${user.id}:${checkoutId}`;
         ws.checkout = {
           id: checkoutId, accountKey: ws.activeAccountKey, accountPhone: String(account.phone || ''), status: 'SUBMITTING',
+          accountCustomerId: customerId,
           createdAt: new Date().toISOString(), amount: total, restaurantName: String(ws.cart.restaurantName || '')
         };
         // Persist the logical ID before the provider can send a placement POST.
@@ -596,7 +643,12 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
     } catch (err) {
       const status = Number(err?.statusCode) || 500;
       // Do not log inputs, tokens, addresses, or raw Swiggy errors.
-      json(res, status, { ok: false, error: status >= 500 && status !== 501 && status !== 502 && status !== 503 ? 'Unable to complete this request. Please retry.' : String(err?.message || 'Request failed.') });
+      const code = ['PRO_VAULT_NOT_CONFIGURED', 'PRO_VAULT_DECRYPT_FAILED'].includes(err?.code) ? err.code : undefined;
+      json(res, status, {
+        ok: false,
+        error: status >= 500 && status !== 501 && status !== 502 && status !== 503 ? 'Unable to complete this request. Please retry.' : String(err?.message || 'Request failed.'),
+        ...(code ? { code } : {})
+      });
     }
   });
   return true;

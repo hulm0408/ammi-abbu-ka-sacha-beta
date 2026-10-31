@@ -5,10 +5,10 @@
   try { tg?.ready(); tg?.expand(); } catch {}
   const initData = tg?.initData || '';
   const state = {
-    tab: 'accounts', auth: false, authError: '', user: null, accounts: [], activeAccount: null,
+    tab: 'accounts', auth: false, authError: '', authErrorCode: '', connecting: false, user: null, accounts: [], activeAccount: null,
     selectedAddress: null, addresses: [], addressNote: '', pendingAddress: null, contactEdit: false,
     cart: null, checkout: null, checkoutEnabled: false, mode: 'phone', otpSent: false, searchQuery: '', results: null, menu: null,
-    orders: null, order: null, orderTracking: null, busy: false
+    orders: null, ordersScope: 'active', order: null, orderTracking: null, busy: false
   };
   const $ = selector => document.querySelector(selector);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
@@ -36,20 +36,82 @@
   };
   const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name] || ''}</svg>`;
   const tile = (name, green = false) => `<span class="icon-tile${green ? ' green' : ''}">${icon(name)}</span>`;
+  const cartLocked = () => Boolean(state.checkout && state.checkout.status !== 'PAID');
   const head = (eyebrow, title, sub, end = '') => `<div class="page-heading"><div><p class="eyebrow">${esc(eyebrow)}</p><h1>${esc(title)}</h1><p>${esc(sub)}</p></div>${end}</div>`;
   const empty = (symbol, title, text) => `<div class="empty"><div class="large-icon">${icon(symbol)}</div><strong>${esc(title)}</strong>${esc(text)}</div>`;
   const toast = message => {
     const el = $('#toast'); el.textContent = message; el.hidden = false;
     clearTimeout(toast.timer); toast.timer = setTimeout(() => { el.hidden = true; }, 4300);
   };
+  // Browser confirm() can be blocked in Telegram WebViews. Keep every consent
+  // inside the Mini App, preserve the full recipient/amount text, and default
+  // to cancellation on dismissal. Only one prompt can be open at a time.
+  let confirmationOpen = false;
+  function confirmInApp({ title, message, confirmText = 'Continue', danger = false }) {
+    if (confirmationOpen) return Promise.resolve(false);
+    confirmationOpen = true;
+    return new Promise(resolve => {
+      const previousFocus = document.activeElement;
+      const overlay = document.createElement('div');
+      overlay.className = 'confirm-overlay';
+      const dialog = document.createElement('section');
+      dialog.className = 'confirm-dialog';
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+      dialog.setAttribute('aria-labelledby', 'confirm-title');
+      dialog.setAttribute('aria-describedby', 'confirm-message');
+      const heading = document.createElement('h2');
+      heading.id = 'confirm-title';
+      heading.textContent = title;
+      const body = document.createElement('p');
+      body.id = 'confirm-message';
+      body.className = 'confirm-message';
+      body.textContent = message;
+      const actions = document.createElement('div');
+      actions.className = 'confirm-actions';
+      const cancel = document.createElement('button');
+      cancel.type = 'button'; cancel.className = 'button soft'; cancel.textContent = 'Cancel';
+      const confirm = document.createElement('button');
+      confirm.type = 'button'; confirm.className = `button ${danger ? 'danger' : 'primary'}`; confirm.textContent = confirmText;
+      actions.append(cancel, confirm);
+      dialog.append(heading, body, actions);
+      overlay.append(dialog);
+      let settled = false;
+      const finish = approved => {
+        if (settled) return;
+        settled = true;
+        confirmationOpen = false;
+        document.removeEventListener('keydown', onKeyDown);
+        overlay.remove();
+        if (previousFocus?.isConnected && typeof previousFocus.focus === 'function') {
+          try { previousFocus.focus({ preventScroll: true }); } catch { previousFocus.focus(); }
+        }
+        resolve(approved);
+      };
+      const onKeyDown = event => {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(false); }
+        if (event.key === 'Tab') {
+          if (event.shiftKey && document.activeElement === cancel) { event.preventDefault(); confirm.focus(); }
+          else if (!event.shiftKey && document.activeElement === confirm) { event.preventDefault(); cancel.focus(); }
+        }
+      };
+      cancel.addEventListener('click', () => finish(false));
+      confirm.addEventListener('click', () => finish(true));
+      overlay.addEventListener('click', event => { if (event.target === overlay) finish(false); });
+      document.addEventListener('keydown', onKeyDown);
+      document.body.append(overlay);
+      cancel.focus();
+    });
+  }
   async function api(path, method = 'GET', body) {
-    if (!initData) throw new Error('Open the Mini App using /pro inside Telegram.');
+    if (!initData) throw new Error('Open the Mini App from your bot in Telegram.');
     const headers = { 'X-Telegram-Init-Data': initData };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const response = await fetch('/pro/api/' + path, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
     const result = await response.json().catch(() => ({}));
     if (!response.ok || !result.ok) {
-      const e = new Error(result.error || 'Request failed. Please try again.'); e.status = response.status; throw e;
+      const e = new Error(result.error || 'Request failed. Please try again.');
+      e.status = response.status; e.code = String(result.code || ''); throw e;
     }
     return result;
   }
@@ -60,8 +122,11 @@
     if (state.busy) return;
     state.busy = true;
     if (button) button.disabled = true;
-    try { await task(); } catch (e) { toast(e.message || 'Something went wrong.'); }
-    finally { state.busy = false; if (button?.isConnected) button.disabled = false; }
+    try { await task(); } catch (e) {
+      if (['PRO_VAULT_NOT_CONFIGURED', 'PRO_VAULT_DECRYPT_FAILED'].includes(e?.code)) {
+        state.auth = false; state.authError = e.message; state.authErrorCode = e.code; render();
+      } else toast(e.message || 'Something went wrong.');
+    } finally { state.busy = false; if (button?.isConnected) button.disabled = false; }
   }
   function openExternal(url) {
     if (tg?.openLink) tg.openLink(url);
@@ -73,37 +138,44 @@
   function addressLabel(a) { return a?.annotation || 'Delivery address'; }
   function renderNav() {
     const tabs = [['accounts','Accounts'],['address','Address'],['search','Search'],['cart','Cart'],['orders','Orders'],['tools','Tools']];
-    $('#bottom-nav').innerHTML = tabs.map(([id, label]) => `<button type="button" data-action="nav" data-tab="${id}" class="${state.tab === id ? 'selected' : ''}" ${state.tab === id ? 'aria-current="page"' : ''}>${icon(id)}<span>${label}</span></button>`).join('');
-    $('#account-chip').textContent = state.activeAccount?.phone ? `+91 ${state.activeAccount.phone}` : 'Select account';
-    const cart = state.cart;
+    $('#bottom-nav').innerHTML = tabs.map(([id, label]) => `<button type="button" data-action="nav" data-tab="${id}" class="${state.tab === id ? 'selected' : ''}" ${state.tab === id ? 'aria-current="page"' : ''} ${state.auth ? '' : 'disabled'}>${icon(id)}<span>${label}</span></button>`).join('');
+    const chip = $('#account-chip');
+    chip.textContent = state.auth ? (state.activeAccount?.phone ? `+91 ${state.activeAccount.phone}` : 'Select account') : 'Not connected';
+    chip.disabled = !state.auth;
+    const cart = state.auth ? state.cart : null;
     const quantity = cart?.items?.reduce((n, i) => n + Number(i.qty || 0), 0) || 0;
     $('#cart-dock').innerHTML = cart && quantity && state.tab !== 'cart' ? `<button type="button" class="cart-dock" data-action="nav" data-tab="cart"><span class="dock-icon">${icon('cart')}</span><span class="dock-copy"><strong>${quantity} item${quantity === 1 ? '' : 's'} · ${esc(cart.restaurantName)}</strong><small>${cart.quote ? `Swiggy bill ${money(cart.quote.total)}` : 'Bill not checked yet'}</small></span><span class="dock-cta">View cart →</span></button>` : '';
   }
   function renderAccounts() {
     const intro = head('YOUR SPACE', 'Accounts', 'Add a Swiggy account to start ordering.');
+    const lockedNotice = cartLocked() ? '<div class="warning">Checkout is pending or unknown. Account switching is locked; only the original account can be reconnected.</div>' : '';
     const controls = state.mode === 'phone'
       ? `<form data-form="${state.otpSent ? 'verify-otp' : 'send-otp'}">${state.otpSent
           ? `${field('OTP from Swiggy', 'otp', 'Enter 6-digit OTP', '', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6" required')}<p class="hint">The OTP is sent by Swiggy. Don’t share it with anyone else.</p><button class="button primary block" type="submit">Verify & add account ${icon('arrow')}</button><button class="text-button" type="button" data-action="otp-reset">Change mobile number</button>`
           : `<label class="field"><span class="field-label">Mobile number</span><span class="input-wrap"><span class="phone-prefix">+91</span><input name="phone" placeholder="Enter mobile number" inputmode="tel" autocomplete="tel-national" required></span></label><button class="button primary block" type="submit">Send OTP ${icon('arrow')}</button>`}</form>`
       : `<form data-form="import"><label class="field"><span class="field-label">Session JSON</span><span class="input-wrap"><textarea name="session" placeholder='{"mobile":"…", "token":"…", "tid":"…"}' required></textarea></span></label><p class="hint">Only use a session you own. Never send tokens or OTPs in chat.</p><button class="button primary block" type="submit">Login via JSON ${icon('arrow')}</button></form>`;
-    const accounts = state.accounts.length ? state.accounts.map(a => `<div class="account-row ${a.active ? 'active' : ''}">${tile('accounts', true)}<div class="row-content"><strong>${esc(a.name)}</strong><p>${a.phone ? '+91 ' + esc(a.phone) : 'Number not returned'}${a.ordersCount !== null ? ' · ' + esc(a.ordersCount) + ' orders' : ''}</p></div><div class="row-actions">${a.active ? '<span class="pill green">Active</span>' : `<button class="button mini outline" data-action="account-select" data-key="${esc(a.key)}">Use</button>`}<button class="icon-button" data-action="account-remove" data-key="${esc(a.key)}" aria-label="Remove account">${icon('trash')}</button></div></div>`).join('') : empty('accounts', 'No accounts yet', 'Add your own account with OTP or a verified session.');
-    return `${intro}<div class="card"><div class="card-title">${tile('userplus')}<span class="title-copy">Add account<small>${state.user?.isBoss ? 'Uses the shared boss vault' : 'Private to your Telegram user'}</small></span></div><div class="divider"></div><div class="segmented"><button type="button" data-action="account-mode" data-mode="phone" class="${state.mode === 'phone' ? 'selected' : ''}">Phone number</button><button type="button" data-action="account-mode" data-mode="json" class="${state.mode === 'json' ? 'selected' : ''}">Session JSON</button></div>${controls}<p class="hint">This adds a server-side session; it does not log the Swiggy app in on your phone.</p></div><div class="line-heading">${icon('accounts')} Saved accounts <span class="pill right">${state.accounts.length}</span></div>${accounts}`;
+    const accounts = state.accounts.length ? state.accounts.map(a => `<div class="account-row ${a.active ? 'active' : ''}">${tile('accounts', true)}<div class="row-content"><strong>${esc(a.name)}</strong><p>${a.phone ? '+91 ' + esc(a.phone) : 'Number not returned'}${a.ordersCount !== null ? ' · ' + esc(a.ordersCount) + ' orders' : ''}</p></div><div class="row-actions">${a.active ? '<span class="pill green">Active</span>' : `<button class="button mini outline" data-action="account-select" data-key="${esc(a.key)}" ${cartLocked() ? 'disabled' : ''}>Use</button>`}<button class="icon-button" data-action="account-remove" data-key="${esc(a.key)}" aria-label="Remove account" ${cartLocked() ? 'disabled' : ''}>${icon('trash')}</button></div></div>`).join('') : empty('accounts', 'No accounts yet', 'Add your own account with OTP or a verified session.');
+    return `${intro}${lockedNotice}<div class="card"><div class="card-title">${tile('userplus')}<span class="title-copy">Add account<small>${state.user?.isBoss ? 'Uses the shared boss vault' : 'Private to your Telegram user'}</small></span></div><div class="divider"></div><div class="segmented"><button type="button" data-action="account-mode" data-mode="phone" class="${state.mode === 'phone' ? 'selected' : ''}">Phone number</button><button type="button" data-action="account-mode" data-mode="json" class="${state.mode === 'json' ? 'selected' : ''}">Session JSON</button></div>${controls}<p class="hint">This adds a server-side session; it does not log the Swiggy app in on your phone.</p></div><div class="line-heading">${icon('accounts')} Saved accounts <span class="pill right">${state.accounts.length}</span></div>${accounts}`;
   }
   function addressCard(a, selected = false) {
-    return `<div class="address-row"><div class="row-content"><span class="badge ${selected ? 'green' : 'blue'}">${selected ? 'SELECTED' : esc(addressLabel(a))}</span><strong>${esc(a.name || 'Receiver name needed')}${a.mobile ? ' · +91 ' + esc(a.mobile) : ''}</strong><p>${esc(a.address || 'Address not available')}</p></div>${selected ? `<button class="icon-button" data-action="contact-edit" aria-label="Edit receiver contact">${icon('accounts')}</button>` : `<button class="button mini outline" data-action="address-select" data-ref="${esc(a.ref)}">Select</button>`}</div>`;
+    const lockAttr = cartLocked() ? 'disabled' : '';
+    return `<div class="address-row"><div class="row-content"><span class="badge ${selected ? 'green' : 'blue'}">${selected ? 'SELECTED' : esc(addressLabel(a))}</span><strong>${esc(a.name || 'Receiver name needed')}${a.mobile ? ' · +91 ' + esc(a.mobile) : ''}</strong><p>${esc(a.address || 'Address not available')}</p></div>${selected ? `<button class="icon-button" data-action="contact-edit" aria-label="Edit receiver contact" ${lockAttr}>${icon('accounts')}</button>` : `<button class="button mini outline" data-action="address-select" data-ref="${esc(a.ref)}" ${lockAttr}>Select</button>`}</div>`;
   }
   function renderAddress() {
+    const locked = cartLocked();
+    const lockAttr = locked ? 'disabled' : '';
+    const lockedNotice = locked ? '<div class="warning">Receiver changes are locked while checkout is pending or unknown.</div>' : '';
     const selected = state.selectedAddress ? addressCard(state.selectedAddress, true) : '';
-    const contact = state.contactEdit && state.selectedAddress ? `<div class="card"><h2 class="card-title">Receiver details</h2><form data-form="contact">${field('Receiver name', 'name', 'Full name', state.selectedAddress.name, 'required')}${field('Receiver mobile', 'mobile', '10-digit mobile number', state.selectedAddress.mobile, 'inputmode="tel" required')}<p class="hint">Use the person who should receive this order; no account-number substitution.</p><button class="button primary block">Confirm receiver</button></form></div>` : '';
-    const pending = state.pendingAddress ? `<div class="card"><h2 class="card-title">Confirm link details</h2><p class="hint">${esc(state.pendingAddress.address)}</p><form data-form="confirm-address">${field('Receiver name', 'name', 'Receiver name', state.pendingAddress.name, 'required')}${field('Receiver mobile', 'mobile', '10-digit mobile number', state.pendingAddress.mobile, 'inputmode="tel" required')}<p class="hint">Name and mobile are filled from the link when Swiggy provides them. Check them before continuing.</p><button class="button primary block">Use this address ${icon('arrow')}</button></form></div>` : '';
+    const contact = !locked && state.contactEdit && state.selectedAddress ? `<div class="card"><h2 class="card-title">Receiver details</h2><form data-form="contact">${field('Receiver name', 'name', 'Full name', state.selectedAddress.name, 'required')}${field('Receiver mobile', 'mobile', '10-digit mobile number', state.selectedAddress.mobile, 'inputmode="tel" required')}<p class="hint">Use the person who should receive this order; no account-number substitution.</p><button class="button primary block">Confirm receiver</button></form></div>` : '';
+    const pending = !locked && state.pendingAddress ? `<div class="card"><h2 class="card-title">Confirm link details</h2><p class="hint">${esc(state.pendingAddress.address)}</p><form data-form="confirm-address">${field('Receiver name', 'name', 'Receiver name', state.pendingAddress.name, 'required')}${field('Receiver mobile', 'mobile', '10-digit mobile number', state.pendingAddress.mobile, 'inputmode="tel" required')}<p class="hint">Name and mobile are filled from the link when Swiggy provides them. Check them before continuing.</p><button class="button primary block">Use this address ${icon('arrow')}</button></form></div>` : '';
     const list = state.addresses.length ? state.addresses.map(a => addressCard(a)).join('') : `<div class="empty">${esc(state.addressNote || 'Refresh to fetch saved addresses from Swiggy.')}</div>`;
-    return `${head('WHERE TO?', 'Delivery addresses', 'Choose the right person and place.')}${selected}${contact}<div class="card"><div class="card-title">${tile('link')}<span class="title-copy">Add by address link<small>Paste the Swiggy share-address link.</small></span></div><form data-form="address-link">${field('Swiggy address link', 'url', 'https://swiggy.onelink.me/…', '', 'type="url" required')}<button class="button primary block">Read address ${icon('arrow')}</button></form></div>${pending}<div class="action-tile">${tile('address', true)}<span class="tile-copy"><strong>Pin on map</strong><small>Manual map entry is not available yet.</small></span><span class="pill">Soon</span></div><div class="line-heading">${icon('address')} Saved addresses <button class="text-button right" data-action="addresses-refresh">${icon('refresh')} Refresh</button></div>${list}`;
+    return `${head('WHERE TO?', 'Delivery addresses', 'Choose the right person and place.')}${lockedNotice}${selected}${contact}<div class="card"><div class="card-title">${tile('link')}<span class="title-copy">Add by address link<small>Paste the Swiggy share-address link.</small></span></div><form data-form="address-link">${field('Swiggy address link', 'url', 'https://swiggy.onelink.me/…', '', 'type="url" required ' + lockAttr)}<button class="button primary block" ${lockAttr}>Read address ${icon('arrow')}</button></form></div>${pending}<div class="action-tile">${tile('address', true)}<span class="tile-copy"><strong>Pin on map</strong><small>Manual map entry is not available yet.</small></span><span class="pill">Soon</span></div><div class="line-heading">${icon('address')} Saved addresses <button class="text-button right" data-action="addresses-refresh">${icon('refresh')} Refresh</button></div>${list}`;
   }
   function renderSearch() {
     if (state.menu) {
       const r = state.menu.restaurant;
       const avail = r.isOpen === false ? `<div class="warning">${esc(r.opens || 'This restaurant is closed right now.')}</div>` : '';
-      const sections = state.menu.categories.map(c => `<div class="menu-category">${esc(c.title)} <span class="pill">${c.items.length}</span></div>${c.items.map(i => `<article class="dish-row"><div class="row-content">${i.isVeg === null ? '' : `<span class="veg-mark ${i.isVeg ? '' : 'nonveg'}" aria-label="${i.isVeg ? 'Vegetarian' : 'Non-vegetarian'}"></span>`}<strong>${esc(i.name)}</strong><div class="dish-price">${i.price === null ? 'Price unavailable' : money(i.price)}</div><p class="dish-description">${esc(i.description)}</p></div><div class="dish-right">${i.image ? `<img class="food-thumb" src="${esc(i.image)}" alt="" loading="lazy">` : `<span class="food-placeholder">${icon('store')}</span>`}<button class="button mini outline" data-action="dish-add" data-id="${esc(i.id)}" ${r.isOpen === false || i.inStock === false || i.customizable || i.price === null ? 'disabled' : ''}>${i.inStock === false ? 'Sold out' : i.customizable ? 'Choices needed' : 'ADD +'}</button></div></article>`).join('')}`).join('');
+      const sections = state.menu.categories.map(c => `<div class="menu-category">${esc(c.title)} <span class="pill">${c.items.length}</span></div>${c.items.map(i => `<article class="dish-row"><div class="row-content">${i.isVeg === null ? '' : `<span class="veg-mark ${i.isVeg ? '' : 'nonveg'}" aria-label="${i.isVeg ? 'Vegetarian' : 'Non-vegetarian'}"></span>`}<strong>${esc(i.name)}</strong><div class="dish-price">${i.price === null ? 'Price unavailable' : money(i.price)}</div><p class="dish-description">${esc(i.description)}</p></div><div class="dish-right">${i.image ? `<img class="food-thumb" src="${esc(i.image)}" alt="" loading="lazy">` : `<span class="food-placeholder">${icon('store')}</span>`}<button class="button mini outline" data-action="dish-add" data-id="${esc(i.id)}" ${cartLocked() || r.isOpen === false || i.inStock === false || i.customizable || i.price === null ? 'disabled' : ''}>${cartLocked() ? 'Checkout pending' : i.inStock === false ? 'Sold out' : i.customizable ? 'Choices needed' : 'ADD +'}</button></div></article>`).join('')}`).join('');
       return `<button class="back-button" data-action="menu-back">${icon('back')} Back to search</button><div class="menu-hero"><p>RESTAURANT · ${esc(r.area)}</p><h1>${esc(r.name)}</h1><p>${esc([r.rating ? '★ ' + r.rating : '', r.ratings, r.time].filter(Boolean).join(' · '))}</p></div>${avail}<p class="hint">Items that require custom choices can be ordered in Swiggy; support here is coming later.</p>${sections}`;
     }
     const addr = state.selectedAddress ? `<button class="action-tile" data-action="nav" data-tab="address">${tile('address')}<span class="tile-copy"><small>DELIVER TO</small><strong>${esc(addressLabel(state.selectedAddress))}</strong><small>${esc(state.selectedAddress.address)}</small></span>${icon('arrow')}</button>` : `<button class="action-tile" data-action="nav" data-tab="address">${tile('address')}<span class="tile-copy"><strong>Select a delivery address</strong><small>Restaurant availability depends on your location.</small></span>${icon('arrow')}</button>`;
@@ -116,13 +188,13 @@
   }
   function trackingDetails(t) {
     if (!t) return '<p class="hint">Swiggy has not returned tracking details yet.</p>';
-    const link = t.trackingUrl ? `<a class="button soft block" href="${esc(t.trackingUrl)}" target="_blank" rel="noopener noreferrer">Open Swiggy tracking ↗</a>` : '';
+    const link = t.trackingUrl ? `<a class="button soft block" href="${esc(t.trackingUrl)}" target="_blank" rel="noopener noreferrer">Open Swiggy tracking (external) ↗</a>` : '';
     return `<div class="bill-row"><span>Status</span><strong>${esc(t.status || 'Not returned')}</strong></div>${t.eta ? `<div class="bill-row"><span>ETA</span><strong>${esc(t.eta)}</strong></div>` : ''}${t.deliveryPartner?.name ? `<div class="bill-row"><span>Delivery partner</span><strong>${esc(t.deliveryPartner.name)}</strong></div>` : ''}${t.deliveryPartner?.phone ? `<div class="bill-row"><span>Partner phone</span><strong>${esc(t.deliveryPartner.phone)}</strong></div>` : ''}${t.deliveryOtp ? `<div class="bill-row"><span>Delivery OTP</span><strong>${esc(t.deliveryOtp)}</strong></div>` : ''}${link}`;
   }
   function renderCheckout() {
     const c = state.checkout;
     if (!c) {
-      if (!state.checkoutEnabled) return `<div class="card"><div class="card-title">${icon('cart')} Payment</div><div class="warning">Experimental in-app checkout is disabled. Review and pay in Swiggy.</div><button class="button green block" type="button" data-action="open-swiggy">Review in Swiggy ${icon('arrow')}</button></div>`;
+      if (!state.checkoutEnabled) return `<div class="card"><div class="card-title">${icon('cart')} Payment</div><div class="warning">In-app checkout is not enabled yet; this draft is not an order. The optional button below opens Swiggy outside this Mini App.</div><button class="button soft block" type="button" data-action="open-swiggy">Open Swiggy (external) ${icon('arrow')}</button></div>`;
       return `<div class="card"><div class="card-title">${icon('cart')} UPI checkout</div><p class="hint">Experimental: one real placement request is sent after your confirmation. Swiggy may notify the recipient. Check all details before continuing.</p><button class="button green block" type="button" data-action="checkout-start" ${state.cart?.quote ? '' : 'disabled'}>Place order & get UPI QR ${icon('arrow')}</button><p class="hint">A bill is not an order. Card and cash payments are not supported here.</p></div>`;
     }
     const id = `${c.accountPhone ? `<div class="bill-row"><span>Original account</span><strong>${esc(c.accountPhone)}</strong></div>` : ''}${c.orderId ? `<div class="bill-row"><span>Swiggy order ID</span><strong>#${esc(c.orderId)}</strong></div>` : ''}`;
@@ -132,19 +204,22 @@
       const qr = c.qrDataUrl && /^data:image\/png;base64,/.test(c.qrDataUrl) && c.upiIntentUrl && /^upi:\/\/pay\?/i.test(c.upiIntentUrl)
         ? `<img class="payment-qr" src="${esc(c.qrDataUrl)}" alt="Swiggy UPI payment QR"><a class="button green block" href="${esc(c.upiIntentUrl)}">Open UPI app</a><p class="hint">Pay ${money(c.amount)} only once. If your UPI app cannot open here, scan this QR with another device.</p>` : '';
       const paidNote = c.paymentVerified ? '<div class="warning">Payment was reported, but order confirmation is still pending. Do not pay again.</div>' : '';
-      return `<div class="card"><div class="card-title">${icon('receipt')} Payment pending</div>${id}${warning}${paidNote}${qr}<p class="hint">${c.ofoConfirmed ? 'Swiggy returned an OFO flag; recipient SMS is not verified.' : 'Swiggy has not confirmed OFO acceptance or recipient SMS.'}</p><button class="button primary block" data-action="checkout-status">Check payment & order ${icon('refresh')}</button><button class="button outline block" data-action="open-orders">Open Swiggy My Orders</button></div>`;
+      return `<div class="card"><div class="card-title">${icon('receipt')} Payment pending</div>${id}${warning}${paidNote}${qr}<p class="hint">${c.ofoConfirmed ? 'Swiggy returned an OFO flag; recipient SMS is not verified.' : 'Swiggy has not confirmed OFO acceptance or recipient SMS.'}</p><button class="button primary block" data-action="checkout-status">Check payment & order ${icon('refresh')}</button><button class="button soft block" data-action="checkout-orders">Check original account's orders here</button><button class="button outline block" data-action="open-orders">Open Swiggy My Orders (external)</button></div>`;
     }
-    return `<div class="card"><div class="card-title">${icon('receipt')} Checkout needs checking</div>${id}<div class="warning">${esc(c.message || 'The result is unknown. An order may exist; do not place another.')}</div>${c.orderId ? `<button class="button primary block" data-action="checkout-status">Check this order ${icon('refresh')}</button>` : ''}<button class="button outline block" data-action="open-orders">Open Swiggy My Orders ↗</button></div>`;
+    return `<div class="card"><div class="card-title">${icon('receipt')} Checkout needs checking</div>${id}<div class="warning">${esc(c.message || 'The result is unknown. An order may exist; do not place another.')}</div>${c.orderId ? `<button class="button primary block" data-action="checkout-status">Check this order ${icon('refresh')}</button>` : ''}<button class="button soft block" data-action="checkout-orders">Check original account's orders here</button><button class="button outline block" data-action="open-orders">Open Swiggy My Orders (external) ↗</button></div>`;
   }
   function renderCart() {
     const cart = state.cart;
-    const importCard = `<div class="card"><div class="card-title">${tile('link')}<span class="title-copy">Add from group cart<small>Use a Swiggy group-cart link.</small></span></div><form data-form="group-cart">${field('Group cart link', 'url', 'https://swig.gy/gc/…', '', 'type="url" required')}<button class="button soft block">Import items ${icon('arrow')}</button></form></div>`;
-    if (!cart) return `${head('YOUR ORDER', 'Cart', 'Everything for your next meal.')}${state.checkout ? renderCheckout() : ''}${importCard}${empty('cart', 'Your cart is empty', 'Search for a restaurant or import a group cart.')}`;
-    const items = cart.items.map(i => `<div class="cart-item"><div class="row-content"><strong>${esc(i.name)}</strong><p>${i.price === null ? 'Price unavailable' : money(i.price) + ' each'}${(i.variants?.length || i.addons?.length) ? ' · Customised' : ''}</p></div><div class="stepper"><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)-1}" aria-label="Remove one">−</button><span>${Number(i.qty)}</span><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)+1}" aria-label="Add one">+</button></div></div>`).join('');
+    const locked = cartLocked();
+    const lockAttr = locked ? 'disabled' : '';
+    const lockedNotice = locked ? '<div class="warning">Checkout is pending or unknown. Draft cart changes are locked; check the original account before another order.</div>' : '';
+    const importCard = `<div class="card"><div class="card-title">${tile('link')}<span class="title-copy">Add from group cart<small>Use a Swiggy group-cart link.</small></span></div><form data-form="group-cart">${field('Group cart link', 'url', 'https://swig.gy/gc/…', '', 'type="url" required ' + lockAttr)}<button class="button soft block" ${lockAttr}>Import items ${icon('arrow')}</button></form></div>`;
+    if (!cart) return `${head('YOUR ORDER', 'Cart', 'Everything for your next meal.')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${importCard}${empty('cart', 'Your cart is empty', 'Search for a restaurant or import a group cart.')}`;
+    const items = cart.items.map(i => `<div class="cart-item"><div class="row-content"><strong>${esc(i.name)}</strong><p>${i.price === null ? 'Price unavailable' : money(i.price) + ' each'}${(i.variants?.length || i.addons?.length) ? ' · Customised' : ''}</p></div><div class="stepper"><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)-1}" aria-label="Remove one" ${lockAttr}>−</button><span>${Number(i.qty)}</span><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)+1}" aria-label="Add one" ${lockAttr}>+</button></div></div>`).join('');
     const q = cart.quote;
     const bill = q ? `<div class="card"><div class="card-title">${icon('receipt')} Swiggy bill</div><div class="bill-row"><span>Item total</span><strong>${money(q.itemTotal)}</strong></div><div class="bill-row"><span>Delivery fee</span><strong>${money(q.deliveryFee)}</strong></div><div class="bill-row"><span>Packing</span><strong>${money(q.packingCharges)}</strong></div><div class="bill-row"><span>Taxes & charges</span><strong>${money(q.taxes)}</strong></div>${q.discount ? `<div class="bill-row"><span>Coupon ${esc(q.coupon)}</span><strong>−${money(q.discount)}</strong></div>` : ''}<div class="bill-row total"><span>To pay</span><span>${money(q.total)}</span></div><p class="hint">Fetched from Swiggy. Bill can change; re-check it before paying.${cart.forSomeoneElse ? ' OFO acceptance is not confirmed by this bill.' : ''}</p></div>` : `<div class="warning">Cart items are a draft. The total, offers and delivery fee have not been confirmed by Swiggy yet.</div>`;
     const contact = state.selectedAddress ? `<strong>${esc(state.selectedAddress.name || 'Name needed')}${state.selectedAddress.mobile ? ' · ' + esc(state.selectedAddress.mobile) : ' · Mobile needed'}</strong><p class="hint">${esc(state.selectedAddress.address)}</p>` : `<p class="hint">Choose a delivery address first.</p>`;
-    return `${head('YOUR ORDER', 'Cart', 'Review before doing anything on Swiggy.')}${importCard}<div class="card"><div class="card-title">${icon('store')} ${esc(cart.restaurantName)}</div>${items}</div><div class="card"><div class="card-title">${icon('address')} Delivery to</div>${contact}<button class="button mini outline" data-action="nav" data-tab="address">Change / check receiver</button></div>${bill}<div class="card"><div class="card-title">${icon('receipt')} Get live bill</div><p class="hint">Sync replaces the current cart on the selected Swiggy account and may save the delivery address there.</p><form data-form="sync">${field('Coupon (optional)', 'coupon', 'Enter coupon code', q?.coupon || '')}<label class="checkbox-row"><input type="checkbox" name="forSomeoneElse" ${cart.forSomeoneElse ? 'checked' : ''}><span>Order for someone else (use the selected receiver)</span></label><button class="button primary block">Sync & check bill ${icon('refresh')}</button></form></div>${renderCheckout()}`;
+    return `${head('YOUR ORDER', 'Cart', 'Review before doing anything on Swiggy.')}${lockedNotice}${importCard}<div class="card"><div class="card-title">${icon('store')} ${esc(cart.restaurantName)}</div>${items}</div><div class="card"><div class="card-title">${icon('address')} Delivery to</div>${contact}<button class="button mini outline" data-action="nav" data-tab="address">${locked ? 'Check receiver' : 'Change / check receiver'}</button></div>${bill}<div class="card"><div class="card-title">${icon('receipt')} Get live bill</div><p class="hint">Sync replaces the current cart on the selected Swiggy account and may save the delivery address there.</p><form data-form="sync">${field('Coupon (optional)', 'coupon', 'Enter coupon code', q?.coupon || '', lockAttr)}<label class="checkbox-row"><input type="checkbox" name="forSomeoneElse" ${cart.forSomeoneElse ? 'checked' : ''} ${lockAttr}><span>Order for someone else (use the selected receiver)</span></label><button class="button primary block" ${lockAttr}>Sync & check bill ${icon('refresh')}</button></form></div>${renderCheckout()}`;
   }
   function renderOrders() {
     if (state.order) {
@@ -152,7 +227,9 @@
       return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER DETAILS', o.restaurant || 'Swiggy order', 'Only information returned by Swiggy is shown.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div>${o.address ? `<div class="bill-row"><span>Address</span><strong>${esc(o.address)}</strong></div>` : ''}</div><div class="card"><div class="card-title">${icon('cart')} Ordered items</div>${o.items.length ? o.items.map(i => `<div class="bill-row"><span>${esc(i.name)}</span><strong>× ${Number(i.qty)}</strong></div>`).join('') : '<p class="hint">Swiggy did not return item details.</p>'}</div><div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>`;
     }
     const rows = state.orders === null ? empty('orders', 'Your orders', 'Refresh to load order history from the selected account.') : state.orders.length ? state.orders.map(o => `<button class="restaurant-row" data-action="order-detail" data-id="${esc(o.id)}">${tile('orders', true)}<span class="row-content"><strong>${esc(o.restaurant || 'Swiggy order')}</strong><p>${esc(o.placedAt || 'Time not returned')}</p><p>${esc(o.items.map(i => i.name).join(', '))}</p><span class="order-id">#${esc(o.id)}</span></span><span class="pill ${/delivered/i.test(o.status) && !/cancel/i.test(o.status) ? 'green' : ''}">${esc(o.status)}</span></button>`).join('') : empty('orders', 'No orders returned', 'Swiggy did not return any orders for this account.');
-    return `${head('ORDER HISTORY', 'Your orders', 'Past and current orders on this account.', `<button class="button mini soft" data-action="orders-refresh">${icon('refresh')} Refresh</button>`)}${rows}`;
+    const original = state.ordersScope === 'checkout';
+    const note = original ? '<div class="warning">Showing the original checkout account. An empty or delayed list does not prove the order failed; do not place or pay for another order while the outcome is unknown.</div>' : '';
+    return `${head('ORDER HISTORY', original ? 'Original account orders' : 'Your orders', original ? 'Recent orders returned for the account used at checkout.' : 'Past and current orders on this account.', `<button class="button mini soft" data-action="orders-refresh">${icon('refresh')} Refresh</button>`)}${note}${rows}`;
   }
   function renderTools() {
     const offers = [
@@ -160,17 +237,51 @@
       ['sun','Breakfast offer','Check eligibility and timing on Swiggy.','https://events.swiggy.com/book-your-offer'],
       ['tools','Extra offer','Check availability on Swiggy.','https://events.swiggy.com/pick-your-offer']
     ];
-    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Explore offers without guessing eligibility.')}<div class="warning">Offer status is not checked here yet. Opening a page does not mean an offer is claimed.</div>${offers.map(([sym,title,sub,url]) => `<button class="action-tile offer-card" data-action="offer" data-url="${esc(url)}">${tile(sym)}<span class="tile-copy"><strong>${esc(title)}</strong><small>${esc(sub)}</small></span><span class="offer-tag">Open ↗</span></button>`).join('')}`;
+    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Explore offers without guessing eligibility.')}<div class="warning">Offer status is not checked here yet. These links open Swiggy outside this Mini App and do not mean an offer is claimed.</div>${offers.map(([sym,title,sub,url]) => `<button class="action-tile offer-card" data-action="offer" data-url="${esc(url)}">${tile(sym)}<span class="tile-copy"><strong>${esc(title)}</strong><small>${esc(sub)}</small></span><span class="offer-tag">External ↗</span></button>`).join('')}`;
+  }
+  function renderConnection() {
+    if (!initData) return `${head('TELEGRAM MINI APP', 'Open in Telegram', 'Your private account space needs a Telegram session.')}<div class="card connection-card"><strong>Browser preview only</strong><p>Open this app from your bot using Open App or /pro. No account data is shown here.</p></div>`;
+    if (state.connecting) return `${head('CONNECTING', 'Preparing your space', 'Checking your Telegram session and secure storage…')}<div class="card connection-card" role="status">Connecting securely…</div>`;
+    let title = 'Unable to connect';
+    let message = state.authError || 'Please retry, or reopen the app from your Telegram bot.';
+    if (state.authErrorCode === 'PRO_VAULT_NOT_CONFIGURED') {
+      title = 'Server setup needed';
+      message = 'This is not a problem with your phone number. The bot owner needs to configure secure account storage on the server.';
+    } else if (state.authErrorCode === 'PRO_VAULT_DECRYPT_FAILED') {
+      title = 'Saved account space unavailable';
+      message = 'The server could not open the saved workspace. Do not create or delete accounts; ask the bot owner to restore the original vault key.';
+    }
+    return `${head('CONNECTION', title, 'Your account data has not been changed.')}<div class="card connection-card" role="alert"><strong>${esc(title)}</strong><p>${esc(message)}</p><button class="button primary block" type="button" data-action="retry-auth">Try again ${icon('refresh')}</button></div>`;
   }
   function render() {
     const views = { accounts: renderAccounts, address: renderAddress, search: renderSearch, cart: renderCart, orders: renderOrders, tools: renderTools };
-    $('#content').innerHTML = views[state.tab]();
+    $('#content').innerHTML = state.auth ? views[state.tab]() : renderConnection();
     renderNav();
-    const notice = $('#connection-notice');
-    notice.hidden = state.auth;
-    notice.textContent = state.authError || (initData ? 'Connecting securely…' : 'Preview only. Open /pro in Telegram to use your own account.');
+    $('#connection-notice').hidden = true;
+  }
+  async function reconnect() {
+    if (!initData || state.connecting) return;
+    state.connecting = true;
+    state.auth = false;
+    state.authError = '';
+    state.authErrorCode = '';
+    render();
+    try {
+      merge(await api('bootstrap'));
+      state.auth = true;
+    } catch (err) {
+      state.authError = err?.message || 'Could not connect. Please retry.';
+      state.authErrorCode = err?.code || '';
+    } finally {
+      state.connecting = false;
+      render();
+    }
   }
   async function navigate(tab) {
+    if (tab === 'orders' && state.ordersScope !== 'active') {
+      state.ordersScope = 'active';
+      state.orders = null;
+    }
     state.tab = tab;
     state.order = null;
     if (tab !== 'search') state.menu = null;
@@ -181,7 +292,10 @@
   async function loadAddresses() {
     const data = await api('addresses'); state.addresses = data.addresses; state.addressNote = data.note; render();
   }
-  async function loadOrders() { const data = await api('orders'); state.orders = data.orders; render(); }
+  async function loadOrders() {
+    const data = await api('orders' + (state.ordersScope === 'checkout' ? '?scope=checkout' : ''));
+    state.orders = data.orders; render();
+  }
   async function search(q) { state.searchQuery = q; const data = await api('search?q=' + encodeURIComponent(q)); state.results = data.restaurants; state.menu = null; render(); }
   function forms(event) {
     const form = event.target.closest('form[data-form]');
@@ -205,10 +319,10 @@
       } else if (type === 'search') {
         await search(String(data.get('q') || '').trim());
       } else if (type === 'group-cart') {
-        if (state.cart && !window.confirm('Replace your current draft cart?')) return;
+        if (state.cart && !await confirmInApp({ title: 'Replace draft cart?', message: 'Your current draft cart will be replaced by the imported group cart.', confirmText: 'Replace draft' })) return;
         const out = await api('cart/import-group', 'POST', { url: data.get('url'), replace: Boolean(state.cart) }); merge(out); render(); toast('Group cart imported as a draft.');
       } else if (type === 'sync') {
-        if (!window.confirm('This replaces the current cart on your selected Swiggy account and may save the address there. Continue?')) return;
+        if (!await confirmInApp({ title: 'Sync cart with Swiggy?', message: 'This replaces the current cart on your selected Swiggy account and may save the address there.', confirmText: 'Sync cart' })) return;
         // The prior quote is stale as soon as sync starts, including when the
         // response times out after Swiggy has changed the cart.
         state.cart.quote = null; render();
@@ -220,6 +334,7 @@
   document.addEventListener('click', event => {
     const button = event.target.closest('[data-action]'); if (!button) return;
     const action = button.dataset.action;
+    if (action === 'retry-auth') { reconnect(); return; }
     if (action === 'nav') { run(() => navigate(button.dataset.tab)); return; }
     if (action === 'theme') { document.body.classList.toggle('dark'); try { localStorage.setItem('pro-theme', document.body.classList.contains('dark') ? 'dark' : 'light'); } catch {} return; }
     if (action === 'account-mode') { state.mode = button.dataset.mode; state.otpSent = false; render(); return; }
@@ -234,7 +349,11 @@
     run(async () => {
       if (action === 'account-select') { const out = await api('accounts/select', 'POST', { key: button.dataset.key }); merge(out); state.addresses = []; state.orders = null; render(); }
       else if (action === 'account-remove') {
-        if (!window.confirm(state.user?.isBoss ? 'Log out and remove this account from the shared boss vault?' : 'Remove this account from your private Mini App vault?')) return;
+        if (!await confirmInApp({
+          title: 'Remove account?',
+          message: state.user?.isBoss ? 'This will log out and remove the account from the shared boss vault.' : 'This will remove the account from your private Mini App vault.',
+          confirmText: 'Remove account', danger: true
+        })) return;
         const out = await api('accounts/remove', 'POST', { key: button.dataset.key }); merge(out); state.addresses = []; state.orders = null; render(); toast('Account removed.');
       } else if (action === 'addresses-refresh') await loadAddresses();
       else if (action === 'address-select') { const out = await api('addresses/select', 'POST', { ref: button.dataset.ref }); merge(out); state.contactEdit = !out.selectedAddress?.mobile || !out.selectedAddress?.name; render(); toast('Address selected.'); }
@@ -243,13 +362,21 @@
       else if (action === 'dish-add') {
         let out;
         try { out = await api('cart/add', 'POST', { itemId: button.dataset.id }); }
-        catch (e) { if (e.status !== 409 || !window.confirm('Replace your existing draft cart with this restaurant?')) throw e; out = await api('cart/add', 'POST', { itemId: button.dataset.id, replace: true }); }
+        catch (e) {
+          if (e.status !== 409 || (state.checkout && state.checkout.status !== 'PAID')) throw e;
+          if (!await confirmInApp({ title: 'Replace draft cart?', message: 'The existing draft will be replaced with items from this restaurant.', confirmText: 'Replace draft' })) return;
+          out = await api('cart/add', 'POST', { itemId: button.dataset.id, replace: true });
+        }
         merge(out); render(); toast('Added to draft cart.');
       } else if (action === 'qty') { const out = await api('cart/quantity', 'POST', { lineKey: button.dataset.key, qty: Number(button.dataset.qty) }); merge(out); render(); }
       else if (action === 'checkout-start') {
         const quote = state.cart?.quote;
         if (!quote || !state.selectedAddress || !state.activeAccount) throw new Error('Select an account and recipient, then sync a fresh bill.');
-        if (!window.confirm(`Send ONE real Swiggy order request for ${money(quote.total)}?\n\nAccount: ${state.activeAccount.phone || state.activeAccount.name}\nReceiver: ${state.selectedAddress.name} · ${state.selectedAddress.mobile}\nAddress: ${state.selectedAddress.address}\n\nSwiggy may notify the receiver; SMS is not verified. Payment is separate. If the request times out, do not place another order until you check Swiggy My Orders.`)) return;
+        if (!await confirmInApp({
+          title: 'Confirm real order request',
+          message: `Send ONE real Swiggy order request for ${money(quote.total)}?\n\nAccount: ${state.activeAccount.phone || state.activeAccount.name}\nReceiver: ${state.selectedAddress.name} · ${state.selectedAddress.mobile}\nAddress: ${state.selectedAddress.address}\n\nSwiggy may notify the receiver; SMS is not verified. Payment is separate. If the request times out, do not place another order until you check Swiggy My Orders.`,
+          confirmText: 'Send order request'
+        })) return;
         try {
           const out = await api('checkout', 'POST', { confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt });
           merge(out); render();
@@ -265,19 +392,21 @@
       }
       else if (action === 'checkout-status') { const out = await api('checkout/status', 'POST', {}); merge(out); render(); toast(out.checkout?.status === 'PAID' ? 'Swiggy returned the paid order.' : 'Status checked. If you already paid, do not pay again.'); }
       else if (action === 'checkout-finish') {
-        if (!window.confirm('Start a new draft? The paid order remains in Swiggy order history.')) return;
-        const out = await api('checkout/finish', 'POST', { confirmNewDraft: true }); merge(out); state.orders = null; render();
+        if (!await confirmInApp({ title: 'Start a new draft?', message: 'The paid order remains in Swiggy order history.', confirmText: 'Start new draft' })) return;
+        const out = await api('checkout/finish', 'POST', { confirmNewDraft: true }); merge(out); state.orders = null; state.ordersScope = 'active'; render();
       }
-      else if (action === 'order-tracking') { const out = await api('orders/tracking?id=' + encodeURIComponent(state.order.id)); state.orderTracking = out.tracking; render(); }
+      else if (action === 'checkout-orders') {
+        state.ordersScope = 'checkout'; state.orders = null; state.order = null; state.orderTracking = null; state.tab = 'orders';
+        render(); window.scrollTo(0, 0); await loadOrders();
+      }
+      else if (action === 'order-tracking') {
+        const scope = state.ordersScope === 'checkout' ? '&scope=checkout' : '';
+        const out = await api('orders/tracking?id=' + encodeURIComponent(state.order.id) + scope); state.orderTracking = out.tracking; render();
+      }
       else if (action === 'orders-refresh') await loadOrders();
     }, button);
   });
   try { if (localStorage.getItem('pro-theme') === 'dark') document.body.classList.add('dark'); } catch {}
-  render();
-  if (initData) {
-    api('bootstrap').then(data => { merge(data); state.auth = true; render(); }).catch(e => {
-      state.authError = e.message;
-      render();
-    });
-  }
+  if (initData) reconnect();
+  else render();
 })();

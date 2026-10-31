@@ -51,6 +51,7 @@ const fake = {
     if (paymentMode === 'paid') return { paid: true, swiggyOrderId: id, orderStatus: 'Confirmed', trackingUrl: `https://www.swiggy.com/orders/${id}`, deliveryOtp: '1234' };
     return { paid: false, paymentVerified: false };
   },
+  async verifySession(session) { return { valid: true, phone: session.phone || session.mobile, customerId: session.token === 'wrong-customer' ? 'customer-other' : `customer-${session.phone || session.mobile}` }; },
   async orders(account) { return account.phone === '9123456789' ? [{ id, restaurant: 'Mock' }] : [{ id: otherId, restaurant: 'Other' }]; },
   async tracking(_account, orderId) { return { orderId, status: 'Confirmed', trackingUrl: 'https://evil.invalid/not-swiggy', deliveryOtp: '1234' }; },
   async quoteCart(_a, address) { return { address, bill: { total: 150.25, coupon: '' }, ofoConfirmed: false }; }
@@ -81,8 +82,8 @@ function seed(user) {
   writeProWorkspace(String(user), {
     version: 1,
     accounts: {
-      a: { phone: '9123456789', name: 'Original', token: 'test-a', isLoggedIn: true },
-      b: { phone: '9234567890', name: 'Other', token: 'test-b', isLoggedIn: true }
+      a: { phone: '9123456789', customerId: 'customer-9123456789', name: 'Original', token: 'test-a', isLoggedIn: true },
+      b: { phone: '9234567890', customerId: 'customer-9234567890', name: 'Other', token: 'test-b', isLoggedIn: true }
     }, activeAccountKey: 'a', selectedAddress: receiver, addressCandidates: [],
     cart: { restaurantId: '123', restaurantName: 'Mock restaurant', forSomeoneElse: true,
       items: [{ lineKey: 'line', id: '456', menu_item_id: 456, name: 'Meal', qty: 1, variants: [], addons: [] }], quote }
@@ -199,6 +200,10 @@ test('checkout requires opt-in, explicit consent, fresh quote and exact approved
   process.env.PRO_ENABLE_CHECKOUT = '0';
   assert.equal((await req(8101, 'checkout', confirmation(quote))).status, 503);
   process.env.PRO_ENABLE_CHECKOUT = '1';
+  const missingIdentity = readProWorkspace('8101'); missingIdentity.accounts.a.customerId = ''; writeProWorkspace('8101', missingIdentity);
+  assert.equal((await req(8101, 'checkout', confirmation(quote))).status, 409);
+  assert.equal(readProWorkspace('8101').checkout, undefined);
+  missingIdentity.accounts.a.customerId = 'customer-9123456789'; writeProWorkspace('8101', missingIdentity);
   assert.equal((await req(8101, 'checkout', { ...confirmation(quote), confirmCheckout: false })).status, 400);
   assert.equal((await req(8101, 'checkout', { ...confirmation(quote), expectedTotal: 150.24 })).status, 400);
   assert.equal((await req(8101, 'checkout', { ...confirmation(quote), expectedTotal: 150.251 })).status, 400);
@@ -215,16 +220,47 @@ test('two taps create one provider attempt and display the exact provider URI as
   assert.equal(calls, 1);
   const output = results.find(r => r.status === 200).body.checkout;
   assert.equal(output.status, 'PAYMENT_PENDING'); assert.equal(output.upiIntentUrl, uri); assert.equal(output.orderId, id);
+  assert.equal(output.accountCustomerId, undefined);
   const png = PNG.sync.read(Buffer.from(output.qrDataUrl.split(',')[1], 'base64'));
   assert.equal(jsQR(new Uint8ClampedArray(png.data), png.width, png.height)?.data, uri);
   assert.equal((await req(8102, 'accounts/remove', { key: 'a' })).status, 409);
+  assert.equal((await req(8102, 'accounts/select', { key: 'b' })).status, 409);
+  assert.equal((await req(8102, 'accounts/send-otp', { phone: '9234567890' })).status, 409);
+  assert.equal((await req(8102, 'accounts/import', { session: { phone: '9234567890', token: 'other-session' } })).status, 409);
+  assert.equal((await req(8102, 'accounts/import', { session: { phone: '9123456789', token: 'wrong-customer' } })).status, 409);
   assert.equal((await req(8102, 'cart/sync', { confirmReplaceSwiggyCart: true })).status, 409);
+  const cartBefore = structuredClone(readProWorkspace('8102').cart);
+  assert.equal((await req(8102, 'cart/quantity', { lineKey: 'line', qty: 2 })).status, 409);
+  assert.equal((await req(8102, 'cart/add', { itemId: '456', replace: true })).status, 409);
+  assert.equal((await req(8102, 'cart/import-group', { url: 'https://swig.gy/gc/test', replace: true })).status, 409);
+  assert.equal((await req(8102, 'addresses/update-contact', { name: 'Other', mobile: '9345678901' })).status, 409);
+  assert.equal((await req(8102, 'addresses/select', { ref: 'other' })).status, 409);
+  assert.equal((await req(8102, 'addresses/resolve', { url: 'https://swiggy.onelink.me/abc' })).status, 409);
+  assert.deepEqual(readProWorkspace('8102').cart, cartBefore);
+  assert.deepEqual(readProWorkspace('8102').selectedAddress, receiver);
+  assert.equal((await req(8102, 'accounts/import', { session: { phone: '9123456789', token: 'refreshed-original-session' } })).status, 200);
+  assert.equal(readProWorkspace('8102').activeAccountKey, 'a');
+  assert.deepEqual(readProWorkspace('8102').cart, cartBefore);
+  assert.deepEqual(readProWorkspace('8102').selectedAddress, receiver);
   const bob = (await req(8103, 'bootstrap')).body;
   assert.equal(bob.checkout, null); assert.equal(JSON.stringify(bob).includes(uri), false);
 });
 
 test('status uses original account, does not accept a different order and hides QR after payment report', async () => {
-  assert.equal((await req(8102, 'accounts/select', { key: 'b' })).status, 200);
+  // A changed customer ID must not silently replace the original account.
+  const stale = readProWorkspace('8102');
+  stale.accounts.a.customerId = 'different-customer'; writeProWorkspace('8102', stale);
+  assert.equal((await req(8102, 'checkout/status', {})).status, 409);
+  assert.equal((await req(8102, 'orders?scope=checkout')).status, 409);
+  // Simulate an older/stale workspace which had selected another account before
+  // the new switching guard; recovery must still use the original account.
+  stale.accounts.a.customerId = 'customer-9123456789'; stale.activeAccountKey = 'b'; writeProWorkspace('8102', stale);
+  assert.equal((await req(8102, 'orders')).body.orders[0].id, otherId);
+  assert.equal((await req(8102, 'orders?scope=checkout')).body.orders[0].id, id);
+  assert.equal((await req(8102, `orders/tracking?id=${id}`)).status, 404);
+  assert.equal((await req(8102, `orders/tracking?id=${id}&scope=checkout`)).status, 200);
+  assert.equal((await req(8102, 'orders?scope=arbitrary')).status, 400);
+  assert.equal((await req(8103, 'orders?scope=checkout')).status, 404);
   paymentMode = 'wrong';
   let result = await req(8102, 'checkout/status', {});
   assert.equal(result.body.checkout.status, 'PAYMENT_PENDING'); assert.equal(result.body.checkout.paymentVerified, false);
@@ -254,7 +290,7 @@ test('timeout after POST and invalid provider QR both leave persistent, non-retr
   const count = calls;
   assert.equal((await req(8105, 'checkout', confirmation(q))).status, 409);
   assert.equal((await req(8105, 'checkout/finish', { confirmNewDraft: true })).status, 409);
-  assert.equal((await req(8105, 'accounts/select', { key: 'b' })).status, 200);
+  assert.equal((await req(8105, 'accounts/select', { key: 'b' })).status, 409);
   assert.equal((await req(8105, 'cart/sync', { confirmReplaceSwiggyCart: true })).status, 409);
   assert.equal((await req(8105, 'bootstrap')).body.checkout.status, 'OUTCOME_UNKNOWN'); assert.equal(calls, count);
   checkoutMode = 'badamount'; const q2 = seed(8106); result = await req(8106, 'checkout', confirmation(q2));

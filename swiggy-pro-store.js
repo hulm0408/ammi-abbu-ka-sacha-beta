@@ -12,6 +12,7 @@ function secretKey() {
   if (Buffer.byteLength(secret) < 16) {
     const err = new Error('Mini App vault is not configured. Set PRO_VAULT_KEY (at least 16 characters) on the server.');
     err.statusCode = 503;
+    err.code = 'PRO_VAULT_NOT_CONFIGURED';
     throw err;
   }
   return crypto.scryptSync(secret, 'sacha-beta-miniapp-v1', 32);
@@ -48,6 +49,7 @@ export function readProWorkspace(userId) {
   } catch {
     const err = new Error('Unable to decrypt the Mini App workspace. Check the configured vault key; existing data was not changed.');
     err.statusCode = 503;
+    err.code = 'PRO_VAULT_DECRYPT_FAILED';
     throw err;
   }
 }
