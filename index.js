@@ -16316,6 +16316,20 @@ async function startBotWithRetry() {
           intervalMs: 60_000,
           onReport: async (report) => {
             const freed = (report.locksReleased?.length || 0) + (report.reservationsReleased?.length || 0) + (report.scansReset || 0);
+            // Atka hua kaam (jaise QR generation budget se zyada) — chup-chaap
+            // hang nahi, boss ko ek baar batata hai.
+            const stuck = Array.isArray(report.newStuckJobs) ? report.newStuckJobs : [];
+            if (stuck.length > 0) {
+              for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
+                await bot.telegram.sendMessage(
+                  bossId,
+                  `⏱ <b>ATKA HUA KAAM</b>\n` +
+                  stuck.map((j) => `• <code>${escapeHtml(String(j.key))}</code> — ${Math.round(Number(j.ageMs || 0) / 1000)}s se chal raha hai (budget ${Math.round(Number(j.timeoutMs || 0) / 1000)}s)`).join('\n') +
+                  `\n<i>Kaam roka nahi gaya — beech me rokna duplicate order bana sakta hai. Zyada der rahe to 🩺 Maintenance kholo.</i>`,
+                  { parse_mode: 'HTML' }
+                ).catch(() => {});
+              }
+            }
             if (freed <= 0) return;
             for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
               await bot.telegram.sendMessage(

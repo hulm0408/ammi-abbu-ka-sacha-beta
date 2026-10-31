@@ -189,7 +189,12 @@ console.log('\n=== 2. Order PLACE ho gaya par UPI intent nahi → koi ID switch 
   const bossMsgs = sent.filter((s) => s.kind === 'message' && bossIds().includes(Number(s.chatId)));
   check('Boss ko seedha "ORDER PLACE HUA, QR NAHI MILA" message gaya', bossMsgs.some((m) => /ORDER PLACE HUA, QR NAHI MILA/i.test(String(m.text || ''))), String(bossMsgs[0]?.text || '').slice(0, 80));
   check('Boss message me Swiggy order id hai', bossMsgs.some((m) => /259900112233/.test(String(m.text || ''))));
-  check('Boss ke paas "Naya QR" button hai', bossMsgs.some((m) => /fwd_gen_qr_PLACED1/.test(JSON.stringify(m.extra?.reply_markup || {}))));
+  // "Naya QR" nahi — wo doosra unpaid order banata tha. Aage badhne ke do asli
+  // raaste: is order ka payment check, ya Swiggy My Orders (pay/cancel).
+  const bossKb = JSON.stringify(bossMsgs.map((m) => m.extra?.reply_markup || {}));
+  check('Boss ke paas "Paid check" button hai (naya order nahi banta)', /fwd_check_paid_PLACED1/.test(bossKb), bossKb.slice(0, 160));
+  check('Boss ke paas Swiggy My Orders link hai', /swiggy\.com\/my-account\/orders/.test(bossKb));
+  check('Boss ke paas Accounts shortcut hai', /boss_view_accounts/.test(bossKb));
   check('Boss ko jhoota "rejected" nahi bola', !bossMsgs.some((m) => /code: SWIGGY_UPI_INTENT_INVALID/.test(String(m.text || ''))));
 }
 
@@ -218,13 +223,20 @@ console.log('\n=== 3. Placed-but-unpaid: dobara QR maangne par jhooth nahi ===')
     await cart.generateRealSwiggyMerchantUpiQr(getDb().config.accounts.acc_8511111111, getDb().orders.PLACED2);
   } catch (e) { err = e; }
   check('bina "Naya QR" ke ORDER_ALREADY_PLACED_UNPAID milta hai', err?.diag?.code === 'ORDER_ALREADY_PLACED_UNPAID', JSON.stringify(err?.diag));
-  check('message me placed order id + agla step hai', /259900998877/.test(String(err?.message || '')) && /Naya QR/i.test(String(err?.message || '')), String(err?.message || ''));
+  check('message me placed order id + agla step hai',
+    /259900998877/.test(String(err?.message || ''))
+    && /My Orders/i.test(String(err?.message || ''))
+    && /pay karein ya cancel karein/i.test(String(err?.message || '')),
+    String(err?.message || ''));
+  check('message jhootha wada nahi karta ki naya QR turant banega', /naya QR nahi banega/i.test(String(err?.message || '')));
 
   let forcedErr = null;
   try {
     await cart.generateRealSwiggyMerchantUpiQr({ account: getDb().config.accounts.acc_8511111111, order: getDb().orders.PLACED2, forceNewQr: true });
   } catch (e) { forcedErr = e; }
-  check('"Naya QR" (forceNewQr) par woh block nahi karta — aage badhta hai', forcedErr?.diag?.code !== 'ORDER_ALREADY_PLACED_UNPAID', JSON.stringify(forcedErr?.diag));
+  // Boss (30-10-2026): forceNewQr bhi block hota hai — doosra unpaid order
+  // banana customer ke paise ka nuksaan hai.
+  check('"Naya QR" (forceNewQr) bhi block hota hai — doosra order nahi banta', forcedErr?.diag?.code === 'ORDER_ALREADY_PLACED_UNPAID', JSON.stringify(forcedErr?.diag));
 }
 
 console.log('\n=== 4. AMOUNT INVARIANCE: ₹37 ka bill = ₹37 ka QR ===');
@@ -284,7 +296,13 @@ console.log('\n=== 8. Boss ko raw error dump nahi, seedha Hinglish reason ===');
   check('diag me placedOrderId dikhta hai', /placedOrderId: \$\{err\.diag\.placedOrderId\}/.test(fofSrc));
   check('diag me intentProblems dikhte hain', /intentProblems: \$\{err\.diag\.intentProblems\.join/.test(fofSrc));
   check('diag me tried IDs dikhte hain', /tried: \$\{err\.diag\.tried\.join/.test(fofSrc));
-  check('placed-no-intent error me next step likha hai', /Payment link se pay karein ya "Naya QR" dabaiye/.test(fofSrc));
+  // Next-step text wahan likha hai jahan se error aata hai (swiggy-cart) aur
+  // forwarded-order-flow usko boss tak pahunchata hai (`err.message`).
+  const cartSrcForMsg = fs.readFileSync('./swiggy-cart.js', 'utf8');
+  check('placed-no-intent error me next step likha hai',
+    /Payment link usi order me milega/.test(cartSrcForMsg)
+    && /pay karein ya cancel karein/.test(cartSrcForMsg)
+    && /err\??\.message/.test(fofSrc));
 }
 
 function restoreState() {

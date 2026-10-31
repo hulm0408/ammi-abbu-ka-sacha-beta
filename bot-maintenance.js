@@ -15,6 +15,7 @@ const LAG_SAMPLE_MS = 2_000;
 
 const inflightJobs = new Map(); // name -> { startedAt, timeoutMs, orderId }
 const healLog = [];
+const alertedStuckJobs = new Set();
 let loopStarted = false;
 let lagMs = 0;
 let lagTimer = null;
@@ -35,6 +36,10 @@ export function startJob(name, { timeoutMs = 90_000, orderId = '' } = {}) {
   const key = `${name}${orderId ? `#${orderId}` : ''}`;
   inflightJobs.set(key, { startedAt: Date.now(), timeoutMs: Math.max(100, Number(timeoutMs) || 90_000), orderId: String(orderId || '') });
   return () => inflightJobs.delete(key);
+}
+
+export function clearJob(name, orderId = '') {
+  return inflightJobs.delete(`${name}${orderId ? `#${orderId}` : ''}`);
 }
 
 export function listStuckJobs(now = Date.now()) {
@@ -117,8 +122,18 @@ export async function runMaintenance(deps = {}, { reason = 'AUTO', dryRun = fals
     report.scansReset = Number(out?.reset || 0);
   }
 
-  // 4) Stuck jobs (jo apne timeout se zyada chal rahe hain) — sirf report.
+  // 4) Stuck jobs (jo apne timeout se zyada chal rahe hain) — report + ek baar
+  // boss ko alert. Job ko MARA nahi jata: chal raha worker beech me rokna
+  // (jaise QR place ke dauraan) duplicate order bana sakta hai. Isliye sirf
+  // batate hain, aur jo naya atka hai usko `newStuckJobs` me dete hain.
   report.stuckJobs = listStuckJobs();
+  report.newStuckJobs = [];
+  for (const job of report.stuckJobs) {
+    const stamp = `${job.key}@${job.startedAt}`;
+    if (alertedStuckJobs.has(stamp)) continue;
+    alertedStuckJobs.add(stamp);
+    report.newStuckJobs.push(job);
+  }
 
   // 5) Orders jo cardStage par phanse hain aur unka koi job nahi chal raha.
   try {

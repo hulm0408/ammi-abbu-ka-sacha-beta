@@ -152,20 +152,42 @@ const orderAddrInput = {
   city: 'Bengaluru'
 };
 
+// 🔒 RULE (boss 30-10-2026, /pro checkout se sakht hua): saved address tabhi
+// reuse hota hai jab RECIPIENT bhi wahi ho — naam, mobile, street aur pin sab
+// match karein. Pehle bot account-holder ka address (uske phone ke saath) chupchaap
+// reuse kar leta tha, isliye rider galat number par call karta tha.
 const savedRes = await saveAddressToAccount(activeAccount, orderAddrInput, savedAddresses);
-ok(Boolean(savedRes.addressId), 'Address successfully reused/matched despite different customer recipient phone!');
-strictEqual(savedRes.addressId, 'addr_swiggy_456', 'Exact saved address ID correctly bound');
-strictEqual(savedRes.addressDetails.mobile, '9999900000', 'Recipient customer mobile preserved for order delivery');
+strictEqual(savedRes.addressId, '', 'Different recipient phone wala saved address reuse NAHI hota (rider galat number par call na kare)');
+ok(/did not accept|verify|recipient/i.test(String(savedRes.error || savedRes.addressDetails?.error || savedRes.error || '')),
+  'Reuse na hone par saaf reason milta hai (chupchaap default address nahi)');
+strictEqual(savedRes.createdNew, false, 'Koi jhoota "created" claim nahi');
+
+// Ab bilkul match wala saved address — wahi reuse hona chahiye.
+const matchingAddresses = [
+  {
+    id: 'addr_swiggy_456',
+    address: orderAddrInput.address,
+    lat: orderAddrInput.lat,
+    lng: orderAddrInput.lng,
+    name: orderAddrInput.name,
+    mobile: orderAddrInput.mobile,
+    city: orderAddrInput.city
+  }
+];
+const matchedRes = await saveAddressToAccount(activeAccount, orderAddrInput, matchingAddresses);
+strictEqual(matchedRes.addressId, 'addr_swiggy_456', 'Exact same recipient + street + pin ka address reuse hota hai');
+strictEqual(matchedRes.addressDetails.mobile, '9999900000', 'Recipient customer mobile preserved for order delivery');
+strictEqual(matchedRes.createdNew, false, 'Reuse par naya address nahi banaya');
 
 // Coupon application check with bound vs unbound address
-const unboundOrder = { id: 'ORD_UNBOUND', restaurantId: '12345', addressDetails: { ...savedRes.addressDetails, id: '' }, items: [{ itemId: 'item_1', name: 'Burger', price: 250, quantity: 1 }] };
+const unboundOrder = { id: 'ORD_UNBOUND', restaurantId: '12345', addressDetails: { ...matchedRes.addressDetails, id: '' }, items: [{ itemId: 'item_1', name: 'Burger', price: 250, quantity: 1 }] };
 const unboundRes = await applyLiveCouponToOrder(activeAccount, unboundOrder, 'SWIGGYIT');
 ok(unboundRes?.code === 'DELIVERY_ADDRESS_NOT_BOUND', 'Correctly rejects when delivery address is not bound');
 
 const dummyOrder = {
   id: 'ORD_TEST_99',
   restaurantId: '12345',
-  addressDetails: savedRes.addressDetails,
+  addressDetails: matchedRes.addressDetails,
   items: [{ itemId: 'item_1', name: 'Burger', price: 250, quantity: 1 }]
 };
 
@@ -185,7 +207,7 @@ saveDb(heroDb);
 const autoPick = await findBestMaxCouponAccountForOrder({
   id: 'ORD_AUTO_PICK_TEST',
   subtotal: 300,
-  addressDetails: savedRes.addressDetails,
+  addressDetails: matchedRes.addressDetails,
   items: [{ itemId: 'item_1', name: 'Burger', price: 300, quantity: 1 }]
 }, { maxSearchWaves: 1, maxParallelProbes: 1 });
 

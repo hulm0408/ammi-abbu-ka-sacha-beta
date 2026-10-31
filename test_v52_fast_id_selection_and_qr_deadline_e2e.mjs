@@ -240,7 +240,14 @@ console.log('\n━━━ Scenario 3: BEST pick & QR generation have hard deadlin
     /if \(!syncRes\) \{[\s\S]{0,500}releaseSwiggyAccountReservation/.test(flow)
     && /releaseSwiggyAccountReservation[\s\S]{0,300}ID_SELECT_TIMEOUT/.test(flow));
   check('the scan budget is configurable (ID_SELECT_BUDGET_MS)', /ID_SELECT_BUDGET_MS/.test(flow));
-  check('QR generation is capped (QR_GENERATION_TIMEOUT)', /QR_GENERATION_TIMEOUT/.test(flow) && /QR_GEN_BUDGET_MS/.test(flow));
+  // 30-10-2026: timer se race hata diya (chhodta hua worker + retry = doosra
+  // unpaid order). Ab budget naapa jata hai aur order par SACH likha jata hai.
+  check('QR generation ka budget (QR_GEN_BUDGET_MS) hai aur job registry me chadhta hai',
+    /QR_GEN_BUDGET_MS/.test(flow) && /startJob\('QR_GENERATE', \{ timeoutMs: QR_GEN_BUDGET_MS/.test(flow));
+  check('budget se zyada lage to QR_GENERATION_TIMEOUT order par audit hota hai',
+    /qrGenerationSlow = \{[\s\S]{0,120}code: 'QR_GENERATION_TIMEOUT'/.test(flow));
+  check('worker beech me nahi chhoda jata (duplicate order ka khatra nahi)',
+    /qrGenerationInFlight\.has\(key\)[\s\S]{0,120}return qrGenerationInFlight\.get\(key\)/.test(flow));
 
   check('payment verification is bounded (never a 240s kill)',
     /verifyTimer[\s\S]{0,400}75_000/.test(flow) && /rescueTimer[\s\S]{0,300}45_000/.test(flow));
