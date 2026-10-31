@@ -66,6 +66,7 @@ import {
   syncAccountsJsonMirror,
 } from './store.js';
 import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
+import { restoreMoneyOnBoot, startDbDurability } from './db-durability.js';
 import { isMenuText, isCommandText, looksLikePlainOrderId } from './menu-labels.js';
 import {
   extractStandaloneMobileNumber,
@@ -16283,6 +16284,15 @@ async function startBotWithRetry() {
   try {
     // Restore ALL saved `.json` accounts from Persistent Cloud Vault BEFORE serving orders!
     await hydrateAccountsFromCloudVault().catch(e => console.warn('CloudVault boot warning:', e.message));
+    // Boss (31-10-2026, round 19): "deploy karne par sara data reset ho jata
+    // hai" — wallet aur UTR ledger disk par the, deploy par ud jaate the.
+    // Ab boot par cloud snapshot se paisa/UTR wapas, aur 30s me snapshot chalta
+    // rehta hai. Paisa kabhi kam nahi hota (merge max balance leta hai).
+    try {
+      const money = await restoreMoneyOnBoot();
+      if (money?.restored) console.log(`[db-durability] paisa/UTR restore hua (${money.source})`, JSON.stringify(money.summary || {}));
+    } catch (err) { console.warn('[db-durability] restore warning:', err?.message || err); }
+    startDbDurability();
     // Rehydrate the shared WAF token + breaker state (the vault hydrate above
     // may have written a newer token into db.waf).
     wafPool.loadFromDb();

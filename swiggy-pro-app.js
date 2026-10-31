@@ -382,9 +382,12 @@
   }
   function trackingDetails(t) {
     if (!t) return '<p class="hint">Swiggy has not returned tracking details yet.</p>';
+    // Boss (31-10-2026, round 19): operator ke ID par bhi tracking link mile.
+    // Link Swiggy ka hai; OTP/address sirf operator ke paas.
+    const swiggyLink = /^https:\/\//i.test(String(t.trackingUrl || '')) ? String(t.trackingUrl) : '';
     // Boss (31-10-2026): "AMMI ABBU KO APP SE BAHAR NAHI JAANA HAI." Tracking
     // bhi yahin dikhti hai — koi browser link nahi.
-    return `<div class="bill-row"><span>Status</span><strong>${esc(t.status || 'Not returned')}</strong></div>${t.eta ? `<div class="bill-row"><span>ETA</span><strong>${esc(t.eta)}</strong></div>` : ''}${t.deliveryPartner?.name ? `<div class="bill-row"><span>Delivery partner</span><strong>${esc(t.deliveryPartner.name)}</strong></div>` : ''}${t.deliveryPartner?.phone ? `<div class="bill-row"><span>Partner phone</span><strong>${esc(t.deliveryPartner.phone)}</strong></div>` : ''}${t.deliveryOtp ? `<div class="bill-row"><span>Delivery OTP</span><strong>${esc(t.deliveryOtp)}</strong></div>` : ''}<p class="hint">Tracking sab yahin — Swiggy ke bahar kuch kholne ki zaroorat nahi.</p>`;
+    return `<div class="bill-row"><span>Status</span><strong>${esc(t.status || 'Not returned')}</strong></div>${t.eta ? `<div class="bill-row"><span>ETA</span><strong>${esc(t.eta)}</strong></div>` : ''}${t.deliveryPartner?.name ? `<div class="bill-row"><span>Delivery partner</span><strong>${esc(t.deliveryPartner.name)}</strong></div>` : ''}${t.deliveryPartner?.phone ? `<div class="bill-row"><span>Partner phone</span><strong>${esc(t.deliveryPartner.phone)}</strong></div>` : ''}${t.deliveryOtp ? `<div class="bill-row"><span>Delivery OTP</span><strong>${esc(t.deliveryOtp)}</strong></div>` : ''}${swiggyLink ? `<a class="button soft block" href="${esc(swiggyLink)}" target="_blank" rel="noopener">Swiggy par tracking kholein</a>` : ''}<p class="hint">${esc(t.note || 'Tracking sab yahin — Swiggy ke bahar kuch kholne ki zaroorat nahi.')}</p>`;
   }
   function renderCheckout() {
     const c = state.checkout;
@@ -692,11 +695,11 @@
   }
   function renderOrders() {
     const detailed = state.ordersDetailAllowed !== false;
-    const restrictedNote = detailed ? '' : '<div class="warning">Ye operator ka ID hai. Aapko sirf chhota summary card dikhta hai — address, item list aur tracking sirf operator dekh sakta hai.</div>';
+    const restrictedNote = detailed ? '' : '<div class="warning">Ye operator ka ID hai. Summary aur Swiggy ka tracking link dikhta hai — address, item list, delivery OTP sirf operator ke paas rehta hai.</div>';
     if (state.order) {
       const o = state.order;
       if (!detailed) {
-        return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER SUMMARY', o.restaurant || 'Swiggy order', 'Operator ke ID par sirf summary milti hai.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div></div>${restrictedNote}`;
+        return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER SUMMARY', o.restaurant || 'Swiggy order', 'Operator ke ID par summary + tracking link milta hai.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div></div><div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>${restrictedNote}`;
       }
       return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER DETAILS', o.restaurant || 'Swiggy order', 'Only information returned by Swiggy is shown.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div>${o.address ? `<div class="bill-row"><span>Address</span><strong>${esc(o.address)}</strong></div>` : ''}</div><div class="card"><div class="card-title">${icon('cart')} Ordered items</div>${o.items.length ? o.items.map(i => `<div class="bill-row"><span>${esc(i.name)}</span><strong>× ${Number(i.qty)}</strong></div>`).join('') : '<p class="hint">Swiggy did not return item details.</p>'}</div><div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>`;
     }
@@ -732,6 +735,7 @@
       ${cloudOn ? `<div class="bill-row"><span>Cloud last success</span><strong>${esc(lastOk || 'abhi nahi')}</strong></div>` : ''}
       ${cloudError ? `<div class="warning">Cloud backup fail: ${esc(cloudError)}</div>` : ''}
       <div class="bill-row"><span>Restore hua</span><strong>${restored} baar</strong></div>
+      ${state.durability ? `<div class="bill-row"><span>Paisa + UTR backup</span><strong class="${state.durability.cloud ? 'free' : ''}">${state.durability.cloud ? 'Cloud ON' : 'OFF'}</strong></div><div class="bill-row"><span>Wallet / UTR yaad</span><strong>${Number(state.durability.wallets || 0)} / ${Number(state.durability.utrs || 0)}</strong></div>${state.durability.restoredAt ? `<div class="bill-row"><span>Deploy ke baad restore</span><strong>${esc(new Date(state.durability.restoredAt).toLocaleString('en-IN'))}</strong></div>` : ''}${state.durability.cloud ? '' : `<div class="warning">${esc(state.durability.line || 'Cloud backup OFF hai — deploy par wallet aur UTR bhool sakte hain.')}</div>`}` : ''}
       <button class="button primary block" type="button" data-action="backup-now" ${state.backupBusy ? 'disabled' : ''}>${state.backupBusy ? 'Backup ho raha hai…' : 'Abhi backup karein'}</button>
       <p class="hint">Mirror bot ke db.json me encrypted hi rehta hai — redeploy ke baad wahi se wapas aata hai.</p></div>`;
   }
@@ -819,6 +823,41 @@
       } catch { /* net gaya — agla render phir try karega */ }
     }, timeout + 2000);
   }
+  /**
+   * Boss (31-10-2026, round 19): "ORDER PAYMENT KARNE KE BAAAD AUTO FETCH BHI
+   * NAHI HORAHA" — ab QR screen khud payment check karti rehti hai. Pehla check
+   * 8s baad, phir har 12s, ~6 minute tak; PAID milte hi tracking khul jata hai.
+   */
+  let paymentPollTimer = null;
+  let paymentPollCount = 0;
+  function stopPaymentPoll() {
+    clearTimeout(paymentPollTimer);
+    paymentPollTimer = null;
+    paymentPollCount = 0;
+  }
+  function schedulePaymentPoll() {
+    const c = state.checkout;
+    const pending = c && c.status === 'PAYMENT_PENDING' && c.paymentVerified !== true;
+    if (!pending) return stopPaymentPoll();
+    if (paymentPollTimer || paymentPollCount >= 30) return;
+    const delay = paymentPollCount === 0 ? 8000 : 12000;
+    paymentPollTimer = setTimeout(async () => {
+      paymentPollTimer = null;
+      paymentPollCount += 1;
+      try {
+        const out = await api('checkout/status', 'POST', {});
+        merge(out);
+        render();
+        if (out.checkout?.status === 'PAID' && out.checkout.orderId) {
+          stopPaymentPoll();
+          toast('Payment mil gayi — order track ho raha hai.');
+          startTracking(out.checkout.orderId, 'checkout');
+        }
+      } catch { /* net gaya — agla render phir schedule karega */ }
+    }, delay);
+    if (typeof paymentPollTimer?.unref === 'function') paymentPollTimer.unref();
+  }
+
   function render() {
     // Telegram WebView band hone ke baad bhi async response aa sakta hai —
     // tab render chup-chaap rukna chahiye, window crash nahi.
@@ -841,6 +880,7 @@
       }
       maybeAutoBill();
       scheduleIdleRefresh();
+      schedulePaymentPoll();
     } catch { /* window band ho gaya */ }
   }
   async function reconnect() {
@@ -1330,6 +1370,7 @@
         }
       }
       else if (action === 'checkout-status') {
+        paymentPollCount = 0;
         const out = await api('checkout/status', 'POST', {});
         merge(out); render();
         if (out.checkout?.status === 'PAID' && out.checkout.orderId) {

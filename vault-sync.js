@@ -37,6 +37,11 @@ function vaultEncryptionKey() {
   return crypto.scryptSync(raw, VAULT_ENC_SALT, 32);
 }
 
+// Round 19: db ka paisa/UTR snapshot bhi isi key se encrypt hota hai.
+export function encryptVaultPayloadObject(payloadObj) {
+  return encryptVaultPayloadText(payloadObj);
+}
+
 let _noEncKeyWarned = false;
 function encryptVaultPayloadText(payloadObj) {
   const key = vaultEncryptionKey();
