@@ -149,3 +149,27 @@ Boss ka example: `Items Total ₹230 · Coupon FLASHSALE −₹160 · Extra Disc
 * **Bill Details card** me lines: Items Total · Coupon X · Extra Discount (Free Cash) · Extra Discount (Restaurant) · Swiggy One Lite Membership (+) · Free Delivery (+ kitna saved) · Delivery Fee FREE (₹49 saved) · Packing Charges · GST & Other Charges · Extra saving · **Total Savings** · **To Pay**. `Poora hisaab dekhein` par item-wise lines + pura equation.
 * **Savings Corner** me wahi rows (Coupon/Free Cash/Restaurant/Free delivery/One Lite fee) + `₹279 saved` pill, aur **banner** me Swiggy ka khud ka `totalSavings` (apna bada number nahi banate).
 * **Test:** `test_v98` (2 checks, boss ka exact ₹230 → ₹29 case) — lines ka jod To Pay se match, jhootha saving nahi. Sweep: `test:pro` 40/40, `test:guards` 66/66, `npm test` 132/132, bossbot 49/49.
+
+## Round 10 (31-10-2026): Pay ki asli wajah + naye number ka login
+
+### "Swiggy cart, recipient/OFO, coupon or amount could not be confirmed"
+Pehle **ek hi generic line** thi — user ko pata hi nahi chalta tha kya badla. Ab `provider.checkout` har check alag karta hai aur message me **dono numbers** aate hain:
+
+| Code | Matlab | Kya hota hai |
+|---|---|---|
+| `CART_FETCH` / `CART_PARSE` / `CART_ID` | Swiggy ne cart/jawab/cart-id nahi diya | Order nahi, asli HTTP+statusCode message |
+| `CART_ITEMS` | Swiggy ke cart me items badal gaye | Order nahi, "cart sync karein" |
+| `RESTAURANT` / `ADDRESS` / `OFO` | restaurant, address ya OFO flag alag | Order nahi, saaf wajah |
+| `AMOUNT` | bill ka amount badal gaya | **Order nahi** + **naya bill save** + "aapne ₹29 dekha, Swiggy ab ₹33.85 keh raha hai" |
+| `COUPON` | coupon lag/hat gaya | **Order nahi** + naya bill + dono coupon naam |
+
+* Recoverable case (`AMOUNT`/`COUPON`) me API **naya bill workspace me save** karta hai aur 409 `BILL_CHANGED` deta hai. App bootstrap karke naya total dikhata hai — user ek baar dekh kar dobara Pay dabata hai. Koi loop nahi, koi galat amount ka order nahi.
+* App ab in codes par **"outcome unknown"** ka darr nahi dikhata (pehle har error par dikhta tha, jabki kuch place hi nahi hua tha).
+* `cart/sync` ab `quote.couponCode` bhi save karta hai (bill me discount item-total me hone par bhi asli coupon compare hota hai).
+* Items compare tolerant hai: group-cart ke raw variants/add-ons shape alag hone par bhi `item+qty` match ho to order rukta nahi; sirf sach me badla ho tab rukta hai.
+
+### Naya number = login hi nahi hota
+* `POST /accounts/send-otp` ab `signup: true` leta hai. Bina consent Swiggy account nahi banta; app pehle poochta hai **"Naya Swiggy account banayein?"** (naam + number dikha kar), phir signup ke saath OTP maangta hai. Pehle seedha "not registered" error aata tha — dead end.
+* **30-second cooldown bug:** naya number par "account banayein" dabane ke baad bhi 30s tak retry block tha (cooldown fail par bhi set ho raha tha). Ab cooldown sirf success par lagta hai.
+* `verify-otp`: brand-new account par Swiggy ka profile kabhi `customer_id` nahi deta → account save hi nahi hota tha. Ab OTP-verified session ke JWT se **asli** `user_id` liya jaata hai (koi invent nahi). Sirf jab wahan bhi na mile to saaf error.
+* Error JSON me ab `code` aata hai (`SWIGGY_ACCOUNT_NOT_REGISTERED`, `OTP_IDENTITY_MISSING`, `BILL_CHANGED`, …) — app usi se sahi agla kadam dikhata hai.

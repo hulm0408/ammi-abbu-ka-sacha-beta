@@ -620,6 +620,10 @@ export const proProvider = {
       throw badRequest('Order placement is blocked in this environment; no simulated order or QR was created.');
     }
     const expected = Number(cart?.quote?.total);
+    // Coupon code jo bill ke waqt APPROVE hua tha — billBreakdown `coupon` ko
+    // clear kar deta hai jab discount item total me pehle se ho, isliye asli
+    // code alag field me rakhte hain.
+    const approvedCoupon = String(cart?.quote?.couponCode ?? cart?.quote?.coupon ?? '').trim().toUpperCase();
     if (!address?.id || !address?.name || !normalizeIndianMobileNumber(address?.mobile) ||
         !Array.isArray(cart?.items) || !cart.items.length || exactPaise(expected) === null || expected <= 0) {
       throw badRequest('Confirm the recipient and refresh the Swiggy bill before checkout.');
@@ -647,13 +651,63 @@ export const proProvider = {
       const addressId = String(meta?.address_id || meta?.delivery_address?.id || data?.address_id || data?.delivery_address?.id || '');
       const cartId = String(meta?.originalCartId || meta?.cartId || meta?.cart_id || '');
       const coupon = String(parsed?.couponCode || '').toUpperCase();
-      const approvedCoupon = String(cart.quote.coupon || '').toUpperCase();
-      if (!successCode(liveCart?.json?.statusCode) || !parsed || !cartId ||
-          !sameCartItems(cart.items, parsed.items) || addressId !== String(address.id) ||
-          (cart.forSomeoneElse && !hasExplicitOfoCartFlag(meta)) ||
-          (parsed.restaurantId && String(parsed.restaurantId) !== String(cart.restaurantId)) ||
-          exactPaise(liveTotal) === null || exactPaise(liveTotal) !== exactPaise(expected) || coupon !== approvedCoupon) {
-        throw unavailable('Swiggy cart, recipient/OFO, coupon or amount could not be confirmed. No order was placed; review it in Swiggy and sync a new bill.');
+      // Boss (31-10-2026, round 10): pehle yahan ek hi generic message aata tha
+      // ("cart, recipient/OFO, coupon or amount could not be confirmed") aur
+      // user ko pata hi nahi chalta tha kya badla. Ab har check alag hai aur
+      // uski asli wajah + dono numbers message me aate hain.
+      const problems = [];
+      const fail = (code, message, extra = {}) => problems.push({ code, message, ...extra });
+      if (!successCode(liveCart?.json?.statusCode) || !data) {
+        fail('CART_FETCH', `Swiggy ne cart nahi diya (HTTP ${liveCart?.status || '?'}${liveCart?.json?.statusCode !== undefined ? `, statusCode ${liveCart.json.statusCode}` : ''}).`);
+      } else if (!parsed) {
+        fail('CART_PARSE', 'Swiggy ka cart jawab samajh nahi aaya (items parse nahi hue).');
+      } else {
+        const quantityOk = sameCartItems(cart.items, parsed.items) ||
+          // Group cart import ke raw variants/add-ons Swiggy ke shape se thoda
+          // alag hote hain — pehle item+qty compare karo, phir hi "badal gaya"
+          // bolo. Jhoothi mismatch ki wajah se order nahi rukna chahiye.
+          (() => {
+            const key = list => list.map(i => `${i.menu_item_id || i.itemId || i.id}:${Number(i.qty ?? i.quantity) || 0}`).sort().join('|');
+            return Boolean(cart.items?.length) && key(cart.items) === key(parsed.items || []);
+          })();
+        if (!quantityOk) fail('CART_ITEMS', 'Swiggy ke cart me items badal gaye (Swiggy app me kuch add/hata hua hai).');
+        if (parsed.restaurantId && String(parsed.restaurantId) !== String(cart.restaurantId)) {
+          fail('RESTAURANT', `Restaurant badal gaya — bill ${cart.restaurantId}, Swiggy ${parsed.restaurantId}.`);
+        }
+      }
+      if (addressId && addressId !== String(address.id)) fail('ADDRESS', `Delivery address Swiggy par alag hai (bill ${address.id}, Swiggy ${addressId}).`);
+      if (cart.forSomeoneElse && meta && !hasExplicitOfoCartFlag(meta)) {
+        fail('OFO', 'Swiggy ne "order for someone else" flag confirm nahi kiya — address/receiver ka OFO flag nahi mila.');
+      }
+      if (exactPaise(liveTotal) === null) fail('AMOUNT_MISSING', 'Swiggy ne payable amount nahi diya.');
+      else if (exactPaise(liveTotal) !== exactPaise(expected)) {
+        fail('AMOUNT', `Bill ka amount badal gaya — aapne ₹${expected} dekh kar Pay dabaya, Swiggy ab ₹${liveTotal} keh raha hai.`);
+      }
+      if (coupon !== approvedCoupon) {
+        fail('COUPON', `Coupon badal gaya — bill me "${approvedCoupon || 'koi coupon nahi'}", Swiggy par "${coupon || 'koi coupon nahi'}".`);
+      }
+      if (!cartId) fail('CART_ID', 'Swiggy ne cart id nahi di (order place karne ke liye zaroori hai).');
+      if (problems.length) {
+        const err = unavailable(`${problems.map((p, i) => `${i + 1}. ${p.message}`).join(' ')} Order place nahi hua — naya bill dekh kar dobara Pay dabaiye.`);
+        err.diag = { code: problems[0].code, problems, placementAttempted: false };
+        // Recoverable: bill/coupon badla hai par items/address wahi hain. Tab
+        // naya bill bhej dete hain taaki app use dikha kar dobara confirm kare
+        // (dead-end loop nahi).
+        const hardStop = problems.some(p => ['CART_FETCH', 'CART_PARSE', 'CART_ID', 'CART_ITEMS', 'RESTAURANT', 'ADDRESS', 'OFO'].includes(p.code));
+        // Code hamesha set — app isi se decide karta hai ki retry safe hai ya
+        // nahi (aur "outcome unknown" ka darr dikhana hai ya nahi).
+        err.code = hardStop ? problems[0].code : 'BILL_CHANGED';
+        if (!hardStop && parsed) {
+          err.diag.freshBill = {
+            itemTotal: parsed.itemTotal, deliveryFee: parsed.deliveryFee, deliverySaved: parsed.freeDeliveryDiscount,
+            packingCharges: parsed.packingCharges, taxes: parsed.taxesAndCharges,
+            discount: parsed.discountAmount, coupon: String(parsed.couponCode || ''),
+            freeCash: parsed.freeCashApplied, tradeDiscount: parsed.merchantTradeDiscount,
+            oneMembershipFee: parsed.swiggyOneMembershipFee, oneApplied: parsed.swiggyOneApplied === true,
+            totalSavings: parsed.totalSavings, total: liveTotal
+          };
+        }
+        throw err;
       }
       const recipient = cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: actualAddress }) : {};
       const body = {
