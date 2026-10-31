@@ -67,6 +67,7 @@ import {
 } from './store.js';
 import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
 import { restoreMoneyOnBoot, restoreIdentityOnBoot, startDbDurability } from './db-durability.js';
+import { runDurabilityDoctor } from './durability-doctor.js';
 import { recordStatementPayment } from './upi-statement.js';
 import { isMenuText, isCommandText, looksLikePlainOrderId } from './menu-labels.js';
 import {
@@ -16313,6 +16314,13 @@ async function startBotWithRetry() {
       const money = await restoreMoneyOnBoot();
       if (money?.restored) console.log(`[db-durability] paisa/UTR restore hua (${money.source})`, JSON.stringify(money.summary || {}));
     } catch (err) { console.warn('[db-durability] restore warning:', err?.message || err); }
+    // Round 26 (boss: "PHIR DEPLOY HOTE HI SAB ERASE HOGAYA"): boot par hi
+    // asli jaanch — vault padha ja raha hai ya nahi. Jhootha "sab theek" nahi.
+    try {
+      const doctor = await runDurabilityDoctor({ skipWriteTest: true });
+      if (doctor.canRestore) console.log(`[durability-doctor] vault se restore possible — ${doctor.verdictLine}`);
+      else console.warn(`[durability-doctor] ⚠ RESTORE NAHI HO SAKTA — ${doctor.verdictLine} | failed: ${doctor.failed.join(',')} | next: ${doctor.nextStep.join(' | ')}`);
+    } catch (err) { console.warn('[durability-doctor] check fail:', err?.message || err); }
     startDbDurability();
     // Rehydrate the shared WAF token + breaker state (the vault hydrate above
     // may have written a newer token into db.waf).

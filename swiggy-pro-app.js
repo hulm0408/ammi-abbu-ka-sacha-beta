@@ -17,6 +17,7 @@
     // Boss (31-10-2026, round 11): wallet ₹15 gate + UPI top-up.
     wallet: null, walletTopup: null, walletSheet: false, walletClaimBusy: false, walletUpiEdit: false,
     utrTrack: null, utrTrackBusy: false, walletClaimTruth: null,
+    doctor: null, doctorBusy: false, doctorNote: '',
     // Boss (31-10-2026, round 13): 2 minute idle → draft order band.
     idle: null, idleClosed: null
   };
@@ -864,6 +865,22 @@
       <form data-form="utr-track" novalidate><div class="input-wrap">${icon('search')}<input name="utr" inputmode="numeric" maxlength="12" placeholder="12 digit UTR" value="${esc(t?.utr || '')}" required></div><button class="button primary block" type="submit" ${state.utrTrackBusy ? 'disabled' : ''}>${state.utrTrackBusy ? 'Details nikaal rahe hain…' : 'UTR ki poori detail nikaalein'}</button></form>
       ${t ? `<div class="divider"></div><div class="bill-row"><span>Faisla</span><strong><span class="pill ${verdictPill}">${esc(verdictLabel)}</span></strong></div>${rows}${missing}<p class="hint">${esc(t.bossLine || '')}</p>${t.claim ? `<p class="hint">Claim: ${esc(String(t.claim.status || ''))} · user ${esc(String(t.claim.userId || ''))} · ₹${(Number(t.claim.claimedPaise || 0) / 100).toFixed(2)}</p>` : ''}` : '<p class="hint">Koi bhi UTR daal kar dekhein: kitna aaya, kab aaya, kisko aaya, kaun bheja.</p>'}</div>`;
   }
+  /**
+   * Boss (31-10-2026, round 26): "PHIR DEPLOY HOTE HI SAB ERASE HOGAYA".
+   * Yahan ek ek kadam ka asli jawab — token, branch, vault files, likhne ka
+   * test — aur ek button jo vault se turant restore karta hai.
+   */
+  function renderDoctorCard() {
+    if (!state.user?.isBoss) return '';
+    const d = state.doctor;
+    const rows = (d?.steps || []).map(s => `<div class="offer-row"><span class="offer-emoji">${s.ok ? '✅' : '❌'}</span><span class="row-content"><strong>${esc(s.label)}</strong><p>${esc(s.detail)}</p></span><span class="pill ${s.ok ? 'green' : 'red'}">${s.ok ? 'OK' : 'FAIL'}</span></div>`).join('');
+    const need = (d?.nextStep || []).length ? `<div class="warning">Karna hai: ${esc(d.nextStep.join(' · '))}</div>` : '';
+    return `<div class="card"><div class="card-title">${tile('store')}<span class="title-copy">Backup ka asli check<small>Deploy par data bachega ya nahi — ek ek kadam.</small></span></div>
+      <button class="button primary block" type="button" data-action="doctor-run" ${state.doctorBusy ? 'disabled' : ''}>${state.doctorBusy ? 'Jaanch ho rahi hai…' : 'Poori jaanch karein (vault write test ke saath)'}</button>
+      ${d ? `${rows}<div class="warning">${esc(d.verdictLine || '')}</div>${need}` : '<p class="hint">Abhi jaanch nahi hui — button dabayein. Ye sach me token/branch/vault check karta hai.</p>'}
+      ${d ? `<button class="button soft block" type="button" data-action="doctor-restore" ${state.restoreBusy ? 'disabled' : ''}>${state.restoreBusy ? 'Restore ho raha hai…' : 'Vault se abhi restore karein'}</button>` : ''}
+      ${state.doctorNote ? `<p class="hint">${esc(state.doctorNote)}</p>` : ''}</div>`;
+  }
   function renderTools() {
     // Boss (31-10-2026): "NIGHT OFFER AND BREAKFAST AND WEEKEND WALA OFFER
     // ACTIVE KARDO CLAIM KARNE KE LIYE." Ab yahan se seedha claim hota hai —
@@ -883,7 +900,7 @@
       return `<div class="card"><div class="card-title">${tile('tools')}<span class="title-copy">${esc(a.name)}<small>${a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned'} · ${a.owner === 'operator' ? 'Operator' : 'Aapka'}</small></span></div>${tracks}${claimButton}</div>`;
     }).join('');
     const result = state.claimResult ? `<div class="card"><div class="card-title">${icon('check')} Claim ka sach</div>${(state.claimResult.tracks || []).map(t => `<div class="offer-row"><span class="offer-emoji">${t.emoji || '🎁'}</span><span class="row-content"><strong>${esc(t.label)}</strong><p>${esc(t.message || '')}</p></span><span class="pill ${t.verified ? 'green' : 'amber'}">${esc(String(t.status || '').replace(/_/g, ' '))}</span></div>`).join('')}<p class="hint">Do baar claim nahi hota — pehle se laga ho to ALREADY ACTIVE dikhta hai.</p></div>` : '';
-    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${renderWalletCard()}${accounts}${renderIdentitiesCard()}${renderStatementCard()}${renderUtrTrackCard()}${renderLiveOrderCard()}${renderBackupCard()}`;
+    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${renderWalletCard()}${accounts}${renderIdentitiesCard()}${renderStatementCard()}${renderUtrTrackCard()}${renderLiveOrderCard()}${renderBackupCard()}${renderDoctorCard()}`;
   }
   function renderConnection() {
     if (!initData) return `${head('TELEGRAM MINI APP', 'Open in Telegram', 'Your private account space needs a Telegram session.')}<div class="card connection-card"><strong>Browser preview only</strong><p>Open this app from your bot using Open App or /pro. No account data is shown here.</p></div>`;
@@ -1400,6 +1417,25 @@
             toast(out.message || 'Backup ho gaya.');
           }
         } finally { state.identityBusy = false; render(); }
+      } else if (action === 'doctor-run') {
+        state.doctorBusy = true; state.doctorNote = ''; render();
+        try {
+          const out = await api('boss/durability');
+          state.doctor = out.doctor; state.doctorNote = '';
+          render();
+          toast(out.doctor?.verdictLine || 'Jaanch poori hui.');
+        } finally { state.doctorBusy = false; render(); }
+      } else if (action === 'doctor-restore') {
+        state.restoreBusy = true; render();
+        try {
+          const out = await api('boss/durability/restore', 'POST', {});
+          state.doctorNote = out.message || '';
+          if (out.identities) state.identities = out.identities;
+          if (out.durability) state.durability = out.durability;
+          merge(out);
+          render();
+          toast(out.message || 'Restore ho gaya.');
+        } finally { state.restoreBusy = false; render(); }
       } else if (action === 'identities-refresh') {
         const out = await api('boss/identities'); state.identities = out.identities || null; render();
       } else if (action === 'backup-now') {

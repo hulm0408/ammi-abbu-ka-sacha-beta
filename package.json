@@ -14,6 +14,7 @@
     "test:round23": "node test_v112_utr_fetch_and_credit.mjs",
     "test:round24": "node test_v113_no_data_erase.mjs",
     "test:round25": "node test_v114_utr_truth.mjs",
+    "test:round26": "node test_v115_durability_doctor.mjs",
     "test:live": "node test_live_address_and_cart_e2e.mjs",
     "test:guards": "node run_guards.mjs",
     "test:pro": "node --test test_v87_miniapp_security_and_flow.mjs test_v88_checkout_safety.mjs test_v89_provider_faults.mjs test_v90_miniapp_ui.mjs",
