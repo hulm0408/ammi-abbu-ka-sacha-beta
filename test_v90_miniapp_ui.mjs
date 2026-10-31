@@ -154,7 +154,7 @@ test('checkout uses an in-app consent dialog, preserves full details, and only s
     let dialog = app.document.querySelector('[role="dialog"]');
     assert.match(dialog.textContent, /₹150\.25/);
     assert(dialog.textContent.includes(address.address), 'full address must not be truncated');
-    assert.match(dialog.textContent, /do not place another order/i);
+    assert.match(dialog.textContent, /dobara order na karein/i);
     assert.equal(app.calls.filter(c => c.url.endsWith('/checkout')).length, 0);
     assert.equal(app.document.activeElement.textContent, 'Cancel');
     dialog.querySelector('.confirm-actions button').click();
