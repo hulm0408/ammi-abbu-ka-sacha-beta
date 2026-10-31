@@ -16,6 +16,7 @@
     "test:round25": "node test_v114_utr_truth.mjs",
     "test:round26": "node test_v115_durability_doctor.mjs",
     "test:round27": "node test_v116_premium_look.mjs",
+    "test:round28": "node test_v117_reference_visual_system.mjs",
     "preview:miniapp": "node preview-miniapp.mjs",
     "test:live": "node test_live_address_and_cart_e2e.mjs",
     "test:guards": "node run_guards.mjs",

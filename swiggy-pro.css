@@ -578,3 +578,241 @@ body.dark #toast { background: #16232f; border-color: #24394a; color: #e8f1f7; }
   }
   .button:active, .chip:active, .icon-button:active, .bottom-nav button:active { transform: none; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Round 28 (boss 31-10-2026): "PURA SPACING AND FONT SIZE ANIMATED ICON AND
+   EVERYTHING COPY KARNA HAI."
+
+   Yahan spacing, type scale aur icon animation ka poora system hai — jaisa
+   reference screens me hai: 4/8/12/16/20 ka grid, 11–27px type scale, soft
+   cards (16px padding, 14–18px radius), tinted blue rows, animated icons.
+   Koi brand asset copy nahi — sirf layout/rhythm/typography/motion.
+   ══════════════════════════════════════════════════════════════════════════ */
+:root {
+  /* spacing scale (4-grid) */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-7: 32px;
+  /* type scale */
+  --t-11: 11px; --t-12: 12px; --t-13: 13px; --t-14: 14px; --t-15: 15px;
+  --t-16: 16px; --t-17: 17px; --t-20: 20px; --t-27: 27px;
+  /* radii + shadows (reference jaisa soft) */
+  --r-sm: 10px; --r-md: 14px; --r-lg: 18px; --r-xl: 22px;
+  --shadow-card: 0 4px 16px rgba(24, 49, 70, .05);
+  --shadow-float: 0 10px 30px rgba(20, 44, 63, .13);
+  --tint-blue: #f1f9ff;
+  --tint-blue-line: #d8eefc;
+  --ink-2: #4a5b6d;
+}
+
+/* ── cards: reference ka rhythm ─────────────────────────────────────────── */
+.card {
+  padding: var(--s-4) var(--s-4) calc(var(--s-4) + 2px);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+  margin-bottom: var(--s-3);
+  border-color: #e9eff5;
+}
+.card-title { font-size: var(--t-16); line-height: 1.25; gap: var(--s-3); }
+.card-title small { font-size: var(--t-12); margin-top: 3px; color: var(--ink-2); }
+.icon-tile { width: 40px; height: 40px; border-radius: 12px; }
+.icon-tile .icon { width: 20px; height: 20px; }
+.divider { margin: var(--s-3) 0; }
+.hint { font-size: var(--t-12); line-height: 1.55; color: var(--ink-2); }
+
+/* ── animated icons ─────────────────────────────────────────────────────── */
+@keyframes icon-draw { from { stroke-dashoffset: 42; opacity: .25; } to { stroke-dashoffset: 0; opacity: 1; } }
+@keyframes icon-pop { 0% { transform: scale(.86); } 60% { transform: scale(1.08); } 100% { transform: scale(1); } }
+@keyframes icon-spin-slow { to { transform: rotate(360deg); } }
+@keyframes dot-blink { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }
+@keyframes chevron-nudge { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(3px); } }
+@keyframes check-pop { 0% { transform: scale(.4); opacity: 0; } 55% { transform: scale(1.14); opacity: 1; } 100% { transform: scale(1); } }
+
+.icon {
+  stroke-dasharray: 42;
+  animation: icon-draw .55s var(--ease-soft) both;
+  transition: transform var(--dur-1) var(--ease-soft);
+}
+.icon-tile .icon { animation: icon-draw .55s var(--ease-soft) both, icon-pop .5s var(--ease-spring) both; }
+.action-tile .icon:last-child, .select-address .chev { animation: chevron-nudge 2.6s var(--ease-soft) infinite; }
+.icon[data-spin], .icon.spin { animation: icon-spin-slow 1s linear infinite; stroke-dasharray: none; }
+.spinner {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid rgba(34, 172, 229, .25); border-top-color: var(--blue);
+  animation: icon-spin-slow .75s linear infinite;
+}
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); display: inline-block; animation: dot-blink 1.6s var(--ease-soft) infinite; }
+
+/* ── group cart card (reference: toggle right, tinted card) ─────────────── */
+.group-cart-card {
+  background: linear-gradient(180deg, #f7fcff, #ffffff 62%);
+  border-color: var(--tint-blue-line);
+}
+.group-cart-card .card-title { align-items: flex-start; }
+.group-cart-card .title-copy strong { font-size: var(--t-15); }
+.switch {
+  position: relative; width: 46px; height: 27px; border-radius: 999px; border: 0;
+  background: #d9e4ec; flex-shrink: 0; margin-left: auto; cursor: pointer;
+  transition: background-color var(--dur-2) var(--ease-soft);
+}
+.switch:after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 21px; height: 21px; border-radius: 50%;
+  background: #fff; box-shadow: 0 2px 6px rgba(16, 40, 60, .22);
+  transition: transform var(--dur-2) var(--ease-spring);
+}
+.switch[aria-checked="true"] { background: #34b3e8; }
+.switch[aria-checked="true"]:after { transform: translateX(19px); }
+.group-cart-form { display: flex; gap: var(--s-2); margin-top: var(--s-3); }
+.group-cart-form .input-wrap { flex: 1; }
+.group-cart-form .button { width: 46px; min-width: 46px; height: 46px; padding: 0; border-radius: var(--r-md); }
+.group-cart-form .button span.cta-label { display: none; }
+.group-cart-card.off .group-cart-form { opacity: .55; }
+
+/* ── select delivery address (reference row) ────────────────────────────── */
+.select-address {
+  width: 100%; display: flex; align-items: center; gap: var(--s-3);
+  background: var(--surface); border: 1px solid #e6eef4; border-radius: var(--r-lg);
+  padding: var(--s-4); margin-bottom: var(--s-3); box-shadow: var(--shadow-card);
+  text-align: left; color: var(--text);
+}
+.select-address .pin { color: var(--blue); flex-shrink: 0; }
+.select-address .copy { flex: 1; min-width: 0; }
+.select-address strong { display: block; font-size: var(--t-15); letter-spacing: -.02em; }
+.select-address small { display: block; margin-top: 2px; font-size: var(--t-12); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.select-address .chev { color: #9fb0c0; flex-shrink: 0; }
+
+/* ── section heading ("Your Order" + right meta) ────────────────────────── */
+.section-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3);
+  margin: var(--s-5) 2px var(--s-3);
+}
+.section-head h2 { margin: 0; font-size: var(--t-17); letter-spacing: -.03em; }
+.section-head span { font-size: var(--t-12); color: var(--ink-2); font-weight: 700; }
+
+/* ── restaurant cart card ───────────────────────────────────────────────── */
+.restaurant-cart { padding: var(--s-4); }
+.cart-restaurant-head { display: flex; align-items: center; gap: var(--s-3); }
+.cart-restaurant-thumb { width: 48px; height: 48px; border-radius: 13px; overflow: hidden; display: grid; place-items: center; background: var(--surface-2); flex-shrink: 0; }
+.cart-restaurant-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.cart-item { padding: var(--s-3) 0; gap: var(--s-3); }
+.cart-item strong { font-size: var(--t-14); }
+.cart-item p { margin: 3px 0 0; font-size: var(--t-12); color: var(--ink-2); }
+.cart-item-right { display: flex; align-items: center; gap: var(--s-3); flex-shrink: 0; }
+.stepper { border-radius: var(--r-sm); padding: 2px; }
+.stepper button { width: 30px; height: 30px; font-size: 17px; }
+.line-total { min-width: 56px; text-align: right; font-size: var(--t-14); }
+.cart-actions-row { display: flex; gap: var(--s-2); margin-top: var(--s-3); padding-top: var(--s-3); border-top: 1px dashed var(--line); }
+.chip-action { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #d9ecf7; background: var(--tint-blue); color: #0c7fa8; border-radius: var(--r-md); padding: 9px 12px; font-size: var(--t-12); font-weight: 800; }
+
+/* ── finding coupon card ────────────────────────────────────────────────── */
+.finding-coupon-card { padding: var(--s-4); }
+.finding-coupon .row-content strong { font-size: var(--t-15); }
+.finding-coupon .row-content p { font-size: var(--t-12); color: var(--ink-2); }
+.skeleton-line.lg { height: 16px; }
+
+/* ── bill details (reference numbers right, free delivery green) ────────── */
+.bill-card .card-title { font-size: var(--t-16); }
+.bill-row { padding: 6px 0; font-size: var(--t-14); }
+.bill-row strong { font-weight: 800; color: var(--text); }
+.bill-row.total { padding-top: var(--s-4); margin-top: var(--s-2); font-size: var(--t-17); }
+.bill-row.free-delivery strong, .free { color: #0f8a4a; }
+
+/* ── payment method tiles (reference) ──────────────────────────────────── */
+.pay-method-card { padding: var(--s-4); }
+.pay-option {
+  display: flex; align-items: center; gap: var(--s-3);
+  border: 1px solid #e6eef4; border-radius: var(--r-md); padding: var(--s-3) var(--s-4);
+  margin-bottom: var(--s-2); background: var(--surface);
+  transition: border-color var(--dur-2) var(--ease-soft), box-shadow var(--dur-2) var(--ease-soft), transform var(--dur-1) var(--ease-soft);
+}
+.pay-option.selected { border-color: #bfe9d8; background: #f4fdf9; box-shadow: 0 0 0 3px rgba(7, 155, 115, .07); }
+.pay-option.disabled { opacity: .55; }
+.pay-copy { flex: 1; min-width: 0; }
+.pay-copy strong { display: block; font-size: var(--t-14); }
+.pay-copy small { display: block; margin-top: 2px; font-size: var(--t-12); color: var(--ink-2); }
+.pay-radio { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #cfdde8; flex-shrink: 0; display: grid; place-items: center; }
+.pay-option.selected .pay-radio { border-color: var(--green); background: var(--green); }
+.pay-option.selected .pay-radio:after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: check-pop .35s var(--ease-spring) both; }
+.updating-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+  padding: 7px 13px 7px 9px; font-size: var(--t-12); font-weight: 800; color: var(--ink-2);
+  box-shadow: var(--shadow-card);
+}
+
+/* ── pay bar (reference: amount + PAY USING UPI left, action right) ────── */
+.pay-bar {
+  border-radius: var(--r-lg); padding: 10px 12px 10px var(--s-4);
+  background: var(--surface); border: 1px solid #e6eef4; box-shadow: var(--shadow-float);
+  gap: var(--s-3);
+}
+.pay-bar .pay-left { display: flex; flex-direction: column; gap: 1px; }
+.pay-bar .pay-left small { order: -1; font-size: 10px; letter-spacing: .1em; font-weight: 900; color: var(--ink-2); }
+.pay-bar .pay-left strong { font-size: var(--t-20); letter-spacing: -.03em; }
+.pay-bar .pay-left .link-button { font-size: var(--t-11); }
+.pay-now { border-radius: var(--r-md); min-width: 132px; }
+
+/* ── coupon sheet look (reference) ─────────────────────────────────────── */
+.coupon-sheet-head { display: flex; align-items: center; gap: var(--s-3); margin-bottom: var(--s-3); }
+.coupon-sheet-head h2 { margin: 0; font-size: var(--t-17); letter-spacing: -.03em; }
+.coupon-sheet-head .icon-button { margin-left: auto; }
+.coupon-code-form { display: flex; gap: var(--s-2); margin-bottom: var(--s-4); }
+.coupon-code-form .input-wrap { flex: 1; background: #f6f9fc; border-radius: var(--r-md); }
+.coupon-code-form .button { width: 46px; min-width: 46px; height: 46px; padding: 0; border-radius: var(--r-md); }
+.coupon-count { margin: 0 2px var(--s-3); }
+.coupon-tile { border-radius: var(--r-md); padding: var(--s-3); border: 1px solid #e6eef4; }
+.coupon-ribbon { min-width: 64px; border-radius: var(--r-sm); }
+.coupon-code { font-size: var(--t-14); letter-spacing: -.01em; }
+.coupon-cta { border-radius: var(--r-sm); padding: 8px 12px; font-size: var(--t-12); font-weight: 900; border: 1px solid #bfe4f6; color: #0b7fa8; background: #f2fbff; transition: transform var(--dur-1) var(--ease-soft), background-color var(--dur-2) var(--ease-soft); }
+
+/* ── delivered hero + order summary (reference) ────────────────────────── */
+.delivered-hero { text-align: center; padding: var(--s-5) var(--s-4) var(--s-4); }
+.delivered-check {
+  width: 92px; height: 92px; margin: 0 auto var(--s-4); border-radius: 50%;
+  display: grid; place-items: center; color: #fff; background: linear-gradient(140deg, #12b981, #079b73);
+  box-shadow: 0 14px 32px rgba(7, 155, 115, .28); animation: check-pop .6s var(--ease-spring) both;
+  position: relative;
+}
+.delivered-check:before, .delivered-check:after {
+  content: ""; position: absolute; border-radius: 50%; border: 2px solid rgba(7, 155, 115, .3);
+  inset: -10px; animation: soft-pulse 2.8s var(--ease-soft) infinite;
+}
+.delivered-check:after { inset: -20px; animation-delay: .6s; }
+.delivered-check .icon { width: 42px; height: 42px; stroke-width: 2.6; stroke-dasharray: none; }
+.delivered-hero h1 { margin: 0; font-size: var(--t-27); letter-spacing: -.04em; }
+.delivered-hero .pill { margin-top: var(--s-2); }
+.delivered-hero p { margin: var(--s-3) 0 0; font-size: var(--t-13); color: var(--ink-2); }
+.back-pill {
+  display: inline-flex; align-items: center; gap: 7px; border: 1px solid #e2ebf2; background: var(--surface);
+  border-radius: 999px; padding: 9px 14px; font-size: var(--t-12); font-weight: 800; color: var(--text);
+  box-shadow: var(--shadow-card);
+}
+.order-actions { position: sticky; bottom: calc(var(--nav-height) + env(safe-area-inset-bottom) + 8px); margin-top: var(--s-3); }
+.order-actions .button.green { border-radius: var(--r-md); }
+
+/* ── segmented (This Account / Last 1 Hour) ────────────────────────────── */
+.segmented { border-radius: 999px; padding: 4px; }
+.segmented button { border-radius: 999px; font-size: var(--t-12); display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.segmented button.selected { border-radius: 999px; }
+
+/* ── outlet sheet rows ────────────────────────────────────────────────── */
+.sheet-option { border-radius: var(--r-md); }
+.sheet-grip { width: 44px; }
+
+@media (max-width: 380px) {
+  .card { padding: var(--s-3) var(--s-3) var(--s-4); }
+  .cart-item-right { gap: var(--s-2); }
+  .line-total { min-width: 48px; }
+}
+
+/* Round 28: order top actions (Back to Orders + Refresh pills) */
+.order-top-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); margin-bottom: var(--s-3); }
+.order-top-actions .back-pill:last-child { color: var(--blue); border-color: #d6ecf8; background: #f4fbff; }
+.order-top-actions .back-pill:active { transform: scale(.96); }
+
+/* Round 28: "Your Order" heading + orders list rows */
+.line-heading { font-size: var(--t-17); margin: var(--s-5) 2px var(--s-3); gap: var(--s-3); }
+.line-heading .pill { font-size: var(--t-12); font-weight: 800; }
+.order-row { border-radius: var(--r-lg); padding: var(--s-4); }
+.order-row .row-content strong { font-size: var(--t-15); }
+.order-row .row-content p { font-size: var(--t-12); }
+.order-status-card { border-left: 3px solid var(--green); }
+.chip-row { display: flex; gap: var(--s-2); flex-wrap: wrap; margin: var(--s-3) 0; }
