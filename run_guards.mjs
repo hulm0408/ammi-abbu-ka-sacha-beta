@@ -72,7 +72,8 @@ const TESTS = [
   "test_v83_ofo_proof_and_early_mode.mjs",
   "test_v84_maintenance_and_zero_order_scan.mjs",
   "test_v91_mini_app_ids_honest.mjs",
-  "test_v92_miniapp_vault_selfsetup.mjs"
+  "test_v92_miniapp_vault_selfsetup.mjs",
+  "test_v93_miniapp_shared_accounts_and_polish.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];

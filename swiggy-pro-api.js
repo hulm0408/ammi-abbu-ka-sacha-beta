@@ -10,7 +10,7 @@ import { requestSwiggyOtpViaBridge, verifySwiggyOtpViaBridge } from './swiggy-br
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { describeAccountForPicker } from './mini-app.js';
 import { proProvider } from './swiggy-pro-provider.js';
-import { readProWorkspace, writeProWorkspace, withProWorkspaceLock } from './swiggy-pro-store.js';
+import { ensureProWorkspaceHydrated, readProWorkspace, writeProWorkspace, withProWorkspaceLock } from './swiggy-pro-store.js';
 
 const ASSETS = {
   '/pro': ['text/html; charset=utf-8', new URL('./swiggy-pro.html', import.meta.url)],
@@ -78,8 +78,40 @@ async function bodyJson(req) {
   } catch { throw error(400, 'Invalid JSON.'); }
 }
 
+/**
+ * Boss (31-10-2026): "JO ACCOUNT ME UPLOAD KARTA HU WO SAARE USERS KO SHOW HONA
+ * CHAHIYE BUT KOI USER AGAR APNA ACCOUNT ADD KARE TO WO SABKO SHOW NA HO."
+ *
+ * Isliye map do hone chahiye:
+ *   • shared (boss/operator vault) — har user ko dikhta hai, par sirf boss
+ *     badal sakta hai;
+ *   • private workspace — sirf us Telegram user ka, kisi doosre ko kabhi nahi.
+ * Boss ka apna map pehle jaisa hi shared vault hai (boss wahin likhta hai).
+ */
+function sharedAccountMap() {
+  try { return getDb().config?.accounts || {}; } catch { return {}; }
+}
 function accountMap(user, workspace) {
-  return isBoss(user.id) ? (getDb().config?.accounts || {}) : workspace.accounts;
+  const shared = sharedAccountMap();
+  if (isBoss(user.id)) return shared;
+  return { ...shared, ...workspace.accounts };
+}
+/**
+ * Kya ye ID operator (boss) ki hai? User ke apne workspace me isi key ka
+ * account ho to wo uska apna hai — shared map me same naam ho to bhi private
+ * hi rahega (key collision se kisi ka data kisi ko nahi dikhna chahiye).
+ */
+function isSharedAccountFor(user, workspace, key) {
+  const k = String(key);
+  if (isBoss(user.id)) return false;
+  if (Object.prototype.hasOwnProperty.call(workspace?.accounts || {}, k)) return false;
+  return Object.prototype.hasOwnProperty.call(sharedAccountMap(), k);
+}
+/** Doosre ke number poora nahi dikhta — sirf operator ko poora. */
+function maskAccountPhone(phone) {
+  const p = normalizeIndianMobileNumber(phone || '') || '';
+  if (p.length !== 10) return '';
+  return `${p.slice(0, 2)}••••${p.slice(-4)}`;
 }
 /**
  * Boss (30-10-2026): "har ID ke saamne likha ho ki isse order place hua hai ki
@@ -98,11 +130,21 @@ function listAccounts(user, workspace) {
   return Object.entries(map)
     .filter(([, a]) => a && a.isLoggedIn && !a.isLoggedOut)
     .map(([key, a]) => {
-      const truth = describeAccountForPicker(key, a, boss ? { db: bossDb } : { accounts: map, orders: {} });
+      const shared = isSharedAccountFor(user, workspace, key);
+      const mine = !shared;
+      // Shared ID par kisi ka live order chal raha ho to wo sabke liye busy
+      // hai — isliye shared rows ke liye poora db dekhte hain.
+      const truth = describeAccountForPicker(key, a, boss || shared ? { db: bossDb || getDb() } : { accounts: map, orders: {} });
       return {
         key,
         name: String(a.swiggyName || a.name || 'Swiggy account').slice(0, 80),
-        phone: normalizeIndianMobileNumber(a.phone || a.mobile || '') || '',
+        phone: mine ? (normalizeIndianMobileNumber(a.phone || a.mobile || '') || '') : '',
+        phoneMasked: mine ? '' : maskAccountPhone(a.phone || a.mobile || ''),
+        owner: shared || boss ? 'operator' : 'self',
+        canClaim: mine,
+        canRemove: mine,
+        // Used ID sirf warning ke baad khulti hai (boss 31-10-2026).
+        needsConfirm: truth.status === 'USED',
         active: key === workspace.activeAccountKey,
         ordersCount: Number.isInteger(a.totalOrdersCount) ? a.totalOrdersCount : null,
         sessionExpired: Boolean(a.sessionExpired),
@@ -161,16 +203,23 @@ function safeTrackingUrl(value, orderId) {
     return pathId && pathId !== String(orderId) ? '' : link;
   } catch { return ''; }
 }
-function publicCheckout(checkout) {
+/**
+ * `restricted` = user ne operator (shared) ID par order kiya. Us haalat me
+ * operator ka poora number aur tracking detail user ko nahi dikhte (boss
+ * 31-10-2026: "MOBILE NUMBER BHI FULL NAHI DIKHEGA ... TRACKING BHI NAHI").
+ */
+function publicCheckout(checkout, { restricted = false } = {}) {
   if (!checkout) return null;
   const output = {
     status: String(checkout.status || 'UNKNOWN'), createdAt: String(checkout.createdAt || ''),
-    accountPhone: String(checkout.accountPhone || ''),
+    accountPhone: restricted ? maskAccountPhone(checkout.accountPhone) : String(checkout.accountPhone || ''),
     orderId: String(checkout.orderId || ''), amount: Number(checkout.amount) || 0,
     restaurantName: String(checkout.restaurantName || ''),
     ofoConfirmed: checkout.ofoConfirmed === true,
     paymentVerified: checkout.paymentVerified === true,
-    message: String(checkout.message || ''), tracking: checkout.tracking || null
+    message: String(checkout.message || ''),
+    tracking: restricted ? null : (checkout.tracking || null),
+    restricted: restricted === true
   };
   if (checkout.status === 'PAYMENT_PENDING' && checkout.paymentVerified !== true && checkout.upiIntentUrl && checkout.qrDataUrl) {
     output.upiIntentUrl = checkout.upiIntentUrl;
@@ -194,14 +243,64 @@ function autoSelectAccount(user, ws) {
   } catch { /* auto-select fail ho to user khud chun sakta hai */ }
 }
 
+/**
+ * Boss (31-10-2026): "BILL CALCULATION BHI NA HORAHA SAHI SE — IMAGE JAISA HONA
+ * CHAHIYE." Swiggy screenshot: Item total (list strike), Delivery FREE,
+ * GST & other charges, To Pay. Yahan hum sirf wahi numbers rakhte hain jo
+ * Swiggy ne diye, aur lines ko itna banana ki unka jod To Pay ke barabar ho.
+ * Jod nahi milta to hum chupe nahi rakhte — `mismatch` sach bolta hai.
+ */
+function round2(value) { return Math.round(Number(value) * 100) / 100; }
+function billBreakdown(bill) {
+  if (!bill || typeof bill !== 'object') return bill;
+  const num = value => (value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : round2(value));
+  const itemTotal = num(bill.itemTotal);
+  const deliveryFee = num(bill.deliveryFee);
+  const packingCharges = num(bill.packingCharges);
+  const taxes = num(bill.taxes);
+  const discountRaw = num(bill.discount);
+  const discount = discountRaw && discountRaw > 0 ? discountRaw : 0;
+  const total = num(bill.total);
+  const add = (...values) => values.reduce((sum, v) => sum + (v === null ? 0 : v), 0);
+  let otherCharges = 0;
+  let mismatch = false;
+  let couponApplied = discount > 0;
+  if (total !== null) {
+    const gross = add(itemTotal, deliveryFee, packingCharges, taxes);
+    const withCoupon = add(gross, -discount);
+    if (Math.abs(total - gross) < 0.5) {
+      // Swiggy ne total me coupon pehle hi jod diya (item total already net).
+      couponApplied = false;
+    } else if (Math.abs(total - withCoupon) >= 0.5) {
+      const gap = round2(total - withCoupon);
+      if (gap > 0) otherCharges = gap;
+      else mismatch = true;
+    }
+  }
+  return {
+    ...bill,
+    itemTotal, deliveryFee, packingCharges, taxes,
+    discount: couponApplied ? discount : null,
+    coupon: couponApplied ? String(bill.coupon || '') : '',
+    discountAlreadyApplied: discount > 0 && !couponApplied,
+    otherCharges,
+    taxesAndCharges: round2(add(packingCharges, taxes, otherCharges)),
+    total,
+    mismatch
+  };
+}
+
 function publicState(user, ws) {
   autoSelectAccount(user, ws);
   return {
     user: { name: user.firstName || 'Friend', isBoss: isBoss(user.id) },
     accounts: listAccounts(user, ws), activeAccount: activeAccountForClient(user, ws),
     selectedAddress: ws.selectedAddress, cart: ws.cart,
-    checkout: publicCheckout(ws.checkout),
-    checkoutEnabled: process.env.PRO_ENABLE_CHECKOUT === '1'
+    checkout: publicCheckout(ws.checkout, { restricted: Boolean(ws.checkout) && isSharedAccountFor(user, ws, ws.checkout.accountKey) }),
+    checkoutEnabled: process.env.PRO_ENABLE_CHECKOUT === '1',
+    // Boss (31-10-2026): "AMMI ABBU SE MINI APP BAHAR NAHI JANA CHAHIYE" —
+    // app ke andar hi admin se baat ka raasta (Telegram DM).
+    adminContact: String(process.env.ADMIN_TELEGRAM_USERNAME || process.env.BOSS_TELEGRAM_USERNAME || '').replace(/^@/, '').slice(0, 64)
   };
 }
 function checkoutAccount(user, ws) {
@@ -212,6 +311,22 @@ function checkoutAccount(user, ws) {
   const originalId = String(ws.checkout?.accountCustomerId || '').trim();
   if (originalId && String(account.customerId || '').trim() !== originalId) throw error(409, 'The saved account no longer matches the original checkout account. Check Swiggy My Orders.');
   return { ...account, __proPrivate: true };
+}
+/**
+ * Boss (31-10-2026): "USER KO ORDER HISTORY ME BAS CHOTA CARD DIKHEGA, JAB ME
+ * KHOLU TO PURA DETAILS." Shared (operator) ID par user ko sirf compact card —
+ * address, item-wise detail aur tracking link nahi. Apne add kiye ID par aur
+ * boss ke liye poora detail.
+ */
+function orderDetailAllowed(user, workspace, key) {
+  return !isSharedAccountFor(user, workspace, key);
+}
+function compactOrder(order) {
+  return {
+    id: order.id, restaurant: order.restaurant, status: order.status,
+    placedAt: order.placedAt, amount: order.amount,
+    items: [], address: '', restricted: true
+  };
 }
 function orderHistoryAccount(user, ws, scope) {
   if (scope === 'checkout') {
@@ -300,6 +415,9 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
 
   await withProWorkspaceLock(user.id, async () => {
     try {
+      // Redeploy ke baad naya disk khali ho sakta hai — encrypted workspace
+      // cloud vault se wapas (sirf jab local file na ho).
+      await ensureProWorkspaceHydrated(user.id);
       const ws = readProWorkspace(user.id);
       if (route === '/pro/api/bootstrap' && req.method === 'GET') {
         const quotedAt = Date.parse(ws.cart?.quote?.fetchedAt || '');
@@ -381,10 +499,20 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const key = String(body.key || '');
         const map = accountMap(user, ws);
         if (!Object.prototype.hasOwnProperty.call(map, key) || !map[key]?.isLoggedIn || map[key]?.isLoggedOut) throw error(404, 'Account not found.');
-        // Used / suspended / expired / busy ID select nahi hoti — kaat di jati hai.
+        // Boss (31-10-2026): "JAISE KOI USED ID HAI PHIR BHI KOI USKO SELECT
+        // KARNA CHAHTA TO EK WARNING DEKAR USKO PHIR WO SELECT KAR PAYEGA."
+        // Isliye USED ab confirm ke baad khulti hai. Suspended / expired /
+        // busy ID phir bhi band rehti hai — unse order ho hi nahi sakta, aur
+        // busy ID kisi chalte order ki hai (wo kabhi doosre ko nahi milti).
         {
           const row = listAccounts(user, ws).find(r => r.key === key);
-          if (row && row.selectable === false) throw error(409, row.reason || `Ye ID abhi select nahi ho sakti (${row.status}).`);
+          if (row && row.needsConfirm === true && body.confirmUsed === true) {
+            // explicit user warning acknowledgement — aage badho
+          } else if (row && row.selectable === false) {
+            const e = error(409, row.reason || `Ye ID abhi select nahi ho sakti (${row.status}).`);
+            e.code = 'ACCOUNT_NEEDS_CONFIRM';
+            throw e;
+          }
         }
         if (ws.activeAccountKey !== key) {
           if (ws.checkout && ws.checkout.status !== 'PAID') throw error(409, 'Resolve the existing Swiggy checkout before switching accounts.');
@@ -404,19 +532,51 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           throw error(409, 'This account has an unresolved checkout. Check it in Swiggy My Orders before removing the account.');
         }
         if (isBoss(user.id)) permanentLogoutAccount(key);
-        else delete ws.accounts[key];
+        else if (isSharedAccountFor(user, ws, key)) {
+          // Operator ka ID sabko dikhta hai par kisi user ke haath se delete
+          // nahi hota — warna ek user sabka ID uda dega.
+          throw error(403, 'Ye operator ka ID hai; aap ise remove nahi kar sakte. Apna add kiya ID hi remove hota hai.');
+        } else delete ws.accounts[key];
         if (ws.activeAccountKey === key) { ws.activeAccountKey = ''; invalidateAccountDependentState(ws); }
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
       }
       if (route === '/pro/api/addresses' && req.method === 'GET') {
+        // Boss (31-10-2026): "ADDRESS WAGAIRA BHI WO NAHI DEKH SAKTA DUSRE LOGO
+        // KA — ONLY USKA DEKH SAKTA, BUT ME SABKA DEKH SAKTA."
+        // Shared (operator) ID par saved address list kisi user ko nahi dikhti;
+        // user apna address link se add karta hai, aur wo uske workspace me
+        // rehta hai. Boss ko sab dikhta hai.
+        const activeKey = String(ws.activeAccountKey || '');
+        if (isSharedAccountFor(user, ws, activeKey)) {
+          ws.addressCandidates = [];
+          writeProWorkspace(user.id, ws);
+          json(res, 200, {
+            ok: true, addresses: [],
+            note: 'Ye operator ka ID hai. Purane address (kisi aur ke) nahi dikhaye jaate — apna address link se add karein. Aapka add kiya address sirf aapko dikhta hai.'
+          });
+          return;
+        }
         const account = currentAccount(user, ws);
-        const addresses = await provider.addresses(account);
-        if (!Array.isArray(addresses)) throw error(502, 'Could not fetch addresses from Swiggy.');
+        // Ek transient failure par seedha error nahi — Swiggy kabhi kabhi ek
+        // hi try me jawab nahi deta (boss: "ADDRESS FETCH NA HORAHA").
+        let addresses = null;
+        let lastError = null;
+        for (let attempt = 0; attempt < 2 && addresses === null; attempt += 1) {
+          try {
+            const result = await provider.addresses(account);
+            if (Array.isArray(result)) addresses = result;
+            else lastError = error(502, 'Could not fetch addresses from Swiggy.');
+          } catch (err) {
+            lastError = err;
+            if (attempt === 0) await new Promise(r => setTimeout(r, 350));
+          }
+        }
+        if (!Array.isArray(addresses)) throw lastError || error(502, 'Could not fetch addresses from Swiggy.');
         ws.addressCandidates = addresses.slice(0, 50).map(a => ({ ...cleanAddress(a), ref: crypto.randomUUID() }));
         writeProWorkspace(user.id, ws);
-        json(res, 200, { ok: true, addresses: ws.addressCandidates, note: addresses.length ? '' : 'No addresses returned. If you have saved addresses, retry: Swiggy may not have responded.' });
+        json(res, 200, { ok: true, addresses: ws.addressCandidates, note: addresses.length ? '' : 'Swiggy ne koi saved address nahi diya. Address link se add karein, ya ek baar Refresh dabayein — Swiggy kabhi kabhi late jawab deta hai.' });
         return;
       }
       if (route === '/pro/api/addresses/select' && req.method === 'POST') {
@@ -549,21 +709,31 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         writeProWorkspace(user.id, ws);
         const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon);
         ws.selectedAddress = cleanAddress(quote.address);
-        ws.cart.quote = { ...quote.bill, ofoConfirmed: quote.ofoConfirmed === true, fetchedAt: new Date().toISOString() };
+        ws.cart.quote = { ...billBreakdown(quote.bill), ofoConfirmed: quote.ofoConfirmed === true, fetchedAt: new Date().toISOString() };
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, cart: ws.cart, selectedAddress: ws.selectedAddress });
         return;
       }
       if (route === '/pro/api/orders' && req.method === 'GET') {
-        const account = orderHistoryAccount(user, ws, url.searchParams.get('scope') || 'active');
+        const scope = url.searchParams.get('scope') || 'active';
+        const account = orderHistoryAccount(user, ws, scope);
         const orders = await provider.orders(account);
-        json(res, 200, { ok: true, orders });
+        const key = scope === 'checkout' ? String(ws.checkout?.accountKey || '') : String(ws.activeAccountKey || '');
+        const detailed = orderDetailAllowed(user, ws, key);
+        json(res, 200, { ok: true, orders: detailed ? orders : orders.map(compactOrder), detailAllowed: detailed });
         return;
       }
       if (route === '/pro/api/orders/tracking' && req.method === 'GET') {
         const id = normalizeSwiggyOrderId(url.searchParams.get('id'));
         if (!id) throw error(400, 'Invalid Swiggy order ID.');
-        const account = orderHistoryAccount(user, ws, url.searchParams.get('scope') || 'active');
+        const scope = url.searchParams.get('scope') || 'active';
+        const scopeKey = scope === 'checkout' ? String(ws.checkout?.accountKey || '') : String(ws.activeAccountKey || '');
+        if (!orderDetailAllowed(user, ws, scopeKey)) {
+          const e = error(403, 'Operator ke ID ka tracking detail sirf operator dekh sakta hai. Order status upar dikh raha hai.');
+          e.code = 'SHARED_ACCOUNT_RESTRICTED';
+          throw e;
+        }
+        const account = orderHistoryAccount(user, ws, scope);
         const orders = await provider.orders(account);
         if (!orders.some(o => String(o.id) === id)) throw error(404, 'Order was not returned for this Swiggy account.');
         const tracking = await provider.tracking(account, id);
@@ -635,7 +805,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
             delete ws.checkout.upiIntentUrl;
             delete ws.checkout.qrDataUrl;
             writeProWorkspace(user.id, ws);
-            json(res, 200, { ok: true, checkout: publicCheckout(ws.checkout) });
+            json(res, 200, { ok: true, checkout: publicCheckout(ws.checkout, { restricted: isSharedAccountFor(user, ws, ws.checkout.accountKey) }) });
             return;
           }
           ws.checkout = null;
@@ -643,7 +813,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           writeProWorkspace(user.id, ws);
           throw error(Number(err?.statusCode) || 502, String(err?.message || 'Checkout could not be prepared. No order was placed.'));
         }
-        json(res, 200, { ok: true, checkout: publicCheckout(ws.checkout) });
+        json(res, 200, { ok: true, checkout: publicCheckout(ws.checkout, { restricted: isSharedAccountFor(user, ws, ws.checkout.accountKey) }) });
         return;
       }
       if (route === '/pro/api/checkout/status' && req.method === 'POST') {
@@ -651,7 +821,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const checkout = ws.checkout;
         if (!checkout) throw error(404, 'No Mini App checkout exists.');
         if (checkout.status === 'PAID' || !normalizeSwiggyOrderId(checkout.orderId)) {
-          json(res, 200, { ok: true, checkout: publicCheckout(checkout) });
+          json(res, 200, { ok: true, checkout: publicCheckout(checkout, { restricted: isSharedAccountFor(user, ws, checkout.accountKey) }) });
           return;
         }
         const payment = await provider.checkPayment(checkoutAccount(user, ws), checkout);
@@ -674,7 +844,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           checkout.message = 'Payment was reported by Swiggy, but this exact order is not yet confirmed. Check My Orders; do not pay again.';
         }
         writeProWorkspace(user.id, ws);
-        json(res, 200, { ok: true, checkout: publicCheckout(checkout) });
+        json(res, 200, { ok: true, checkout: publicCheckout(checkout, { restricted: isSharedAccountFor(user, ws, checkout.accountKey) }) });
         return;
       }
       if (route === '/pro/api/checkout/finish' && req.method === 'POST') {
@@ -693,7 +863,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
     } catch (err) {
       const status = Number(err?.statusCode) || 500;
       // Do not log inputs, tokens, addresses, or raw Swiggy errors.
-      const code = ['PRO_VAULT_NOT_CONFIGURED', 'PRO_VAULT_DECRYPT_FAILED'].includes(err?.code) ? err.code : undefined;
+      const code = ['PRO_VAULT_NOT_CONFIGURED', 'PRO_VAULT_DECRYPT_FAILED', 'ACCOUNT_NEEDS_CONFIRM', 'ADDRESS_INCOMPLETE', 'SHARED_ACCOUNT_RESTRICTED'].includes(err?.code) ? err.code : undefined;
       json(res, status, {
         ok: false,
         error: status >= 500 && status !== 501 && status !== 502 && status !== 503 ? 'Unable to complete this request. Please retry.' : String(err?.message || 'Request failed.'),

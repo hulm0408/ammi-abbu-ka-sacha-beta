@@ -360,3 +360,77 @@ export function isCloudVaultHydrated() {
 export function markCloudVaultHydrated() {
   cloudVaultHydrated = true;
 }
+
+// ── Generic vault files (Mini App encrypted workspaces) ────────────────────
+// Boss (31-10-2026): "JAISE ME KOI CHEEZ UPDATE KARU TO SAARA USER KA DATA
+// RESET NA HOJAYE." Render ka disk redeploy par khali ho sakta hai, isliye
+// har user ka ALREADY-ENCRYPTED workspace blob usi `bot-vault` branch me
+// rakha jata hai (`vault/pro-workspaces/<hash>.json`). Blob AES-256-GCM
+// encrypted hai — is branch me plaintext kabhi nahi jata.
+const PRO_WORKSPACE_PREFIX = 'vault/pro-workspaces';
+
+function vaultContentsUrl(relativePath, ref = true) {
+  const encoded = String(relativePath).split('/').map(encodeURIComponent).join('/');
+  return `https://api.github.com/repos/${VAULT_OWNER}/${VAULT_REPO}/contents/${encoded}${ref ? `?ref=${encodeURIComponent(VAULT_BRANCH)}` : ''}`;
+}
+
+export function proWorkspaceVaultPath(fileName) {
+  return `${PRO_WORKSPACE_PREFIX}/${String(fileName).replace(/[^A-Za-z0-9._-]/g, '')}`;
+}
+
+/** Best-effort backup of one encrypted workspace blob. Never throws. */
+export async function pushVaultTextFile(relativePath, text, message = 'chore(vault): mini app workspace backup') {
+  const token = resolveVaultToken();
+  if (!token || process.env.PRO_VAULT_CLOUD_BACKUP === '0') return { ok: false, reason: 'NO_TOKEN' };
+  try {
+    await ensureOrphanVaultBranchExists(token);
+    const url = vaultContentsUrl(relativePath, false);
+    const existing = await fetch(url, { headers: ghHeaders(token), signal: AbortSignal.timeout(8000) }).catch(() => null);
+    const existingJson = existing?.ok ? await existing.json().catch(() => null) : null;
+    if (existingJson?.content) {
+      const current = Buffer.from(String(existingJson.content).replace(/\s+/g, ''), 'base64').toString('utf8');
+      if (current === text) return { ok: true, unchanged: true };
+    }
+    const putRes = await fetch(url, {
+      method: 'PUT',
+      headers: ghHeaders(token),
+      body: JSON.stringify({
+        message,
+        content: Buffer.from(text, 'utf8').toString('base64'),
+        branch: VAULT_BRANCH,
+        ...(existingJson?.sha ? { sha: existingJson.sha } : {})
+      }),
+      signal: AbortSignal.timeout(12000)
+    });
+    return { ok: putRes.ok, status: putRes.status };
+  } catch (err) {
+    console.warn('[CloudVault] workspace backup skipped:', err?.message || err);
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+/** Read one vault file back. Token ke bina public raw URL se try karta hai. */
+export async function pullVaultTextFile(relativePath) {
+  const token = resolveVaultToken();
+  // Token ke bina koi network try nahi — warna har read par 8s ka stall aur
+  // tests me GitHub call. Backup bhi token ke bina nahi hota.
+  if (!token || process.env.PRO_VAULT_CLOUD_BACKUP === '0') return '';
+  try {
+    {
+      const res = await fetch(vaultContentsUrl(relativePath), { headers: ghHeaders(token), signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const meta = await res.json().catch(() => null);
+        if (meta?.content) return Buffer.from(String(meta.content).replace(/\s+/g, ''), 'base64').toString('utf8');
+      }
+    }
+    const encoded = String(relativePath).split('/').map(encodeURIComponent).join('/');
+    const rawRes = await fetch(`https://raw.githubusercontent.com/${VAULT_OWNER}/${VAULT_REPO}/${VAULT_BRANCH}/${encoded}`, {
+      signal: AbortSignal.timeout(8000)
+    }).catch(() => null);
+    if (rawRes?.ok) {
+      const text = await rawRes.text();
+      return text && text.length > 20 ? text : '';
+    }
+  } catch {}
+  return '';
+}

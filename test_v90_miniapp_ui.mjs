@@ -175,7 +175,7 @@ test('checkout uses an in-app consent dialog, preserves full details, and only s
     assert(app.document.querySelector('[data-action="contact-edit"]').disabled);
     assert(app.document.querySelector('form[data-form="address-link"] button').disabled);
     app.document.querySelector('[data-tab="accounts"]').click();
-    assert.match(app.document.body.textContent, /Account switching is locked/);
+    assert.match(app.document.body.textContent, /Account switching locked/i);
     assert(app.document.querySelector('[data-action="account-select"]').disabled);
     assert(app.document.querySelector('[data-action="account-remove"]').disabled);
     assert.deepEqual(app.external, []);
@@ -198,7 +198,7 @@ test('uncertain checkout offers in-app original-account history without clearing
     await waitFor(() => app.document.querySelector('[data-action="checkout-orders"]'), 'original-account history button');
     app.document.querySelector('[data-action="checkout-orders"]').click();
     await waitFor(() => app.document.querySelector('[data-action="order-detail"]'), 'original-account orders');
-    assert.match(app.document.body.textContent, /empty or delayed list does not prove the order failed/i);
+    assert.match(app.document.body.textContent, /order fail nahi|doosra order na karein/i);
     assert(app.calls.some(c => c.url.endsWith('/orders?scope=checkout')));
     app.document.querySelector('[data-action="order-detail"]').click();
     app.document.querySelector('[data-action="order-tracking"]').click();

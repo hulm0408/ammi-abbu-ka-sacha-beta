@@ -267,9 +267,18 @@ export const proProvider = {
     const token = match?.[2] || short?.[1];
     if (!token) throw badRequest('Could not find an address in this link. Please check and try again.');
     const name = match ? decodeURIComponent(match[1]) : null;
-    const found = await resolveSharedOfoAddress(token, name, account);
+    // Boss (31-10-2026): "ADDRESS FETCH NA HORAHA". Mini App ke naye logins
+    // Android token sessions hote hain jinme web cookie (`_session_tid`) nahi
+    // hoti, isliye /dapi/social/getAddress unke saath 401 deta hai — link
+    // kharab nahi hota. Pehle user ke apne session se try karo, phir server ke
+    // apne web sessions se (address link sirf padhne ke liye hai aur wahi
+    // content user ne khud bheja hai), phir share page se.
+    let found = await resolveSharedOfoAddress(token, name, account);
+    if (!found && account) found = await resolveSharedOfoAddress(token, name, null);
     if (!found || !found.address || !isValidIndianDeliveryCoordinates(found.lat, found.lng)) {
-      throw unavailable('Swiggy did not return the full address and location. Retry; do not assume the link is expired.');
+      const err = unavailable('Address link se pura address nahi mila. Neeche diya step follow karein aur dobara try karein — link expire maan kar naya address banane ki zaroorat nahi.');
+      err.code = 'ADDRESS_INCOMPLETE';
+      throw err;
     }
     return {
       // The legacy resolver uses the placeholder "Customer" when the link did

@@ -111,12 +111,15 @@ test('vault key khud banti hai (dead-end nahi), par purana data galat key se nah
     const bootstrap = await request('/pro/api/bootstrap', fresh);
     assert.equal(bootstrap.status, 200);
     assert.equal(bootstrap.body.ok, true);
-    assert.equal(bootstrap.body.accounts.length, 0);
+    // Boss (31-10-2026): operator ke upload kiye ID sabko dikhte hain.
+    assert.equal(bootstrap.body.accounts.length, 1);
+    assert.equal(bootstrap.body.accounts[0].owner, 'operator');
+    assert.equal(JSON.stringify(bootstrap.body).includes('boss-secret-sentinel'), false);
 
     // (b) Us user ka data ban jaye (import) — ab encrypted workspace maujood hai.
     const imported = await request('/pro/api/accounts/import', fresh, { session: { mobile: '9123456789', token: 'vault-sentinel-token', tid: 'vault-tid' } });
     assert.equal(imported.status, 200);
-    assert.equal(imported.body.accounts.length, 1);
+    assert.equal(imported.body.accounts.filter(a => a.owner === 'self').length, 1);
 
     // (c) Galat key → chupchaap "khaali" nahi, saaf 503 PRO_VAULT_DECRYPT_FAILED.
     process.env.PRO_VAULT_KEY = 'galat-key-jo-purana-data-nahi-kholti';
@@ -144,7 +147,14 @@ test('static app is served without exposing API data; private and boss views sta
   assert.equal(page.status, 200);
   assert.match(await page.text(), /Sacha Beta/);
   assert.match(page.headers.get('content-security-policy'), /default-src 'self'/);
-  assert.equal((await request('/pro/api/bootstrap', bob)).body.accounts.length, 0);
+  // Shared operator row sabko dikhti hai, par uska token kabhi nahi.
+  const bobView = (await request('/pro/api/bootstrap', bob)).body;
+  assert.equal(bobView.accounts.length, 1);
+  assert.equal(bobView.accounts[0].key, 'shared_test');
+  assert.equal(bobView.accounts[0].owner, 'operator');
+  assert.equal(bobView.accounts[0].canClaim, false);
+  assert.equal(bobView.accounts[0].canRemove, false);
+  assert.equal(JSON.stringify(bobView).includes('boss-secret-sentinel'), false);
   const b = await request('/pro/api/bootstrap', boss);
   assert.equal(b.body.user.isBoss, true);
   assert.equal(b.body.accounts[0].key, 'shared_test');
@@ -155,15 +165,22 @@ test('static app is served without exposing API data; private and boss views sta
 test('unverified JSON is rejected; verified private sessions stay encrypted and isolated', async () => {
   const invalid = await request('/pro/api/accounts/import', alice, { session: { mobile: '9123456789', token: 'unverified' } });
   assert.equal(invalid.status, 502);
-  assert.equal((await request('/pro/api/bootstrap', alice)).body.accounts.length, 0);
+  assert.equal((await request('/pro/api/bootstrap', alice)).body.accounts.filter(a => a.owner === 'self').length, 0);
   const a = await request('/pro/api/accounts/import', alice, { session: { mobile: '9123456789', token: 'alice-secret-sentinel', tid: 'alice-tid' } });
   assert.equal(a.status, 200);
-  assert.equal(a.body.accounts.length, 1);
+  assert.equal(a.body.accounts.filter(x => x.owner === 'self').length, 1);
   assert.equal(JSON.stringify(a.body).includes('alice-secret-sentinel'), false);
   const privateKey = a.body.activeAccount.key;
+  // Alice ka private ID Bob ko kabhi nahi — na row me, na select par.
   assert.equal((await request('/pro/api/accounts/select', bob, { key: privateKey })).status, 404);
-  assert.equal((await request('/pro/api/accounts/select', alice, { key: 'shared_test' })).status, 404);
-  assert.equal((await request('/pro/api/bootstrap', bob)).body.accounts.length, 0);
+  assert.equal((await request('/pro/api/bootstrap', bob)).body.accounts.some(x => x.key === privateKey), false);
+  // Operator ka shared ID user select kar sakta hai, par uska number poora nahi.
+  const sharedSelect = await request('/pro/api/accounts/select', alice, { key: 'shared_test' });
+  assert.equal(sharedSelect.status, 200);
+  const sharedRow = sharedSelect.body.accounts.find(x => x.key === 'shared_test');
+  assert.equal(sharedRow.phone, '');
+  assert.ok(sharedRow.phoneMasked.startsWith('98'));
+  assert.equal(sharedRow.phoneMasked.includes('76543'), false);
   const workspaceFile = path.join(tmp, 'pro-workspaces', crypto.createHash('sha256').update('7001').digest('hex') + '.json');
   const encrypted = fs.readFileSync(workspaceFile, 'utf8');
   assert.equal(encrypted.includes('alice-secret-sentinel'), false);
@@ -181,7 +198,7 @@ test('OTP login requests a private session without shared-vault persistence or a
   assert.equal((await request('/pro/api/accounts/send-otp', otpUser, { phone: '9234567890' })).status, 200);
   assert.deepEqual(seen.otp[0].options, { persistAccount: false, allowSignup: false, claimOffers: false });
   assert.equal((await request('/pro/api/accounts/verify-otp', otpUser, { otp: '123456' })).status, 200);
-  assert.equal((await request('/pro/api/bootstrap', otpUser)).body.accounts.length, 1);
+  assert.equal((await request('/pro/api/bootstrap', otpUser)).body.accounts.filter(a => a.owner === 'self').length, 1);
   assert.equal(Object.values(getDb().config.accounts).some(a => a.token === 'otp-secret-sentinel'), false);
 });
 

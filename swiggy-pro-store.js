@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDataDir } from './store.js';
+import { proWorkspaceVaultPath, pullVaultTextFile, pushVaultTextFile } from './vault-sync.js';
 
 // The chat bot's shared vault must not contain the Mini App's private users.
 // Each Telegram user's workspace is authenticated and encrypted separately.
@@ -193,10 +194,74 @@ export function writeProWorkspace(userId, workspace) {
     try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
     const parentFd = fs.openSync(path.dirname(dir), 'r');
     try { fs.fsyncSync(parentFd); } finally { fs.closeSync(parentFd); }
+    scheduleProWorkspaceBackup(userId);
   } finally {
     if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
     try { fs.unlinkSync(tmp); } catch {}
   }
+}
+
+// ── DURABLE BACKUP (boss 31-10-2026) ──────────────────────────────────────
+// "JAISE ME KOI CHEEZ UPDATE KARU TO SAARA USER KA DATA RESET NA HOJAYE, BAAKI
+// RAHE UNKE PHONES ME." Render ka disk redeploy par khali ho sakta hai. Isliye
+// har workspace ka ENCRYPTED blob cloud vault me bhi jata hai aur naye disk par
+// pehli read se pehle wapas aata hai. Key wahi rehti hai (env/derived/key file),
+// isliye blob wapas aane par data waisa hi khulta hai.
+const hydratedUsers = new Set();
+const backupTimers = new Map();
+
+export function cloudBackupEnabled() {
+  return process.env.PRO_VAULT_CLOUD_BACKUP !== '0';
+}
+
+function scheduleProWorkspaceBackup(userId) {
+  if (!cloudBackupEnabled()) return;
+  const key = String(userId);
+  if (backupTimers.has(key)) return;
+  const timer = setTimeout(async () => {
+    backupTimers.delete(key);
+    try {
+      const file = workspacePath(key);
+      if (!fs.existsSync(file)) return;
+      await pushVaultTextFile(proWorkspaceVaultPath(path.basename(file)), fs.readFileSync(file, 'utf8'));
+    } catch { /* best effort — local file hi asli hai */ }
+  }, 6000);
+  if (typeof timer.unref === 'function') timer.unref();
+  backupTimers.set(key, timer);
+}
+
+/**
+ * Naye/khali disk par (redeploy ke baad) encrypted workspace wapas laata hai.
+ * Sirf tab likhta hai jab local file bilkul nahi hai — chalta hua data kabhi
+ * overwrite nahi hota.
+ */
+export async function ensureProWorkspaceHydrated(userId) {
+  const key = String(userId);
+  if (hydratedUsers.has(key)) return false;
+  hydratedUsers.add(key);
+  if (!cloudBackupEnabled()) return false;
+  try {
+    const file = workspacePath(key);
+    if (fs.existsSync(file)) return false;
+    const text = await pullVaultTextFile(proWorkspaceVaultPath(path.basename(file)));
+    if (!text || !text.trim().startsWith('{') || text.length > 2_000_000) return false;
+    JSON.parse(text); // sirf valid envelope likho
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.${process.pid}.restore.tmp`;
+    fs.writeFileSync(tmp, text, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+    console.log('[MiniAppVault] encrypted workspace cloud vault se wapas aaya (redeploy recovery).');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Tests ke liye. */
+export function resetProWorkspaceHydrationCache() {
+  hydratedUsers.clear();
+  for (const timer of backupTimers.values()) clearTimeout(timer);
+  backupTimers.clear();
 }
 
 const locks = new Map();

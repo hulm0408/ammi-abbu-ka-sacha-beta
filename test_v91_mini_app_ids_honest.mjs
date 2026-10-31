@@ -136,7 +136,10 @@ const fakeDb = {
   const proSrc = fs.readFileSync('./swiggy-pro-api.js', 'utf8');
   check('/pro accounts sach ke saath aate hain', /describeAccountForPicker\(key, a,/.test(proSrc));
   check('/pro row me status + reason + icons + freeCash + offers', /status: truth\.status/.test(proSrc) && /reason: truth\.reason/.test(proSrc) && /freeCash: truth\.freeCash/.test(proSrc) && /icons: truth\.icons/.test(proSrc));
-  check('/pro par used/suspended ID select block hoti hai', /row\.selectable === false\) throw error\(409/.test(proSrc));
+  // 31-10-2026: boss ne kaha used ID par pehle WARNING, phir select. Suspended
+  // / expired / busy ID phir bhi block rehti hai.
+  check('/pro par used ID warning ke baad khulti hai', /needsConfirm === true && body\.confirmUsed === true/.test(proSrc) && /ACCOUNT_NEEDS_CONFIRM/.test(proSrc));
+  check('/pro par suspended/expired ID block rehti hai', /row\.selectable === false\)/.test(proSrc) && /throw error\(409/.test(proSrc));
   check('/pro khud auto ID select karta hai', /function autoSelectAccount/.test(proSrc) && /if \(ws\.activeAccountKey\) return;/.test(proSrc));
   check('auto-select sirf selectable ID chunta hai', /rows\.find\(r => r\.selectable\)/.test(proSrc));
 
