@@ -187,9 +187,13 @@ test('shared ID ke order user ko chhote card me, boss ko poore detail me; tracki
   assert.deepEqual(compact.body.orders[0].items, []);
   assert.equal(compact.body.orders[0].address, '');
   assert.equal(compact.body.orders[0].restricted, true);
+  // Round 19 (boss): "TRACKING LINK BHI NAHI AARAHA" — shared ID par bhi
+  // Swiggy ka tracking LINK milta hai; OTP/address/rider private rehta hai.
   const tracking = await req(user, 'orders/tracking?id=111111111111');
-  assert.equal(tracking.status, 403);
-  assert.equal(tracking.body.code, 'SHARED_ACCOUNT_RESTRICTED');
+  assert.equal(tracking.status, 200);
+  assert.equal(tracking.body.restricted, true);
+  assert.equal(tracking.body.tracking.deliveryOtp, '');
+  assert.equal(tracking.body.tracking.deliveryPartner.name, '');
 
   await req(boss, 'accounts/select', { key: 'acc_operator_fresh' });
   const full = await req(boss, 'orders');
@@ -290,7 +294,11 @@ const cssSource = fs.readFileSync(new URL('./swiggy-pro.css', import.meta.url), 
 test('Mini App se koi bahar navigation nahi (koi browser link nahi)', () => {
   assert.equal(/openExternal/.test(appSource), false);
   assert.equal(/window\.open\(/.test(appSource), false);
-  assert.equal(/target="_blank"/.test(appSource), false, 'tracking bhi app ke andar');
+  // Round 19 (boss): tracking LINK chahiye — par sirf Swiggy ka tracking page.
+  // Baaki koi bahar link nahi (cart/account/Swiggy app nahi khulta).
+  const externalLinks = [...appSource.matchAll(/href="\$\{esc\(([^)]*)\)\}"[^>]*target="_blank"/g)].map(m => m[1]);
+  for (const expr of externalLinks) assert.match(expr, /swiggyLink/, `sirf tracking link bahar ja sakta hai, mila: ${expr}`);
+  assert.equal(/href=\\?"https?:/.test(appSource), false, 'server se aaya link hi kholta hai, hardcoded nahi');
   assert.equal(/swiggy\.com\/cart/.test(appSource), false);
   assert.equal(/swiggy\.com\/my-account/.test(appSource), false);
   // Sirf UPI app kholna allowed hai — wo payment ka hissa hai.

@@ -146,3 +146,46 @@ Auto-credit cap: env `WALLET_AUTO_CREDIT_MAX_PAISE` (default `1500` = ₹15).
   ledger me `verifiedBy: 'user-claim'` likha jata hai aur bada amount boss approval par jata hai.
 * Swiggy kabhi-kabhi place-response me intent hi nahi bhejta — tab payment page se recovery,
   warna `PAYMENT_PENDING` + order ID (order cancel Swiggy khud karta hai).
+
+---
+
+## H. Deploy-proof paisa/UTR + tracking link + auto-fetch (Round 19)
+
+Boss: *"SAME UTR MENE DAALA TO HOGAYA KIUKI DEPLOY KARNE PAR SARA DATA RESET HOJATA HAI"*,
+*"TRACKING LINK BHI NAHI AARAHA"*, *"ORDER PAYMENT KARNE KE BAAAD AUTO FETCH BHI NAHI HORAHA"*.
+
+### H — paisa/UTR ka har case
+
+| # | Case | Behaviour |
+|---|---|---|
+| H1 | `db.json` deploy par naya (`ensureDb` reseed) | boot par snapshot se merge — wallet + `usedUtrs` wapas |
+| H2 | Cloud token nahi | local disk copy; status line **saaf** bolti hai "Cloud backup OFF" |
+| H3 | Snapshot me balance kam, local me zyada | local jeetta hai — paisa **kabhi** kam nahi |
+| H4 | Snapshot me UTR hai, local me nahi | UTR jud jata hai (dobara claim nahi) |
+| H5 | Local me UTR hai, snapshot me nahi | local rehta hai (union, delete nahi) |
+| H6 | Snapshot duplicate/again push | union idempotent — `changed:false`, jhootha "restore hua" nahi |
+| H7 | Snapshot khaali | push skip (`empty`), restore kuch nahi badalta |
+| H8 | Vault file encrypted | AES-256-GCM; bina `VAULT_ENCRYPTION_KEY` decrypt nahi — status me wajah |
+| H9 | Cloud me UTR plaintext | **never** — test snapshot file me UTR string dhoondta hai |
+| H10 | Push fail / net gaya | throttled retry, `lastError` status me; boot kabhi block nahi |
+| H11 | Process `SIGTERM` | shutdown se pehle ek force flush |
+
+### H — tracking link
+
+| # | Case | Behaviour |
+|---|---|---|
+| H12 | Shared/operator ID | 200 + `trackingUrl` (Swiggy), status, ETA — `restricted: true` |
+| H13 | Shared ID par private detail | `deliveryOtp` = `''`, `deliveryPartner` = `''` — leak nahi |
+| H14 | Provider `swiggy://share?text=<https…>` | https link nikaal kar diya jata hai |
+| H15 | Provider ne link nahi diya | `trackingUrl: ''` + saaf note "refresh se status aata rahega" |
+| H16 | Doosre order ka link | `safeTrackingUrl` reject (order id mismatch) |
+| H17 | Paid checkout restricted user | `publicCheckout` link deta hai, OTP/rider nahi |
+
+### H — auto-fetch
+
+| # | Case | Behaviour |
+|---|---|---|
+| H18 | Payment ke baad button nahi dabaya | app khud 8s baad `checkout/status`, phir har 12s |
+| H19 | 30 try ke baad bhi pending | poller ruk jata hai (battery/net), button bacha rehta hai |
+| H20 | `PAID` mil gaya | tracking khud khulta hai + toast |
+| H21 | Draft idle band / naya draft | poller band, counter reset |

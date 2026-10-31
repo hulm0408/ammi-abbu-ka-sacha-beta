@@ -459,3 +459,45 @@ API checkout QR render se pehle plan + PNG check karta hai; checkout me `qrSourc
 ### Tests
 `test_v107_bill_and_qr_possibilities.mjs` **29 checks** (bill 16, QR 13). Sweep:
 `test:guards` **75/75 (137s)**, `test:pro` **41/41**, `npm test` **132/132**, bossbot **49/49**.
+
+## Round 19 (31-10-2026): tracking link, auto-fetch, aur deploy par data reset
+
+Boss (screenshot: order #252429282132542, ₹48, processing):
+*"SAME ISSUE TRACKING LINK BHI NAHI AARAHA AND ORDER PAYMENT KARNE KE BAAAD AUTO FETCH BHI NAHI HORAHA KI AND SAME UTR MENE DAALA TO HOGAYA KIUKI DEPLOY KARNE PAR SARA DATA RESET HOJATA HAI"*
+
+### 1. `money-snapshot.js` (naya, pure) + `db-durability.js` (naya)
+Root cause jaan-boojh kar: `store.js` ka `ensureDb()` `db.json` na mile to `defaultData` bana deta hai —
+Render par disk attach na ho to har deploy par wallet + `usedUtrs` gayab, isliye wahi UTR dobara credit ho jata tha.
+
+* Snapshot sirf paisa ka sach: `wallets`, `topupRequests`, `topupClaims`, `topupIntents`, `usedUtrs`
+  + money config (`walletUpiId`, `serviceFeePaise`, `walletAutoCreditMaxPaise`).
+* Local copy `<DATA_DIR>/db-money-snapshot.json`; cloud copy `vault/db-money-snapshot.json`
+  (`bot-vault` branch, AES-256-GCM `VAULT_ENCRYPTION_KEY`) — cloud me UTR plaintext kabhi nahi.
+* Push: har 20s se zyada nahi, background me har 30s, `SIGTERM`/`beforeExit` par bhi ek flush.
+* Restore boot par (`index.js` `startBotWithRetry`): deploy ke baad cloud/local snapshot se
+  **merge** — wallet balance kabhi ghatta nahi (zyada wala jeetta hai), `usedUtrs` sirf judta hai.
+* `durabilityStatus().line` sach bolti hai: cloud OFF ho to *"Cloud backup OFF — deploy par wallet
+  aur UTR ki yaad mit sakti hai"*; ON ho to *"Cloud backup ON · last snapshot … · deploy ke baad
+  restore hua … · N wallet, M UTR yaad"* — boss ke backup card me dikhta hai.
+
+Render env (ek hi baar, deploy ke baad asar): `GITHUB_VAULT_TOKEN`, `VAULT_ENCRYPTION_KEY`,
+disk `data` → `/app/data` (DATA_DIR).
+
+### 2. Tracking link operator ke ID par bhi
+Pehle `/pro/api/orders/tracking` shared (operator) ID par 403 `SHARED_ACCOUNT_RESTRICTED` deta tha —
+screen par sirf Order ID/Placed/Amount. Ab wo rasta **200 + tracking** deta hai:
+`trackingUrl` (Swiggy ka `https://www.swiggy.com/ofo/track/<token>`), status, ETA —
+par `deliveryOtp` khaali aur `deliveryPartner` khaali. `publicCheckout()` bhi restricted case me
+`tracking` null nahi, wahi safe projection deta hai. `swiggy://share?text=…` jaisa share-URI
+se https link nikaal liya jata hai, warna customer ko khaali button dikhta.
+
+### 3. Payment ke baad auto fetch
+Payment screen (`PAYMENT_PENDING`) ab khud `checkout/status` maangti rehti hai — pehla check 8s,
+phir har 12s, 30 try tak; `PAID` milte hi tracking khud khul jata hai. Button bhi raha
+(hath se turant check karne ke liye). Draft band hote hi poller ruk jata hai.
+
+### Tests
+`test_v108_deployproof_tracking_autopay.mjs` **9 checks** (snapshot/merge 3, deploy+restore 2,
+tracking 3, app auto-poll + restricted tracking card 2). Sweep: `test:guards` **75/75 (147s)**,
+`test:pro` **41/41**, `npm test` **132/132**, `test_v107` **29/29**, `test_v106` **11/11**,
+`test_v105` **13/13**, `test_v93` **20/20**, bossbot **49/49**.

@@ -5,6 +5,7 @@ import { validateUpiIntentForQr } from './payment-qr-guard.js';
 import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { checkRateLimit, rateLimitMessage, rateLimitState } from './pro-rate-limit.js';
 import { reconcileBill, describeBillState } from './bill-reconcile.js';
+import { backupMoneyNow, durabilityStatus } from './db-durability.js';
 import { planQrGeneration, isRenderableQrImage, describeQrPlan } from './qr-generation-plan.js';
 import { exactPaise } from './swiggy-cart-integrity.js';
 import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder } from './swiggy-cart.js';
@@ -283,7 +284,21 @@ function activeAccountForClient(user, ws) {
   return listAccounts(user, ws).find(a => a.active) || null;
 }
 function safeTrackingUrl(value, orderId) {
-  const link = String(value || '').trim();
+  let link = String(value || '').trim();
+  // Swiggy kabhi `swiggy://share?text=https://…/ofo/track/<token>` bhejta hai —
+  // usme se asli https link nikaal lo, warna customer ko khaali link dikhta.
+  if (!/^https:\/\//i.test(link)) {
+    let candidate = '';
+    try {
+      const url = new URL(link);
+      candidate = url.searchParams.get('text') || url.searchParams.get('url') || url.searchParams.get('link') || '';
+    } catch { candidate = ''; }
+    if (!candidate) {
+      const inner = link.match(/https?:\/\/[^\s&"']+/i) || link.match(/https?%3A%2F%2F[^\s&"']+/i);
+      candidate = inner ? decodeURIComponent(inner[0]) : '';
+    }
+    link = /^https?:\/\//i.test(candidate.trim()) ? candidate.trim() : '';
+  }
   if (!/^https:\/\//i.test(link) || !isOfficialSwiggyTrackingUrl(link, { allowProviderShortLink: true }) ||
       !validateTrackingUrlForOrder(link, { swiggyOrderId: orderId }, 'SWIGGY_API')) return '';
   try {
@@ -293,9 +308,28 @@ function safeTrackingUrl(value, orderId) {
 }
 /**
  * `restricted` = user ne operator (shared) ID par order kiya. Us haalat me
- * operator ka poora number aur tracking detail user ko nahi dikhte (boss
- * 31-10-2026: "MOBILE NUMBER BHI FULL NAHI DIKHEGA ... TRACKING BHI NAHI").
+ * operator ka poora number, delivery OTP aur rider nahi dikhte.
+ *
+ * Round 19 (boss 31-10-2026): "SAME ISSUE TRACKING LINK BHI NAHI AARAHA".
+ * Isliye tracking ka **link + status/ETA** ab restricted user ko bhi milta hai
+ * — link Swiggy ka public tracking page hai, private detail nahi.
  */
+function publicRestrictedTracking(tracking) {
+  if (!tracking || typeof tracking !== 'object') return null;
+  const link = /^https:\/\//i.test(String(tracking.trackingUrl || '')) ? String(tracking.trackingUrl) : '';
+  return {
+    orderId: String(tracking.orderId || ''),
+    status: String(tracking.status || '').slice(0, 200),
+    eta: String(tracking.eta || '').slice(0, 100),
+    trackingUrl: link,
+    deliveryOtp: '',
+    deliveryPartner: { name: '', phone: '' },
+    restricted: true,
+    note: link
+      ? 'Tracking link Swiggy ka hai — status aur rider wahan dikhega. OTP/address sirf operator ke paas rehta hai.'
+      : 'Swiggy ne is order ka tracking link nahi diya — status yahan refresh se aata rahega.'
+  };
+}
 function publicCheckout(checkout, { restricted = false } = {}) {
   if (!checkout) return null;
   const output = {
@@ -306,7 +340,7 @@ function publicCheckout(checkout, { restricted = false } = {}) {
     ofoConfirmed: checkout.ofoConfirmed === true,
     paymentVerified: checkout.paymentVerified === true,
     message: String(checkout.message || ''),
-    tracking: restricted ? null : (checkout.tracking || null),
+    tracking: restricted ? publicRestrictedTracking(checkout.tracking) : (checkout.tracking || null),
     restricted: restricted === true,
     // Round 12: order bana par QR nahi mila — asli wajah + (agar Swiggy ne
     // diya ho to) uske payment page ka link. Koi apna banaya hua link nahi.
@@ -836,7 +870,15 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           ok: true, ...publicState(user, ws), wallet: walletView(user), backup: userBackupView(user),
           idle: { timeoutMs: idle.timeoutMs, closed: idleClosed, abandoned: Array.isArray(ws.abandoned) ? ws.abandoned.slice(-3) : [] },
           // Round 17: har user ka apna quota — kaun si cheez kitni baar ho chuki.
-          rateLimits: rateLimitSnapshot(user.id)
+          rateLimits: rateLimitSnapshot(user.id),
+          // Round 19: "deploy par data reset" ka asli sach — wallet/UTR cloud me
+          // safe hai ya nahi. User ko bas ek line, boss ko poora detail.
+          durability: (() => {
+            const d = durabilityStatus();
+            return user?.isBoss || isBoss(user.id)
+              ? d
+              : { cloud: d.cloud, restoredAt: d.restoredAt, line: d.line };
+          })()
         });
         return;
       }
@@ -1379,10 +1421,28 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (!id) throw error(400, 'Invalid Swiggy order ID.');
         const scope = url.searchParams.get('scope') || 'active';
         const scopeKey = scope === 'checkout' ? String(ws.checkout?.accountKey || '') : String(ws.activeAccountKey || '');
+        // Boss (31-10-2026, round 19): "TRACKING LINK BHI NAHI AARAHA".
+        // Operator ke ID par pehle poora tracking band tha. Tracking LINK
+        // Swiggy ka public page hai (order ID ka token) — customer ko wo
+        // mile, par address/OTP/delivery partner jaisa private detail nahi.
         if (!orderDetailAllowed(user, ws, scopeKey)) {
-          const e = error(403, 'Operator ke ID ka tracking detail sirf operator dekh sakta hai. Order status upar dikh raha hai.');
-          e.code = 'SHARED_ACCOUNT_RESTRICTED';
-          throw e;
+          const account = orderHistoryAccount(user, ws, scope);
+          let tracking = null;
+          try { tracking = await provider.tracking(account, id); } catch { tracking = null; }
+          const link = String(tracking?.trackingUrl || tracking?.nativeShareUrl || '');
+          json(res, 200, { ok: true, restricted: true, tracking: {
+            orderId: id,
+            status: String(tracking?.status || '').slice(0, 200),
+            eta: String(tracking?.eta || tracking?.etaMinutes || '').slice(0, 100),
+            trackingUrl: safeTrackingUrl(link, id),
+            deliveryOtp: '',
+            deliveryPartner: { name: '', phone: '' },
+            restricted: true,
+            note: tracking?.trackingUrl || tracking?.nativeShareUrl
+              ? 'Tracking link Swiggy ka hai — status aur rider wahan dikhega. OTP/address sirf operator ke paas rehta hai.'
+              : 'Swiggy ne is order ka tracking link nahi diya — status yahan refresh se aata rahega.'
+          } });
+          return;
         }
         const account = orderHistoryAccount(user, ws, scope);
         const orders = await provider.orders(account);
@@ -1418,6 +1478,8 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const intentDb = getDb();
         const intent = createTopupIntent(intentDb, user.id, amountPaise);
         saveDb(intentDb);
+        // Round 19: paisa/UTR ka snapshot turant cloud me (deploy-proof).
+        backupMoneyNow().catch(() => {});
         json(res, 200, {
           ok: true,
           topup: {
@@ -1431,6 +1493,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
       if (route === '/pro/api/wallet/claim' && req.method === 'POST') {
         enforceRateLimit(user, 'walletClaim');
         const out = await claimWalletTopup(user, await bodyJson(req));
+        backupMoneyNow().catch(() => {});
         json(res, 200, { ok: true, ...out });
         return;
       }
