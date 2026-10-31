@@ -101,3 +101,21 @@ A real trial requires a suitable deployed HTTPS service with persistent storage,
 * **Restaurant kholne par outlet chunna.** Search results me same naam ke >1 outlet ho to row dabane par Swiggy jaisa bottom sheet (`CHOOSE LOCATION`) aata hai — har branch ka area, distance, ETA aur open/closed. Band branch disabled, current branch "Yahi". Ek hi outlet ho to seedha menu. Menu page par bhi outlet row ("25 min · Outlet badlein") wahi sheet kholta hai.
 * **Tracking app ke andar.** `target="_blank"` / `window.open` / browser link hata diye gaye; status, ETA, partner aur OTP app me hi dikhte hain.
 * `test_v93` (20 checks) aur `test_v94` (13 checks) in dono pages ko lock karte hain.
+
+## Group cart parsing + backup truth (31-10-2026, round 6)
+
+* **Koi dropdown nahi.** Cart page par group cart ka link box aur **"Cart parse karein"** button hamesha saamne hain (`form[data-form="group-cart"]`). Input `type="text"` + `inputmode="url"` hai taaki `swiggy://` deep link bhi paste ho sake. Khaali box par seedha message aata hai, request nahi jaati.
+* **5 link shapes parse hote hain** (`extractGroupCartRef` / `resolveGroupCartLink` in `swiggy-pro-provider.js`):
+  1. `https://www.swiggy.com/gc/<x>/<slug>-<cartId>` (web share)
+  2. `https://www.swiggy.com/gc/<cartId>` (chhota link)
+  3. `?sharedCartId=` / `?groupCartId=` / `?shared_cart_id=` query links
+  4. `swiggy://gc?shared_cart_id=…` aur `swiggy://share?text=<encoded url>` deep links
+  5. `swig.gy` / `swiggy.onelink.me` short links (redirect expand karke)
+  URL-encoded link bhi khulta hai. Kuch match na ho to saaf wajah + jo format chahiye wo message me aata hai; jhootha cart id kabhi nahi.
+* **Backup ab do jagah, aur sach dikhta hai.**
+  * **DB mirror:** har workspace ka *encrypted* envelope `db.json` → `config.proWorkspaceMirror` me (debounce 1.5 s, max 300 rows, checksum ke saath). Koi token nahi chahiye.
+  * **Cloud vault:** `vault/pro-workspaces/<hash>.json` (`GITHUB_VAULT_TOKEN`/git hone par).
+  * Restore: local file na mile to pehle cloud, phir DB mirror (`ensureProWorkspaceHydrated`), aur `backup.restored` me `lastFrom` + count aata hai.
+  * **Boss ko Tools me "Data backup" card**: mirror rows, last save time, cloud ON/OFF, cloud ki asli error, kitni baar restore hua, aur **"Abhi backup karein"** button (`POST /pro/api/backup`, sirf boss).
+  * `GET /pro/api/bootstrap` ab `backup` field deta hai — boss ko poora, user ko sirf mirror ki haalat.
+* **Tests:** `test_v95_miniapp_cart_import_and_backup.mjs` (11 checks: 7 link shapes, galat link par asli error, short-link expansion, mirror→restore, backup status/route permissions, no-dropdown DOM, parse request, khaali-link toast, boss backup card, user ko card nahi).

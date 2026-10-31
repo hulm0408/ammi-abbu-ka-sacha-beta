@@ -152,7 +152,7 @@ function parseMenu(json, restaurantId) {
 
 // Short links are followed without credentials and only to these Swiggy hosts.
 // This avoids exposing account cookies to redirects or using a link as SSRF.
-const SHARE_HOSTS = new Set(['swig.gy', 'swiggy.onelink.me', 'www.swiggy.com', 'swiggy.com']);
+const SHARE_HOSTS = new Set(['swig.gy', 'swiggy.onelink.me', 'www.swiggy.com', 'swiggy.com', 'm.swiggy.com']);
 function shareUrl(value) {
   let url;
   try { url = new URL(String(value).trim()); } catch { throw badRequest('Paste a valid Swiggy share link.'); }
@@ -181,6 +181,75 @@ export async function expandProShareLink(raw) {
     try { current = shareUrl(resolved).toString(); } catch { return current; }
   }
   return current;
+}
+
+/**
+ * Boss (31-10-2026): "CART KO BHI PARSE NAHI KAR PAA RAHA SALA."
+ *
+ * Swiggy group cart link sirf ek shakal me nahi aata. Yahan sabse pehle koi
+ * network call ke bina, plain text se hi cart id nikaal lete hain:
+ *   1. https://www.swiggy.com/gc/<x>/<slug>-<cartId>      (web share — purana)
+ *   2. https://www.swiggy.com/gc/<cartId>                 (chhota web link)
+ *   3. ...?sharedCartId= / ?groupCartId= / ?shared_cart_id= (query wale)
+ *   4. swiggy://gc?... / swiggy://share?text=<encoded url>  (app deep link)
+ *   5. swig.gy / swiggy.onelink.me short link  → resolveGroupCartLink expand karta hai
+ * Kuch bhi match na ho to `null` — jhootha cart id kabhi nahi.
+ */
+const GROUP_CART_QUERY_KEYS = ['sharedCartId', 'shared_cart_id', 'groupCartId', 'group_cart_id', 'groupcartid', 'cartId', 'cart_id', 'sharedCart', 'shared_cart'];
+function safeDecode(value) {
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+export function extractGroupCartRef(raw) {
+  const original = String(raw || '').trim();
+  if (!original || original.length > 4000) return null;
+  // URL-encoded ya swiggy://share?text=... ke andar chhupa hua link bhi kholte hain.
+  const variants = [original, safeDecode(original)];
+  const deep = (() => { try { return new URL(original).searchParams.get('text') || ''; } catch { return ''; } })();
+  if (deep) variants.push(safeDecode(deep));
+  const text = variants.join('\n');
+
+  // 1 & 2: /gc/ path — trailing number hi group cart id hai (jaise pehle tha).
+  const pathMatch = text.match(/\/gc\/([A-Za-z0-9_-]{1,40})(?:\/(?:[^/?#\s]*-)?(\d{1,20}))?/i);
+  if (pathMatch) {
+    const cartId = pathMatch[2] || (/^\d{1,20}$/.test(pathMatch[1]) ? pathMatch[1] : '');
+    if (cartId) return { cartId, restaurantId: pathMatch[2] ? pathMatch[1] : '', shape: 'gc-path' };
+  }
+  // 3 & 4: query / deep-link parameters.
+  for (const key of GROUP_CART_QUERY_KEYS) {
+    const match = text.match(new RegExp(`[?&#;]${key}=([A-Za-z0-9_-]{1,40})`, 'i'));
+    if (match && /\d/.test(match[1])) {
+      const restaurantMatch = text.match(/[?&#;](?:restaurantId|restaurant_id)=(\d{1,20})/i);
+      return { cartId: match[1], restaurantId: restaurantMatch ? restaurantMatch[1] : '', shape: 'gc-query' };
+    }
+  }
+  return null;
+}
+
+/**
+ * Sirf Swiggy ke host ya bare text (bina host) se seedha parse karte hain —
+ * kisi doosre host ka `/gc/1/x-2` jaisa text jhootha cart id na ban jaye.
+ */
+function groupCartTextAllowed(text) {
+  const value = String(text || '').trim();
+  if (/^swiggy:\/\//i.test(value)) return true;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return true;
+  try { return SHARE_HOSTS.has(new URL(value).hostname.toLowerCase()); } catch { return false; }
+}
+
+/** Link ko samajhne ki ek hi jagah — short link pehle expand hota hai. */
+export async function resolveGroupCartLink(raw) {
+  const direct = groupCartTextAllowed(raw) ? extractGroupCartRef(raw) : null;
+  if (direct) return { ...direct, expanded: String(raw).trim() };
+  let expanded = '';
+  try {
+    expanded = await expandProShareLink(raw);
+  } catch (err) {
+    // shareUrl ka apna saaf message (http / doosra host) — wahi dikhao.
+    throw badRequest(`${err?.message || 'Link padha nahi ja saka.'} Swiggy ka group cart link paste karein (swiggy.com/gc/... ya app ka Share link).`);
+  }
+  const ref = extractGroupCartRef(expanded);
+  if (ref) return { ...ref, expanded };
+  throw badRequest(`Is link me group cart ki ID nahi mili. Chahiye: swiggy.com/gc/<id>, ?sharedCartId=<id>, swiggy:// deep link, ya app ka Share link. Mila: ${String(raw).slice(0, 120)}`);
 }
 
 // Compare the item IDs, quantities AND selected add-ons/variants, not just
@@ -313,12 +382,11 @@ export const proProvider = {
   },
   async groupCart(account, address, link) {
     const { lat, lng } = coords(address);
-    const expanded = await expandProShareLink(link);
-    const match = expanded.match(/\/gc\/(\d+)\/[^/?#]+-(\d+)/i);
-    if (!match) throw badRequest('This group-cart link could not be expanded. Try the full Swiggy group-cart link.');
+    // Boss (31-10-2026): 5 tarah ke link shapes, aur fail par asli wajah.
+    const ref = await resolveGroupCartLink(link);
     const auth = await getSwiggySessionAuth(account);
     if (!auth?.jwtTid || !auth?.userId) throw unavailable('The selected Swiggy session could not be verified.');
-    const response = await fetch(`https://chkout.swiggy.com/api/v1/shared_cart?group_cart_id=${encodeURIComponent(match[2])}`, {
+    const response = await fetch(`https://chkout.swiggy.com/api/v1/shared_cart?group_cart_id=${encodeURIComponent(ref.cartId)}`, {
       headers: buildSwiggyAndroidClientHeaders(account, { tid: auth.jwtTid, token: auth.token, sid: auth.sid, deviceId: auth.deviceId, userId: auth.userId, lat, lng }),
       signal: AbortSignal.timeout(8000)
     });
@@ -340,7 +408,7 @@ export const proProvider = {
       }
     }
     if (!items.length) throw unavailable('Swiggy returned no items for this group cart.');
-    return { restaurantId: String(data.restaurant_details?.restaurant_id || match[1]), restaurantName: String(data.restaurant_details?.restaurant_name || 'Restaurant'), items };
+    return { restaurantId: String(data.restaurant_details?.restaurant_id || ref.restaurantId || ref.cartId), restaurantName: String(data.restaurant_details?.restaurant_name || 'Restaurant'), items };
   },
   async quoteCart(account, address, cart, coupon) {
     const { lat, lng } = coords(address);

@@ -9,8 +9,8 @@
     selectedAddress: null, addresses: [], addressNote: '', pendingAddress: null, contactEdit: false, addressesLoading: false,
     cart: null, checkout: null, checkoutEnabled: false, mode: 'phone', otpSent: false, searchQuery: '', results: null, menu: null,
     menuLoading: false, orders: null, ordersScope: 'active', order: null, orderTracking: null, ordersLoading: false, ordersDetailAllowed: true,
-    cachedAccounts: [], busy: false, loading: 0, resultsLoading: false, deleteFlow: null, claimBusyKey: '', claimResult: null, couponOpen: false, groupCartOpen: false,
-    outlets: null, outletsOpen: false, outletsLoading: false
+    cachedAccounts: [], busy: false, loading: 0, resultsLoading: false, deleteFlow: null, claimBusyKey: '', claimResult: null, couponOpen: false,
+    outlets: null, outletsOpen: false, outletsLoading: false, backup: null, backupBusy: false
   };
   // Boss (31-10-2026): "ME KOI CHEEZ UPDATE KARU TO SAARA USER KA DATA RESET NA
   // HOJAYE, BAAKI RAHE UNKE PHONES ME." UI ka safe hissa (tab, theme, pehle
@@ -54,8 +54,13 @@
   const head = (eyebrow, title, sub, end = '') => `<div class="page-heading"><div><p class="eyebrow">${esc(eyebrow)}</p><h1>${esc(title)}</h1><p>${esc(sub)}</p></div>${end}</div>`;
   const empty = (symbol, title, text) => `<div class="empty"><div class="large-icon">${icon(symbol)}</div><strong>${esc(title)}</strong>${esc(text)}</div>`;
   const toast = message => {
-    const el = $('#toast'); el.textContent = message; el.hidden = false;
-    clearTimeout(toast.timer); toast.timer = setTimeout(() => { el.hidden = true; }, 4300);
+    // Telegram WebView band hone ke baad bhi async response aa sakta hai.
+    try {
+      const el = $('#toast');
+      if (!el) return;
+      el.textContent = message; el.hidden = false;
+      clearTimeout(toast.timer); toast.timer = setTimeout(() => { el.hidden = true; }, 4300);
+    } catch { /* window band ho gaya */ }
   };
   // Browser confirm() can be blocked in Telegram WebViews. Keep every consent
   // inside the Mini App, preserve the full recipient/amount text, and default
@@ -148,7 +153,7 @@
     return result;
   }
   function merge(data) {
-    for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled','checkoutBlockReason','ordersDetailAllowed','adminContact']) if (Object.hasOwn(data, key)) state[key] = data[key];
+    for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled','checkoutBlockReason','ordersDetailAllowed','adminContact','backup']) if (Object.hasOwn(data, key)) state[key] = data[key];
     if (Array.isArray(data.accounts)) {
       state.cachedAccounts = data.accounts.map(a => ({ key: a.key, name: a.name, phoneMasked: a.phoneMasked || '', owner: a.owner || 'self' }));
       writeCache({ accounts: state.cachedAccounts });
@@ -401,8 +406,10 @@
     const locked = cartLocked();
     const lockAttr = locked ? 'disabled' : '';
     const lockedNotice = locked ? '<div class="warning">Checkout pending ya unknown hai. Cart/receiver changes band hain; pehle original account check karein.</div>' : '';
-    // Swiggy me ye ek patli line hoti hai — dabane par link box khulta hai.
-    const groupCard = `<div class="card group-cart-card"><button class="group-cart-toggle" type="button" data-action="toggle-group-cart" aria-expanded="${state.groupCartOpen ? 'true' : 'false'}"><span class="icon-tile">${icon('link')}</span><span class="title-copy">Add Items from Group Cart<small>${state.groupCartOpen ? 'Swiggy group cart ka link paste karein.' : 'Group cart ka link hai? Yahan se add karein.'}</small></span><span class="outlet-caret">${state.groupCartOpen ? '▴' : '▾'}</span></button>${state.groupCartOpen ? `<form data-form="group-cart"><span class="input-wrap"><input name="url" type="url" placeholder="https://www.swiggy.com/…" required ${lockAttr}></span><button class="button primary" type="submit" aria-label="Import group cart" ${lockAttr}>${icon('arrow')}</button></form>` : ''}</div>`;
+    // Boss (31-10-2026): "CART PARSE KARNE WALA BUTTON SIDHA ACTIVE KAR NAKI
+    // DROP DOWN PAR CLICK KARNE KE BAAD." Isliye koi toggle nahi — input aur
+    // button hamesha saamne, seedha dabao.
+    const groupCard = `<div class="card group-cart-card"><div class="card-title">${tile('link')}<span class="title-copy">Add Items from Group Cart<small>Swiggy group cart ka link paste karein.</small></span></div><form data-form="group-cart" class="group-cart-form" novalidate><span class="input-wrap">${icon('link')}<input name="url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://www.swiggy.com/gc/…" ${lockAttr}></span><button class="button primary" type="submit" ${lockAttr}>Cart parse karein ${icon('arrow')}</button></form><p class="hint">Share link, <b>swiggy.com/gc/…</b>, <b>?sharedCartId=…</b> ya app ka deep link — sab chalta hai.</p></div>`;
     const delivery = `<button class="action-tile" type="button" data-action="nav" data-tab="address">${tile('address')}<span class="tile-copy"><small>DELIVERING TO</small><strong>${esc(state.selectedAddress ? addressLabel(state.selectedAddress) : 'Address chunein')}</strong><small>${esc(state.selectedAddress ? (state.selectedAddress.address || '') : 'Order ke liye address zaroori hai')}</small></span>${icon('arrow')}</button>`;
     if (!cart) {
       return `${head('YOUR ORDER', 'Cart', 'Group cart se items add karein ya restaurant search karein.')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${groupCard}${state.selectedAddress ? delivery : ''}${empty('cart', 'Cart khaali hai', 'Restaurant search karein ya group cart link paste karein.')}`;
@@ -454,6 +461,29 @@
     const note = original ? '<div class="warning">Original checkout account dikh raha hai. Khaali ya der se aayi list ka matlab order fail nahi — jab tak outcome pata na chale doosra order na karein.</div>' : restrictedNote;
     return `${head('ORDER HISTORY', original ? 'Original account orders' : 'Your orders', original ? 'Checkout wale account ke recent orders.' : 'Is account ke purane aur chalte orders.', `<button class="button mini soft" data-action="orders-refresh">${icon('refresh')} Refresh</button>`)}${note}${rows}`;
   }
+  /**
+   * Boss (31-10-2026): "DATA TO ERASE HOJATA HAI." Ab backup ki asli haalat
+   * dikhti hai — cloud chalu hai ya nahi, mirror me kitne user, last save kab.
+   */
+  function renderBackupCard() {
+    if (!state.user?.isBoss) return '';
+    const b = state.backup;
+    if (!b) return '';
+    const cloudOn = b.cloud?.enabled === true;
+    const cloudError = b.cloud?.lastError || '';
+    const lastOk = b.cloud?.lastOkAt ? new Date(b.cloud.lastOkAt).toLocaleString('en-IN') : '';
+    const mirrorAt = b.dbMirror?.lastAt ? new Date(b.dbMirror.lastAt).toLocaleString('en-IN') : '';
+    const restored = Number(b.restored?.count || 0);
+    return `<div class="card backup-card"><div class="card-title">${tile('store')}<span class="title-copy">Data backup<small>Yahan se pata chalta hai ki data sach me safe hai ya nahi.</small></span></div>
+      <div class="bill-row"><span>DB mirror (token ke bina)</span><strong class="${Number(b.dbMirror?.rows || 0) > 0 ? 'free' : ''}">${Number(b.dbMirror?.rows || 0)} workspace saved</strong></div>
+      <div class="bill-row"><span>Mirror last save</span><strong>${esc(mirrorAt || 'abhi nahi')}</strong></div>
+      <div class="bill-row"><span>Cloud vault</span><strong class="${cloudOn ? 'free' : ''}">${cloudOn ? 'ON' : 'OFF'}</strong></div>
+      ${cloudOn ? `<div class="bill-row"><span>Cloud last success</span><strong>${esc(lastOk || 'abhi nahi')}</strong></div>` : ''}
+      ${cloudError ? `<div class="warning">Cloud backup fail: ${esc(cloudError)}</div>` : ''}
+      <div class="bill-row"><span>Restore hua</span><strong>${restored} baar</strong></div>
+      <button class="button primary block" type="button" data-action="backup-now" ${state.backupBusy ? 'disabled' : ''}>${state.backupBusy ? 'Backup ho raha hai…' : 'Abhi backup karein'}</button>
+      <p class="hint">Mirror bot ke db.json me encrypted hi rehta hai — redeploy ke baad wahi se wapas aata hai.</p></div>`;
+  }
   function renderTools() {
     // Boss (31-10-2026): "NIGHT OFFER AND BREAKFAST AND WEEKEND WALA OFFER
     // ACTIVE KARDO CLAIM KARNE KE LIYE." Ab yahan se seedha claim hota hai —
@@ -473,7 +503,7 @@
       return `<div class="card"><div class="card-title">${tile('tools')}<span class="title-copy">${esc(a.name)}<small>${a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned'} · ${a.owner === 'operator' ? 'Operator' : 'Aapka'}</small></span></div>${tracks}${claimButton}</div>`;
     }).join('');
     const result = state.claimResult ? `<div class="card"><div class="card-title">${icon('check')} Claim ka sach</div>${(state.claimResult.tracks || []).map(t => `<div class="offer-row"><span class="offer-emoji">${t.emoji || '🎁'}</span><span class="row-content"><strong>${esc(t.label)}</strong><p>${esc(t.message || '')}</p></span><span class="pill ${t.verified ? 'green' : 'amber'}">${esc(String(t.status || '').replace(/_/g, ' '))}</span></div>`).join('')}<p class="hint">Do baar claim nahi hota — pehle se laga ho to ALREADY ACTIVE dikhta hai.</p></div>` : '';
-    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${accounts}`;
+    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${accounts}${renderBackupCard()}`;
   }
   function renderConnection() {
     if (!initData) return `${head('TELEGRAM MINI APP', 'Open in Telegram', 'Your private account space needs a Telegram session.')}<div class="card connection-card"><strong>Browser preview only</strong><p>Open this app from your bot using Open App or /pro. No account data is shown here.</p></div>`;
@@ -576,8 +606,14 @@
       } else if (type === 'search') {
         await search(String(data.get('q') || '').trim());
       } else if (type === 'group-cart') {
-        if (state.cart && !await confirmInApp({ title: 'Replace draft cart?', message: 'Your current draft cart will be replaced by the imported group cart.', confirmText: 'Replace draft' })) return;
-        const out = await api('cart/import-group', 'POST', { url: data.get('url'), replace: Boolean(state.cart) }); merge(out); render(); toast('Group cart imported as a draft.');
+        const url = String(data.get('url') || '').trim();
+        if (!url) { toast('Pehle group cart ka link paste karein.'); return; }
+        if (state.cart && !await confirmInApp({ title: 'Draft cart replace karein?', message: 'Aapka draft cart is group cart se replace ho jayega. Purana draft chala jayega.', confirmText: 'Replace karein' })) return;
+        const out = await api('cart/import-group', 'POST', { url, replace: Boolean(state.cart) });
+        merge(out);
+        const count = out.cart?.items?.reduce((n, i) => n + Number(i.qty || 0), 0) || 0;
+        state.tab = 'cart'; writeCache({ tab: 'cart' }); render();
+        toast(`Cart parse ho gaya — ${count} item${count === 1 ? '' : 's'}. Ab bill check karein.`);
       } else if (type === 'delete-otp') {
         const out = await api('accounts/remove/confirm', 'POST', { key: state.deleteFlow?.key, otp: data.get('otp') });
         merge(out); state.deleteFlow = null; state.addresses = []; state.orders = null; render(); toast('Account Swiggy se delete ho gaya.');
@@ -612,7 +648,6 @@
     if (action === 'account-mode') { state.mode = button.dataset.mode; state.otpSent = false; render(); return; }
     if (action === 'otp-reset') { state.otpSent = false; render(); return; }
     if (action === 'toggle-coupon') { state.couponOpen = !state.couponOpen; render(); return; }
-    if (action === 'toggle-group-cart') { state.groupCartOpen = !state.groupCartOpen; render(); return; }
     if (action === 'outlets-toggle') {
       state.outletsOpen = !state.outletsOpen;
       render();
@@ -673,6 +708,14 @@
           const out = await api('offers/claim', 'POST', { key });
           merge(out); state.claimResult = out.claim || null; toast('Claim ka result aa gaya.');
         } finally { state.claimBusyKey = ''; render(); }
+      } else if (action === 'backup-now') {
+        state.backupBusy = true; render();
+        try {
+          const out = await api('backup', 'POST', {});
+          merge(out);
+          const cloud = out.result?.cloud;
+          toast(cloud?.ok ? 'Backup ho gaya — cloud + mirror dono.' : (out.result?.mirrored ? 'Mirror me save ho gaya (cloud OFF/fail).' : 'Backup fail — wajah upar likhi hai.'));
+        } finally { state.backupBusy = false; render(); }
       } else if (action === 'addresses-refresh') await loadAddresses();
       else if (action === 'cart-clear') {
         if (!await confirmInApp({ title: 'Cart clear karein?', message: 'Draft cart ke saare items hat jayenge. Swiggy cart tab tak waisa hi rahega jab tak naya sync na ho.', confirmText: 'Clear cart', danger: true })) return;
