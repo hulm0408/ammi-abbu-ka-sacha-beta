@@ -230,3 +230,31 @@ Address text me PIN/city na hone par Swiggy ka address-create reject ho jata tha
 `test_v101_qr_recovery_address_utr.mjs` (10 checks): escaped/text intent milta hai, intent missing → `SWIGGY_PLACED_NO_UPI_INTENT` + order ID, amount mismatch par QR block, API `qrMissing` → `PAYMENT_PENDING` (OUTCOME_UNKNOWN nahi) + barrier, address hints, MCP variant, same-receiver reuse, UTR auto credit + duplicate, DOM card.
 `test_v72` update (99 checks) — auto credit + strict mode dono.
 Sweep: `test:guards` **69/69 (120s)**, `test:pro` **41/41**, `npm test` **132/132**, bossbot **49/49**.
+
+## Round 13 (31-10-2026): 2 minute idle → pura draft order band, ID free
+
+Boss: *"koi ID active karke order kar raha aur order chhod kar chala gaya — 2 minute of activity ke baad uska pura order band ho jayega."*
+
+### Kaise kaam karta hai (`order-idle-expiry.js`, pure module)
+* Har `/pro/api/*` request par **pehle** idle sweep chalta hai (routes se pehle).
+* **2 minute** (default `ORDER_IDLE_TIMEOUT_MS` / `db.config.orderIdleTimeoutMs`, clamp 30s–30min) tak koi **asli activity** na ho to:
+  * `cart` + `quote` + `checkout` — sab saaf (draft band, ID agle order ke liye free),
+  * kati hui **fee wapas** (`refundServiceFee`) — sirf jab order place nahi hua tha,
+  * `ws.abandoned` me record (kind, idle minutes, orderId, amount, refund) aur `lastClosed` app ko ek baar.
+* **Activity ka matlab:** cart add, bill sync, address, login, checkout start — yaani `ws.lastActivityAt`. Sirf **bootstrap (page refresh) activity nahi hai**, warna app khol kar chhod dene par timer kabhi poora na hota.
+
+### Kya KABHI band nahi hota (jhooth/paisa ka nuksaan nahi)
+| Haalat | Kya hota hai |
+|---|---|
+| `PAID` order | Kabhi band nahi — paid order ka rasta "Start a new draft" hai |
+| `OUTCOME_UNKNOWN` | Kabhi band nahi — order Swiggy par ban gaya ho sakta hai; wahi My Orders ka rasta |
+| `SUBMITTING` + journal record | Nahi band (placement POST ja chuki ho sakti hai) |
+| `PAYMENT_PENDING` jisme `orderId` hai | **Band hota hai** par fee **wapas nahi** (order Swiggy par bana hua hai); record me order ID, aur `checkoutGeneration` aage — taaki wahi journal key dubara place na kare |
+
+### App me
+* Cart page par saaf likha rehta hai: *"2 minute tak koi activity nahi hogi to ye draft order apne aap band ho jayega (bill aur cart saaf, fee wapas)."*
+* Band hone ke baad app **khud refresh** hota hai (2 min + 2s) aur toast dikhata hai — server ka asli message (kitne minute, fee wapas hui ya nahi, order ID).
+
+### Tests
+`test_v102_idle_order_expiry.mjs` **13 checks**: default 120000 + clamp; classify (paid/unknown/placed-unpaid); 3 min vs 30 s plan; in-flight placement block; fee refund/no-refund; last activity max; API bootstrap par band + fee refund + message ek hi baar; 30 s par kuch nahi; placed-unpaid band par generation aage; paid/unknown kabhi nahi; activity touch; DOM hint + toast.
+Sweep: `test:guards` **70/70 (124s)**, `test:pro` **41/41**, `npm test` **132/132**, bossbot **49/49**, DOM v90…v101 **89/89**.

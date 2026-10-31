@@ -18,6 +18,7 @@ import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { describeAccountForPicker } from './mini-app.js';
 import { proProvider } from './swiggy-pro-provider.js';
 import { backupProWorkspaceNow, cloudBackupEnabled, ensureProWorkspaceHydrated, proBackupStatus, readProWorkspace, writeProWorkspace, withProWorkspaceLock } from './swiggy-pro-store.js';
+import { describeIdleClosure, idleTimeoutMs, planIdleExpiry, touchActivity } from './order-idle-expiry.js';
 
 const ASSETS = {
   '/pro': ['text/html; charset=utf-8', new URL('./swiggy-pro.html', import.meta.url)],
@@ -509,6 +510,71 @@ async function claimWalletTopup(user, body) {
   };
 }
 
+/**
+ * Boss (31-10-2026, round 13): "ID active karke order karke chhod kar chala gaya
+ * to 2 minute of activity ke baad pura order band ho jayega."
+ *
+ * Har API call par pehle yahi chalta hai: agar draft/bill/checkout 2 minute se
+ * zyada bina kisi asli activity ke pada hai to band. Paid order aur
+ * outcome-unknown kabhi band nahi hote.
+ */
+const IDLE_ACTIVITY_EXEMPT = new Set([
+  '/pro/api/bootstrap',            // page refresh activity nahi hai
+  '/pro/api/checkout/status',      // status poll order ko zinda nahi rakhta
+  '/pro/api/orders',
+  '/pro/api/orders/tracking'
+]);
+
+function applyIdleExpiry(user, ws, { route = '' } = {}) {
+  const now = Date.now();
+  const db = getDb();
+  const timeout = idleTimeoutMs(db);
+  let placementInFlight = false;
+  if (ws?.checkout && String(ws.checkout.status || '').toUpperCase() === 'SUBMITTING') {
+    try {
+      placementInFlight = Boolean(readSwiggyPlacement(`pro:${user.id}:${ws.checkoutGeneration ?? 0}`));
+    } catch { placementInFlight = true; } // journal padha na jaye to ruk jao
+  }
+  const plan = planIdleExpiry({ ws, now, timeoutMs: timeout, placementInFlight });
+  let changed = false;
+
+  if (plan.expire) {
+    let feeRefundPaise = 0;
+    if (plan.refundFee && ws.checkout) {
+      const walletDb = getDb();
+      const refunded = refundServiceFee(walletDb, ws.checkout, user.id, { reason: 'draft 2 minute idle tha — band' });
+      if (refunded?.ok) { feeRefundPaise = Number(refunded.refundedPaise || 0); saveDb(walletDb); }
+    }
+    const record = {
+      at: plan.idledAt, kind: plan.kind, orderId: plan.orderId,
+      idleMs: plan.idleMs, refundedPaise: feeRefundPaise,
+      amount: Number(ws.checkout?.amount || 0) || null,
+      accountKey: String(ws.checkout?.accountKey || ws.activeAccountKey || ''),
+      reason: String(ws.checkout?.message || '').slice(0, 200)
+    };
+    record.message = describeIdleClosure(record);
+    ws.abandoned = Array.isArray(ws.abandoned) ? ws.abandoned.slice(-9) : [];
+    ws.abandoned.push(record);
+    // Placed-unpaid order ka journal record rehta hai — usi key par naya
+    // placement block hota, isliye generation aage badhata hai (naya order
+    // possible, par Swiggy par pada unpaid order app me dikhta rahega).
+    if (plan.kind === 'PLACED_UNPAID') {
+      const generation = ws.checkoutGeneration ?? 0;
+      if (Number.isSafeInteger(generation) && generation < Number.MAX_SAFE_INTEGER) ws.checkoutGeneration = generation + 1;
+    }
+    ws.checkout = null;
+    ws.cart = null;
+    ws.lastClosed = record;
+    changed = true;
+  }
+
+  if (!IDLE_ACTIVITY_EXEMPT.has(route)) {
+    const before = Date.parse(String(ws.lastActivityAt || '')) || 0;
+    if (now - before > 5000) { touchActivity(ws, now); changed = true; }
+  }
+  return { changed, closed: plan.expire ? ws.abandoned[ws.abandoned.length - 1] : null, timeoutMs: timeout };
+}
+
 function publicState(user, ws) {
   autoSelectAccount(user, ws);
   return {
@@ -640,13 +706,22 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
       // cloud vault se wapas (sirf jab local file na ho).
       await ensureProWorkspaceHydrated(user.id);
       const ws = readProWorkspace(user.id);
+      // Idle sweep — har request par, routes se pehle (boss: 2 minute rule).
+      const idle = applyIdleExpiry(user, ws, { route });
+      if (idle.changed) writeProWorkspace(user.id, ws);
       if (route === '/pro/api/bootstrap' && req.method === 'GET') {
         const quotedAt = Date.parse(ws.cart?.quote?.fetchedAt || '');
         if (ws.cart?.quote && (!Number.isFinite(quotedAt) || Date.now() - quotedAt > 5 * 60_000 || quotedAt > Date.now() + 30_000)) {
           ws.cart.quote = null;
           writeProWorkspace(user.id, ws);
         }
-        json(res, 200, { ok: true, ...publicState(user, ws), wallet: walletView(user), backup: userBackupView(user) });
+        // Idle closure ek hi baar dikhti hai (phir clear), taaki toast repeat na ho.
+        const idleClosed = ws.lastClosed ? { ...ws.lastClosed } : null;
+        if (ws.lastClosed) { delete ws.lastClosed; writeProWorkspace(user.id, ws); }
+        json(res, 200, {
+          ok: true, ...publicState(user, ws), wallet: walletView(user), backup: userBackupView(user),
+          idle: { timeoutMs: idle.timeoutMs, closed: idleClosed, abandoned: Array.isArray(ws.abandoned) ? ws.abandoned.slice(-3) : [] }
+        });
         return;
       }
       if (route === '/pro/api/backup' && req.method === 'POST') {

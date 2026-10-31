@@ -15,7 +15,9 @@
     meal: null, mealFor: '', mealLoading: false, couponDraft: '', groupCartDraft: '',
     track: null, trackData: null, trackError: '', trackBusy: false,
     // Boss (31-10-2026, round 11): wallet ₹15 gate + UPI top-up.
-    wallet: null, walletTopup: null, walletSheet: false, walletClaimBusy: false, walletUpiEdit: false
+    wallet: null, walletTopup: null, walletSheet: false, walletClaimBusy: false, walletUpiEdit: false,
+    // Boss (31-10-2026, round 13): 2 minute idle → draft order band.
+    idle: null, idleClosed: null
   };
   // Boss (31-10-2026): "ME KOI CHEEZ UPDATE KARU TO SAARA USER KA DATA RESET NA
   // HOJAYE, BAAKI RAHE UNKE PHONES ME." UI ka safe hissa (tab, theme, pehle
@@ -161,6 +163,7 @@
   }
   function merge(data) {
     for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled','checkoutBlockReason','ordersDetailAllowed','adminContact','backup','wallet']) if (Object.hasOwn(data, key)) state[key] = data[key];
+    if (data.idle) { state.idle = data.idle; if (data.idle.closed) state.idleClosed = data.idle.closed; }
     if (Array.isArray(data.accounts)) {
       state.cachedAccounts = data.accounts.map(a => ({ key: a.key, name: a.name, phoneMasked: a.phoneMasked || '', owner: a.owner || 'self' }));
       writeCache({ accounts: state.cachedAccounts });
@@ -621,6 +624,13 @@
     // DROP DOWN PAR CLICK KARNE KE BAAD." Isliye koi toggle nahi — input aur
     // button hamesha saamne, seedha dabao.
     const groupCard = `<div class="card group-cart-card"><div class="card-title">${tile('link')}<span class="title-copy">Add Items from Group Cart<small>Swiggy group cart ka link paste karein.</small></span></div><form data-form="group-cart" class="group-cart-form" novalidate><span class="input-wrap">${icon('link')}<input name="url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://www.swiggy.com/gc/…" value="${esc(state.groupCartDraft || '')}" ${lockAttr}></span><button class="button primary" type="submit" ${lockAttr}>Cart parse karein ${icon('arrow')}</button></form><p class="hint">Share link, <b>swiggy.com/gc/…</b>, <b>?sharedCartId=…</b> ya app ka deep link — sab chalta hai.</p></div>`;
+    // Boss (31-10-2026, round 13): 2 minute idle rule app me likha rehta hai —
+    // chhupkar draft band nahi hota.
+    const idleNote = (() => {
+      const minutes = Math.round(Number(state.idle?.timeoutMs || 0) / 60_000);
+      if (!minutes) return '';
+      return `<p class="hint idle-note">${minutes} minute tak koi activity nahi hogi to ye draft order apne aap band ho jayega${cart?.quote ? ' (bill aur cart saaf, fee wapas)' : ''}.</p>`;
+    })();
     const delivery = `<button class="action-tile" type="button" data-action="nav" data-tab="address">${tile('address')}<span class="tile-copy"><small>DELIVERING TO</small><strong>${esc(state.selectedAddress ? addressLabel(state.selectedAddress) : 'Address chunein')}</strong><small>${esc(state.selectedAddress ? (state.selectedAddress.address || '') : 'Order ke liye address zaroori hai')}</small></span>${icon('arrow')}</button>`;
     if (!cart) {
       return `${head('YOUR ORDER', 'Cart', 'Group cart se items add karein ya restaurant search karein.')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${groupCard}${state.selectedAddress ? delivery : ''}${empty('cart', 'Cart khaali hai', 'Restaurant search karein ya group cart link paste karein.')}`;
@@ -648,7 +658,7 @@
     const eta = `<div class="eta-strip"><span class="eta-clock">${icon('orders')}</span><span class="eta-copy"><strong>${cart.restaurantTime ? `Delivery in ${esc(cart.restaurantTime)}` : 'Delivery time Swiggy se aayega'}</strong><small>${esc([cart.restaurantName, cart.restaurantArea].filter(Boolean).join(' · '))}</small></span><span class="pill">${esc(state.selectedAddress ? 'Deliver to ' + addressLabel(state.selectedAddress) : 'Address chunein')}</span></div>`;
     // Pay bar: Swiggy jaisa — bada amount + bill link left, green pay right.
     const payBar = `<div class="pay-bar"><button class="button green pay-now" type="button" data-action="checkout-start" ${locked || !state.checkoutEnabled ? 'disabled' : ''} ${!state.checkoutEnabled ? `title="${esc(state.checkoutBlockReason || '')}"` : ''}>${state.checkoutEnabled ? `Pay Now · Proceed to Pay ${icon('arrow')}` : 'Payment band'}</button><div class="pay-left"><strong>${q ? money(q.total) : '—'}</strong><span class="link-button" role="button" tabindex="0" data-action="bill-open">${state.billOpen ? 'Bill band karein' : 'View Detailed Bill'}</span><small>${q ? 'PAY USING UPI' : 'BILL CHECK KAREIN'}</small></div></div>${state.checkoutEnabled ? '' : `<div class="warning pay-blocked">Payment abhi band hai — wahi asli wajah: ${esc(state.checkoutBlockReason || 'server ne reason nahi diya')}</div>`}`;
-    return `${head('CHECKOUT', 'Checkout', 'Address, bill aur payment — sab yahin.')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${renderSavingsCorner(q)}${renderBill(q, cart)}${renderPayment(cart)}${renderWalletCard()}${payBar}`;
+    return `${head('CHECKOUT', 'Checkout', 'Address, bill aur payment — sab yahin.')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${idleNote}${renderSavingsCorner(q)}${renderBill(q, cart)}${renderPayment(cart)}${renderWalletCard()}${payBar}`;
   }
   function renderOrders() {
     const detailed = state.ordersDetailAllowed !== false;
@@ -759,6 +769,26 @@
     }
     return `${head('CONNECTION', title, 'Your account data has not been changed.')}<div class="card connection-card" role="alert"><strong>${esc(title)}</strong><p>${esc(message)}</p><button class="button primary block" type="button" data-action="retry-auth">Try again ${icon('refresh')}</button></div>`;
   }
+  /**
+   * Boss (31-10-2026, round 13): "2 minutes of activity ke baad pura order
+   * band ho jayega." Server har request par yeh khud karta hai; app sirf itna
+   * karta hai ki 2 minute baad khud refresh ho kar band hua order dikha de
+   * (user ko button dabane ki zaroorat nahi).
+   */
+  let idleTimer = null;
+  function scheduleIdleRefresh() {
+    clearTimeout(idleTimer);
+    const timeout = Number(state.idle?.timeoutMs || 0);
+    if (!timeout) return;
+    const hasDraft = Boolean(state.cart || (state.checkout && state.checkout.status !== 'PAID'));
+    if (!hasDraft) return;
+    idleTimer = setTimeout(async () => {
+      try {
+        const out = await api('bootstrap');
+        merge(out); render();
+      } catch { /* net gaya — agla render phir try karega */ }
+    }, timeout + 2000);
+  }
   function render() {
     // Telegram WebView band hone ke baad bhi async response aa sakta hai —
     // tab render chup-chaap rukna chahiye, window crash nahi.
@@ -774,7 +804,13 @@
       $('#content').innerHTML = state.auth ? views[state.tab]() : renderConnection();
       renderNav();
       $('#connection-notice').hidden = true;
+      if (state.idleClosed) {
+        const closed = state.idleClosed;
+        state.idleClosed = null;
+        toast(closed.message || 'Draft order band ho gaya (2 minute tak koi activity nahi).');
+      }
       maybeAutoBill();
+      scheduleIdleRefresh();
     } catch { /* window band ho gaya */ }
   }
   async function reconnect() {
