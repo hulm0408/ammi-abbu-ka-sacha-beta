@@ -2545,9 +2545,11 @@ async function authorizeMiniAppUser(user) {
 bot.command('pro', async (ctx) => {
   const url = configuredMiniAppUrl();
   if (!url) return ctx.reply('Mini App abhi configure nahi hai. Chat bot se order kar sakte hain.');
-  const checkoutNote = process.env.PRO_ENABLE_CHECKOUT === '1'
-    ? 'UPI checkout experimental hai; order aur payment ko Swiggy me verify karein.'
-    : 'In-app payment abhi available nahi hai.';
+  // Boss (31-10-2026, round 3): "ACTUAL PAYMENT FLOW APPLY KAR." In-app UPI
+  // payment default ON hai; band karne ke liye PRO_ENABLE_CHECKOUT=0.
+  const checkoutNote = process.env.PRO_ENABLE_CHECKOUT === '0' || process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE === '1'
+    ? 'App ke andar payment abhi band hai (server setting).'
+    : 'Cart ke andar hi bill, UPI QR aur order status — order Swiggy se verify hota hai.';
   return ctx.reply(`Mini App kholo. Chat bot pehle ki tarah available hai. ${checkoutNote}`,
     Markup.inlineKeyboard([[Markup.button.webApp('🍽 Open App', url)]]));
 });

@@ -224,13 +224,15 @@ test('link auto-fill, menu and draft cart keep the receiver and server-provided 
   assert.equal(seen.quote[0].selected.address, address.address);
 });
 
-test('provider failures clear old quotes; experimental checkout is disabled by default', async () => {
+test('provider failures clear old quotes; checkout never starts without a fresh quote', async () => {
   quoteFails = true;
   assert.equal((await request('/pro/api/cart/sync', alice, { confirmReplaceSwiggyCart: true, forSomeoneElse: true })).status, 502);
   assert.equal((await request('/pro/api/bootstrap', alice)).body.cart.quote, null);
+  // Boss (31-10-2026, round 3): in-app checkout default ON hai, par bina
+  // taaza bill ke ek bhi order request nahi jaati.
   const checkout = await request('/pro/api/checkout', alice, {});
-  assert.equal(checkout.status, 503);
-  assert.match(checkout.body.error, /disabled/);
+  assert.equal([400, 409].includes(checkout.status), true, `unexpected ${checkout.status}`);
+  assert.match(checkout.body.error, /quote|bill|receiver|reconnect/i);
   assert.equal((await request('/pro/api/orders', alice)).body.orders[0].status, 'Status unavailable');
 });
 
@@ -293,7 +295,7 @@ test('Telegram /pro entry uses only the configured HTTPS URL and leaves chat ava
   const sent = calls.find(c => c.method === 'sendMessage');
   assert.equal(sent?.payload?.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url, 'https://example.test/pro');
   assert.equal(sent?.payload?.reply_markup?.inline_keyboard?.[0]?.[0]?.text, '🍽 Open App');
-  assert.match(sent.payload.text, /payment abhi available nahi/);
+  assert.match(sent.payload.text, /UPI QR aur order status/);
   calls.length = 0;
   process.env.PRO_MINIAPP_URL = 'http://localhost:4173/pro';
   await bot.handleUpdate(update(101));

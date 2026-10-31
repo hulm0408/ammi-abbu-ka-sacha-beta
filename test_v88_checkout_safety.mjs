@@ -15,9 +15,11 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sacha-checkout-test-'));
 Object.assign(process.env, {
   DATA_DIR: tmp, DB_FILE: path.join(tmp, 'db.json'), ACCOUNTS_JSON_FILE: path.join(tmp, 'accounts.json'),
   BOT_TOKEN: '123456:checkout-offline-test-token', PRO_VAULT_KEY: 'only-an-offline-test-key-12345',
-  PRO_ENABLE_CHECKOUT: '1', BOSS_ID: '8000', DB_ASYNC_WRITE: '0', NODE_ENV: 'test',
-  SWIGGY_BLOCK_LIVE_ORDER_PLACE: '1'
+  PRO_ENABLE_CHECKOUT: '1', BOSS_ID: '8000', DB_ASYNC_WRITE: '0', NODE_ENV: 'test'
 });
+// Boss (31-10-2026, round 3): checkout default ON hai. Live-order hard block ka
+// apna test neeche hai; baaki tests uske bina chalte hain warna sab 503 ho jaate.
+delete process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE;
 const { executeSingleSwiggyPlacement, readSwiggyPlacement } = await import('./swiggy-placement-journal.js');
 const { exactPaise } = await import('./swiggy-cart-integrity.js');
 const { validateUpiIntentForQr, shouldReusePendingQr } = await import('./payment-qr-guard.js');
@@ -193,6 +195,21 @@ test('money, UPI and OFO guards reject fractional paise, wrong amount and mere O
   assert.equal(detectOfoFromPlaceResponse({ data: { ofo: false, recipient_phone: '9123456789' } }).ofo, false);
   assert.equal(hasExplicitOfoCartFlag({ message: 'ofo', config: { ofo: true } }), false);
   assert.equal(hasExplicitOfoCartFlag({ is_order_for_someone_else: true }), true);
+});
+
+test('checkout can be turned off with PRO_ENABLE_CHECKOUT=0 and SWIGGY_BLOCK_LIVE_ORDER_PLACE=1', async () => {
+  const quote = seed(8099);
+  process.env.PRO_ENABLE_CHECKOUT = '0';
+  const off = await req(8099, 'checkout', confirmation(quote));
+  assert.equal(off.status, 503);
+  assert.match(off.body.error, /PRO_ENABLE_CHECKOUT=0/);
+  process.env.PRO_ENABLE_CHECKOUT = '1';
+  process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE = '1';
+  const blocked = await req(8099, 'checkout', confirmation(quote));
+  assert.equal(blocked.status, 503);
+  assert.match(blocked.body.error, /blocked/i);
+  assert.equal(readProWorkspace('8099').checkout, undefined);
+  delete process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE;
 });
 
 test('checkout requires opt-in, explicit consent, fresh quote and exact approved amount', async () => {
