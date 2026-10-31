@@ -13,7 +13,7 @@ import { getDb } from './store.js';
 import crypto from 'node:crypto';
 import { sameCartItems, sameDeliveryRecipient, exactPaise } from './swiggy-cart-integrity.js';
 import { executeSingleSwiggyPlacement } from './swiggy-placement-journal.js';
-import { validateUpiIntentForQr, normalizeUpiIntentForQr } from './payment-qr-guard.js';
+import { planQrGeneration } from './qr-generation-plan.js';
 export { sameCartItems, sameDeliveryRecipient } from './swiggy-cart-integrity.js';
 
 const bootFetch = globalThis.fetch;
@@ -1018,46 +1018,45 @@ export const proProvider = {
       if (!details.upiIntentUrl && details.orderId && /^https:\/\//i.test(String(details.paymentPageUrl || ''))) {
         const recovered = await recoverUpiIntentFromPaymentPage(account, details.paymentPageUrl);
         if (recovered) {
-          details.upiIntentUrl = recovered;
-          details.intentSource = 'payment_page';
+          details.pageIntent = recovered;
         }
       }
       // Boss (31-10-2026, round 15): "qr nahi aata direct ye ajata". Swiggy ka
       // intent kabhi `&amp;`/`\u0026` escaped aata hai, kabhi `amount` ke naam
       // se, kabhi duplicate param ke saath — inhe "invalid" maan kar QR na
       // dena hi galat tha. Pehle saaf karo, phir strict check.
-      const normalized = details.upiIntentUrl
-        ? normalizeUpiIntentForQr(details.upiIntentUrl)
-        : { uri: '', repairs: [], ok: false };
-      const qrUri = normalized.uri || details.upiIntentUrl || '';
-      const check = qrUri
-        ? validateUpiIntentForQr(qrUri, { amount: expected, requireAmount: true })
-        : { valid: false, info: {}, problems: ['Swiggy ne koi UPI intent nahi diya'] };
+      // Boss (31-10-2026, round 18): "QR generation ke har possibility".
+      // Har source ek hi plan se guzarta hai — pehla valid jeetta hai, jo
+      // reject hua uski wajah `diag` me jaati hai (jhootha QR kabhi nahi).
+      const qrPlan = planQrGeneration([
+        ...(details.upiIntentUrl ? [{ source: 'provider', uri: details.upiIntentUrl }] : []),
+        ...(details.pageIntent ? [{ source: 'payment_page', uri: details.pageIntent }] : [])
+      ], { amount: expected });
+      const qrUri = qrPlan.ok ? qrPlan.uri : '';
       if (!result?.placeRes?.ok || !successCode(result?.json?.statusCode) || !details.orderId) {
         throw attemptedPlacementError(
           'Swiggy did not return a verifiable order ID and matching UPI payment. An order may exist; check My Orders on this account. Do not retry.',
           'SWIGGY_PLACEMENT_RESPONSE_UNCERTAIN', details.orderId
         );
       }
-      const amountOk = exactPaise(check.info?.amount) !== null && exactPaise(check.info.amount) === exactPaise(expected);
-      if (!check.valid || !amountOk) {
+      if (!qrPlan.ok) {
         // Order BAN gaya hai — "rejected" kehna jhooth hota. Bas QR nahi mila.
-        // Aur wajah bhi asli honi chahiye: pehle har reject par "amount match
-        // nahi karta (QR ₹68, bill ₹68)" chhap jata tha — wahi jhooth tha.
-        const reasons = [...(check.problems || [])].slice(0, 3);
-        const intentProblem = details.upiIntentUrl
-          ? `Swiggy ka QR bhejne layak nahi tha: ${reasons.join(' · ') || 'wajah nahi mili'}`
-          : 'Swiggy ne order accept kiya par UPI payment QR/intent nahi diya.';
+        // Wajah bhi asli: har source ka asli reject reason (fixed line nahi).
+        const reasons = (qrPlan.reasons || []).slice(0, 3);
+        const intentProblem = `Swiggy ka QR bhejne layak nahi tha: ${reasons.join(' · ') || 'wajah nahi mili'}`;
         const err = unavailable(`${intentProblem} Order #${details.orderId} Swiggy par bana hua hai — dobara order na karein.`);
         err.code = 'SWIGGY_PLACED_NO_UPI_INTENT';
         err.diag = {
           code: 'SWIGGY_PLACED_NO_UPI_INTENT', placementAttempted: true, placedOrderId: details.orderId,
           qrMissing: true, intentProblem,
           intentProblems: reasons,
-          intentWarnings: (check.warnings || []).slice(0, 5),
-          intentAmount: check.info?.amount ?? null, billAmount: expected,
+          intentAttempts: (qrPlan.attempted || []).map((a) => ({ source: a.source, ok: a.ok, reasons: (a.reasons || []).slice(0, 2) })),
+          intentWarnings: (qrPlan.warnings || []).slice(0, 5),
+          // Jo pehla candidate aaya uska asli amount (kuch na ho to null).
+          intentAmount: (qrPlan.attempted || []).map((a) => a?.info?.amount).find((v) => Number.isFinite(v)) ?? null,
+          billAmount: expected,
           // Agli baar bina guess kiye pata chale ki Swiggy ne kya bheja tha.
-          intentRaw: String(details.upiIntentUrl || '').slice(0, 400),
+          intentRaw: String(details.upiIntentUrl || details.pageIntent || '').slice(0, 400),
           paymentFallbacks: details.paymentFallbacks || null,
           paymentPageUrl: details.paymentPageUrl || '', paymentTxnId: details.paymentTxnId || ''
         };
@@ -1070,9 +1069,11 @@ export const proProvider = {
       const ofoProof = detectOfoFromPlaceResponse(result.json);
       return {
         ...details,
-        // QR me wahi string jaye jo guard ne saaf karke valid kaha.
-        upiIntentUrl: check.info?.uri || qrUri,
-        intentRepairs: check.info?.repaired || [],
+        // QR me wahi string jaye jo plan ne saaf karke valid kaha.
+        upiIntentUrl: qrUri,
+        intentSource: qrPlan.source,
+        intentRepairs: qrPlan.warnings || [],
+        intentAttempts: (qrPlan.attempted || []).map((a) => ({ source: a.source, ok: a.ok, reasons: (a.reasons || []).slice(0, 2) })),
         amount: expected,
         ofoConfirmed: ofoProof.ofo === true,
         ofoRequested: cart.forSomeoneElse === true,

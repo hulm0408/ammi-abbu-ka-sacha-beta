@@ -83,6 +83,51 @@ Legend: ✅ = block + test · ⚠️ = block hai par provider/bank par depend ka
 | E2 | Generic "kuch galat ho gaya" | har error me code + asli wajah | `KNOWN_CODES` |
 | E3 | QR intent ka kachra dobara na pata chale | `diag.intentRaw` (400 chars) | `swiggy-pro-provider.js` |
 
+## F. Bill calculation ki har possibility (round 18, `bill-reconcile.js`)
+
+| # | Possibility | Kya hota hai |
+|---|---|---|
+| F1 | Bill hi nahi aaya (null / string / number) | `BILL_MISSING`, koi number invent nahi |
+| F2 | `"₹1,234.50"`, `"1 234.5"`, `"Rs 1234"` string money | parse hota hai (`toMoney`) |
+| F3 | `NaN` / `abc` / khaali | us line ko chhoda jata hai + note |
+| F4 | Negative value (`-20` delivery) | 0 + `BILL_NEGATIVE_VALUE` note |
+| F5 | 3+ decimal (10.555) | 2 par round + note |
+| F6 | `total` missing | lines se derive + `BILL_TOTAL_MISSING` (derived bata kar) |
+| F7 | `itemTotal` missing | items ka jod + `BILL_ITEM_TOTAL_DERIVED` |
+| F8 | Total lines se **zyada** (chhupa charge) | limit (₹20/15%) ke andar `otherCharges`, bahar `BILL_DOES_NOT_ADD_UP` |
+| F9 | Total lines se **kam** (chhupi saving) | `unlistedDiscount` — darawni warning nahi (boss ka purana rule) |
+| F10 | Approved total badal gaya | `BILL_TOTAL_CHANGED` + dono numbers |
+| F11 | Free cash payable se zyada | clamp + `BILL_FREE_CASH_OVER_PAYABLE` (negative total nahi) |
+| F12 | Coupon "laga hua" par discount 0 | coupon line hatai jati hai + note |
+| F13 | Coupon ka discount item total me already shamil | alag line nahi (`discountAlreadyApplied`) |
+| F14 | Packing GST ke andar | double nahi jodta + note |
+| F15 | One Lite fee par delivery FREE nahi | `BILL_ONE_FEE_WITHOUT_FREE_DELIVERY` note (nuksaan saaf) |
+| F16 | Delivery FREE par saving 0 | `BILL_DELIVERY_FREE_NO_SAVING` — 0 hi dikhta hai |
+| F17 | Subscription item hai par fee 0 | note, One Lite line nahi |
+| F18 | To Pay ₹0 | `BILL_ZERO_TOTAL` |
+
+## G. QR generation ki har possibility (round 18, `qr-generation-plan.js`)
+
+| # | Possibility | Kya hota hai |
+|---|---|---|
+| G1 | Provider ne intent nahi diya | payment page se recovery, phir bhi nahi → saaf wajah |
+| G2 | Escaped/kachra (`&amp;`, `\u0026`, duplicate, space) | normalize + auto-fix warning |
+| G3 | `am` + `amount` value alag | bill se match karne wala amount chuna jata hai |
+| G4 | Intent `https://…` page link | block — "web page ka link hai, UPI intent nahi" |
+| G5 | Placeholder/fake VPA (`swiggy@icici`) | block + wajah |
+| G6 | Amount bill se alag | block + dono numbers |
+| G7 | Amount missing / 0 / 3 decimal | block |
+| G8 | `cu` non-INR | block |
+| G9 | Duplicate param alag value | block |
+| G10 | Intent bahut lamba (1200 chars) | block — QR scan nahi hoga |
+| G11 | Kai sources (provider + page) | pehla valid jeetta, har reject ki wajah rakhi jati hai |
+| G12 | Wahi intent do baar | duplicate skip |
+| G13 | QR image bani par PNG nahi/khaali | render se pehle `isRenderableQrImage` block |
+| G14 | Kuch bhi valid nahi | `ok:false` + HAR wajah (`reasons[]`, max 6) |
+
+Bill ka poora sach quote me `checks` / `problems` / `notes` / `billState` ke roop me jaata hai;
+QR ka sach `qrSource` + `qrPlan` me.
+
 ---
 
 ## Kaise chalte hain

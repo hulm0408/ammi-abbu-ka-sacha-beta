@@ -4,6 +4,8 @@ import QRCode from 'qrcode';
 import { validateUpiIntentForQr } from './payment-qr-guard.js';
 import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { checkRateLimit, rateLimitMessage, rateLimitState } from './pro-rate-limit.js';
+import { reconcileBill, describeBillState } from './bill-reconcile.js';
+import { planQrGeneration, isRenderableQrImage, describeQrPlan } from './qr-generation-plan.js';
 import { exactPaise } from './swiggy-cart-integrity.js';
 import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder } from './swiggy-cart.js';
 import { deleteAccount, getDb, isBoss, saveDb, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
@@ -308,6 +310,7 @@ function publicCheckout(checkout, { restricted = false } = {}) {
     restricted: restricted === true,
     // Round 12: order bana par QR nahi mila — asli wajah + (agar Swiggy ne
     // diya ho to) uske payment page ka link. Koi apna banaya hua link nahi.
+    qrSource: String(checkout.qrSource || '').slice(0, 30),
     qrMissing: checkout.qrMissing === true,
     qrMissingReason: String(checkout.qrMissingReason || ''),
     // Asli wajahon ki list (round 15) — app inhe line-by-line dikhata hai.
@@ -344,55 +347,27 @@ function autoSelectAccount(user, ws) {
  * Jod nahi milta to hum chupe nahi rakhte — `mismatch` sach bolta hai.
  */
 function round2(value) { return Math.round(Number(value) * 100) / 100; }
-function billBreakdown(bill) {
+/**
+ * Bill ka sach ek hi jagah (`bill-reconcile.js`) — yahan sirf app ka shape.
+ * Har possibility (string money, missing total, packing inside GST, free cash
+ * payable se zyada, coupon bina discount, lines vs To Pay) wahan handle hoti
+ * hai; jo jod nahi milta wo `checks`/`problems` me saamne aata hai.
+ */
+function billBreakdown(bill, { expectedTotal = null, items = [] } = {}) {
   if (!bill || typeof bill !== 'object') return bill;
-  const num = value => (value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : round2(value));
-  const pos = value => Math.max(0, num(value) ?? 0);
-  const add = (...values) => values.reduce((sum, v) => sum + (v === null || v === undefined ? 0 : v), 0);
-  const itemTotal = num(bill.itemTotal);
-  const deliveryFee = num(bill.deliveryFee);
-  const packingCharges = num(bill.packingCharges);
-  const taxes = num(bill.taxes);
-  const discount = pos(bill.discount);
-  const freeCash = pos(bill.freeCash);
-  const tradeDiscount = pos(bill.tradeDiscount);
-  const oneMembershipFee = pos(bill.oneMembershipFee);
-  const total = num(bill.total);
-  let otherCharges = 0;
-  let unlistedDiscount = 0;
-  let couponApplied = discount > 0;
-  if (total !== null) {
-    // Boss (31-10-2026, round 9): bill summary me wahi lines jo Swiggy dikhata
-    // hai. Net = items + delivery + packing + gst + One fee − coupon − free
-    // cash − restaurant discount. Bacha hua = platform/other charge, kam pada
-    // = chhupa hua discount — dono sach ke saath, koi darawne warning nahi.
-    const gross = add(itemTotal, deliveryFee, packingCharges, taxes, oneMembershipFee);
-    const known = total - add(gross, -discount, -freeCash, -tradeDiscount);
-    if (Math.abs(known) >= 0.5) {
-      if (known > 0) otherCharges = round2(known);
-      else unlistedDiscount = round2(Math.abs(known));
-    }
-    if (discount > 0 && Math.abs(total - add(gross, -freeCash, -tradeDiscount, otherCharges)) < 0.5) {
-      couponApplied = false;
-    }
-  }
-  const totalSavings = num(bill.totalSavings) ?? round2(discount + freeCash + tradeDiscount + pos(bill.deliverySaved));
-  return {
-    ...bill,
-    itemTotal, deliveryFee, packingCharges, taxes,
-    discount: couponApplied ? discount : null,
-    coupon: couponApplied ? String(bill.coupon || '') : '',
-    discountAlreadyApplied: discount > 0 && !couponApplied,
-    freeCash, tradeDiscount, oneMembershipFee,
-    oneApplied: bill.oneApplied === true || oneMembershipFee > 0,
-    deliverySaved: pos(bill.deliverySaved),
-    otherCharges,
-    unlistedDiscount,
-    taxesAndCharges: round2(add(packingCharges, taxes, otherCharges)),
-    totalSavings: Math.max(round2(totalSavings), round2(discount + freeCash + tradeDiscount)),
-    total,
-    mismatch: false
+  const result = reconcileBill(bill, { expectedTotal, items });
+  if (!result.bill) return bill;
+  const out = {
+    ...result.bill,
+    billState: describeBillState(result),
+    checks: result.checks.map((c) => ({ key: c.key, ok: c.ok })),
+    problems: result.problems.map((p) => ({ code: p.code, message: p.message })),
+    notes: result.notes.map((n) => ({ code: n.code, message: n.message }))
   };
+  // `mismatch` app ke purane contract ke liye: sirf tab true jab lines jod
+  // nahi khaati ya approved total badal gaya ho (wajah `problems` me hai).
+  out.mismatch = result.problems.some((p) => p.code === 'BILL_DOES_NOT_ADD_UP' || p.code === 'BILL_TOTAL_CHANGED');
+  return out;
 }
 
 /**
@@ -1369,7 +1344,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (Array.isArray(quote?.bill?.subscriptionItems)) ws.cart.activeSubscriptionItems = quote.bill.subscriptionItems;
         ws.selectedAddress = cleanAddress(quote.address);
         ws.cart.quote = {
-          ...billBreakdown(quote.bill),
+          ...billBreakdown(quote.bill, { items: ws.cart?.items || [] }),
           // Asli coupon code (billBreakdown discount na hone par isse clear kar
           // deta hai) — checkout isi se Swiggy ka live coupon match karta hai.
           couponCode: String(quote.bill?.coupon || '').toUpperCase(),
@@ -1547,17 +1522,26 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           // saaf + validated hai. Yahan sirf wahi string QR me jaati hai —
           // dobara kachra check karke QR rokna galat tha.
           const uri = String(result?.upiIntentUrl || '');
-          const intent = validateUpiIntentForQr(uri, { amount: total, requireAmount: true });
-          if (!orderId || uri.length > 6000 || !intent.valid || exactPaise(intent.info?.amount) === null ||
-              exactPaise(intent.info.amount) !== exactPaise(total)) {
-            const reasons = (intent.problems || []).slice(0, 3);
+          // Boss (31-10-2026, round 18): QR generation ka aakhri gate bhi wahi
+          // plan hai — amount, encoding, length, VPA, scheme sab ek jagah.
+          const qrPlan = planQrGeneration([{ source: 'provider', uri }], { amount: total });
+          if (!orderId || !qrPlan.ok) {
+            const reasons = (qrPlan.reasons || []).slice(0, 3);
             throw new Error(`Payment details match nahi hue: ${reasons.join(' · ') || 'QR string khaali/galat hai'}.`);
           }
-          const qrUri = intent.info?.uri || uri;
+          const qrUri = qrPlan.uri;
           const qrDataUrl = await QRCode.toDataURL(qrUri, { errorCorrectionLevel: 'M', margin: 2, width: 320 });
+          // Image sach me QR hai? Nahi to QR dikhane ka matlab hi nahi.
+          if (!isRenderableQrImage(qrDataUrl)) {
+            throw new Error(`QR image ban nahi payi (${describeQrPlan({ ...qrPlan, ok: false })}). Swiggy se payment status check karein.`);
+          }
           Object.assign(ws.checkout, {
             status: 'PAYMENT_PENDING', orderId, paymentTxnId: String(result.paymentTxnId || '').slice(0, 200),
             upiIntentUrl: qrUri, qrDataUrl, ofoConfirmed: result.ofoConfirmed === true,
+            // Round 18: QR kis source se bana (provider / payment page) aur baaki
+            // candidates ka sach — jhooth nahi, debug ke liye.
+            qrSource: String(result.intentSource || 'provider').slice(0, 30),
+            qrPlan: (result.intentAttempts || []).slice(0, 4),
             message: 'Swiggy returned payment details. Payment and restaurant acceptance are not yet verified.'
           });
           writeProWorkspace(user.id, ws);
