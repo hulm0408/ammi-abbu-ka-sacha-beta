@@ -635,8 +635,8 @@ try {
     addressDetails: { name: 'Ammi', mobile: '9876500011' }
   };
   saveDb(pollDb);
-  // Customer-facing order notices are SMS-only (Telegram DM disabled per user
-  // request) — capture the exact SMS text through a fake webhook.
+  // The bot must not send recipient SMS. Capture any attempted gateway call;
+  // Swiggy's own SMS behavior still requires a real order to verify.
   const realFetchForPoll = globalThis.fetch;
   const deliverySms = [];
   process.env.SMS_WEBHOOK_URL = 'https://sms.audit.example/gw';
@@ -674,8 +674,8 @@ try {
     'Bounded delivery poller persists a later Swiggy tracking URL and delivery OTP with source provenance'
   );
   assert(
-    deliverySms.length >= 2 && deliverySms.some(text => text.includes(officialTrackingUrl) && text.includes('4821')),
-    'Customer first receives tracking, then receives a follow-up with the delivery OTP when Swiggy publishes it later'
+    deliverySms.length === 0,
+    'Delivery poller does not send bot-generated recipient SMS; Swiggy notification remains a live-order check'
   );
   delete pollDb.orders[pollOrderId];
   delete pollDb.config.accounts.TEST_TRACKING_ACCOUNT;
@@ -993,7 +993,7 @@ try {
   const forwardedSource = fs.readFileSync('forwarded-order-flow.js', 'utf8');
   const renderSource = fs.readFileSync('render.yaml', 'utf8');
   const allSource = indexSource + '\n' + bossPanelSource + '\n' + forwardedSource;
-  assert(!/web_app|telegram-web-app\.js|\/copy|order-ux-portal|APP_BASE_URL|setUserMiniAppButton/i.test(allSource + renderSource), 'Mini App UI, WebApp entry points, APIs, and deployment URL are removed');
+  assert(/handleSwiggyProHttp/.test(indexSource) && /PRO_MINIAPP_URL/.test(indexSource) && /bot\.command\('pro'/.test(indexSource), 'Mini App is optional and the existing Telegram order flow remains available');
   assert(indexSource.includes('action_send_to_boss') && indexSource.includes('action_send_to_beta') && indexSource.includes('action_add_cart') && indexSource.includes('action_add_address') && indexSource.includes('action_previous_order'), 'Traditional inline Telegram order buttons remain wired');
   assert(indexSource.includes("bot.action('boss_login_with_number'") && indexSource.includes("bot.action('boss_login_with_json'") && indexSource.includes("bot.action('boss_view_accounts'"), 'Boss-panel login and account buttons map to existing Telegram handlers');
   assert(indexSource.includes('bot.action(/^fwd_input_(cart|address|mobile)_([A-Za-z0-9_-]+)$/'), 'Order-specific Telegram input buttons have a callback handler');
@@ -1164,7 +1164,7 @@ try {
 }
 
 console.log('\n================================================================');
-console.log(`📊 FINAL RESULT: ${passedTests}/${totalTests} Scenarios Successfully Verified!`);
+console.log(`📊 OFFLINE RESULT: ${passedTests}/${totalTests} checks passed. Live Swiggy behavior was not verified.`);
 console.log('================================================================');
 
 if (passedTests === totalTests) {

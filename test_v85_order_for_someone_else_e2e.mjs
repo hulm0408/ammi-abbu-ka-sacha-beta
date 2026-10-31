@@ -302,6 +302,6 @@ console.log('\n=== 10. Naam too short → retry ===');
 
 console.log('\n' + '='.repeat(60));
 console.log(`📊 RESULT: ${pass}/${pass + fail} checks passed`);
-if (fail === 0) console.log('🏆 ORDER FOR SOMEONE ELSE FLOW VERIFIED');
+if (fail === 0) console.log('✅ Offline/mock checks passed — real Swiggy placement, tracking and SMS are NOT verified.');
 else console.log(`❌ ${fail} checks FAILED`);
 process.exitCode = fail > 0 ? 1 : 0;

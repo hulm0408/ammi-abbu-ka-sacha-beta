@@ -385,7 +385,9 @@ export async function bootstrapSwiggyWebSessionFromAndroidTokens(accountOrCookie
     if (uid && !accountOrCookies.customerId) accountOrCookies.customerId = String(uid);
     sessionAuthCache.clear();
 
-    try {
+    // Mini App users hold isolated sessions, not the shared boss vault. Never
+    // match a private session by phone/customer ID and overwrite a boss entry.
+    if (!accountOrCookies.__proPrivate) try {
       const db = getDb();
       const targetPhone = String(accountOrCookies.phone || '').replace(/\D/g, '').slice(-10);
       const targetToken = String(accountOrCookies.token || '').trim();
@@ -2214,7 +2216,9 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
           console.warn(`[OfoResolve] token=${String(tok).slice(0, 16)} swiggy API says "${String(msg).slice(0, 60)}" — trying the share page`);
           // The API can reject a token the share page still renders. Try the
           // page before telling the customer anything.
-          const pageHit = await resolveOfoAddressFromPage(tok, ofoUser).catch(() => null);
+          // Stay on the explicitly supplied session; otherwise a private Mini
+          // App request could accidentally probe the shared boss vault.
+          const pageHit = await resolveOfoAddressFromPage(tok, ofoUser, accountOrCookies).catch(() => null);
           if (pageHit) return pageHit;
           noteOfoFailure(tok, 'EXPIRED');
           return null;
@@ -2255,7 +2259,7 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
     // OUR side: report a transport/session problem, never "your link expired".
     // Before giving up, let the share *page* answer — it is plain HTML and keeps
     // working when the mobile API refuses (WAF, token-only session, A/B rollout).
-    const pageHit = await resolveOfoAddressFromPage(tok, ofoUser).catch(() => null);
+    const pageHit = await resolveOfoAddressFromPage(tok, ofoUser, accountOrCookies).catch(() => null);
     if (pageHit) return pageHit;
     const reason = sawTransportBlock || sawRealAnswer
       ? (hadWebSession ? 'NETWORK' : 'NO_ACCOUNT')

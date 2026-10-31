@@ -7,7 +7,7 @@
 //   1) buildOfoCartFields — recipient fields from order (address link se auto-fill)
 //   2) ensureOfoCartMode — cart OFO mode me daalna (recipient fields push)
 //   3) detectOfoFromPlaceResponse — OFO ka saboot place response se
-//   4) No bot SMS — Swiggy khud bhejta hai
+//   4) Source checks for no bot order SMS; Swiggy SMS is not tested
 //   5) Order creation — recipient fields attach
 
 process.env.TEST_MODE = '1';
@@ -66,7 +66,7 @@ const ACCOUNT = {
   cookies: '_session_tid=abc123;'
 };
 
-console.log('\n🧪 v86 OFO Integrated Flow — address link → recipient auto-fill → order creation → OFO place → tracking\n');
+console.log('\n🧪 v86 OFO offline mocked/source checks — no real Swiggy order or SMS\n');
 
 // ── 1. buildOfoCartFields — recipient fields from address link ───────────
 console.log('=== 1. buildOfoCartFields — recipient fields from address link ===');
@@ -142,7 +142,7 @@ check('OFO proof mila (place response se)', ofoProof.ofo === true, JSON.stringif
 check('OFO markers mein flag hai', ofoProof.markers?.length > 0, JSON.stringify(ofoProof.markers));
 
 // ── 4. No bot SMS ───────────────────────────────────────────────────────
-console.log('\n=== 4. No bot SMS (Swiggy khud bhejta hai) ===');
+console.log('\n=== 4. No bot SMS source checks (Swiggy SMS not tested) ===');
 
 const indexSrc = fs.readFileSync('index.js', 'utf8');
 const forwardedSrc = fs.readFileSync('forwarded-order-flow.js', 'utf8');
@@ -253,9 +253,8 @@ check('User ka typed mobile nahi override hua', !autoRecipient2.recipientMobile,
 console.log('\n' + '═'.repeat(60));
 console.log(`📊 RESULT: ${pass}/${pass + fail} checks passed`);
 if (fail === 0) {
-  console.log('🏆 OFO INTEGRATED FLOW VERIFIED');
-  console.log('   ✅ Address link → recipient auto-fill → order creation → OFO place → tracking');
-  console.log('   ✅ No bot SMS — Swiggy khud bhejta hai');
+  console.log('✅ Offline mocked/source checks passed; this is not a live end-to-end order.');
+  console.log('   Real address-link resolution, OFO placement, tracking and Swiggy SMS remain unverified.');
 } else {
   console.log(`❌ ${fail} checks FAILED`);
 }
