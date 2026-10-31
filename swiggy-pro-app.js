@@ -766,6 +766,29 @@
       toast(e?.message || 'Swiggy ne bill nahi diya.');
     });
   }
+
+  /**
+   * Boss (31-10-2026, round 20): "UTR PAR JITNA AMOUNT JAYE AGAR WO MISBAHUL
+   * ISLAM HO UTNA ADD HOJAYE" — isliye asli paisa ka sabooot: UPI/bank
+   * statement. Boss apni statement (ya SMS) paste karta hai, jis UTR ka paisa
+   * sach me aaya hai sirf wahi amount credit hota hai.
+   */
+  function renderStatementCard() {
+    if (!state.user?.isBoss) return '';
+    const st = state.statement || null;
+    const money = (paise) => `₹${(Number(paise || 0) / 100).toFixed(2)}`;
+    const rows = st ? `<div class="bill-row"><span>Statement entries</span><strong>${Number(st.count || 0)}</strong></div>
+      <div class="bill-row"><span>Asli paisa dikha</span><strong>${money(st.totalPaise)}</strong></div>
+      <div class="bill-row"><span>Misbahul Islam ke naam</span><strong>${Number(st.bossPayeeCount || 0)}</strong></div>
+      <div class="bill-row"><span>Verify ka intezaar</span><strong>${Number(st.pendingClaims || 0)} claim${Number(st.pendingMatched || 0) ? ` (${Number(st.pendingMatched)} match)` : ''}</strong></div>` : '';
+    const recent = st?.recent?.length
+      ? st.recent.slice(0, 5).map(r => `<div class="bill-row"><span>${esc(r.utr)} · ${esc(new Date(r.at || Date.now()).toLocaleDateString('en-IN'))}</span><strong>${money(r.amountPaise)}</strong></div>`).join('')
+      : '<p class="hint">Abhi koi statement entry nahi — neeche paste karein.</p>';
+    return `<div class="card"><div class="card-title">${tile('receipt')}<span class="title-copy">UPI statement (asli paisa)<small>Customer khud UTR likh kar paisa nahi bana sakta.</small></span></div>
+      ${rows}${recent}
+      <form data-form="statement" novalidate><div class="input-wrap"><textarea name="text" rows="4" placeholder="UPI/bank statement ki lines paste karein — jaise: 31-10-2026 UPI/CR/123456789012/MISBAHUL ISLAM/₹15.00"></textarea></div><button class="button primary block" type="submit">Statement import karein ${icon('arrow')}</button></form>
+      <p class="hint">Jis UTR ka paisa Misbahul Islam ke account (mius@ybl) me aaya hai, sirf utna hi amount judega — chhota ya random UTR credit nahi hoga.</p></div>`;
+  }
   function renderTools() {
     // Boss (31-10-2026): "NIGHT OFFER AND BREAKFAST AND WEEKEND WALA OFFER
     // ACTIVE KARDO CLAIM KARNE KE LIYE." Ab yahan se seedha claim hota hai —
@@ -785,7 +808,7 @@
       return `<div class="card"><div class="card-title">${tile('tools')}<span class="title-copy">${esc(a.name)}<small>${a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned'} · ${a.owner === 'operator' ? 'Operator' : 'Aapka'}</small></span></div>${tracks}${claimButton}</div>`;
     }).join('');
     const result = state.claimResult ? `<div class="card"><div class="card-title">${icon('check')} Claim ka sach</div>${(state.claimResult.tracks || []).map(t => `<div class="offer-row"><span class="offer-emoji">${t.emoji || '🎁'}</span><span class="row-content"><strong>${esc(t.label)}</strong><p>${esc(t.message || '')}</p></span><span class="pill ${t.verified ? 'green' : 'amber'}">${esc(String(t.status || '').replace(/_/g, ' '))}</span></div>`).join('')}<p class="hint">Do baar claim nahi hota — pehle se laga ho to ALREADY ACTIVE dikhta hai.</p></div>` : '';
-    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${renderWalletCard()}${accounts}${renderBackupCard()}`;
+    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${renderWalletCard()}${accounts}${renderStatementCard()}${renderBackupCard()}`;
   }
   function renderConnection() {
     if (!initData) return `${head('TELEGRAM MINI APP', 'Open in Telegram', 'Your private account space needs a Telegram session.')}<div class="card connection-card"><strong>Browser preview only</strong><p>Open this app from your bot using Open App or /pro. No account data is shown here.</p></div>`;
@@ -1112,6 +1135,16 @@
           merge(out); state.walletTopup = null; state.walletSheet = false;
           toast(out.message || `₹${state.walletTopup?.amount || ''} wallet me jud gaya.`);
         } finally { state.walletClaimBusy = false; render(); }
+      } else if (type === 'statement') {
+        const text = String(data.get('text') || '').trim();
+        if (text.length < 10) { toast('Statement ki lines paste karein (UTR + amount).'); return; }
+        const out = await api('boss/statement', 'POST', { text });
+        merge(out);
+        const settled = Array.isArray(out.settled) ? out.settled.filter(s => s.action === 'CREDIT') : [];
+        render();
+        toast(settled.length
+          ? `${settled.length} claim verify hua — asli amount juda.`
+          : `Statement import hua (${Number(out.imported?.accepted || 0)} credit line). Koi pending claim match nahi hua.`);
       } else if (type === 'wallet-upi') {
         const out = await api('wallet/upi', 'POST', { upiId: String(data.get('upiId') || '').trim() });
         merge(out); state.walletUpiEdit = false; render();

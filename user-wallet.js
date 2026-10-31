@@ -27,6 +27,7 @@
  * Money is stored in PAISE (integers) — no float rounding holes.
  * Pure module (no Telegram, no network except injectable fetch) => offline tests.
  */
+import { evaluateUtrCredit } from './upi-credit-policy.js';
 
 /** ₹15 default; env se badla ja sakta hai (`SERVICE_FEE_PAISE=1500`). */
 export function serviceFeePaise() {
@@ -495,8 +496,12 @@ export async function verifyUtrWithProvider({ utr, amountPaise, userId }, { fetc
       configured: true,
       verified,
       reason: String(json?.message || (verified ? 'provider ne UTR confirm kiya' : 'provider ne UTR confirm nahi kiya')).slice(0, 140),
-      amountPaise: Number(json?.amountPaise || 0) || null,
-      providerRef: String(json?.ref || json?.transactionId || '').slice(0, 60)
+      amountPaise: Number(json?.amountPaise || json?.amount || 0) || null,
+      payeeName: String(json?.payeeName || json?.payee || json?.beneficiary || '').slice(0, 60),
+      payeeVpa: String(json?.payeeVpa || json?.vpa || '').slice(0, 60),
+      at: Number(json?.paidAt || json?.at || 0) || null,
+      status: String(json?.paymentStatus || json?.status || '').slice(0, 20),
+      providerRef: String(json?.ref || json?.transactionId || json?.utr || '').slice(0, 60)
     };
   } catch (err) {
     return { configured: true, verified: false, reason: `provider error: ${String(err?.message || err).slice(0, 100)}` };
@@ -551,7 +556,7 @@ export function settleDeferredFee(db, order, userId, { at = Date.now(), actor = 
  */
 export async function submitTopupRequest(db, {
   userId, utr, amountPaise, name = '', username = '', note = '', at = Date.now(),
-  fetchImpl = globalThis.fetch, autoVerify = true, minPaise = null
+  fetchImpl = globalThis.fetch, autoVerify = true, minPaise = null, autoMaxPaise = 0
 } = {}) {
   const checked = validateUtr(utr);
   if (!checked.ok) return { ok: false, code: 'INVALID_UTR', reason: checked.reason };
@@ -603,47 +608,85 @@ export async function submitTopupRequest(db, {
   }
 
   if (autoVerify) {
+    // Boss (31-10-2026, round 20):
+    //   "JAB CHOTA AMOUNT DAAL KAR RANDOM KOI BHI UTR DAALTA WO ADD HO JATA ...
+    //    UTR PAR JITNA AMOUNT JAYE AGAR WO MISBAHUL ISLAM HO UTNA ADD HOJAYE"
+    //
+    // Pehle provider set na hone par sirf "UTR unique hai" se credit ho jata
+    // tha — koi bhi random UTR + chhota amount wallet me add. Ab credit ka
+    // faisla sirf ASLI payment proof se hota hai (upi-credit-policy.js):
+    //   statement entry (bank/UPI) ya provider verify → payee Misbahul Islam,
+    //   status SUCCESS, aur jitna paisa aaya utna hi. Proof na ho → PENDING,
+    //   balance me kuch nahi judta.
     const res = await verifyUtrWithProvider({ utr: checked.utr, amountPaise: amount, userId }, { fetchImpl });
     req.providerConfigured = res.configured;
-    // Boss (31-10-2026, round 12): "UTR AUTO VERIFY NAHI HO RAHA." Provider API
-    // set hi nahi hai, isliye har UTR boss ke approve karne par atakta tha.
-    // Ab user ka claim + UTR (unique, duplicate check ke baad) seedha credit
-    // hota hai — status me saaf `verifiedBy: 'user-claim'` rehta hai, jhootha
-    // "provider verified" nahi. `UPI_REQUIRE_PROVIDER_VERIFY=1` se purana
-    // strict behaviour wapas.
-    const strictProvider = String(process.env.UPI_REQUIRE_PROVIDER_VERIFY || '').trim() === '1';
-    if (!res.configured && !strictProvider) {
-      const credit = creditWallet(db, userId, amount, {
-        reason: `Top-up: user ne UTR ${checked.utr} diya (auto credit)`,
-        actor: 'user-claim',
+    const providerPayment = res.configured && res.verified
+      ? {
+        utr: checked.utr,
+        amountPaise: Number(res.amountPaise) || 0,
+        payeeName: String(res.payeeName || ''),
+        payeeVpa: String(res.payeeVpa || ''),
+        status: 'SUCCESS',
+        at: Number(res.at) || at,
+        source: 'provider',
+        ref: String(res.providerRef || '')
+      }
+      : null;
+    // Bank/UPI statement me boss ne ye payment dekhi hai? (`upi-statement.js`)
+    const statementPayment = (() => {
+      const entry = (c.upiStatement && typeof c.upiStatement === 'object') ? c.upiStatement[checked.utr] : null;
+      return entry ? { ...entry, source: entry.source || 'statement' } : null;
+    })();
+    const payment = providerPayment || statementPayment || null;
+    const decision = evaluateUtrCredit({
+      claim: { utr: checked.utr, claimedPaise: amount, userId },
+      intent: { amountPaise: amount, createdAt: Date.parse(req.at || '') || at },
+      payment,
+      usedUtrs: {}, // duplicate pehle hi upar check ho chuka (+ ledger mark ho chuki hai)
+      autoMaxPaise: Math.max(0, Math.round(Number(autoMaxPaise) || 0)),
+      at
+    });
+    req.paymentEvidence = payment ? { source: payment.source || '', amountPaise: Number(payment.amountPaise) || 0, payee: payment.payeeName || payment.payeeVpa || '', ref: payment.ref || '' } : null;
+    if (decision.action === 'CREDIT') {
+      const credit = creditWallet(db, userId, decision.creditedPaise, {
+        reason: `Top-up verified: UTR ${checked.utr} — ${decision.reason}`.slice(0, 240),
+        actor: decision.verifiedBy || 'verified',
         at,
         type: 'CREDIT',
-        meta: { utr: checked.utr, topupId: req.id, verifiedBy: 'user-claim' }
+        meta: { utr: checked.utr, topupId: req.id, verifiedBy: decision.verifiedBy || 'verified', providerRef: String(payment?.ref || '') }
       });
+      if (!credit.ok) {
+        req.providerReason = credit.reason;
+        return { ok: false, code: 'CREDIT_FAILED', reason: credit.reason, request: req };
+      }
+      // Ledger me asli amount likho (claim ka nahi).
+      const ledger = findUsedUtr(db, checked.utr);
+      if (ledger) { ledger.status = 'CREDITED'; ledger.amountPaise = decision.creditedPaise; }
       req.status = TOPUP_STATUS.AUTO_VERIFIED;
-      req.approvedPaise = amount;
-      req.verifiedBy = 'user-claim';
+      req.approvedPaise = decision.creditedPaise;
+      req.claimedPaise = amount;
+      req.verifiedBy = decision.verifiedBy || 'verified';
       req.reviewedAt = nowIso(at);
-      req.reviewedBy = 'user-claim';
-      req.reason = 'UTR unique tha — auto credit (provider verify set nahi hai)';
-      return { ok: true, code: 'AUTO_VERIFIED', request: req, balancePaise: credit.balancePaise, verifiedBy: 'user-claim' };
+      req.reviewedBy = decision.verifiedBy || 'verified';
+      req.reason = decision.reason;
+      return {
+        ok: true, code: 'AUTO_VERIFIED', request: req, balancePaise: credit.balancePaise,
+        verifiedBy: decision.verifiedBy, creditedPaise: decision.creditedPaise
+      };
     }
-    if (res.configured && res.verified) {
-      const credit = creditWallet(db, userId, amount, {
-        reason: `UTR ${checked.utr} verified`,
-        actor: 'provider',
-        at,
-        type: 'CREDIT',
-        meta: { utr: checked.utr, topupId: req.id, providerRef: res.providerRef || '' }
-      });
-      req.status = TOPUP_STATUS.AUTO_VERIFIED;
-      req.approvedPaise = amount;
+    if (decision.action === 'REJECT') {
+      // Jhootha claim: UTR ledger me reh jata hai (dobara try nahi), par paisa
+      // nahi judta aur asli wajah likhi jati hai.
+      req.status = TOPUP_STATUS.REJECTED;
+      req.approvedPaise = 0;
       req.reviewedAt = nowIso(at);
-      req.reviewedBy = 'provider';
-      req.reason = res.reason;
-      return { ok: true, code: 'AUTO_VERIFIED', request: req, balancePaise: credit.balancePaise };
+      req.reviewedBy = 'verify';
+      req.reason = decision.reason;
+      req.providerReason = decision.reason;
+      return { ok: false, code: decision.code, reason: decision.reason, request: req, balancePaise: walletBalancePaise(db, userId) };
     }
-    req.providerReason = res.reason;
+    req.providerReason = decision.reason;
+    req.verifyPendingReason = decision.reason;
   }
 
   return { ok: true, code: 'PENDING', request: req, balancePaise: walletBalancePaise(db, userId) };

@@ -6,6 +6,7 @@ import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { checkRateLimit, rateLimitMessage, rateLimitState } from './pro-rate-limit.js';
 import { reconcileBill, describeBillState } from './bill-reconcile.js';
 import { backupMoneyNow, durabilityStatus } from './db-durability.js';
+import { importStatementText, recordStatementPayment, statementStatus } from './upi-statement.js';
 import { planQrGeneration, isRenderableQrImage, describeQrPlan } from './qr-generation-plan.js';
 import { exactPaise } from './swiggy-cart-integrity.js';
 import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder } from './swiggy-cart.js';
@@ -618,19 +619,24 @@ async function claimWalletTopup(user, body) {
     // credit karna hi "jitna bol raha" ka darwaza tha. Ab auto-credit sirf
     // chhote amount tak (default ₹15 = ek order ki fee); usse zyada → PENDING,
     // boss approve karega. Env: WALLET_AUTO_CREDIT_MAX_PAISE.
+    // Boss (31-10-2026, round 20): ab har claim par asli proof check hota hai
+    // (bank/UPI statement ya provider verify). Bina proof credit NAHI — sirf
+    // PENDING. Chhota amount bhi bina proof nahi judega, isliye random UTR se
+    // wallet bharne ka rasta band. Bada verified amount boss approval par.
     const autoMaxPaise = (() => {
       const raw = Number(process.env.WALLET_AUTO_CREDIT_MAX_PAISE);
       return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 1500;
     })();
-    const autoVerify = claimedPaise <= autoMaxPaise;
     const submitted = await submitTopupRequest(db, {
       userId: user.id, utr, amountPaise: claimedPaise, name: user.firstName || '',
-      note: autoVerify ? 'Mini App claim' : `Mini App claim ₹${rupees(claimedPaise)} — boss approval chahiye`,
-      autoVerify, minPaise: 100
+      note: `Mini App claim ₹${rupees(claimedPaise)}`,
+      autoVerify: true, minPaise: 100, autoMaxPaise
     });
     if (!submitted.ok) {
-      const e = error(submitted.code === 'DUPLICATE_UTR' ? 409 : 400, submitted.reason || 'UTR accept nahi hua.');
-      e.code = submitted.code === 'DUPLICATE_UTR' ? 'DUPLICATE_UTR' : '';
+      const code = String(submitted.code || '');
+      const status = code === 'DUPLICATE_UTR' || code === 'UTR_ALREADY_USED' ? 409 : 400;
+      const e = error(status, submitted.reason || 'UTR accept nahi hua.');
+      e.code = code;
       throw e;
     }
     request = submitted.request;
@@ -650,11 +656,12 @@ async function claimWalletTopup(user, body) {
     verified,
     creditedPaise: creditPaise,
     pending,
+    verifyNote: String(request?.verifyPendingReason || request?.reason || ''),
     message: pending
-      ? `₹${rupees(claimedPaise)} ka claim boss ke paas approval ke liye chala gaya (bada amount bina bank verify ke auto-credit nahi hota). Abhi balance ₹${wallet.balance} hai.`
+      ? `₹${rupees(claimedPaise)} ka claim verify ke liye chala gaya — bank/UPI me paisa dikhte hi sirf aaya hua amount judega (abhi balance ₹${wallet.balance} hai). ${String(request?.verifyPendingReason || '').slice(0, 140)}`.trim()
       : (wallet.ready
-        ? `Balance ₹${wallet.balance} ho gaya — ab order place kar sakte hain.`
-        : `₹${rupees(creditPaise)} jama hua. Abhi balance ₹${wallet.balance} hai — ₹${wallet.shortfall} aur add karein.`)
+        ? `₹${rupees(creditPaise)} juda (bank ka asli amount) — balance ₹${wallet.balance} hai, ab order place kar sakte hain.`
+        : `₹${rupees(creditPaise)} juda (bank ka asli amount). Abhi balance ₹${wallet.balance} hai — ₹${wallet.shortfall} aur add karein.`)
   };
 }
 
@@ -878,7 +885,9 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
             return user?.isBoss || isBoss(user.id)
               ? d
               : { cloud: d.cloud, restoredAt: d.restoredAt, line: d.line };
-          })()
+          })(),
+          // Round 20: asli paisa ka sabooot (sirf boss ko) — statement summary.
+          ...(user?.isBoss || isBoss(user.id) ? { statement: statementStatus(getDb()) } : {})
         });
         return;
       }
@@ -888,6 +897,55 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (!isBoss(user.id)) throw error(403, 'Backup sirf boss kar sakta hai.');
         const result = await backupProWorkspaceNow(user.id);
         json(res, 200, { ok: true, result, backup: userBackupView(user) });
+        return;
+      }
+      // ── Round 20: UPI/bank statement = asli paisa ka sabooot ────────────
+      // Boss (31-10-2026): "UTR PAR JITNA AMOUNT JAYE AGAR WO MISBAHUL ISLAM HO
+      // UTNA ADD HOJAYE". Boss apni UPI/bank statement (ya SMS) paste karta hai
+      // → jis UTR ka paisa Misbahul Islam ke account me aaya hai, sirf wahi
+      // amount credit hota hai; random/chhota UTR ka rasta band.
+      if (route === '/pro/api/boss/statement' && req.method === 'GET') {
+        if (!isBoss(user.id)) throw error(403, 'UPI statement sirf boss dekh sakta hai.');
+        json(res, 200, { ok: true, statement: statementStatus(getDb()) });
+        return;
+      }
+      if (route === '/pro/api/boss/statement' && req.method === 'POST') {
+        if (!isBoss(user.id)) throw error(403, 'UPI statement sirf boss daal sakta hai.');
+        const body = await bodyJson(req);
+        const db = getDb();
+        let imported = { parsed: 0, accepted: [], rejected: [], settled: [] };
+        if (Array.isArray(body.entries)) {
+          for (const entry of body.entries.slice(0, 500)) {
+            const saved = recordStatementPayment(db, entry, { actor: `boss:${user.id}` });
+            (saved.ok ? imported.accepted : imported.rejected).push(saved.ok ? saved.record : { utr: entry?.utr, reason: saved.reason });
+          }
+        }
+        const text = String(body.text || '').trim();
+        if (text) {
+          const fromText = importStatementText(db, text, { actor: `boss:${user.id}` });
+          imported = {
+            parsed: imported.parsed + fromText.parsed,
+            accepted: imported.accepted.concat(fromText.accepted),
+            rejected: imported.rejected.concat(fromText.rejected),
+            settled: imported.settled.concat(fromText.settled)
+          };
+        }
+        if (!imported.accepted.length && !imported.settled.length) {
+          // Kuch bhi useful nahi mila — jhoothi "ho gaya" nahi.
+          const e = error(400, 'Statement me koi credit line (UTR + amount) nahi mili. Poori line copy karein, jaise: "31-10-2026 UPI/CR 123456789012 MISBAHUL ISLAM ₹15.00 credit".');
+          e.code = 'STATEMENT_NOT_PARSED';
+          throw e;
+        }
+        if (imported.settled.length) {
+          saveDb(db);
+          backupMoneyNow().catch(() => {});
+        }
+        json(res, 200, {
+          ok: true,
+          imported: { parsed: imported.parsed, accepted: imported.accepted.length, rejected: imported.rejected },
+          settled: imported.settled,
+          statement: statementStatus(db)
+        });
         return;
       }
       if (route === '/pro/api/accounts/send-otp' && req.method === 'POST') {

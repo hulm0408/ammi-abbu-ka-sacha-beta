@@ -501,3 +501,40 @@ phir har 12s, 30 try tak; `PAID` milte hi tracking khud khul jata hai. Button bh
 tracking 3, app auto-poll + restricted tracking card 2). Sweep: `test:guards` **75/75 (147s)**,
 `test:pro` **41/41**, `npm test` **132/132**, `test_v107` **29/29**, `test_v106` **11/11**,
 `test_v105` **13/13**, `test_v93` **20/20**, bossbot **49/49**.
+
+## Round 20 (31-10-2026): UTR par sirf asli paisa, jitna aaya utna
+
+Boss: *"JAB CHOTA AMOUNT DAAL KAR RANDOM KOI BHI UTR DAALTA WO ADD HO JATA MUJHE LAGATA TUJHE AISA KARNA CHAHIE KI UTR PAR JITNA AMOUNT JAYE AGAR WO MISBAHUL ISLAM HO UTNA ADD HOJAYE"*
+
+### Root cause
+`user-wallet.js` me `!res.configured` branch — provider set nahi hone par "UTR unique hai" hi credit
+ka sabooot tha. Isliye koi bhi 8-30 character ka random UTR + chhota amount wallet me jud jata tha.
+
+### Fix — asli paisa ka sabooot
+* **`upi-credit-policy.js`** (naya, pure): `evaluateUtrCredit()` — UTR ledger, payment record,
+  payee (Misbahul Islam naam) / VPA (`mius@ybl`), status SUCCESS, asli amount, intent se purana
+  payment, aur auto-credit cap — har case par `CREDIT` / `PENDING` / `REJECT` + asli wajah.
+  Saath me `parseStatementText()` (bank/UPI statement ya SMS line → UTR + amount + payee).
+* **`upi-statement.js`** (naya): `config.upiStatement` ledger (encrypted snapshot ka hissa),
+  `recordStatementPayment()`, `importStatementText()`, `settledPendingClaims()` (pending claim
+  asli amount par auto-settle), `statementStatus()`.
+* `submitTopupRequest()` ab sirf provider/statement proof par credit karta hai; credit amount
+  **bank ka asli amount** hai (`decision.creditedPaise`), claim ka nahi. Bina proof → PENDING.
+* `swiggy-pro-api.js`: `/pro/api/boss/statement` GET/POST (sirf boss) — statement paste karo,
+  pending claims khud verify ho kar asli amount jud jate hain. Bootstrap me boss ko
+  `statement` summary. Wallet claim message me verify ki asli wajah.
+* Mini-app: Tools → **UPI statement (asli paisa)** card — entries, asli paisa, Misbahul ke naam,
+  verify ke intezaar wale claim, aur paste + import button.
+* Bot: UTR message ab "₹X asli paisa juda" bolta hai (jhootha "provider verified" nahi).
+
+### Boss ko kya karna hai
+1. Render env me `GITHUB_VAULT_TOKEN` + `VAULT_ENCRYPTION_KEY` (snapshot ke liye, round 19).
+2. Paisa aane ke baad mini-app → Tools → UPI statement card me statement ki lines paste karke
+   import — jis UTR ka paisa aaya hai sirf wahi amount judega; baaki claims PENDING hi rahenge.
+3. Chaho to `UPI_UTR_VERIFY_URL` (provider) set kar do — tab statement paste ki zaroorat nahi.
+
+### Tests
+`test_v109_utr_asli_paisa.mjs` **13 checks** (policy 7, API/statement 6).
+Updated (intentional reversal): `test_v72` 101/101, `test_v100` 14/14, `test_v101` 10/10,
+`test_v105` 13/13, `test_v106` 12/12. Sweep: guards **77/77 (134s)**, `test:pro` **41/41**,
+`npm test` **132/132**, bossbot **49/49**.

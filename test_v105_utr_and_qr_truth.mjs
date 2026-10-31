@@ -37,6 +37,7 @@ const { handleSwiggyProHttp } = await import('./swiggy-pro-api.js');
 const { readProWorkspace, writeProWorkspace } = await import('./swiggy-pro-store.js');
 const { getDb, saveDb } = await import('./store.js');
 const { walletBalancePaise } = await import('./user-wallet.js');
+const { recordStatementPayment } = await import('./upi-statement.js');
 const { validateUpiIntentForQr } = await import('./payment-qr-guard.js');
 
 const db = getDb();
@@ -78,6 +79,16 @@ async function req(userId, route, payload) {
   });
   return { status: response.status, body: await response.json() };
 }
+/**
+ * Round 20 (boss): bina asli payment sabooot ke credit nahi hota. Purane tests
+ * ka matlab wahi hai (amount rules), isliye pehle bank/UPI statement me wahi
+ * payment likh dete hain — jaise asli zindagi me paisa pehle aata hai.
+ */
+function verifiedPayment(utr, amountPaise) {
+  const db = getDb();
+  recordStatementPayment(db, { utr, amountPaise, payeeName: 'MISBAHUL ISLAM', payeeVpa: 'mius@ybl', status: 'SUCCESS', source: 'statement', at: Date.now() }, { actor: 'test' });
+  saveDb(db);
+}
 function seed(userId) {
   writeProWorkspace(String(userId), {
     version: 1,
@@ -118,6 +129,7 @@ test('wallet: top-up ₹15 ka tha, user ₹15 likhe → ₹15 hi judta hai', asy
   assert.equal(topup.status, 200);
   assert.ok(topup.body.topup.topupId, 'topupId mila');
   assert.equal(String(topup.body.topup.amount), '15');
+  verifiedPayment('222233334444', 1500);
   const out = await req(7104, 'wallet/claim', { topupId: topup.body.topup.topupId, amountRupees: 15, utr: '222233334444' });
   assert.equal(out.status, 200);
   assert.equal(walletBalancePaise(getDb(), '7104'), 1500);
@@ -137,6 +149,7 @@ test('wallet: "jitna bol raha" band — ₹15 ka top-up par ₹500 ka dawa rejec
 test('wallet: amount body me na ho to bhi sirf top-up ka amount judta hai', async () => {
   seed(7106);
   const topup = await req(7106, 'wallet/topup', { amountPaise: 1000 });
+  verifiedPayment('444455556666', 1000);
   const out = await req(7106, 'wallet/claim', { topupId: topup.body.topup.topupId, utr: '444455556666' });
   assert.equal(out.status, 200);
   assert.equal(walletBalancePaise(getDb(), '7106'), 1000, 'top-up ka amount, body ka nahi');
@@ -146,6 +159,7 @@ test('wallet: amount body me na ho to bhi sirf top-up ka amount judta hai', asyn
 test('wallet: same UTR dobara nahi (records prune hone ke baad bhi)', async () => {
   seed(7107);
   const first = await req(7107, 'wallet/topup', { amountPaise: 1500 });
+  verifiedPayment('555566667777', 1500);
   const ok = await req(7107, 'wallet/claim', { topupId: first.body.topup.topupId, amountPaise: 1500, utr: '555566667777' });
   assert.equal(ok.status, 200);
   // Purane top-up records saaf kar do (pipeline ka prune) — UTR ki yaad nahi mitni chahiye.
@@ -161,6 +175,7 @@ test('wallet: kisi aur ka UTR daalne par credit nahi (aur wajah saaf)', async ()
   seed(7108);
   seed(7109);
   const a = await req(7108, 'wallet/topup', { amountPaise: 1500 });
+  verifiedPayment('666677778888', 1500);
   assert.equal((await req(7108, 'wallet/claim', { topupId: a.body.topup.topupId, amountPaise: 1500, utr: '666677778888' })).status, 200);
   const b = await req(7109, 'wallet/topup', { amountPaise: 1500 });
   const steal = await req(7109, 'wallet/claim', { topupId: b.body.topup.topupId, amountPaise: 1500, utr: '666677778888' });
@@ -173,6 +188,7 @@ test('wallet: kisi aur ka UTR daalne par credit nahi (aur wajah saaf)', async ()
 test('wallet: top-up intent ek hi baar chalta hai', async () => {
   seed(7110);
   const topup = await req(7110, 'wallet/topup', { amountPaise: 1500 });
+  verifiedPayment('777788889999', 1500);
   assert.equal((await req(7110, 'wallet/claim', { topupId: topup.body.topup.topupId, amountPaise: 1500, utr: '777788889999' })).status, 200);
   const reuse = await req(7110, 'wallet/claim', { topupId: topup.body.topup.topupId, amountPaise: 1500, utr: '888899990000' });
   assert.equal(reuse.status, 409);

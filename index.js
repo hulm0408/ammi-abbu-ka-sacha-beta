@@ -67,6 +67,7 @@ import {
 } from './store.js';
 import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
 import { restoreMoneyOnBoot, startDbDurability } from './db-durability.js';
+import { recordStatementPayment } from './upi-statement.js';
 import { isMenuText, isCommandText, looksLikePlainOrderId } from './menu-labels.js';
 import {
   extractStandaloneMobileNumber,
@@ -8869,7 +8870,8 @@ bot.on('text', async (ctx, next) => {
     const auto = submitted.code === 'AUTO_VERIFIED';
     await ctx.reply(
       auto
-        ? `✅ <b>PAYMENT VERIFIED</b>\n\nUTR <code>${escapeHtml(submitted.request.utr)}</code> provider se confirm hua — ` +
+        ? `✅ <b>PAYMENT VERIFIED</b>\n\nUTR <code>${escapeHtml(submitted.request.utr)}</code> — ` +
+          `₹${walletRupees(Number(submitted.creditedPaise || submitted.request.approvedPaise || 0))} asli paisa juda, ` +
           `balance <b>₹${walletRupees(submitted.balancePaise)}</b>.`
         : `⏳ <b>UTR RECEIVED</b>\n\nUTR <code>${escapeHtml(submitted.request.utr)}</code> · claimed ₹${walletRupees(amountPaise)}\n` +
           `<i>Ab admin aapke UPI statement me payment dekh kar confirm karega (5-10 min). Bot jhootha "verified" nahi likhta. ` +
@@ -15716,6 +15718,18 @@ if (healthPort > 0) {
 
         // (b) Wallet top-up — request banao aur turant approve (paisa aaya hai).
         if (userId && amountPaise > 0) {
+          // Round 20: webhook bhi asli paisa ka sabooot hai — UTR ledger me
+          // record karo (baad me statement import/audit me wahi dikhega).
+          if (utr) {
+            try {
+              recordStatementPayment(wDb, {
+                utr, amountPaise,
+                payeeName: String(body.payeeName || body.payerName || ''),
+                payeeVpa: String(body.payeeVpa || body.vpa || ''),
+                status: 'SUCCESS', at: Date.now(), source: 'webhook', ref: String(body.ref || '')
+              }, { actor: 'webhook' });
+            } catch { /* ledger best-effort — paisa webhook se hi verify hua hai */ }
+          }
           const created = await submitTopupRequest(wDb, {
             userId,
             utr: utr || `WEBHOOK${Date.now()}`,

@@ -33,6 +33,7 @@ globalThis.fetch = async (raw, options = {}) => {
 const { handleSwiggyProHttp } = await import('./swiggy-pro-api.js');
 const { writeProWorkspace, readProWorkspace } = await import('./swiggy-pro-store.js');
 const { getDb, saveDb } = await import('./store.js');
+const { recordStatementPayment } = await import('./upi-statement.js');
 const { walletBalancePaise } = await import('./user-wallet.js');
 const { RATE_LIMITS } = await import('./pro-rate-limit.js');
 
@@ -84,6 +85,13 @@ async function req(userId, route, payload) {
   });
   return { status: response.status, body: await response.json() };
 }
+
+/** Round 20: credit ka saboot — bank/UPI statement me paisa aana. */
+function verifiedPayment(utr, amountPaise, payeeName = 'MISBAHUL ISLAM') {
+  const db = getDb();
+  recordStatementPayment(db, { utr, amountPaise, payeeName, payeeVpa: payeeName === 'MISBAHUL ISLAM' ? 'mius@ybl' : '', status: 'SUCCESS', source: 'statement', at: Date.now() }, { actor: 'test' });
+  saveDb(db);
+}
 function seed(userId) {
   writeProWorkspace(String(userId), {
     version: 1,
@@ -107,23 +115,38 @@ test('matrix: wallet claim — bina UTR, galat UTR, bina top-up, chhota UTR — 
   assert.equal(walletBalancePaise(getDb(), '8001'), 0);
 });
 
-test('matrix: bada amount auto-credit nahi — boss approval par jata hai (jhootha credit nahi)', async () => {
+test('matrix: bina saboot bada amount bhi credit nahi — verify par jata hai', async () => {
   seed(8002);
   const topup = await req(8002, 'wallet/topup', { amountPaise: 50000 }); // ₹500
   const out = await req(8002, 'wallet/claim', { topupId: topup.body.topup.topupId, utr: '111100001111' });
   assert.equal(out.status, 200);
   assert.equal(out.body.pending, true, 'pending bata raha hai');
   assert.equal(out.body.creditedPaise, 0);
-  assert.match(out.body.message, /approval/i);
+  assert.match(out.body.message, /verify/i);
   assert.equal(walletBalancePaise(getDb(), '8002'), 0, 'ek paisa bhi auto credit nahi');
 });
 
-test('matrix: chhota amount (₹15 tak) auto credit — order nahi rukta', async () => {
+test('matrix: chhota amount bhi bina saboot credit nahi; statement milte hi asli amount judta hai', async () => {
   seed(8003);
   const topup = await req(8003, 'wallet/topup', { amountPaise: 1500 });
-  const out = await req(8003, 'wallet/claim', { topupId: topup.body.topup.topupId, utr: '222200002222' });
-  assert.equal(out.body.creditedPaise, 1500);
-  assert.equal(walletBalancePaise(getDb(), '8003'), 1500);
+  const first = await req(8003, 'wallet/claim', { topupId: topup.body.topup.topupId, utr: '222200002222' });
+  assert.equal(first.body.creditedPaise, 0, 'random UTR se kuch nahi juda');
+  assert.equal(walletBalancePaise(getDb(), '8003'), 0);
+  verifiedPayment('222200002222', 1500);
+  const boss = await req(9000, 'boss/statement', { text: '31-10-2026 UPI/CR/222200002222/MISBAHUL ISLAM/₹15.00 credited' });
+  assert.equal(boss.status, 200, JSON.stringify(boss.body));
+  assert.ok(boss.body.settled.some(s => s.action === 'CREDIT'), JSON.stringify(boss.body.settled));
+  assert.equal(walletBalancePaise(getDb(), '8003'), 1500, 'asli ₹15 juda');
+});
+
+test('matrix: statement me doosre ka naam — credit nahi, claim reject', async () => {
+  seed(8005);
+  const topup = await req(8005, 'wallet/topup', { amountPaise: 1500 });
+  await req(8005, 'wallet/claim', { topupId: topup.body.topup.topupId, utr: '555500005555' });
+  const out = await req(9000, 'boss/statement', { text: '31-10-2026 UPI/CR/555500005555/RAHUL KUMAR/₹15.00 credited' });
+  assert.equal(out.status, 200);
+  assert.ok(!out.body.settled.some(s => s.action === 'CREDIT'));
+  assert.equal(walletBalancePaise(getDb(), '8005'), 0);
 });
 
 test('matrix: ek user ke paas ek hi zinda top-up — purana khud band', async () => {

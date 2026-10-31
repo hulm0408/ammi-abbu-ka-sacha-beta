@@ -189,3 +189,46 @@ Boss: *"SAME UTR MENE DAALA TO HOGAYA KIUKI DEPLOY KARNE PAR SARA DATA RESET HOJ
 | H19 | 30 try ke baad bhi pending | poller ruk jata hai (battery/net), button bacha rehta hai |
 | H20 | `PAID` mil gaya | tracking khud khulta hai + toast |
 | H21 | Draft idle band / naya draft | poller band, counter reset |
+
+---
+
+## I. Wallet credit = asli paisa (Round 20)
+
+Boss: *"JAB CHOTA AMOUNT DAAL KAR RANDOM KOI BHI UTR DAALTA WO ADD HO JATA ... UTR PAR JITNA
+AMOUNT JAYE AGAR WO MISBAHUL ISLAM HO UTNA ADD HOJAYE"*.
+
+Pehle provider set na hone par `submitTopupRequest` sirf "UTR unique hai" dekh kar credit kar deta
+tha — ₹1 ka random UTR bhi wallet me jud jata tha. Ab credit ka faisla `upi-credit-policy.js`
+(pure) karta hai, aur sabooot sirf do jagah se aata hai: **bank/UPI statement** (`upi-statement.js`)
+ya **provider verify API**.
+
+| # | Case | Behaviour |
+|---|---|---|
+| I1 | Random UTR, koi payment record nahi | PENDING — balance me **kuch nahi** |
+| I2 | Statement me UTR hai, paisa Misbahul Islam ko aaya | CREDIT — **jitna aaya utna** |
+| I3 | Claim ₹500, statement ₹15 | ₹15 judta hai (claim ka amount nahi) |
+| I4 | Claim ₹15, statement ₹500 | ₹500 judta hai + note "poora asli paisa juda" |
+| I5 | Statement me payee koi doosra (RAHUL KUMAR) | REJECT `PAYEE_MISMATCH`, claim reject, paisa nahi |
+| I6 | Payee naam spelling variants (Md Misbahul Islam / MISBAHUL) | accept (token match) |
+| I7 | Payee VPA `mius@ybl` | accept (VPA match) |
+| I8 | Payment FAILED / PENDING / REVERSED / debit line | REJECT `PAYMENT_NOT_SUCCESSFUL` |
+| I9 | Aaya amount ₹1 se kam | REJECT `AMOUNT_TOO_LOW` |
+| I10 | Statement me amount missing | REJECT `AMOUNT_NOT_RETURNED` |
+| I11 | UTR mismatch (statement ka UTR alag) | REJECT `UTR_MISMATCH` |
+| I12 | Wahi UTR dobara (kisi bhi user ka) | 409 `DUPLICATE_UTR` / `UTR_ALREADY_USED` |
+| I13 | Payment top-up QR banne se 10 min pehle ka | PENDING `PAYMENT_BEFORE_INTENT` |
+| I14 | Verified par amount `WALLET_AUTO_CREDIT_MAX_PAISE` (₹15) se zyada | PENDING — boss approve karega |
+| I15 | Statement entry dobara import | idempotent (UTR unique), double paisa nahi |
+| I16 | Boss statement paste karta hai, pending claim match hua | claim auto-settle **asli amount** par, ledger me credit |
+| I17 | Boss statement paste karta hai, payee galat | claim REJECTED, wajah naam ke saath |
+| I18 | Non-boss statement import | 403 |
+| I19 | Statement line me debit/failed/reversal | parse hi nahi hoti |
+| I20 | Provider API verified + amount + payee | CREDIT asli amount (provider payment record) |
+| I21 | Webhook (signed) se paisa | statement ledger me record + credit webhook amount |
+
+Statement import: boss mini-app → Tools → **UPI statement (asli paisa)** → lines paste → import.
+Format kuch bhi chalta hai jisme 12-digit UTR + ₹amount ho, jaise
+`31-10-2026 UPI/CR/123456789012/MISBAHUL ISLAM/₹15.00 credited`.
+
+Badalne wale env: `UPI_PAYEE_NAME` (default `MISBAHUL ISLAM`), `UPI_PAYEE_VPA` (default `mius@ybl`),
+`UPI_UTR_VERIFY_URL` + `UPI_UTR_VERIFY_TOKEN` (provider verify), `WALLET_AUTO_CREDIT_MAX_PAISE`.
