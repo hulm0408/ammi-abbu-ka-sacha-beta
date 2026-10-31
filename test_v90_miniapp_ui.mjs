@@ -110,11 +110,13 @@ test('cart sync requires in-app confirmation and Escape safely cancels it', asyn
   try {
     await waitFor(() => app.document.querySelector('[data-tab="cart"]:not([disabled])'), 'connected navigation');
     app.document.querySelector('[data-tab="cart"]').click();
-    // 31-10-2026: cart Swiggy jaisa saaf hai — coupon/bill form "Apply coupon"
-    // kholne par aata hai.
+    // 31-10-2026 (round 7): "Apply coupon" ab apna page kholta hai; wahan ka
+    // APPLY hi asli cart sync karta hai.
     await waitFor(() => app.document.querySelector('[data-action="toggle-coupon"]'), 'coupon row');
     app.document.querySelector('[data-action="toggle-coupon"]').click();
     await waitFor(() => app.document.querySelector('form[data-form="sync"]'), 'sync form');
+    const form = app.document.querySelector('form[data-form="sync"]');
+    form.querySelector('input[name="coupon"]').value = 'TRYNEW';
     const submit = () => app.document.querySelector('form[data-form="sync"]').dispatchEvent(new app.window.Event('submit', { bubbles: true, cancelable: true }));
     submit();
     await waitFor(() => app.document.querySelector('[role="dialog"]'), 'sync dialog');
@@ -126,10 +128,11 @@ test('cart sync requires in-app confirmation and Escape safely cancels it', asyn
     submit();
     await waitFor(() => app.document.querySelector('[role="dialog"]'), 'second sync dialog');
     app.document.querySelectorAll('.confirm-actions button')[1].click();
-    await waitFor(() => app.document.querySelector('#toast').textContent.includes('Bill returned'), 'sync result');
+    await waitFor(() => /TRYNEW/.test(app.document.querySelector('#toast').textContent), 'sync result');
     const syncCalls = app.calls.filter(c => c.url.endsWith('/cart/sync'));
     assert.equal(syncCalls.length, 1);
     assert.equal(syncCalls[0].body.confirmReplaceSwiggyCart, true);
+    assert.equal(syncCalls[0].body.coupon, 'TRYNEW');
     assert.deepEqual(app.external, []);
   } finally { app.close(); }
 });

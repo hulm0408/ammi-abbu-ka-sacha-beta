@@ -903,6 +903,17 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         json(res, 200, { ok: true, cart: null });
         return;
       }
+      if (route === '/pro/api/coupons' && req.method === 'GET') {
+        // Boss (31-10-2026): coupon choose karne ka asli page — Swiggy ke apne
+        // coupon list se, jhootha code nahi.
+        const account = currentAccount(user, ws);
+        const requested = String(url.searchParams.get('id') || '').trim();
+        const restaurantId = requested || String(ws.cart?.restaurantId || '');
+        if (!/^\d{1,20}$/.test(restaurantId)) throw error(400, 'Pehle cart ya restaurant kholein.');
+        const out = await provider.coupons(account, ws.selectedAddress || {}, restaurantId);
+        json(res, 200, { ok: true, ...out });
+        return;
+      }
       if (route === '/pro/api/restaurants/outlets' && req.method === 'GET') {
         // Boss (31-10-2026): ek restaurant ke kai franchise — location ka naam
         // aur dropdown, taaki aas-paas ka outlet chuna ja sake.
@@ -918,7 +929,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           .slice(0, 20)
           .map(r => ({
             id: String(r.id || ''), name: String(r.name || ''), area: String(r.area || ''),
-            distance: String(r.distance || ''), time: String(r.time || ''),
+            distance: String(r.distance || ''), time: String(r.time || ''), rating: String(r.rating || ''), ratings: String(r.ratings || ''),
             isOpen: r.isOpen === true ? true : r.isOpen === false ? false : null
           }))
           .filter(r => r.id);

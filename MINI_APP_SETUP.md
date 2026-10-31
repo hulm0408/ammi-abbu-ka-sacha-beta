@@ -119,3 +119,15 @@ A real trial requires a suitable deployed HTTPS service with persistent storage,
   * **Boss ko Tools me "Data backup" card**: mirror rows, last save time, cloud ON/OFF, cloud ki asli error, kitni baar restore hua, aur **"Abhi backup karein"** button (`POST /pro/api/backup`, sirf boss).
   * `GET /pro/api/bootstrap` ab `backup` field deta hai — boss ko poora, user ko sirf mirror ki haalat.
 * **Tests:** `test_v95_miniapp_cart_import_and_backup.mjs` (11 checks: 7 link shapes, galat link par asli error, short-link expansion, mirror→restore, backup status/route permissions, no-dropdown DOM, parse request, khaali-link toast, boss backup card, user ko card nahi).
+
+## Round 7 (31-10-2026): cart fetch, Swiggy-jaisa checkout, coupon page, tracking
+
+* **Cart fetch ka asli fix.** Mini app sirf `GET /api/v1/shared_cart` karta tha, jisse doosre customer ka group cart `statusCode 86` (USER_ALREADY_PART_OF_GROUP_CART) ya khaali aata tha. Ab pehle bot ka proven engine chalta hai — `POST /api/v1/shared_cart/join` (ephemeral reader `user_id`) — phir read-only GET. Fail par HTTP status + Swiggy ka `statusCode`/`statusMessage` message me aata hai; band cart (`88` / GROUP_CART_NO_LONGER_EXISTS) aur place-ho-chuka cart ki alag saaf wajah.
+* **Link shapes:** apna parser + `resolveSwiggyLink` fallback (AppsFlyer HTML, `swiggy://webviewV2?group_cart_id=…`, `af_dp`/`deep_link_value`). Address pin na ho to bhi cart parse hota hai (lat/lng sirf headers ke liye).
+* **Navigation block khatam.** Global `state.busy` lock hata diya — sirf wahi button band hota hai jisne request bheji. Address load hote waqt bhi doosra tab turant khulta hai.
+* **Cart/checkout page Swiggy jaisa:** ETA + "Deliver to", savings banner, Your Order card (rating, items, swiggy-style stepper), "Add Items / Apply coupon" chips, **Complete your meal** rail (isi restaurant ke asli menu se), **Savings Corner** (Applied/Remove), bill, payment method, aur pay bar: bada total + `View Detailed Bill` + green **Pay Now · Proceed to Pay**.
+* **Coupon page** (`Apply coupon`): applied coupon ka ribbon (`₹140 OFF`, REMOVE), asli code se APPLY, aur Swiggy ke coupon tool (`fetch_food_coupons`) ki list — jo lagta nahi wo LOCKED + reason. List khaali aaye to saaf likha: "Swiggy ne list nahi di".
+* **Route:** `GET /pro/api/coupons?id=<restaurantId>`; `restaurants/outlets` me ab `rating`/`ratings` bhi.
+* **Pay → track:** Pay Now (bill na ho to pehle khud bill leke) → payment screen (QR + "Payment check karein") → `checkout/status` PAID → **tracking screen** (timeline, ETA, rider, delivery OTP) jo 20s me khud refresh hota hai. `orders/tracking` hi source hai — koi guess nahi.
+* **Typing safe:** re-render par coupon code / group cart link ka typed text nahi udta.
+* **Imaandaar:** payment band ho to pay bar ke neeche asli reason (`PRO_ENABLE_CHECKOUT=0` jaisa) dikhta hai, sirf tooltip nahi.

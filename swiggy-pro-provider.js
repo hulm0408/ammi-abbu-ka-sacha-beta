@@ -5,7 +5,7 @@ import {
   swiggyCartGet, swiggyCartUpdate, verifySwiggySessionLive, withSwiggyAccountLock,
   checkRealSwiggyPaymentAndExtractTracking, detectOfoFromPlaceResponse, hasExplicitOfoCartFlag, normalizeSwiggyOrderId,
   extractSwiggyProvidedTrackingUrl, extractSwiggyDeliveryOtp, isZeroSmsTestSandboxActive,
-  extractDeepLinkFromReferrerOrUrl
+  extractDeepLinkFromReferrerOrUrl, fetchLiveGroupCart, resolveSwiggyLink, callSwiggyFoodMcpTool
 } from './swiggy-cart.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { getDb } from './store.js';
@@ -249,6 +249,19 @@ export async function resolveGroupCartLink(raw) {
   }
   const ref = extractGroupCartRef(expanded);
   if (ref) return { ...ref, expanded };
+  // Akhri raasta: bot ka battle-tested resolver. Ye AppsFlyer ke HTML page,
+  // swiggy://webviewV2?group_cart_id=… aur af_dp/deep_link_value wale share
+  // link bhi padh leta hai — inhi par "cart parse nahi hua" hota tha.
+  const vendor = await resolveSwiggyLink(String(raw).trim()).catch(() => null);
+  if (vendor?.groupCartId) {
+    return {
+      cartId: String(vendor.groupCartId),
+      restaurantId: String(vendor.restaurantId || ''),
+      hostName: String(vendor.hostName || ''),
+      shape: 'vendor-resolve',
+      expanded: String(vendor.url || expanded)
+    };
+  }
   throw badRequest(`Is link me group cart ki ID nahi mili. Chahiye: swiggy.com/gc/<id>, ?sharedCartId=<id>, swiggy:// deep link, ya app ka Share link. Mila: ${String(raw).slice(0, 120)}`);
 }
 
@@ -381,20 +394,66 @@ export const proProvider = {
     return parseMenu(payload, restaurantId);
   },
   async groupCart(account, address, link) {
-    const { lat, lng } = coords(address);
-    // Boss (31-10-2026): 5 tarah ke link shapes, aur fail par asli wajah.
+    // Group cart padhna address ke pin par depend nahi karta — lat/lng sirf
+    // request headers ke liye hote hain. Address bhara na ho to bhi cart khule.
+    let lat = '';
+    let lng = '';
+    try { ({ lat, lng } = coords(address)); } catch { /* default headers */ }
     const ref = await resolveGroupCartLink(link);
     const auth = await getSwiggySessionAuth(account);
     if (!auth?.jwtTid || !auth?.userId) throw unavailable('The selected Swiggy session could not be verified.');
+    const normalizeItems = live => (live?.items || [])
+      .filter(it => it && it.menu_item_id && Number(it.qty ?? it.quantity) > 0)
+      .map(it => ({
+        id: String(it.menu_item_id),
+        menu_item_id: Number(it.menu_item_id),
+        name: String(it.name || 'Item'),
+        qty: Number(it.qty ?? it.quantity) || 1,
+        price: it.price === null || it.price === undefined || !Number.isFinite(Number(it.price)) ? null : Number(it.price),
+        lineTotal: it.lineTotal === null || it.lineTotal === undefined || !Number.isFinite(Number(it.lineTotal)) ? null : Number(it.lineTotal),
+        // Vendor parser sirf `true` se veg confirm karta hai; `false` ka matlab
+        // "veg nahi bataya" ho sakta hai — jhootha non-veg mark nahi lagate.
+        isVeg: it.isVeg === true ? true : null,
+        inStock: it.inStock === false ? false : true,
+        variants: Array.isArray(it.variants) ? it.variants : [],
+        addons: Array.isArray(it.addons) ? it.addons : [],
+        offer_ids: Array.isArray(it.offer_ids) ? it.offer_ids : [],
+        item_offer_cart_meta: String(it.item_offer_cart_meta || '')
+      }));
+    const cartShape = (live, items) => ({
+      restaurantId: String(live?.restaurantId || ref.restaurantId || ref.cartId),
+      restaurantName: String(live?.restaurantName || 'Restaurant'),
+      restaurantArea: String(live?.areaName || ''),
+      groupCartId: String(live?.groupCartId || ref.cartId),
+      items
+    });
+    // (1) Bot ka proven engine: chkout `shared_cart/join` (ephemeral reader user
+    // id) + read-only GET. Isse doosre customer ka group cart bhi khulta hai aur
+    // "USER_ALREADY_PART_OF_GROUP_CART" (statusCode 86) nahi aata — yahi wajah
+    // thi ki mini app "cart fetch nahi hua" bolta tha.
+    const live = await fetchLiveGroupCart(ref.cartId, ref.restaurantId || null, ref.hostName || null, account, lat, lng).catch(() => null);
+    const liveItems = normalizeItems(live);
+    if (liveItems.length) return cartShape(live, liveItems);
+    if (live?.status === 'EXPIRED') {
+      const e = unavailable('Ye group cart ab band ho chuka hai (Swiggy ne "no longer exists" kaha). Host se naya group cart link maangein.');
+      e.code = 'GROUP_CART_EXPIRED';
+      throw e;
+    }
+    if (live?.status === 'PLACED') {
+      const e = unavailable('Is group cart ka order pehle hi place ho chuka hai. Naya group cart banwaiye.');
+      e.code = 'GROUP_CART_PLACED';
+      throw e;
+    }
+    // (2) Seedha read-only GET (purana raasta) — engine sirf join ke bina bhi
+    // kaam kare to yahan se sach milta hai.
     const response = await fetch(`https://chkout.swiggy.com/api/v1/shared_cart?group_cart_id=${encodeURIComponent(ref.cartId)}`, {
-      headers: buildSwiggyAndroidClientHeaders(account, { tid: auth.jwtTid, token: auth.token, sid: auth.sid, deviceId: auth.deviceId, userId: auth.userId, lat, lng }),
+      headers: buildSwiggyAndroidClientHeaders(account, { tid: auth.jwtTid, token: auth.token, sid: auth.sid, deviceId: auth.deviceId, userId: auth.userId, lat: lat || '17.385044', lng: lng || '78.486671' }),
       signal: AbortSignal.timeout(8000)
     });
     const json = await response.json().catch(() => null);
-    if (!response.ok || !successCode(json?.statusCode) || !json?.data) throw unavailable('Swiggy did not return this group cart; it may be closed or unavailable.');
-    const data = json.data;
+    const data = json?.data;
     const items = [];
-    for (const participant of Object.values(data.user_cart_map || {})) {
+    for (const participant of Object.values(data?.user_cart_map || {})) {
       for (const it of participant?.user_cart || []) {
         if (!it.menu_item_id || !(Number(it.quantity) > 0)) continue;
         const qty = Number(it.quantity);
@@ -402,13 +461,78 @@ export const proProvider = {
         items.push({
           id: String(it.menu_item_id), menu_item_id: Number(it.menu_item_id), name: String(it.name || 'Item'), qty,
           price: Number.isFinite(raw) ? Math.round(raw / qty) / 100 : null,
+          lineTotal: Number.isFinite(raw) ? Math.round(raw) / 100 : null,
+          isVeg: it.is_veg === 1 || it.is_veg === '1' || it.isVeg === 1 ? true : null,
+          is_veg: it.is_veg,
+          inStock: it.in_stock === 0 ? false : true,
           variants: Array.isArray(it.variants) ? it.variants : [], addons: Array.isArray(it.addons) ? it.addons : [],
           offer_ids: Array.isArray(it.offer_ids) ? it.offer_ids : [], item_offer_cart_meta: String(it.item_offer_cart_meta || '')
         });
       }
     }
-    if (!items.length) throw unavailable('Swiggy returned no items for this group cart.');
-    return { restaurantId: String(data.restaurant_details?.restaurant_id || ref.restaurantId || ref.cartId), restaurantName: String(data.restaurant_details?.restaurant_name || 'Restaurant'), items };
+    if (items.length) {
+      return cartShape({
+        restaurantId: String(data?.restaurant_details?.restaurant_id || ref.restaurantId || ref.cartId),
+        restaurantName: String(data?.restaurant_details?.restaurant_name || 'Restaurant'),
+        areaName: String(data?.restaurant_details?.area_name || '')
+      }, items);
+    }
+    // Asli wajah — HTTP + Swiggy ka apna statusCode/statusMessage, chhupata nahi.
+    const statusCode = json?.statusCode;
+    const statusMessage = String(json?.statusMessage || (json?.errorCodes || []).join(', ') || '').slice(0, 180);
+    const engineNote = String(live?.statusMessage || '').slice(0, 180);
+    const e = unavailable(`Swiggy ne is group cart par item nahi diye (HTTP ${response.status}${statusCode !== undefined && statusCode !== null ? `, statusCode ${statusCode}` : ''}${statusMessage ? `: ${statusMessage}` : ''}${!statusMessage && engineNote ? `: ${engineNote}` : ''}). Mitti me cart band ho sakta hai ya link ka cart id galat hai — host se taaza link maangein.`);
+    e.code = statusCode === 88 ? 'GROUP_CART_EXPIRED' : statusCode === 86 ? 'GROUP_CART_BUSY' : 'GROUP_CART_FETCH_FAILED';
+    throw e;
+  },
+
+  /**
+   * Boss (31-10-2026): "MUJHE OPTION DETA HAI COUPON CHOOSE KARNE KA." Coupon
+   * page ke liye asli list — Swiggy ke apne coupon tool se. Jo code Swiggy ne
+   * nahi diya wo hum banate nahi; list khaali aaye to saaf bata dete hain.
+   */
+  async coupons(account, address, restaurantId) {
+    const rid = String(restaurantId || '').trim();
+    if (!/^\d{1,20}$/.test(rid)) throw badRequest('Pehle cart ya restaurant kholein — restaurant id chahiye.');
+    const addressId = String(address?.id || address?.addressId || '').trim();
+    const found = new Map();
+    const push = (code, title, description, meta = {}) => {
+      const key = String(code || '').trim().toUpperCase();
+      if (!/^[A-Z0-9_-]{3,28}$/.test(key)) return;
+      const previous = found.get(key);
+      if (previous && previous.applicable === true) return;
+      found.set(key, {
+        code: key,
+        title: String(title || key).slice(0, 80),
+        description: String(description || '').slice(0, 200),
+        applicable: meta.applicable !== false,
+        reason: String(meta.reason || '').slice(0, 140)
+      });
+    };
+    let discovery = false;
+    try {
+      const mcp = await callSwiggyFoodMcpTool(account, 'fetch_food_coupons', {
+        restaurantId: rid,
+        ...(addressId ? { addressId } : {})
+      }, 6000).catch(() => null);
+      const list = Array.isArray(mcp?.structured?.coupons) ? mcp.structured.coupons : [];
+      for (const cp of list) {
+        push(cp?.coupon_code || cp?.couponCode || cp?.code || '', cp?.title || cp?.header || cp?.coupon_code, cp?.description || cp?.subtitle || '', {
+          applicable: cp?.is_applicable !== false && cp?.applicable !== false,
+          reason: cp?.ineligible_reason || cp?.reason || ''
+        });
+      }
+      discovery = Boolean(mcp?.ok) || list.length > 0;
+    } catch { /* neeche sach bata denge */ }
+    const coupons = [...found.values()].sort((a, b) => Number(b.applicable) - Number(a.applicable)).slice(0, 20);
+    return {
+      restaurantId: rid,
+      coupons,
+      discovery,
+      note: coupons.length
+        ? (discovery ? 'Ye Swiggy ke apne coupon list se hain. APPLY karne par asli bill aayega — discount tabhi lagta hai jab Swiggy deta hai.' : '')
+        : 'Swiggy ne abhi is restaurant ke liye coupon list nahi di. Neeche apna code daal kar CHECK karein — bill jo aayega wahi sach hai.'
+    };
   },
   async quoteCart(account, address, cart, coupon) {
     const { lat, lng } = coords(address);
