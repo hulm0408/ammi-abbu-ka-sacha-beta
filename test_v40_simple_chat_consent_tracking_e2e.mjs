@@ -8,7 +8,7 @@
 //      and only then the Swiggy payment QR is created.
 //   4. When Swiggy publishes the tracking link, the customer gets ONE short
 //      bubble with a "🛵 Track on Swiggy" URL button (no duplicate bubbles).
-//   5. No inline `web_app` button exists anywhere in the bot sources.
+//   5. Simple-chat order cards remain chat-only; the optional Mini App is separate.
 // ============================================================================
 
 process.env.TEST_MODE = '1';
@@ -303,8 +303,8 @@ console.log('\n--- Scenario 6: focus order + sources stay chat-only ---');
 
   const indexSrc = fs.readFileSync('index.js', 'utf8');
   const simpleSrc = fs.readFileSync('simple-chat.js', 'utf8');
-  check('no Telegram web_app / mini-app button in the bot sources',
-    !/web_app\s*:/.test(indexSrc) && !/web_app\s*:/.test(simpleSrc));
+  check('optional Mini App is separate from the existing simple-chat cards',
+    /bot\.command\('pro'/.test(indexSrc) && /PRO_MINIAPP_URL/.test(indexSrc) && !/web_app\s*:/.test(simpleSrc));
   const urlButtons = [
     ...buildSimpleOrderCard(getDb().orders[ORDER_ID]).keyboard.reply_markup.inline_keyboard.flat(),
     ...buildSimpleHomeScreen({}).keyboard.reply_markup.inline_keyboard.flat()

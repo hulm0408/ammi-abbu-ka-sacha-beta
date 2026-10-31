@@ -175,5 +175,5 @@ globalThis.fetch = async (url, opts = {}) => {
 
 globalThis.fetch = realFetch;
 
-console.log(`\n${fail === 0 ? '✅' : '❌'} v82 OFO placement: ${pass} pass, ${fail} fail`);
+console.log(`\n${fail === 0 ? '✅' : '❌'} v82 offline OFO checks: ${pass} pass, ${fail} fail (not a live Swiggy order)`);
 process.exit(fail === 0 ? 0 : 1);

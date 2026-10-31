@@ -9,7 +9,9 @@ import {
   isTestRunner
 } from './channel-gate.js';
 import http from 'http';
+import net from 'node:net';
 import { Telegraf, Markup } from 'telegraf';
+import { handleSwiggyProHttp } from './swiggy-pro-api.js';
 import { logThrottled, startMemoryGuard, perfSnapshot } from './perf-guard.js';
 import { EVENT_OFFER_LINKS, activateAllEventOffers } from './event-offers.js';
 
@@ -2520,6 +2522,35 @@ bot.start(async (ctx) => {
       console.error('[START] fallback reply failed:', e2?.message || e2);
     }
   }
+});
+
+// Optional Mini App: the chat flow remains unchanged. Set an explicit HTTPS
+// origin rather than trusting request Host headers or a guessed deployment URL.
+function configuredMiniAppUrl() {
+  try {
+    const url = new URL(String(process.env.PRO_MINIAPP_URL || '').trim());
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (url.protocol !== 'https:' || url.username || url.password || !host.includes('.') || host === 'localhost' || host.endsWith('.localhost') || net.isIP(host)) return '';
+    if (!/^\/pro\/?$/.test(url.pathname) || url.search || url.hash) return '';
+    return url.toString();
+  } catch { return ''; }
+}
+
+async function authorizeMiniAppUser(user) {
+  if (isBoss(user.id)) return { allowed: true };
+  if (isServicePaused()) return { allowed: false, message: 'Service abhi paused hai. Please try again later.' };
+  if (isTestRunner()) return { allowed: true };
+  const membership = await checkUserChannelMembership(bot.telegram, user.id);
+  return membership.isMember
+    ? { allowed: true }
+    : { allowed: false, message: `Pehle ${REQUIRED_CHANNEL} join karein aur bot me Check Joined dabayein.` };
+}
+
+bot.command('pro', async (ctx) => {
+  const url = configuredMiniAppUrl();
+  if (!url) return ctx.reply('Mini App abhi configure nahi hai. Chat bot se order kar sakte hain.');
+  return ctx.reply('Mini App kholo. Chat bot pehle ki tarah available hai. In-app payment abhi available nahi hai.',
+    Markup.inlineKeyboard([[Markup.button.webApp('🍽 Open Mini App', url)]]));
 });
 
 bot.command('waf', async (ctx) => {
@@ -15581,6 +15612,7 @@ if (healthPort > 0) {
     try {
       notePublicServiceOrigin(req);
       const reqUrl = new URL(req.url || '/', `http://localhost:${healthPort}`);
+      if (await handleSwiggyProHttp(req, res, { authorizeUser: authorizeMiniAppUser })) return;
 
       // 🤖 PAYMENT AUTO-VERIFY WEBHOOK (boss 30-10-2026)
       // "utr auto verify nahi ho raha" — ab UTR type karne ki zaroorat nahi:
@@ -16157,6 +16189,7 @@ async function setupBotMenu() {
   try {
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'Start a new Swiggy order' },
+      ...(configuredMiniAppUrl() ? [{ command: 'pro', description: 'Open the Mini App' }] : []),
       { command: 'help', description: 'How to place an order' },
       { command: 'cancel', description: 'Cancel the current draft order' }
     ]);
@@ -16164,7 +16197,10 @@ async function setupBotMenu() {
     console.warn('[Menu] setMyCommands skipped:', e?.message || e);
   }
   try {
-    await bot.telegram.setChatMenuButton({ menuButton: { type: 'commands' } });
+    const miniAppUrl = configuredMiniAppUrl();
+    await bot.telegram.setChatMenuButton({ menuButton: miniAppUrl
+      ? { type: 'web_app', text: 'Mini App', web_app: { url: miniAppUrl } }
+      : { type: 'commands' } });
   } catch (e) {
     console.warn('[Menu] setChatMenuButton skipped:', e?.message || e);
   }
