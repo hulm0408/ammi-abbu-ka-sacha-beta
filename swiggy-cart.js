@@ -8800,9 +8800,14 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
   // A missing intent is not evidence that the provider did not create an order.
   // Neither elapsed time nor a "new QR" button authorizes a second placement.
   if (order?.swiggyPlacedUnpaid) {
+    // Boss (30-10-2026): yahan "Naya QR" daba kar naya order place karna sabse
+    // bada nuksaan tha (Swiggy par do unpaid orders, customer ka paisa atka).
+    // Isliye block pakka hai aur next step seedha likha jata hai.
     const err = new Error(
-      `Swiggy may already have an unpaid order (#${order.pendingSwiggyOrderId || '—'}). ` +
-      'Check the same account in Swiggy My Orders; a replacement order was not created.'
+      `Swiggy par pehle se ek unpaid order hai (#${order.pendingSwiggyOrderId || '—'}). ` +
+      'Payment link usi order me milega — same account ke Swiggy My Orders me jaakar ' +
+      'use pay karein ya cancel karein. Jab tak wo clear nahi hota, naya QR nahi banega ' +
+      '(warna Swiggy par doosra order ban jayega).'
     );
     err.diag = { code: 'ORDER_ALREADY_PLACED_UNPAID', stage: 'GENERATE_REAL_QR', placementAttempted: true, placedOrderId: order.pendingSwiggyOrderId || '' };
     throw err;
@@ -9166,6 +9171,24 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         cartId: String(cm.originalCartId || cm.cartId || cm.cart_id || '')
       };
       throw err;
+    }
+
+    // ── KAM amount adopt (customer ke faayde me) ────────────────────────────
+    // Offer/free cash place se pehle lag gaya to live total neeche aa jata hai.
+    // Purana (zyada) amount QR me bhejna galat tha; par customer ko kabhi
+    // dikhaye bill se ZYADA nahi dena. Isliye: agar live total kam hai aur woh
+    // shown bill se upar nahi jaata, to wahi naya total QR me jata hai — audit ke
+    // saath (kya tha, kya hua, why).
+    if (order && typeof order === 'object') {
+      const approvedAmount = Number(order.finalPayable || 0);
+      if (livePayableNow > 0 && approvedAmount > livePayableNow + 0.5 &&
+          (shownBillAmount <= 0 || livePayableNow <= shownBillAmount + 0.5)) {
+        order.billAmountBeforeOfferApply = approvedAmount;
+        order.finalPayable = Number(cm.order_total);
+        order.finalPayableAdoptedAt = new Date().toISOString();
+        order.finalPayableAdoptionReason =
+          `Live cart total ₹${livePayableNow} (offer/free cash ke baad) approved ₹${approvedAmount} se kam hai — customer kam deta hai, QR live total ka banta hai.`;
+      }
     }
 
     let cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || '');
@@ -9568,10 +9591,19 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
           });
         }
       }
+      // Teen alag haalat ko ek hi code me mila dena hi confusing tha:
+      //   A) order place hua + UPI intent aaya par intent INVALID / amount mismatch
+      //      → SWIGGY_UPI_INTENT_INVALID (paise ka sawaal; customer ko galat QR
+      //        kabhi nahi jayega).
+      //   B) order place hua par intent hi nahi aaya → SWIGGY_PLACED_NO_UPI_INTENT
+      //   C) Swiggy ne mana kiya → SWIGGY_PLACE_ORDER_QR_FAILED
+      const intentInvalid = Boolean(placeAccepted && upiIntentUrl && upiIntentUrl.startsWith('upi://') && !intentCheck.valid);
       err.diag = {
         code: suspendFailure.suspended
           ? 'ACCOUNT_SUSPENDED'
-          : (placeAccepted ? 'SWIGGY_PLACED_NO_UPI_INTENT' : 'SWIGGY_PLACE_ORDER_QR_FAILED'),
+          : (intentInvalid
+              ? 'SWIGGY_UPI_INTENT_INVALID'
+              : (placeAccepted ? 'SWIGGY_PLACED_NO_UPI_INTENT' : 'SWIGGY_PLACE_ORDER_QR_FAILED')),
         placed: placeAccepted,
         placementAttempted: true,
         placedOrderId,

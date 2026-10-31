@@ -24,6 +24,7 @@ import { validateUpiIntentForQr, describeQrRef, shouldReusePendingQr } from './p
 import { readSwiggyPlacement, placementAlreadyAttemptedError } from './swiggy-placement-journal.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { OFFER_TRACKS } from './account-views.js';
+import { startJob, clearJob } from './bot-maintenance.js';
 import { lockAccountToOrder, releaseAccountLock } from './order-account-lock.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
 import { startOrderTrackingAuto, ensureOrderTracking, isTerminalDeliveryStatus } from './order-tracking.js';
@@ -1746,8 +1747,8 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
   const trackLinkHtml = trackingUrl ? `<a href="${escapeHtml(trackingUrl)}">${trackDisplay}</a>` : '';
   const lines = [];
   if (order.status === 'COMPLETED' && trackingUrl) {
-    lines.push(`${escapeHtml(bossName)} has just placed an order (ID: ${escapeHtml(displayOrderId)}) for you on Swiggy. Click this link to track: ${trackLinkHtml}`);
-    lines.push(`✓ <b>Payment received — Swiggy order confirmed</b>`);
+    lines.push(`✓ <b>Payment received — aapka Swiggy order place ho gaya (#${escapeHtml(displayOrderId)})</b>`);
+    lines.push(`${escapeHtml(bossName)} ne aapke liye order kiya hai. Track karne ke liye: ${trackLinkHtml}`);
   } else if (trackingUrl) {
     lines.push(`${escapeHtml(bossName)} has just placed an order (ID: ${escapeHtml(displayOrderId)}) for you on Swiggy. Click this link to track: ${trackLinkHtml}`);
     lines.push(`✓ <b>Payment received — Swiggy order confirmed</b>`);
@@ -1757,7 +1758,10 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
     lines.push(`Order reference: <code>#${escapeHtml(String(order.id))}</code>`);
     if (order.swiggyOrderId) lines.push(`Swiggy order no.: <code>${escapeHtml(String(order.swiggyOrderId))}</code>`);
     if (order.liveOrderStatus) lines.push(`Status: ${escapeHtml(String(order.liveOrderStatus))}`);
-    lines.push('Payment verified successfully. Swiggy tracking is not available yet. I\'ll retry shortly.');
+    lines.push('Payment verified successfully. Swiggy tracking link is not available yet — jaldi hi bheja jayega.');
+    // Sach + raasta: link na ho to Swiggy ke asli orders page ka link do
+    // (bot ka apna page kabhi nahi).
+    lines.push(`Abhi apna order yahan dekh sakte hain: <a href="https://www.swiggy.com/my-account/orders">Swiggy My Orders</a>`);
     console.log(`[Tracking] No reliable tracking source for order ${order.id} (swiggyOrderId=${order.swiggyOrderId || 'unknown'}). Will retry via poller.`);
   }
   if (deliveryOtp) {
@@ -1769,24 +1773,37 @@ export async function sendOrderDeliveryInfoNotice(telegram, chatId, order, { for
   const options = {
     parse_mode: 'HTML',
     link_preview_options: { is_disabled: true },
-    ...(trackingUrl ? Markup.inlineKeyboard([[Markup.button.url('↗ Open Swiggy tracking', trackingUrl)]]) : {})
+    ...(trackingUrl
+      ? Markup.inlineKeyboard([[Markup.button.url('↗ Open Swiggy tracking', trackingUrl)]])
+      : Markup.inlineKeyboard([[Markup.button.url('↗ Swiggy My Orders', 'https://www.swiggy.com/my-account/orders')]]))
   };
-  // Telegram DM disabled per user request — only SMS
+  // 📱 SMS band hai (boss/professor 30-10-2026: "bot SMS mat bhejo"). Par
+  // customer ko tracking link MILNA chahiye — warna wo order ka pata hi nahi
+  // kar sakta aur "link nahi aaya" wali shikayat wapas aati hai.
+  // Isliye delivery yahan Telegram DM par hoti hai (bot ka apna channel), SMS
+  // gateway ka use nahi hota. Sach: message tabhi bhejte hain jab bheja jaye —
+  // `true` sirf tab jab message sach me chala gaya ho.
+  let delivered = false;
   try {
+    const sent = await telegram.sendMessage(recipientId, lines.join('\n'), options);
+    const messageId = sent?.message_id || null;
     order.deliveryInfoNotices = { ...notices, [recipientId]: noticeKey };
+    if (messageId) {
+      order.deliveryInfoMessageId = messageId;
+      order.deliveryInfoSentAt = new Date().toISOString();
+    }
+    order.deliveryInfoChannel = 'TELEGRAM';
     const db = getDb();
     db.orders[order.id] = order;
     saveDb(db);
-    if (trackingUrl || order.swiggyOrderId || order.id) {
-      // 📱 SMS band — Swiggy khud recipient ke number par SMS + tracking link bhejta hai.
-      // Bot SMS gateway use nahi karta (false claim nahi).
-    }
-    return true;
-  } catch {
-    // SMS fallback — band (Swiggy khud bhejega)
-
-    return false;
+    delivered = true;
+  } catch (err) {
+    // Bhej nahi paye to jhooth nahi bolte: dedupe key bhi stamp nahi hoti, taaki
+    // agla attempt dobara try kare.
+    console.warn(`[Tracking] Customer notice failed for order ${order.id}:`, err?.message || err);
+    delivered = false;
   }
+  return delivered;
 }
 
 export function startOrderDeliveryInfoPoller({
@@ -2394,6 +2411,14 @@ export async function notifyBossOrderPlacedNoIntent(telegram, { orderId = '', ph
         parse_mode: 'HTML',
         link_preview_options: { is_disabled: true },
         ...Markup.inlineKeyboard([
+          // Pehle ye order clear karo — tabhi naya QR. Isliye "Naya QR" ke bajaye
+          // wo do cheezein jo sach me aage badhati hain:
+          //   1) is order ka payment aaya ya nahi (status check, koi naya order nahi)
+          //   2) Swiggy My Orders (pay ya cancel karne ke liye)
+          ...(orderId ? [[
+            Markup.button.callback('✓ Paid check karo', `fwd_check_paid_${orderId}`),
+            Markup.button.callback('☎ Accounts', 'boss_view_accounts')
+          ]] : []),
           [Markup.button.url('↗ Swiggy My Orders', 'https://www.swiggy.com/my-account/orders')]
         ])
       }
@@ -2451,12 +2476,50 @@ export async function notifyBossAccountSuspended(telegram, {
 // apna error spam karta tha). Ab doosra caller wahi promise paata hai.
 const qrGenerationInFlight = new Map();
 
+// ⏱ QR GEN BUDGET (boss 30-10-2026: "bot hang hogaya hai").
+// Timer se race karke worker ko chhodna khatarnaak tha (chalta worker + retry =
+// Swiggy par doosra unpaid order). Isliye: worker ko mara nahi jata, par uska
+// waqt naap liya jata hai — budget se zyada chale to maintenance/boss ko
+// `QR_GENERATION_TIMEOUT` ke roop me pata chalta hai, aur usi order par naya
+// attempt sirf purana khatam hone ke baad shuru hota hai (dedupe).
+const QR_GEN_BUDGET_MS = Math.max(20_000, Number(process.env.QR_GEN_BUDGET_MS) || 90_000);
+
 export function executeRealQrGenerationForOrder(args = {}) {
   const key = String(args?.orderId || '');
   if (key && qrGenerationInFlight.has(key)) {
     return qrGenerationInFlight.get(key);
   }
-  const run = executeRealQrGenerationForOrderInternal(args);
+  // Job registry: agar ye budget se zyada chale to maintenance isko "atka hua"
+  // batata hai (code QR_GENERATION_TIMEOUT) — chup-chaap hang nahi.
+  const qrStartedAt = Date.now();
+  const endJob = key ? startJob('QR_GENERATE', { timeoutMs: QR_GEN_BUDGET_MS, orderId: key }) : null;
+  const run = executeRealQrGenerationForOrderInternal(args).catch((err) => {
+    if (err && typeof err === 'object' && !err.diag) err.diag = {};
+    throw err;
+  }).finally(() => {
+    if (endJob) endJob();
+    if (key) clearJob('QR_GENERATE', key);
+    const tookMs = Date.now() - qrStartedAt;
+    if (key && tookMs > QR_GEN_BUDGET_MS) {
+      // Budget se zyada laga — order par SACH likho (jhooth nahi ki sab theek),
+      // aur boss ko maintenance card me yahi code dikhega. Worker ko mara nahi
+      // jata, isliye duplicate order ka khatra nahi.
+      try {
+        const slowDb = getDb();
+        const slowOrder = slowDb.orders?.[key];
+        if (slowOrder) {
+          slowOrder.qrGenerationSlow = {
+            code: 'QR_GENERATION_TIMEOUT',
+            tookMs,
+            budgetMs: QR_GEN_BUDGET_MS,
+            at: new Date().toISOString()
+          };
+          saveDb(slowDb);
+        }
+      } catch { /* audit fail se QR result na ruke */ }
+      console.warn(`[QR] Order ${key}: generation took ${Math.round(tookMs / 1000)}s (budget ${Math.round(QR_GEN_BUDGET_MS / 1000)}s) — QR_GENERATION_TIMEOUT recorded.`);
+    }
+  });
   if (key) {
     qrGenerationInFlight.set(key, run);
     const clear = () => { if (qrGenerationInFlight.get(key) === run) qrGenerationInFlight.delete(key); };
@@ -2548,7 +2611,9 @@ async function executeRealQrGenerationForOrderInternal({
     // (A) Order place ho chuka hai, bas UPI intent nahi mila. Is haalat me
     // DOOSRE account par jaana sabse bada nuksaan tha: Swiggy par ek aur unpaid
     // order ban jata, aur customer ko kuch nahi milta. Yahan rukna sahi hai.
-    if (String(qrErr?.diag?.code || '') === 'SWIGGY_PLACED_NO_UPI_INTENT') {
+    // Order place ho chuka hai par QR nahi mila — intent missing (A) ya intent
+    // invalid/mismatch (B). Dono me retry = doosra unpaid order, isliye rukna.
+    if (['SWIGGY_PLACED_NO_UPI_INTENT', 'SWIGGY_UPI_INTENT_INVALID'].includes(String(qrErr?.diag?.code || ''))) {
       const placedId = String(qrErr?.diag?.placedOrderId || '');
       const placedDb = getDb();
       const placedOrder = placedDb.orders?.[order.id];
