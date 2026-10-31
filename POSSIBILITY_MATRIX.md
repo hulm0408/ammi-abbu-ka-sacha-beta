@@ -270,3 +270,35 @@ Boss: *"NO SMS RECEIVED AND NO TRACKING IS AVAILABLE"*.
 Har order par `receiverPhone`, `forSomeoneElse` checkout ke waqt hi yaad rakhe jaate hain
 (`ws.checkout.receiverPhone`), isliye SMS ka sach baad me bhi asli number par banta hai.
 UI me `receiverMasked` hi dikhta hai (`79••••9775`), poora number nahi.
+
+---
+
+## K. Login ID ka data deploy par kaise bachta hai (Round 22)
+
+Boss: *"AB JAISE JITNE BHI LOGIN ID HOTE HAIN KISKA DATA NAHI BACHTA WO KISLIYE AND KYA SOLUTION HAI"*.
+
+**Kisliye:** `store.js` ka `ensureDb()` `db.json` na mile to `defaultData` bana deta hai. Render par
+disk attach na ho (ya redeploy par khali ho) to login IDs ke cookies/token, `sessionVault`,
+mini-app workspaces (address/cart/orders) — sab ek deploy me gayab. Round 19 me **paisa** ka
+snapshot bana tha, **IDs** ka nahi.
+
+**Solution:** `identity-snapshot.js` (pure) + `db-durability.js` ka identity backup/restore.
+
+| # | Case | Behaviour |
+|---|---|---|
+| K1 | Deploy par `db.json` naya | boot par identity snapshot se saari IDs wapas (`restoredFromSnapshot`) |
+| K2 | Local me live session, snapshot purana | local jeetta hai — naya session overwrite nahi hota |
+| K3 | Local copy dead (cookies khaali / expired) | snapshot wali zinda session wapas aati hai |
+| K4 | ID jaan-boojh kar logout/delete | tombstone — kabhi resurrect nahi |
+| K5 | sessionVault (purane OTP sessions) | union — koi bhi na jaata |
+| K6 | Mini-app workspace (address/cart/orders) | snapshot me envelope, boot par disk file wapas |
+| K7 | Local workspace zinda hai | snapshot se overwrite nahi hota |
+| K8 | Cloud token nahi | local copy (`db-identity-snapshot.json`), status line saaf warning |
+| K9 | Cloud me plaintext cookies | kabhi nahi — AES-256-GCM |
+| K10 | 1.5s debounce me hua workspace change | snapshot disk se naya envelope uthata hai |
+| K11 | Process SIGTERM | shutdown se pehle force flush (IDs + paisa) |
+| K12 | Naya ID add/import (mini-app) | turant force backup, deploy ka intezaar nahi |
+| K13 | ID ka session Swiggy par khatam | "Sessions check karein" par asli jawab + `sessionExpired` mark |
+| K14 | Vault key badal gayi | `workspaceHealth.failed` + saaf line "key se khul nahi rahe, data safe hai" |
+| K15 | Non-boss identities maange | 403 |
+| K16 | Cookies UI me | kabhi nahi — sirf masked number (`98••••3210`) |

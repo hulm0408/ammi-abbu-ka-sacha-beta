@@ -575,3 +575,41 @@ baad me SMS ka sach asli number par banta hai (UI me masked: `79••••9775
 `test_v110_tracking_and_sms_truth.mjs` **10 checks** (SMS scanner/sach 4, tracking sach 2,
 API 3, DOM 1). Sweep: guards **78/78 (145s)**, `test:pro` **41/41**, `npm test` **132/132**,
 `test_v109` 13/13, bossbot **49/49**.
+
+## Round 22 (31-10-2026): "jitne bhi login ID hote hain kiska data nahi bachta"
+
+Boss: *"AB JAISE JITNE BHI LOGIN ID HOTE HAIN KISKA DATA NAHI BACHTA WO KISLIYE AND KYA SOLUTION HAI"*
+
+### Kisliye hota tha
+`store.js` ka `ensureDb()` `db.json` na mile to `defaultData` bana deta hai. Render par disk attach
+na ho, ya redeploy par khali ho jaye, to **har login ID ka data** (cookies/token, `sessionVault`,
+mini-app workspaces = address/cart/orders) ek deploy me chala jata tha. Round 19 me sirf **paisa**
+deploy-proof hua tha — IDs ka koi snapshot nahi tha.
+
+### Solution — `identity-snapshot.js` (naya, pure) + `db-durability.js`
+* Snapshot me: har live ID (cookies/token), `sessionVault`, delete tombstones, aur **mini-app
+  workspaces ke encrypted envelopes**.
+* Push: local copy `<DATA_DIR>/db-identity-snapshot.json` + cloud `vault/db-identity-snapshot.json`
+  (AES-256-GCM). Har 30s, `SIGTERM`/`beforeExit` par bhi, aur **naya ID add/import par turant**.
+* Boot par (`index.js` → `restoreIdentityOnBoot()`): khaali db me IDs + workspaces wapas,
+  workspace files bhi disk par likhi jaati hain.
+* Rules: local **live** session kabhi overwrite nahi; dead local copy ho to snapshot wali zinda
+  session aati hai; logout/delete ki ID kabhi wapas nahi; workspace local zinda ho to chheda nahi.
+* `proWorkspaceKeyHealth()` — har workspace asli me khulta hai ya nahi (PRO_VAULT_KEY badalne par
+  "data safe hai par unreadable" ka sach).
+
+### Boss panel (Tools → *Login ID ka data*)
+* IDs saved / live / expired, mini-app workspaces, Cloud ON-OFF, last backup, deploy ke baad restore.
+* Har ID: naam, masked number, saved time, "deploy ke baad wapas aaya" ya expired.
+* Buttons: **"Sab ID abhi backup karein"** aur **"Sessions Swiggy par check karein"** (asli verify;
+  expired ID ka naam + wajah dikhta hai).
+* API: `GET/POST /pro/api/boss/identities` (sirf boss); cookies kabhi response me nahi.
+
+### Boss ko karna
+Render env me `GITHUB_VAULT_TOKEN` + `VAULT_ENCRYPTION_KEY` (ek baar) — iske bina sirf local copy
+banti hai aur deploy par data ja sakta hai (panel me saaf likha aata hai).
+
+### Tests
+`test_v111_login_id_durability.mjs` **17 checks** (snapshot/merge 8, key health 1,
+deploy+restore 3, API 4, DOM 1). Sweep: guards **79/79 (147s)**, `test:pro` **41/41**,
+`npm test` **132/132**, v109 13/13, v110 10/10, bossbot **49/49**.

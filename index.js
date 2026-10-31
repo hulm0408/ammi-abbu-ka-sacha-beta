@@ -66,7 +66,7 @@ import {
   syncAccountsJsonMirror,
 } from './store.js';
 import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
-import { restoreMoneyOnBoot, startDbDurability } from './db-durability.js';
+import { restoreMoneyOnBoot, restoreIdentityOnBoot, startDbDurability } from './db-durability.js';
 import { recordStatementPayment } from './upi-statement.js';
 import { isMenuText, isCommandText, looksLikePlainOrderId } from './menu-labels.js';
 import {
@@ -16302,6 +16302,13 @@ async function startBotWithRetry() {
     // hai" — wallet aur UTR ledger disk par the, deploy par ud jaate the.
     // Ab boot par cloud snapshot se paisa/UTR wapas, aur 30s me snapshot chalta
     // rehta hai. Paisa kabhi kam nahi hota (merge max balance leta hai).
+    // Round 22 (boss): "JITNE BHI LOGIN ID HOTE HAIN KISKA DATA NAHI BACHTA".
+    // Deploy ke baad khaali db me login IDs + mini-app workspaces wapas — money
+    // snapshot se pehle, kyunki IDs ke bina paisa bhi bekaar hai.
+    try {
+      const identity = await restoreIdentityOnBoot();
+      if (identity?.restored) console.log(`[db-durability] login ID restore hua (${identity.source})`, JSON.stringify(identity.summary || {}));
+    } catch (err) { console.warn('[db-durability] identity restore warning:', err?.message || err); }
     try {
       const money = await restoreMoneyOnBoot();
       if (money?.restored) console.log(`[db-durability] paisa/UTR restore hua (${money.source})`, JSON.stringify(money.summary || {}));

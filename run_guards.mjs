@@ -90,7 +90,8 @@ const TESTS = [
   "test_v107_bill_and_qr_possibilities.mjs",
   "test_v108_deployproof_tracking_autopay.mjs",
   "test_v109_utr_asli_paisa.mjs",
-  "test_v110_tracking_and_sms_truth.mjs"
+  "test_v110_tracking_and_sms_truth.mjs",
+  "test_v111_login_id_durability.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];

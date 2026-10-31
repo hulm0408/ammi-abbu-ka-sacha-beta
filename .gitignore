@@ -124,3 +124,4 @@ extracted_mp4_frames/
 !test_v108_deployproof_tracking_autopay.mjs
 !test_v109_utr_asli_paisa.mjs
 !test_v110_tracking_and_sms_truth.mjs
+!test_v111_login_id_durability.mjs

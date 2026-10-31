@@ -322,6 +322,34 @@ export async function backupProWorkspaceNow(userId) {
   return { mirrored, cloud };
 }
 
+
+/**
+ * Boss (31-10-2026, round 22): "data bachta nahi" ka ek aur asli kaaran —
+ * vault key badal jaye to purane workspace khulte hi nahi. Ye function har
+ * encrypted workspace ko sach me kholne ki koshish karta hai aur batata hai
+ * kitne khul rahe hain, kitne nahi. (Key badli to data safe hai par unreadable
+ * — ye sach UI me dikhna chahiye, "sab theek" ka jhooth nahi.)
+ */
+export function proWorkspaceKeyHealth() {
+  let ok = 0;
+  let failed = 0;
+  let rows = [];
+  try { rows = Object.values(mirrorRows()); } catch { rows = []; }
+  const key = secretKey();
+  for (const row of rows) {
+    try {
+      const envelope = JSON.parse(String(row?.envelope || ''));
+      if (envelope.version !== 1) throw new Error('version');
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64'));
+      decipher.setAAD(aad(String(row.userId)));
+      decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
+      Buffer.concat([decipher.update(Buffer.from(envelope.data, 'base64')), decipher.final()]);
+      ok += 1;
+    } catch { failed += 1; }
+  }
+  return { ok, failed, total: rows.length, keySource: getProVaultSource() };
+}
+
 export function proBackupStatus() {
   let rows = 0;
   try { rows = Object.keys(mirrorRows()).length; } catch {}

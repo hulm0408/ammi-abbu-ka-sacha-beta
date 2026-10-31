@@ -5,9 +5,10 @@ import { validateUpiIntentForQr } from './payment-qr-guard.js';
 import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { checkRateLimit, rateLimitMessage, rateLimitState } from './pro-rate-limit.js';
 import { reconcileBill, describeBillState } from './bill-reconcile.js';
-import { backupMoneyNow, durabilityStatus } from './db-durability.js';
+import { backupMoneyNow, backupIdentityNow, durabilityStatus, identityStatus } from './db-durability.js';
 import { importStatementText, recordStatementPayment, statementStatus } from './upi-statement.js';
 import { describeSmsTruth, describeTrackingTruth, scanRecipientSmsEvidence } from './tracking-truth.js';
+import { summarizeIdentity } from './identity-snapshot.js';
 import { planQrGeneration, isRenderableQrImage, describeQrPlan } from './qr-generation-plan.js';
 import { exactPaise } from './swiggy-cart-integrity.js';
 import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder, isZeroSmsTestSandboxActive } from './swiggy-cart.js';
@@ -951,7 +952,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
               : { cloud: d.cloud, restoredAt: d.restoredAt, line: d.line };
           })(),
           // Round 20: asli paisa ka sabooot (sirf boss ko) — statement summary.
-          ...(user?.isBoss || isBoss(user.id) ? { statement: statementStatus(getDb()) } : {}),
+          ...(user?.isBoss || isBoss(user.id) ? { statement: statementStatus(getDb()), identities: identityStatus() } : {}),
           // Round 21 ("NO SMS RECEIVED"): SMS/order ka asli rasta ya block?
           // Sandbox/blocked environment me order hi place nahi hota, isliye SMS
           // ka intezaar bekaar hai — boss ko yahi saaf dikhna chahiye.
@@ -1013,6 +1014,70 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           imported: { parsed: imported.parsed, accepted: imported.accepted.length, rejected: imported.rejected },
           settled: imported.settled,
           statement: statementStatus(db)
+        });
+        return;
+      }
+      // ── Round 22: login IDs ka data deploy par bachega ya nahi ──────────
+      // Boss: "JITNE BHI LOGIN ID HOTE HAIN KISKA DATA NAHI BACHTA". Yahan har
+      // ID ka asli sach: session saved hai ya nahi, cloud backup chalu hai ya
+      // nahi, deploy ke baad restore hua ya nahi.
+      if (route === '/pro/api/boss/identities' && req.method === 'GET') {
+        if (!isBoss(user.id)) throw error(403, 'Login IDs ka data sirf boss dekh sakta hai.');
+        const status = identityStatus();
+        json(res, 200, { ok: true, identities: status, backup: userBackupView(user) });
+        return;
+      }
+      if (route === '/pro/api/boss/identities' && req.method === 'POST') {
+        if (!isBoss(user.id)) throw error(403, 'Login IDs ka backup sirf boss kar sakta hai.');
+        const body = await bodyJson(req);
+        if (body.verify === true) {
+          // Har ID ka session Swiggy par asli check — jhootha "sab theek" nahi.
+          const db = getDb();
+          const accounts = Object.entries(db.config?.accounts || {}).filter(([, a]) => a && (a.cookies || a.tid || a.token));
+          const results = [];
+          for (const [key, account] of accounts.slice(0, 8)) {
+            const summary = summarizeIdentity(key, account);
+            let live = { valid: false, reason: 'provider ne jawab nahi diya' };
+            try {
+              live = await provider.verifySession(account) || live;
+            } catch (err) {
+              live = { valid: false, reason: String(err?.message || err).slice(0, 120) };
+            }
+            const target = db.config.accounts[key];
+            if (target) {
+              target.lastVerifiedAt = new Date().toISOString();
+              target.sessionExpired = live?.valid !== true;
+              if (live?.valid) {
+                if (live.liveTid) target.tid = live.liveTid;
+                if (live.cookies) target.cookies = live.cookies;
+                if (live.token) target.token = live.token;
+                target.isLoggedIn = true;
+              }
+            }
+            results.push({ ...summary, valid: live?.valid === true, reason: String(live?.reason || '') });
+          }
+          saveDb(db);
+          backupIdentityNow({ force: true }).catch(() => {});
+          json(res, 200, {
+            ok: true,
+            checked: results.length,
+            results,
+            identities: identityStatus(),
+            note: results.length ? '' : 'Koi session saved nahi hai — pehle ID add karein.'
+          });
+          return;
+        }
+        // Backup button — abhi, debounce ke bina.
+        const pushed = await backupIdentityNow({ force: true });
+        json(res, 200, {
+          ok: true,
+          backup: pushed,
+          identities: identityStatus(),
+          message: pushed.ok
+            ? 'Login IDs + mini-app data cloud me save ho gaya.'
+            : (pushed.localOnly
+              ? 'Sirf local copy bani — cloud token (GITHUB_VAULT_TOKEN) Render env me set nahi hai.'
+              : `Backup nahi hua: ${pushed.error || pushed.skipped || pushed.reason || 'wajah nahi mili'}`)
         });
         return;
       }
@@ -1088,6 +1153,9 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         delete ws.otpPhone;
         otpAttempts.delete(user.id);
         writeProWorkspace(user.id, ws);
+        // Round 22: naya ID add hote hi backup — deploy iske turant baad bhi ho,
+        // to ID wapas milegi.
+        backupIdentityNow({ force: true }).catch(() => {});
         json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
       }
@@ -1132,6 +1200,8 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           tid: live.liveTid || session.tid || '', token: live.token || session.token || '', cookies: live.cookies || session.cookies || ''
         });
         writeProWorkspace(user.id, ws);
+        // Round 22: imported ID turant cloud me — deploy bhi ho jaye, ID na jaye.
+        backupIdentityNow({ force: true }).catch(() => {});
         json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
       }
