@@ -63,15 +63,35 @@
   const cartLocked = () => Boolean(state.checkout && state.checkout.status !== 'PAID');
   const head = (eyebrow, title, sub, end = '') => `<div class="page-heading"><div><p class="eyebrow">${esc(eyebrow)}</p><h1>${esc(title)}</h1><p>${esc(sub)}</p></div>${end}</div>`;
   const empty = (symbol, title, text) => `<div class="empty"><div class="large-icon">${icon(symbol)}</div><strong>${esc(title)}</strong>${esc(text)}</div>`;
-  const toast = message => {
+  /**
+   * Round 27 (boss): toast ab Swiggy jaisa — upar se drop, icon ke saath, aur
+   * rang sach ke hisaab se (kaam hua = hara, nahi hua = laal). Type na diya
+   * jaye to message se pata lagta hai, par jahan pakka pata ho wahan type do.
+   */
+  const toast = (message, type = '') => {
     // Telegram WebView band hone ke baad bhi async response aa sakta hai.
     try {
       const el = $('#toast');
       if (!el) return;
-      el.textContent = message; el.hidden = false;
+      const text = String(message ?? '');
+      // Type guess nahi karte — jahan pakka pata ho wahin 'ok'/'bad' bhejte
+      // hain, warna neutral 'info'. Isse jhootha hara tick kabhi nahi aata.
+      const kind = type === 'ok' || type === 'bad' ? type : 'info';
+      el.className = `toast-${kind}`;
+      const glyph = kind === 'bad' ? '!' : kind === 'ok' ? '\u2713' : 'i';
+      el.innerHTML = `<span class="toast-icon" aria-hidden="true">${glyph}</span><span class="toast-copy"></span>`;
+      const copy = el.querySelector('.toast-copy');
+      if (copy) copy.textContent = text; else el.textContent = text;
+      el.hidden = false;
+      // Dobara same message par animation phir se chale.
+      el.style.animation = 'none';
+      void el.offsetWidth;
+      el.style.animation = '';
       clearTimeout(toast.timer); toast.timer = setTimeout(() => { el.hidden = true; }, 4300);
     } catch { /* window band ho gaya */ }
   };
+  // Tests aur manual debug ke liye — behaviour badalta nahi.
+  try { window.__appToast = toast; } catch { /* no window */ }
   // Browser confirm() can be blocked in Telegram WebViews. Keep every consent
   // inside the Mini App, preserve the full recipient/amount text, and default
   // to cancellation on dismissal. Only one prompt can be open at a time.
@@ -211,6 +231,13 @@
   }
   // Boss (31-10-2026, dusra round): "ADMIN SE BAAT KARO WALA BUTTON HATAO."
   // App ke andar sirf app ka kaam — koi support button nahi.
+  /**
+   * Round 27: jab tak Swiggy ka bill/coupon aa raha hai, khaali jagah nahi —
+   * shimmer card jo sach bolta hai ("offers check ho rahe hain").
+   */
+  function renderFindingCoupon() {
+    return `<div class="card finding-coupon-card"><div class="finding-coupon"><span class="spinner" aria-hidden="true"></span><span class="row-content"><strong>Finding the best coupon</strong><p>Checking offers for this cart…</p></span></div><div class="skeleton-list" style="margin-top:12px" aria-hidden="true"><span class="skeleton-line lg"></span><span class="skeleton-line short"></span></div></div>`;
+  }
   function skeletonRows(count = 3, lines = 2) {
     return `<div class="skeleton-list" aria-hidden="true">${Array.from({ length: count }).map(() => `<div class="skeleton-row"><span class="skeleton-tile"></span><span class="skeleton-copy">${Array.from({ length: lines }).map((_, i) => `<span class="skeleton-line${i ? ' short' : ''}"></span>`).join('')}</span></div>`).join('')}</div>`;
   }
@@ -618,7 +645,7 @@
     const body = state.couponsLoading
       ? skeletonRows(3, 2)
       : (list.length ? list.map(tile).join('') : `<div class="card"><p class="hint">Coupon list aa rahi hai — upar APPLY dabaiye.</p></div>`);
-    return `<button class="back-button" data-action="coupon-back">${icon('back')} Cart</button>${head('SAVINGS', 'Coupons', `Your cart: ${q ? money(q.itemTotal ?? q.total) : '—'}`)}${applied}<p class="section-title">Aapke liye offers</p>${body}<p class="hint">${esc(state.couponsNote || 'APPLY dabaiye — asli bill Swiggy se aayega. Discount tabhi dikhega jab Swiggy deta hai.')}</p>`;
+    return `<button class="back-button" data-action="coupon-back">${icon('back')} Cart</button>${head('SAVINGS', 'Coupons', `Your cart: ${q ? money(q.itemTotal ?? q.total) : '—'}`)}${applied}<div class="coupon-count">AVAILABLE COUPONS <b>${Array.isArray(list) ? list.length : 0}</b></div><p class="section-title">Aapke liye offers</p>${body}<p class="hint">${esc(state.couponsNote || 'APPLY dabaiye — asli bill Swiggy se aayega. Discount tabhi dikhega jab Swiggy deta hai.')}</p>`;
   }
   /** Payment ke baad asli tracking — status Swiggy se, guess nahi. */
   function renderTrack() {
@@ -705,7 +732,7 @@
     const eta = `<div class="eta-strip"><span class="eta-clock">${icon('orders')}</span><span class="eta-copy"><strong>${cart.restaurantTime ? `Delivery in ${esc(cart.restaurantTime)}` : 'Delivery time Swiggy se aayega'}</strong><small>${esc([cart.restaurantName, cart.restaurantArea].filter(Boolean).join(' · '))}</small></span><span class="pill">${esc(state.selectedAddress ? 'Deliver to ' + addressLabel(state.selectedAddress) : 'Address chunein')}</span></div>`;
     // Pay bar: Swiggy jaisa — bada amount + bill link left, green pay right.
     const payBar = `<div class="pay-bar"><button class="button green pay-now" type="button" data-action="checkout-start" ${locked || !state.checkoutEnabled ? 'disabled' : ''} ${!state.checkoutEnabled ? `title="${esc(state.checkoutBlockReason || '')}"` : ''}>${state.checkoutEnabled ? `Pay Now · Proceed to Pay ${icon('arrow')}` : 'Payment band'}</button><div class="pay-left"><strong>${q ? money(q.total) : '—'}</strong><span class="link-button" role="button" tabindex="0" data-action="bill-open">${state.billOpen ? 'Bill band karein' : 'View Detailed Bill'}</span><small>${q ? 'PAY USING UPI' : 'BILL CHECK KAREIN'}</small></div></div>${state.checkoutEnabled ? '' : `<div class="warning pay-blocked">Payment abhi band hai — wahi asli wajah: ${esc(state.checkoutBlockReason || 'server ne reason nahi diya')}</div>`}`;
-    return `${head('CHECKOUT', 'Checkout', 'Address, bill aur payment — sab yahin.')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${idleNote}${renderSavingsCorner(q)}${renderBill(q, cart)}${renderPayment(cart)}${renderWalletCard()}${payBar}`;
+    return `${head('CHECKOUT', 'Checkout', 'Address, bill aur payment — sab yahin.')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${idleNote}${!q ? renderFindingCoupon() : ''}${renderSavingsCorner(q)}${renderBill(q, cart)}${renderPayment(cart)}${renderWalletCard()}${payBar}`;
   }
   function renderOrders() {
     const detailed = state.ordersDetailAllowed !== false;
@@ -965,7 +992,7 @@
         render();
         if (out.checkout?.status === 'PAID' && out.checkout.orderId) {
           stopPaymentPoll();
-          toast('Payment mil gayi — order track ho raha hai.');
+          toast('Payment mil gayi — order track ho raha hai.', 'ok');
           startTracking(out.checkout.orderId, 'checkout');
         }
       } catch { /* net gaya — agla render phir schedule karega */ }
@@ -1118,13 +1145,13 @@
     const addr = state.selectedAddress;
     if (!addr) {
       state.tab = 'address'; writeCache({ tab: 'address' }); render();
-      toast('Pehle delivery address chunein.');
+      toast('Pehle delivery address chunein.', 'bad');
       return false;
     }
     const mobile = String(addr.mobile || '').replace(/\D/g, '').slice(-10);
     if (!String(addr.name || '').trim() || mobile.length !== 10) {
       state.tab = 'address'; state.contactEdit = true; writeCache({ tab: 'address' }); render();
-      toast('Receiver ka naam aur 10-digit mobile bhar dein — Swiggy iske bina bill/order nahi deta.');
+      toast('Receiver ka naam aur 10-digit mobile bhar dein — Swiggy iske bina bill/order nahi deta.', 'bad');
       return false;
     }
     return true;
@@ -1147,7 +1174,7 @@
         ? { ok: true, saved: applied }
         : { ok: false, message: 'Swiggy ne is code par discount nahi diya — bill me 0 dikha.' } };
       render();
-      toast(applied > 0 ? `${value} lag gaya — ${money(applied)} ki saving.` : `${value} par Swiggy ne discount nahi diya.`);
+      toast(applied > 0 ? `${value} lag gaya — ${money(applied)} ki saving.` : `${value} par Swiggy ne discount nahi diya.`, applied > 0 ? 'ok' : 'bad');
     } catch (e) {
       state.couponResults = { ...(state.couponResults || {}), [value]: { ok: false, message: e?.message || 'Swiggy ne ye coupon nahi liya.' } };
       render();
@@ -1168,7 +1195,7 @@
     merge(out);
     state.couponResults = {};
     render();
-    toast('Coupon hata diya — naya bill aa gaya.');
+    toast('Coupon hata diya — naya bill aa gaya.', 'ok');
   }
   function forms(event) {
     const form = event.target.closest('form[data-form]');
@@ -1206,7 +1233,7 @@
         await search(String(data.get('q') || '').trim());
       } else if (type === 'group-cart') {
         const url = String(data.get('url') || state.groupCartDraft || '').trim();
-        if (!url) { toast('Pehle group cart ka link paste karein.'); return; }
+        if (!url) { toast('Pehle group cart ka link paste karein.', 'bad'); return; }
         if (state.cart && !await confirmInApp({ title: 'Draft cart replace karein?', message: 'Aapka draft cart is group cart se replace ho jayega. Purana draft chala jayega.', confirmText: 'Replace karein' })) return;
         const out = await api('cart/import-group', 'POST', { url, replace: Boolean(state.cart) });
         state.groupCartDraft = '';
@@ -1217,7 +1244,7 @@
       } else if (type === 'wallet-claim') {
         const utr = String(data.get('utr') || '').trim().replace(/\s+/g, '');
         const amountRupees = Number(String(data.get('amount') || '').replace(/[^0-9.]/g, ''));
-        if (!/^\d{12}$/.test(utr)) { toast('UPI app se poora 12-digit UTR daaliye.'); return; }
+        if (!/^\d{12}$/.test(utr)) { toast('UPI app se poora 12-digit UTR daaliye.', 'bad'); return; }
         // QR khula hai to usi top-up par claim; warna jo amount user ne likha.
         const payload = state.walletTopup?.topupId
           ? { topupId: state.walletTopup.topupId, amountPaise: state.walletTopup.amountPaise, utr }
@@ -1229,7 +1256,7 @@
           merge(out); state.walletTopup = null; state.walletSheet = false;
           // Round 25: user ko bhi poora sach — kitna aaya, kab, kisko.
           state.walletClaimNote = out.utrTruth?.summaryLine || out.lookupLine || '';
-          toast(out.message || 'UTR ki payment fetch hui — jitna aaya utna juda.');
+          toast(out.message || 'UTR ki payment fetch hui — jitna aaya utna juda.', out.pending ? 'info' : 'ok');
         } finally { state.walletClaimBusy = false; render(); }
       } else if (type === 'utr-track') {
         const utr = String(data.get('utr') || '').trim().replace(/\s+/g, '');

@@ -447,3 +447,134 @@ body.dark .bill-plain { background: #1b2b36; color: #dbe8f0; }
 .wallet-card .wallet-topup { margin: 10px 0 4px; text-align: center; }
 .wallet-card .wallet-topup .payment-qr { margin: 8px auto; }
 .wallet-card .wallet-usi { margin-top: 8px; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Round 27 (boss 31-10-2026): "ANIMATION AND FONT AND STRATEGY ... LOOKS
+   AMAZING". Yahan se premium look — font, motion tokens, micro-interactions,
+   top toast, aur breathe karti hui cards. Functionality same rehti hai.
+   ══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --font-ui: "Manrope", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ease-soft: cubic-bezier(.22, .61, .36, 1);
+  --ease-spring: cubic-bezier(.2, .9, .28, 1.12);
+  --dur-1: .16s;
+  --dur-2: .28s;
+  --dur-3: .42s;
+  --lift: 0 12px 28px rgba(23, 52, 74, .09);
+  --ring: 0 0 0 3px rgba(34, 172, 229, .18);
+}
+html { -webkit-text-size-adjust: 100%; }
+body, button, input, textarea, select { font-family: var(--font-ui); }
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  letter-spacing: -.006em;
+}
+h1, h2, h3, .card-title, .page-heading h1, .line-heading, .brand-copy strong, .section-title { letter-spacing: -.035em; }
+.bill-row strong, .line-total, .money, .pay-bar strong, .coupon-ribbon b, .order-bill, #toast {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* ── Motion ─────────────────────────────────────────────────────────────── */
+@keyframes card-in { from { opacity: 0; transform: translateY(12px) scale(.994); } to { opacity: 1; transform: none; } }
+@keyframes pop-in { 0% { transform: scale(.62); opacity: 0; } 62% { transform: scale(1.07); opacity: 1; } 100% { transform: scale(1); } }
+@keyframes toast-drop { from { opacity: 0; transform: translate(-50%, -20px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+@keyframes sheet-rise { from { transform: translateY(46px); opacity: .5; } to { transform: none; opacity: 1; } }
+@keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 rgba(7, 155, 115, .32); } 70% { box-shadow: 0 0 0 13px rgba(7, 155, 115, 0); } 100% { box-shadow: 0 0 0 0 rgba(7, 155, 115, 0); } }
+@keyframes icon-bump { 0% { transform: translateY(0) scale(1); } 45% { transform: translateY(-3px) scale(1.06); } 100% { transform: translateY(0) scale(1); } }
+@keyframes brand-breathe { 0%, 100% { filter: saturate(1) brightness(1); } 50% { filter: saturate(1.22) brightness(1.05); } }
+@keyframes soft-pulse { 0%, 100% { opacity: .55; transform: scale(.96); } 50% { opacity: 1; transform: scale(1); } }
+
+.card { animation: card-in var(--dur-3) var(--ease-soft) both; }
+main > .card:nth-of-type(1) { animation-delay: 0ms; }
+main > .card:nth-of-type(2) { animation-delay: 34ms; }
+main > .card:nth-of-type(3) { animation-delay: 64ms; }
+main > .card:nth-of-type(4) { animation-delay: 92ms; }
+main > .card:nth-of-type(5) { animation-delay: 118ms; }
+.brand-mark { animation: brand-breathe 6s var(--ease-soft) infinite; }
+.savings-banner, .pill.green, .saving-badge.on, .track-dot { animation: pop-in var(--dur-3) var(--ease-spring) both; }
+.pay-bar .pay-now:not(:disabled) { animation: pulse-ring 3.2s var(--ease-soft) infinite; }
+
+/* ── Buttons / controls ─────────────────────────────────────────────────── */
+.button, .icon-button, .chip, .chip-action, .coupon-cta, .text-button, .stepper button, .bottom-nav button, .segmented button {
+  transition: transform var(--dur-1) var(--ease-soft), box-shadow var(--dur-2) var(--ease-soft), background-color var(--dur-2) var(--ease-soft), color var(--dur-2) var(--ease-soft), border-color var(--dur-2) var(--ease-soft);
+}
+.button:active:not(:disabled), .chip:active, .chip-action:active, .coupon-cta:active:not(:disabled), .icon-button:active, .stepper button:active { transform: scale(.965); }
+.button.primary:hover:not(:disabled), .button.green:hover:not(:disabled) { box-shadow: var(--lift); }
+.button.primary:focus-visible, .button.green:focus-visible { box-shadow: var(--ring); }
+.stepper { transition: background-color var(--dur-2) var(--ease-soft); }
+.stepper button:active { transform: scale(.88); }
+.coupon-cta { transition: transform var(--dur-1) var(--ease-soft), background-color var(--dur-2) var(--ease-soft); }
+.coupon-tile { transition: transform var(--dur-2) var(--ease-soft), box-shadow var(--dur-2) var(--ease-soft); }
+.coupon-tile:hover { transform: translateY(-1px); box-shadow: var(--lift); }
+.restaurant-row:active, .action-tile:active, .account-row:active, .address-row:active { transform: scale(.992); }
+.action-tile, .restaurant-row, .account-row, .address-row { transition: transform var(--dur-1) var(--ease-soft), box-shadow var(--dur-2) var(--ease-soft); }
+
+/* ── Bottom nav (active pill + icon bump) ───────────────────────────────── */
+.bottom-nav button { border-radius: 14px; transition: color var(--dur-2) var(--ease-soft), background-color var(--dur-2) var(--ease-soft), transform var(--dur-1) var(--ease-soft); }
+.bottom-nav button.selected { color: var(--blue); background: var(--blue-light); }
+.bottom-nav button.selected .icon { animation: icon-bump var(--dur-3) var(--ease-spring); }
+.bottom-nav button:active { transform: scale(.94); }
+body.dark .bottom-nav button.selected { background: rgba(34, 172, 229, .16); }
+
+/* ── Toast: upar se drop, saaf rang (screenshot jaisa) ──────────────────── */
+#toast {
+  position: fixed; top: calc(76px + env(safe-area-inset-top, 0px) + 10px); left: 50%;
+  bottom: auto; transform: translateX(-50%);
+  z-index: 40; display: flex; align-items: center; gap: 10px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 16px;
+  padding: 12px 16px 12px 14px; font-size: 13.5px; font-weight: 700; line-height: 1.35;
+  max-width: min(92%, 520px);
+  box-shadow: 0 16px 38px rgba(18, 39, 58, .18);
+  animation: toast-drop var(--dur-3) var(--ease-spring) both;
+}
+#toast[hidden] { display: none; }
+#toast .toast-icon {
+  width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+  display: grid; place-items: center; font-size: 12px; font-weight: 900; color: #fff;
+  background: var(--blue);
+}
+#toast.toast-ok .toast-icon { background: var(--green); }
+#toast.toast-bad .toast-icon { background: var(--red); }
+#toast.toast-ok { border-color: #b9e8d8; }
+#toast.toast-bad { border-color: #f3c6ca; }
+#toast .toast-copy { min-width: 0; }
+body.dark #toast { background: #16232f; border-color: #24394a; color: #e8f1f7; }
+
+/* ── Sheets ─────────────────────────────────────────────────────────────── */
+.sheet-overlay { animation: backdrop-in var(--dur-2) var(--ease-soft) both; backdrop-filter: blur(3px); }
+.sheet { animation: sheet-rise var(--dur-3) var(--ease-spring) both; padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px)); }
+.sheet-grip { animation: soft-pulse 3.4s var(--ease-soft) infinite; }
+
+/* ── Skeleton + "finding best coupon" shimmer ───────────────────────────── */
+.skeleton-line.lg { height: 18px; border-radius: 9px; }
+.skeleton-pill { width: 64px; height: 22px; border-radius: 999px; background: linear-gradient(100deg, #e9f0f4 20%, #f6fafc 40%, #e9f0f4 60%); background-size: 200% 100%; animation: skeleton-sweep 1.25s linear infinite; }
+.finding-coupon { display: flex; align-items: center; gap: 12px; }
+.finding-coupon .spinner { flex-shrink: 0; }
+.finding-coupon .row-content strong { font-size: 14.5px; }
+.finding-coupon .row-content p { margin-top: 3px; }
+.coupon-count { display: flex; align-items: center; gap: 8px; margin: 4px 2px 12px; color: var(--muted); font-size: 11.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.coupon-count b { color: var(--text); font-size: 12px; letter-spacing: 0; }
+.section-title { margin: 18px 2px 10px; font-size: 12px; font-weight: 850; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+
+/* ── Micro polish ───────────────────────────────────────────────────────── */
+.eta-strip, .savings-banner { transition: transform var(--dur-2) var(--ease-soft); }
+.pill { transition: background-color var(--dur-2) var(--ease-soft), color var(--dur-2) var(--ease-soft); }
+.bill-row { transition: color var(--dur-2) var(--ease-soft); }
+.bill-row.total { position: relative; }
+.bill-row.total:after {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, #b9e8d8, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card, .brand-mark, .pay-bar .pay-now, .savings-banner, .pill.green, .saving-badge.on, .track-dot,
+  .sheet, .sheet-overlay, #toast, .sheet-grip, .skeleton-line, .skeleton-tile, .skeleton-pill, .skeleton-hero {
+    animation: none !important;
+  }
+  .button:active, .chip:active, .icon-button:active, .bottom-nav button:active { transform: none; }
+}

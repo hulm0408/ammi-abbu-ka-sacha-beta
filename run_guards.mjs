@@ -95,7 +95,8 @@ const TESTS = [
   "test_v112_utr_fetch_and_credit.mjs",
   "test_v113_no_data_erase.mjs",
   "test_v114_utr_truth.mjs",
-  "test_v115_durability_doctor.mjs"
+  "test_v115_durability_doctor.mjs",
+  "test_v116_premium_look.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];

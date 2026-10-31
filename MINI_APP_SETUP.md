@@ -740,3 +740,30 @@ Boss panel → Tools → *Backup ka asli check* → **Poori jaanch karein** → 
 ### Tests
 `test_v115_durability_doctor.mjs` **13 checks**. Sweep: guards **83/83 (142s)**, `npm test` **132/132**,
 `test:pro` **41/41**.
+
+## Round 27 (31-10-2026): premium look — font, motion, toast, skeleton
+
+Boss: *"SEE ALL THESE ANIMATION AND FONT AND STRATEGY ITS LOOKS AMAZING."*
+
+* **Font** — Manrope (Google Fonts, `display=swap` + preconnect), fallback Inter/system.
+  Numbers par `tabular-nums` — bill ke digits nahi hilte.
+* **Motion system** — `--ease-soft`, `--ease-spring`, `--dur-1/2/3`; keyframes: `card-in`,
+  `pop-in`, `toast-drop`, `sheet-rise`, `backdrop-in`, `pulse-ring`, `icon-bump`, `brand-breathe`.
+* **Cards** — entrance + chhota stagger; **buttons** press scale, hover lift, focus ring;
+  **bottom nav** active pill + icon bump; **sheets** spring rise + blur backdrop.
+* **Toast** (naya) — upar se drop, icon ke saath: hara ✓ (kaam hua), laal ! (nahi hua),
+  `i` (neutral). Type **guess nahi** hota — jahan pakka pata hai wahan `toast(msg, 'ok'|'bad')`.
+* **Skeleton** — shimmer lines/pill; bill aate waqt **"Finding the best coupon"** card.
+* **Coupon page** — `AVAILABLE COUPONS n` header.
+* **Accessibility** — `prefers-reduced-motion` par saari animation band.
+* **Preview** — `npm run preview:miniapp` (port 4173): asli HTML/CSS/JS + demo data, bina
+  Telegram/Swiggy. Isse look check karo, deploy ka intezaar nahi.
+
+### Nahi kiya
+Competitor ka "Incognito — history deletes in 3 hours" jaisa toggle: wo Swiggy ke andar ka
+feature hai. Dikhawa nahi banaya — jab asli rasta milega tab.
+
+### Tests
+`test_v116_premium_look.mjs` **9 checks** (CSS system 5, toast variants 1, finding coupon 1,
+coupon count 1, backward-compat 1). Sweep: guards **84/84 (143s)**, `npm test` **132/132**,
+`test:pro` **41/41**.
