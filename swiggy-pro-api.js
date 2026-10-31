@@ -5,8 +5,10 @@ import { validateUpiIntentForQr } from './payment-qr-guard.js';
 import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { exactPaise } from './swiggy-cart-integrity.js';
 import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder } from './swiggy-cart.js';
-import { getDb, isBoss, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
-import { requestSwiggyOtpViaBridge, verifySwiggyOtpViaBridge } from './swiggy-bridge.js';
+import { deleteAccount, getDb, isBoss, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
+import { requestSwiggyDeleteOtpViaBridge, requestSwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, verifySwiggyOtpViaBridge } from './swiggy-bridge.js';
+import { activateAllEventOffers } from './event-offers.js';
+import { OFFER_TRACKS } from './account-views.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { describeAccountForPicker } from './mini-app.js';
 import { proProvider } from './swiggy-pro-provider.js';
@@ -21,7 +23,12 @@ const ASSETS = {
 const MAX_INIT_AGE_SECONDS = 24 * 60 * 60;
 const otpRequestedAt = new Map();
 const otpAttempts = new Map();
+const deleteOtpRequestedAt = new Map();
 const defaultOtp = { request: requestSwiggyOtpViaBridge, verify: verifySwiggyOtpViaBridge };
+const defaultDeleteOtp = {
+  request: (userId, phone, key, name, account) => requestSwiggyDeleteOtpViaBridge(userId, phone, key, name, account),
+  verify: (userId, otp, key) => verifyAndDeleteSwiggyAccountViaBridge(userId, otp, key)
+};
 
 /** Verify Telegram's signature and freshness; never trust initDataUnsafe. */
 export function verifyTelegramWebAppInitData(initData, botToken = process.env.BOT_TOKEN, now = Date.now()) {
@@ -155,6 +162,18 @@ function listAccounts(user, workspace) {
         icons: truth.icons,
         freeCash: truth.freeCash,
         offers: truth.offers,
+        // Har track ka sach — Mini App me claim button isi par chalta hai.
+        offerTracks: OFFER_TRACKS.map(track => {
+          const rec = a.offerAutoActivation?.[track.key] || a.offers?.[track.key] || null;
+          return {
+            key: track.key,
+            label: track.label,
+            emoji: track.emoji,
+            status: String(rec?.status || rec?.state || 'NOT_CLAIMED'),
+            verified: rec?.verified === true || rec?.status === 'CLAIMED' || rec?.status === 'ALREADY_ACTIVE',
+            message: String(rec?.message || '').slice(0, 160)
+          };
+        }),
         busyOrderId: truth.busyOrderId,
         ordersVerifiedLive: truth.ordersVerifiedLive
       };
@@ -290,6 +309,36 @@ function billBreakdown(bill) {
   };
 }
 
+/**
+ * Mini App me claim aur delete jaise write kaam ke liye ek hi jagah.
+ * Boss ka account shared vault me, user ka uske apne workspace me.
+ */
+function persistAccountPatch(user, ws, key, patch) {
+  if (isBoss(user.id)) { updateAccount(key, patch); return; }
+  if (!Object.prototype.hasOwnProperty.call(ws.accounts || {}, key)) throw error(404, 'Account not found.');
+  ws.accounts[key] = { ...ws.accounts[key], ...patch };
+}
+function removeAccountLocally(user, ws, key) {
+  if (isBoss(user.id)) {
+    // Boss ne Swiggy se delete kar diya — local vault se bhi hatao.
+    deleteAccount(key, { purgeVault: true });
+    return;
+  }
+  delete ws.accounts[key];
+}
+function offerClaimSummary(result) {
+  const offers = result?.offers && typeof result.offers === 'object' ? result.offers : {};
+  return OFFER_TRACKS.map(track => {
+    const rec = offers[track.key] || null;
+    return {
+      key: track.key, label: track.label, emoji: track.emoji,
+      status: String(rec?.status || rec?.state || 'NOT_CLAIMED'),
+      verified: rec?.verified === true,
+      message: String(rec?.message || '').slice(0, 200)
+    };
+  });
+}
+
 function publicState(user, ws) {
   autoSelectAccount(user, ws);
   return {
@@ -297,10 +346,7 @@ function publicState(user, ws) {
     accounts: listAccounts(user, ws), activeAccount: activeAccountForClient(user, ws),
     selectedAddress: ws.selectedAddress, cart: ws.cart,
     checkout: publicCheckout(ws.checkout, { restricted: Boolean(ws.checkout) && isSharedAccountFor(user, ws, ws.checkout.accountKey) }),
-    checkoutEnabled: process.env.PRO_ENABLE_CHECKOUT === '1',
-    // Boss (31-10-2026): "AMMI ABBU SE MINI APP BAHAR NAHI JANA CHAHIYE" —
-    // app ke andar hi admin se baat ka raasta (Telegram DM).
-    adminContact: String(process.env.ADMIN_TELEGRAM_USERNAME || process.env.BOSS_TELEGRAM_USERNAME || '').replace(/^@/, '').slice(0, 64)
+    checkoutEnabled: process.env.PRO_ENABLE_CHECKOUT === '1'
   };
 }
 function checkoutAccount(user, ws) {
@@ -368,7 +414,7 @@ function storeAccount(user, ws, incoming) {
   if (!unresolved) invalidateAccountDependentState(ws);
 }
 
-export async function handleSwiggyProHttp(req, res, { provider = proProvider, otp = defaultOtp, authorizeUser = null } = {}) {
+export async function handleSwiggyProHttp(req, res, { provider = proProvider, otp = defaultOtp, authorizeUser = null, claim = activateAllEventOffers, deleteOtp = defaultDeleteOtp } = {}) {
   const url = new URL(req.url || '/', 'http://local');
   const route = url.pathname;
   if (route !== '/pro' && !route.startsWith('/pro/')) return false;
@@ -531,6 +577,34 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (ws.checkout && ws.checkout.accountKey === key && ws.checkout.status !== 'PAID') {
           throw error(409, 'This account has an unresolved checkout. Check it in Swiggy My Orders before removing the account.');
         }
+        // Boss (31-10-2026): delete par DO option — sirf database se hatana, ya
+        // Swiggy se account hi delete karna (uske liye Swiggy ka delete OTP).
+        if (String(body.mode || 'local') === 'swiggy') {
+          if (isSharedAccountFor(user, ws, key)) {
+            const e = error(403, 'Operator ka ID aap Swiggy se delete nahi kar sakte. Sirf apna add kiya ID.');
+            e.code = 'SHARED_ACCOUNT_RESTRICTED';
+            throw e;
+          }
+          const account = map[key];
+          const phone = normalizeIndianMobileNumber(account?.phone || account?.mobile || '') || '';
+          if (!phone) throw error(400, 'Is account ka phone number nahi mila, isliye Swiggy delete OTP nahi bhej sakte.');
+          const now = Date.now();
+          if (now - (deleteOtpRequestedAt.get(user.id) || 0) < 30_000) throw error(429, 'Please wait 30 seconds before requesting another delete OTP.');
+          deleteOtpRequestedAt.set(user.id, now);
+          let requested;
+          try {
+            requested = await deleteOtp.request(`pro_${user.id}`, phone, key, account?.swiggyName || account?.name || '', { ...account, __proPrivate: true });
+          } catch (delErr) {
+            throw error(502, `Swiggy delete OTP fail hua: ${String(delErr?.message || 'jawab nahi mila').slice(0, 160)}. Account waisa hi hai.`);
+          }
+          if (!requested?.success) throw error(502, requested?.message || 'Swiggy ne delete OTP nahi bheja. Account waisa hi hai.');
+          json(res, 200, {
+            ok: true, otpRequired: true, key,
+            phoneMasked: maskAccountPhone(phone),
+            message: 'Swiggy ne delete OTP bheja hai. OTP daalne par account Swiggy se delete ho jayega — ye wapas nahi hota.'
+          });
+          return;
+        }
         if (isBoss(user.id)) permanentLogoutAccount(key);
         else if (isSharedAccountFor(user, ws, key)) {
           // Operator ka ID sabko dikhta hai par kisi user ke haath se delete
@@ -540,6 +614,70 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (ws.activeAccountKey === key) { ws.activeAccountKey = ''; invalidateAccountDependentState(ws); }
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/accounts/remove/confirm' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const key = String(body.key || '');
+        const digits = String(body.otp || '').replace(/\D/g, '');
+        const map = accountMap(user, ws);
+        if (!Object.prototype.hasOwnProperty.call(map, key)) throw error(404, 'Account not found.');
+        if (isSharedAccountFor(user, ws, key)) {
+          const e = error(403, 'Operator ka ID aap Swiggy se delete nahi kar sakte.');
+          e.code = 'SHARED_ACCOUNT_RESTRICTED';
+          throw e;
+        }
+        if (!/^\d{6}$/.test(digits)) throw error(400, 'Swiggy ne jo 6-digit delete OTP bheja hai wahi daalein.');
+        if (ws.checkout && ws.checkout.accountKey === key && ws.checkout.status !== 'PAID') {
+          throw error(409, 'Is account ka checkout pending hai. Pehle Swiggy My Orders me check karein.');
+        }
+        const deleted = await deleteOtp.verify(`pro_${user.id}`, digits, key);
+        if (!deleted?.success) throw error(400, deleted?.message || 'Swiggy ne delete OTP accept nahi kiya. Account waisa hi hai.');
+        removeAccountLocally(user, ws, key);
+        if (ws.activeAccountKey === key) { ws.activeAccountKey = ''; invalidateAccountDependentState(ws); }
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, deleted: true, message: 'Account Swiggy se delete ho gaya aur yahan se bhi hat gaya.', ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/offers/claim' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const key = String(body.key || '');
+        const map = accountMap(user, ws);
+        if (!Object.prototype.hasOwnProperty.call(map, key)) throw error(404, 'Account not found.');
+        if (isSharedAccountFor(user, ws, key)) {
+          // Boss (31-10-2026): operator ke ID par claim band — wo unka free cash hai.
+          const e = error(403, 'Operator ke ID par offer claim nahi hota. Apna add kiya ID select karein.');
+          e.code = 'SHARED_ACCOUNT_RESTRICTED';
+          throw e;
+        }
+        const account = map[key];
+        if (!account?.isLoggedIn || account?.isLoggedOut) throw error(409, 'Pehle is ID ko login karein.');
+        if (ws.checkout && ws.checkout.status !== 'PAID') throw error(409, 'Checkout pending hai. Pehle usko resolve karein, phir claim karein.');
+        let result;
+        try {
+          result = await claim({ ...account, __proPrivate: true }, { force: false });
+        } catch (claimErr) {
+          throw error(502, `Claim fail hua: ${String(claimErr?.message || 'Swiggy ne jawab nahi diya').slice(0, 160)}. Dobara try kar sakte hain.`);
+        }
+        const tracks = offerClaimSummary(result);
+        // Jo sach mila wahi save — icons agla boot bhi sach dikhayein.
+        persistAccountPatch(user, ws, key, {
+          offerAutoActivation: {
+            ...(account.offerAutoActivation && typeof account.offerAutoActivation === 'object' ? account.offerAutoActivation : {}),
+            ...Object.fromEntries(Object.entries(result?.offers || {}).filter(([, value]) => value && typeof value === 'object'))
+          },
+          offersUpdatedAt: new Date().toISOString()
+        });
+        writeProWorkspace(user.id, ws);
+        json(res, 200, {
+          ok: true,
+          claim: {
+            summary: result?.summary || null,
+            allActive: result?.allActive === true,
+            tracks
+          },
+          ...publicState(user, ws)
+        });
         return;
       }
       if (route === '/pro/api/addresses' && req.method === 'GET') {

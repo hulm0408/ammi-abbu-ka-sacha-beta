@@ -146,7 +146,8 @@ const fakeDb = {
   const appSrc = fs.readFileSync('./swiggy-pro-app.js', 'utf8');
   check('UI par status pill dikhta hai', /statusPill\(a\)/.test(appSrc));
   check('UI par blocked ID "Not available" hoti hai', /Not available/.test(appSrc));
-  check('UI par free cash + offers dikhte hain', /💵 ₹/.test(appSrc) && /🎁 /.test(appSrc));
+  // 31-10-2026: offers ab icon chips me — claimed = tick, nahi = kaata hua.
+  check('UI par free cash + offers dikhte hain', /💵 ₹/.test(appSrc) && /offer-chip \$\{on \? 'on' : 'off'\}/.test(appSrc));
 
   const indexSrc = fs.readFileSync('./index.js', 'utf8');
   check('duplicate /app mini app hai hi nahi (ek hi app)', !/pathname === '\/app'/.test(indexSrc));

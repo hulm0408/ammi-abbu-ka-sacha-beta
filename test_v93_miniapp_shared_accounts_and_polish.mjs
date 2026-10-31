@@ -52,8 +52,29 @@ const provider = {
   async tracking() { return { orderId: '111111111111', status: 'Delivered', trackingUrl: 'https://www.swiggy.com/orders/111111111111', deliveryOtp: '1234' }; }
 };
 
+// Claim/delete ke liye fake bridge — koi live Swiggy call nahi.
+const claimCalls = [];
+const claim = async (account) => {
+  claimCalls.push(account.phone || account.name);
+  return {
+    summary: { total: 5, claimed: 2, alreadyActive: 2, preLocked: 0, failed: 1 },
+    allActive: false,
+    offers: {
+      lateNight: { status: 'CLAIMED', verified: true, message: 'claim ho gaya (read-back: option 1)' },
+      breakfast: { status: 'CLAIMED', verified: true, message: 'claim ho gaya (read-back: option 1)' },
+      extra50: { status: 'ALREADY_ACTIVE', verified: true, message: 'pehle se laga hua tha' },
+      weekend: { status: 'ALREADY_ACTIVE', verified: true, message: 'pehle se laga hua tha' },
+      karwaChauth: { status: 'FAILED', verified: false, message: 'window band hai' }
+    }
+  };
+};
+const deleteCalls = [];
+const deleteOtp = {
+  async request(userId, phone, key) { deleteCalls.push({ step: 'request', userId, phone, key }); return { success: true }; },
+  async verify(userId, otp, key) { deleteCalls.push({ step: 'verify', userId, otp, key }); return otp === '123456' ? { success: true } : { success: false, message: 'Swiggy ne OTP reject kiya' }; }
+};
 const server = http.createServer(async (req, res) => {
-  if (!await handleSwiggyProHttp(req, res, { provider, authorizeUser: async () => ({ allowed: true }) })) { res.writeHead(404); res.end(); }
+  if (!await handleSwiggyProHttp(req, res, { provider, claim, deleteOtp, authorizeUser: async () => ({ allowed: true }) })) { res.writeHead(404); res.end(); }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -203,9 +224,61 @@ test('bill breakdown Swiggy screenshot jaisa: lines ka jod To Pay ke barabar, fa
   billStates.mode = 'exact';
 });
 
-test('admin contact bootstrap me aata hai (app ke andar se baat)', async () => {
-  const boot = await req(user, 'bootstrap');
-  assert.equal(boot.body.adminContact, 'admin_bhai');
+test('apne ID par offer claim hota hai (naam badal ke do baar nahi), operator ke ID par band', async () => {
+  await req(user, 'accounts/import', { session: { mobile: '9333344444', token: 'private-token-claim', tid: 't1' } });
+  const mine = (await req(user, 'bootstrap')).body.accounts.find(a => a.owner === 'self');
+  const claimed = await req(user, 'offers/claim', { key: mine.key });
+  assert.equal(claimed.status, 200);
+  const tracks = claimed.body.claim.tracks;
+  assert.equal(tracks.length, 5);
+  const byKey = Object.fromEntries(tracks.map(t => [t.key, t]));
+  assert.equal(byKey.lateNight.status, 'CLAIMED');
+  assert.equal(byKey.lateNight.verified, true);
+  assert.equal(byKey.weekly50?.status, undefined);
+  assert.equal(byKey.weekend.status, 'ALREADY_ACTIVE');
+  assert.equal(byKey.karwaChauth.verified, false);
+  assert.equal(claimCalls.length, 1);
+  // Sach workspace me save hua — agla boot bhi wahi dikhata hai.
+  const saved = readProWorkspace('9101').accounts[mine.key];
+  assert.equal(saved.offerAutoActivation.lateNight.status, 'CLAIMED');
+  const row = (await req(user, 'bootstrap')).body.accounts.find(a => a.key === mine.key);
+  const lateNight = row.offerTracks.find(t => t.key === 'lateNight');
+  assert.equal(lateNight.verified, true);
+  // Operator ke ID par claim band.
+  const shared = await req(user, 'offers/claim', { key: 'acc_operator_fresh' });
+  assert.equal(shared.status, 403);
+  assert.equal(shared.body.code, 'SHARED_ACCOUNT_RESTRICTED');
+});
+
+test('delete ke do raaste: database se (Swiggy ko haath nahi) aur Swiggy se (delete OTP)', async () => {
+  await req(user, 'accounts/import', { session: { mobile: '9333344444', token: 'private-token-delete', tid: 't1' } });
+  let mine = (await req(user, 'bootstrap')).body.accounts.find(a => a.owner === 'self');
+  // database se hatao
+  const removedKey = mine.key;
+  const local = await req(user, 'accounts/remove', { key: removedKey });
+  assert.equal(local.status, 200);
+  assert.equal(deleteCalls.length, 0, 'database delete me Swiggy OTP nahi jata');
+  assert.equal(local.body.accounts.some(a => a.key === removedKey), false);
+
+  await req(user, 'accounts/import', { session: { mobile: '9333344444', token: 'private-token-delete2', tid: 't1' } });
+  mine = (await req(user, 'bootstrap')).body.accounts.find(a => a.owner === 'self');
+  // Swiggy se delete: OTP pehle, phir verify
+  const asked = await req(user, 'accounts/remove', { key: mine.key, mode: 'swiggy' });
+  assert.equal(asked.status, 200);
+  assert.equal(asked.body.otpRequired, true);
+  assert.equal(deleteCalls[0].step, 'request');
+  assert.equal(deleteCalls[0].phone, '9333344444');
+  const wrong = await req(user, 'accounts/remove/confirm', { key: mine.key, otp: '000000' });
+  const deleteKey = mine.key;
+  assert.equal(wrong.status, 400);
+  assert.equal((await req(user, 'bootstrap')).body.accounts.some(a => a.key === deleteKey), true, 'galat OTP par account nahi hatna chahiye');
+  const okOtp = await req(user, 'accounts/remove/confirm', { key: mine.key, otp: '123456' });
+  assert.equal(okOtp.status, 200);
+  assert.equal(okOtp.body.deleted, true);
+  assert.equal((await req(user, 'bootstrap')).body.accounts.some(a => a.key === deleteKey), false);
+  // Operator ID Swiggy se delete nahi hoti.
+  const sharedDelete = await req(user, 'accounts/remove', { key: 'acc_operator_fresh', mode: 'swiggy' });
+  assert.equal(sharedDelete.status, 403);
 });
 
 test('vault backup hooks maujood hain aur local file ko overwrite nahi karte', async () => {
@@ -228,8 +301,9 @@ test('Mini App se koi bahar navigation nahi (koi browser link nahi)', () => {
   assert.equal(/swiggy\.com\/cart/.test(appSource), false);
   assert.equal(/swiggy\.com\/my-account/.test(appSource), false);
   assert.equal(/window\.open\(/.test(appSource), false);
-  assert.match(appSource, /data-action="contact-admin"/);
-  assert.match(appSource, /function contactAdmin\(\)/);
+  // Boss (31-10-2026, round 2): "ADMIN SE BAAT KARO WALA BUTTON HATAO."
+  assert.equal(/contact-admin/.test(appSource), false);
+  assert.equal(/contactAdmin/.test(appSource), false);
 });
 
 test('used ID par in-app warning aur confirm ke baad select', () => {
@@ -294,9 +368,9 @@ test('DOM: bill card me FREE delivery, GST & other charges aur To Pay dikhta hai
     app.document.querySelector('[data-action="nav"][data-tab="cart"]').click();
     await waitFor(() => app.document.body.textContent.includes('To Pay'), 'bill');
     const text = app.document.body.textContent;
-    assert.match(text, /Bill details/);
+    assert.match(text, /Bill Details/i);
     assert.match(text, /FREE/);
-    assert.match(text, /GST & other charges/);
+    assert.match(text, /GST & Other Charges/i);
     assert.match(text, /₹335/);
     assert.equal(/Open Swiggy/.test(text), false);
   } finally { app.close(); }
@@ -322,5 +396,111 @@ test('DOM: used ID par warning dialog, phir confirmUsed ke saath select', async 
     app.document.querySelector('.confirm-dialog .button.primary').click();
     await waitFor(() => selected, 'confirmed select');
     assert.equal(app.calls.filter(c => c.url.endsWith('/accounts/select')).length, 2);
+  } finally { app.close(); }
+});
+
+test('DOM: cart page Swiggy jaisa — group cart, delivering to, coupon, bill, payment, Pay Now', async () => {
+  const app = harness({ responder: call => (call.url.endsWith('/bootstrap') ? state() : state()) });
+  try {
+    await waitFor(() => app.document.querySelector('form[data-form="send-otp"]'), 'accounts');
+    app.document.querySelector('[data-action="nav"][data-tab="cart"]').click();
+    await waitFor(() => app.document.body.textContent.includes('Pay Now'), 'cart');
+    const text = app.document.body.textContent;
+    assert.match(text, /Add Items from Group Cart/);
+    assert.match(text, /DELIVERING TO|Delivering to/i);
+    assert.match(text, /Your Order/);
+    assert.match(text, /Apply coupon/);
+    assert.match(text, /Bill Details/i);
+    assert.match(text, /Payment Method/);
+    assert.match(text, /UPI \/ QR/);
+    assert.match(text, /Cash on Delivery/);
+    assert.match(text, /PAY USING UPI/);
+    assert.equal(/Admin se baat/.test(text), false);
+    // Coupon form sirf kholne par.
+    assert.equal(app.document.querySelector('form[data-form="sync"]'), null);
+    app.document.querySelector('[data-action="toggle-coupon"]').click();
+    await waitFor(() => app.document.querySelector('form[data-form="sync"]'), 'coupon form');
+  } finally { app.close(); }
+});
+
+test('DOM: delete par do option — database ya Swiggy OTP', async () => {
+  const removals = [];
+  const app = harness({ responder: call => {
+    if (call.url.endsWith('/bootstrap')) return state();
+    if (call.url.endsWith('/accounts/remove')) {
+      removals.push(call.body);
+      if (call.body?.mode === 'swiggy') return { ok: true, otpRequired: true, key: call.body.key, phoneMasked: '91••••6789' };
+      return state();
+    }
+    return state();
+  } });
+  try {
+    await waitFor(() => app.document.querySelector('[data-action="account-remove"]'), 'remove button');
+    app.document.querySelector('[data-action="account-remove"]').click();
+    await waitFor(() => app.document.querySelector('.confirm-dialog'), 'delete dialog');
+    const labels = [...app.document.querySelectorAll('.confirm-dialog .confirm-actions button')].map(b => b.textContent);
+    assert.ok(labels.includes('Database se hatao'), labels.join(','));
+    assert.ok(labels.includes('Swiggy se delete'), labels.join(','));
+    // Swiggy wala raasta → OTP form
+    [...app.document.querySelectorAll('.confirm-dialog .confirm-actions button')].find(b => b.textContent === 'Swiggy se delete').click();
+    await waitFor(() => app.document.querySelector('form[data-form="delete-otp"]'), 'delete otp form');
+    assert.equal(removals.at(-1).mode, 'swiggy');
+    assert.match(app.document.body.textContent, /Swiggy ne 91••••6789/);
+  } finally { app.close(); }
+});
+
+test('DOM: account row par offer icons select/cut, Tools me claim button', async () => {
+  const withOffers = state({
+    accounts: [{ ...ownAccount, offerTracks: [
+      { key: 'lateNight', label: 'Late night', emoji: '🌙', status: 'CLAIMED', verified: true, message: '' },
+      { key: 'breakfast', label: 'Breakfast', emoji: '☀️', status: 'NOT_CLAIMED', verified: false, message: '' }
+    ] }],
+    activeAccount: ownAccount
+  });
+  const app = harness({ responder: call => (call.url.endsWith('/bootstrap') ? withOffers : withOffers) });
+  try {
+    await waitFor(() => app.document.querySelector('.offer-chip'), 'offer chips');
+    assert.ok(app.document.querySelector('.offer-chip.on'), 'claimed icon selected');
+    assert.ok(app.document.querySelector('.offer-chip.off'), 'unclaimed icon cut');
+    app.document.querySelector('[data-action="nav"][data-tab="tools"]').click();
+    await waitFor(() => app.document.querySelector('[data-action="claim-offers"]'), 'claim button');
+    assert.match(app.document.body.textContent, /Chaar offers claim karein/);
+    assert.equal(/Admin/.test(app.document.body.textContent), false);
+  } finally { app.close(); }
+});
+
+test('DOM: menu ke andar dish search filter karta hai aur doosre outlet dikhte hain', async () => {
+  const results = [
+    { id: '111', name: 'Domino\'s Pizza', area: 'Kothrud', distance: '2.1 km', cuisines: 'Pizza', isOpen: true },
+    { id: '222', name: 'Domino\'s Pizza', area: 'Baner', distance: '4.5 km', cuisines: 'Pizza', isOpen: true }
+  ];
+  const menu = { restaurant: { id: '111', name: 'Domino\'s Pizza', area: 'Kothrud', isOpen: true }, categories: [{ title: 'Garlic Breads', items: [
+    { id: '1', name: 'Garlic Breadsticks', price: 95, inStock: true, customizable: false, isVeg: true, description: '' },
+    { id: '2', name: 'Chicken Pepperoni Bread', price: 179, inStock: true, customizable: false, isVeg: false, description: '' }
+  ] }] };
+  const menuState = { ok: true, ...menu };
+  const app = harness({ responder: call => {
+    if (call.url.endsWith('/bootstrap')) return { ...state(), cart: null, accounts: [ownAccount], activeAccount: ownAccount };
+    if (call.url.includes('/search')) return { ok: true, restaurants: results };
+    if (call.url.includes('/menu')) return menuState;
+    return state();
+  } });
+  try {
+    await waitFor(() => app.document.querySelector('[data-tab="search"]:not([disabled])'), 'nav');
+    app.document.querySelector('[data-tab="search"]').click();
+    await waitFor(() => app.document.querySelector('form[data-form="search"]'), 'search form');
+    app.document.querySelector('form[data-form="search"] input[name="q"]').value = 'Dominos';
+    app.document.querySelector('form[data-form="search"]').dispatchEvent(new app.window.Event('submit', { bubbles: true, cancelable: true }));
+    await waitFor(() => app.document.querySelectorAll('[data-action="restaurant"]').length === 2, 'two outlets');
+    assert.match(app.document.body.textContent, /2 locations/);
+    app.document.querySelector('[data-action="restaurant"]').click();
+    await waitFor(() => app.document.querySelector('[data-input="menu-search"]'), 'menu search');
+    assert.match(app.document.body.textContent, /2 location par hai/);
+    const input = app.document.querySelector('[data-input="menu-search"]');
+    input.value = 'chicken';
+    input.dispatchEvent(new app.window.Event('input', { bubbles: true }));
+    const rows = [...app.document.querySelectorAll('[data-menu-item]')];
+    assert.equal(rows.filter(r => !r.hidden).length, 1);
+    assert.match(rows.find(r => !r.hidden).textContent, /Chicken Pepperoni/);
   } finally { app.close(); }
 });

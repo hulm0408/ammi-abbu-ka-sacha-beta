@@ -2081,7 +2081,7 @@ async function ensureDeleteCsrfToken(cookieMap, currentCsrf = '', deviceProfile 
   return currentCsrf || cookieMap.get('_csrf') || '';
 }
 
-export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc = '', targetAccName = null) {
+export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc = '', targetAccName = null, accountOverride = null) {
   const cleanPhone = normalizeIndianMobileNumber(phone) || '';
   if (!cleanPhone) {
     return { success: false, code: 'INVALID_MOBILE', message: 'Send a standalone 10-digit Indian mobile number or a 12-digit number beginning with 91.' };
@@ -2092,6 +2092,13 @@ export async function requestSwiggyDeleteOtpViaBridge(userId, phone, targetAcc =
   const { getDb } = await import('./store.js');
   const db = getDb();
   let acc = db.config?.accounts?.[targetAcc];
+  // Mini App (31-10-2026): normal user ka account uske apne encrypted workspace
+  // me hota hai, shared vault me nahi. Us haalat me caller account khud deta hai
+  // — warna delete OTP kabhi chalta hi nahi.
+  if (!acc && accountOverride && typeof accountOverride === 'object' &&
+      (accountOverride.cookies || accountOverride.tid || accountOverride.token)) {
+    acc = accountOverride;
+  }
 
   if (!acc && cleanPhone) {
     for (const [k, a] of Object.entries(db.config?.accounts || {})) {
