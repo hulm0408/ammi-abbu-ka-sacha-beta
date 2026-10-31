@@ -650,3 +650,35 @@ Render env me `UPI_UTR_LOOKUP_URL` (ya `UPI_UTR_VERIFY_URL`) + agar provider tok
 `test_v112_utr_fetch_and_credit.mjs` **12 checks**. Sweep: guards **80/80**,
 `npm test` **132/132**, `test:pro` **41/41**, v105 14/14, v106 12/12, v100 14/14,
 v101 10/10, v109 13/13, v111 17/17.
+
+## Round 24 (31-10-2026): "koi data erase na ho" — push guard
+
+Boss: *"BHAI TU PEHLE YE FIX KAR DE TAAKI KOI DATA ERASE NA HO."*
+
+Dono key (`GITHUB_VAULT_TOKEN`, `VAULT_ENCRYPTION_KEY`) Render par set hain — uske baad bacha hua
+aakhri rasta yahi tha ki **restore fail hone par khaali snapshot cloud par chadh jaye**.
+
+* **Naya `vault-safety.js`**: `assessPush()` batata hai push safe hai ya nahi —
+  cloud padha nahi ja raha → `REMOTE_UNREADABLE` (push band), local khaali → `LOCAL_EMPTY`
+  (push band), cloud par bhi data → `MERGE_THEN_ALLOW`. Saath me `identityWeight()` /
+  `moneyWeight()` (kitni ID, kitna balance, kitne UTR) aur `describePushSafety()` ki Hinglish line.
+* **`db-durability.js`**: har backup se pehle cloud pull → merge → faisla → phir push.
+  Block hone par `blockedPush` + `alerts` + `safetyLine` (dono money aur identity status me).
+  Boot restore fail hone par ab chupchaap "nahi mila" nahi — asli wajah (key khul nahi rahi)
+  aur alert.
+* **`identity-snapshot.js`**: `mergeIdentitySnapshot(..., { reviveDead:false })` — backup-merge me
+  verified-expired ID purani cloud copy se zinda nahi hoti (boot restore me feature waisa hi).
+* **`swiggy-pro-store.js`**: `guardWorkspacePush()` — khaali workspace purana bhara hua cloud/mirror
+  copy overwrite nahi karta; `writeProWorkspaceMirror` khaali envelope se bhara hua row nahi mitata;
+  `proBackupStatus()` me `blockedPush`.
+* **`swiggy-pro-app.js`**: identities card + backup card me "backup RUKA hai" wali asli line.
+
+### Boss ke liye
+`VAULT_ENCRYPTION_KEY` **badalna mat** — badalne par backup khud ruk jayega (data mitega nahi,
+par naya backup nahi jayega) aur panel me saaf likha aayega. Purana data `bot-vault` branch ki
+git history me hamesha pada rehta hai.
+
+### Tests
+`test_v113_no_data_erase.mjs` **17 checks** (pure faisla 5, network push/restore 9, workspace guard 3,
+boss API 1). Sweep: guards **81/81 (162s)**, `npm test` **132/132**, `test:pro` **41/41**,
+v111 17/17, v112 12/12.

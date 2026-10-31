@@ -746,8 +746,9 @@
       <div class="bill-row"><span>Cloud vault</span><strong class="${cloudOn ? 'free' : ''}">${cloudOn ? 'ON' : 'OFF'}</strong></div>
       ${cloudOn ? `<div class="bill-row"><span>Cloud last success</span><strong>${esc(lastOk || 'abhi nahi')}</strong></div>` : ''}
       ${cloudError ? `<div class="warning">Cloud backup fail: ${esc(cloudError)}</div>` : ''}
+      ${b.blockedPush?.line ? `<div class="warning">${esc(b.blockedPush.line)}</div>` : ''}
       <div class="bill-row"><span>Restore hua</span><strong>${restored} baar</strong></div>
-      ${state.durability ? `<div class="bill-row"><span>Paisa + UTR backup</span><strong class="${state.durability.cloud ? 'free' : ''}">${state.durability.cloud ? 'Cloud ON' : 'OFF'}</strong></div><div class="bill-row"><span>Wallet / UTR yaad</span><strong>${Number(state.durability.wallets || 0)} / ${Number(state.durability.utrs || 0)}</strong></div>${state.durability.restoredAt ? `<div class="bill-row"><span>Deploy ke baad restore</span><strong>${esc(new Date(state.durability.restoredAt).toLocaleString('en-IN'))}</strong></div>` : ''}${state.durability.cloud ? '' : `<div class="warning">${esc(state.durability.line || 'Cloud backup OFF hai — deploy par wallet aur UTR bhool sakte hain.')}</div>`}` : ''}
+      ${state.durability ? `<div class="bill-row"><span>Paisa + UTR backup</span><strong class="${state.durability.cloud ? 'free' : ''}">${state.durability.cloud ? 'Cloud ON' : 'OFF'}</strong></div><div class="bill-row"><span>Wallet / UTR yaad</span><strong>${Number(state.durability.wallets || 0)} / ${Number(state.durability.utrs || 0)}</strong></div>${state.durability.restoredAt ? `<div class="bill-row"><span>Deploy ke baad restore</span><strong>${esc(new Date(state.durability.restoredAt).toLocaleString('en-IN'))}</strong></div>` : ''}${state.durability.safetyLine ? `<div class="warning">${esc(state.durability.safetyLine)}</div>` : ''}${state.durability.cloud ? '' : `<div class="warning">${esc(state.durability.line || 'Cloud backup OFF hai — deploy par wallet aur UTR bhool sakte hain.')}</div>`}` : ''}
       <button class="button primary block" type="button" data-action="backup-now" ${state.backupBusy ? 'disabled' : ''}>${state.backupBusy ? 'Backup ho raha hai…' : 'Abhi backup karein'}</button>
       <p class="hint">Mirror bot ke db.json me encrypted hi rehta hai — redeploy ke baad wahi se wapas aata hai.</p></div>`;
   }
@@ -810,6 +811,7 @@
       ${id.lastPushAt ? `<div class="bill-row"><span>Last backup</span><strong>${esc(new Date(id.lastPushAt).toLocaleString('en-IN'))}</strong></div>` : ''}
       ${id.restoredAt ? `<div class="bill-row"><span>Deploy ke baad restore</span><strong>${esc(new Date(id.restoredAt).toLocaleString('en-IN'))}</strong></div>` : ''}
       <div class="warning">${esc(id.line || '')}</div>
+      ${id.safetyLine && id.safetyLine !== id.line ? `<div class="warning">${esc(id.safetyLine)}</div>` : ''}
       ${rows}
       <button class="button primary block" type="button" data-action="identities-backup" ${state.identityBusy ? 'disabled' : ''}>${state.identityBusy ? 'Backup ho raha hai…' : 'Sab ID abhi backup karein'}</button>
       <button class="button soft block" type="button" data-action="identities-verify" ${state.identityBusy ? 'disabled' : ''}>${state.identityBusy ? 'Check ho raha hai…' : 'Sessions Swiggy par check karein'}</button>

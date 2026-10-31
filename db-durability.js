@@ -21,6 +21,7 @@ import { buildMoneySnapshot, snapshotHasData, needsMoneyRestore, mergeMoneySnaps
 import { buildIdentitySnapshot, snapshotHasIdentities, mergeIdentitySnapshot, describeIdentityDurability, summarizeIdentities } from './identity-snapshot.js';
 import { pushVaultTextFile, pullVaultTextFile, resolveVaultToken, encryptVaultPayloadObject, decryptVaultPayloadText } from './vault-sync.js';
 import { proWorkspaceKeyHealth } from './swiggy-pro-store.js';
+import { assessPush, describePushSafety, PUSH_BLOCK } from './vault-safety.js';
 
 const SNAPSHOT_PATH = 'vault/db-money-snapshot.json';
 const LOCAL_COPY = 'db-money-snapshot.json';
@@ -32,7 +33,9 @@ const PUSH_MIN_INTERVAL_MS = 20_000;
 
 const identityState = {
   lastPushAt: '', lastPushOk: null, lastError: '', restoredAt: '', restoredSummary: null,
-  pushing: false, pending: false
+  pushing: false, pending: false,
+  // Round 24: push block hua to yahan asli wajah rehti hai (UI/DM isi se bolta hai).
+  blockedPush: null, alerts: []
 };
 
 const state = {
@@ -44,8 +47,42 @@ const state = {
   bootChecked: false,
   pushing: false,
   pending: false,
-  timer: null
+  timer: null,
+  // Round 24: push block hua to yahan asli wajah rehti hai.
+  blockedPush: null,
+  alerts: []
 };
+
+// Round 24: cloud ka sach baar-baar padhne ki zaroorat nahi — par push se pehle
+// hamesha taza hona chahiye, isliye cache chhota rakha hai.
+const REMOTE_PULL_CACHE_MS = 90_000;
+const remoteCache = new Map();
+
+/** Cloud par kya pada hai — present / readable / snapshot. Kabhi throw nahi. */
+async function pullRemoteSnapshot(pathKey, decode) {
+  const cached = remoteCache.get(pathKey);
+  if (cached && Date.now() - cached.at < REMOTE_PULL_CACHE_MS) return cached;
+  let text = '';
+  try { text = await pullVaultTextFile(pathKey); } catch { text = ''; }
+  const present = Boolean(text && String(text).trim().length > 20);
+  let snapshot = null;
+  if (present) {
+    try { snapshot = decode(text); } catch { snapshot = null; }
+  }
+  const entry = { at: Date.now(), present, readable: present && Boolean(snapshot), snapshot };
+  remoteCache.set(pathKey, entry);
+  return entry;
+}
+
+function forgetRemoteSnapshot(pathKey) {
+  try { remoteCache.delete(pathKey); } catch {}
+}
+
+function recordAlert(bucket, code, line) {
+  const at = new Date().toISOString();
+  bucket.blockedPush = { code, line, at };
+  bucket.alerts = [{ code, line, at }, ...(Array.isArray(bucket.alerts) ? bucket.alerts : [])].slice(0, 10);
+}
 
 function localCopyPath() {
   try { return path.join(getDataDir(), LOCAL_COPY); } catch { return ''; }
@@ -91,7 +128,22 @@ export async function backupMoneyNow({ force = false } = {}) {
   state.pushing = true;
   try {
     const db = getDb();
-    const snapshot = buildMoneySnapshot(db);
+    let snapshot = buildMoneySnapshot(db);
+    // Round 24: push se PEHLE cloud ka sach padho. Jo cloud par hai use local me
+    // milao (paisa kabhi kam nahi hota) — aur padha na ja sake to push band,
+    // taaki purana data overwrite na ho.
+    const remote = await pullRemoteSnapshot(SNAPSHOT_PATH, decodeSnapshotText);
+    if (remote.readable && remote.snapshot) {
+      const merged = mergeMoneySnapshot(db, remote.snapshot);
+      if (merged.changed) { saveDb(db); snapshot = buildMoneySnapshot(db); }
+    }
+    const verdict = assessPush({ kind: 'money', local: snapshot, remote: remote.snapshot, remotePresent: remote.present, remoteReadable: remote.readable });
+    if (!verdict.allow) {
+      recordAlert(state, verdict.code, verdict.line);
+      state.lastError = verdict.line;
+      return { ok: false, blocked: verdict.code, reason: verdict.line };
+    }
+    state.blockedPush = null;
     if (!snapshotHasData(snapshot)) return { ok: false, skipped: 'empty' };
     const localOk = writeLocalCopy(snapshot);
     const token = resolveVaultToken();
@@ -103,6 +155,7 @@ export async function backupMoneyNow({ force = false } = {}) {
     }
     const text = JSON.stringify({ __moneySnapshot: true, at: snapshot.at, payload: encryptVaultPayloadObject(snapshot) });
     const res = await pushVaultTextFile(SNAPSHOT_PATH, text, 'chore(vault): money/UTR snapshot (deploy-proof)');
+    if (res?.ok) forgetRemoteSnapshot(SNAPSHOT_PATH);
     state.lastPushAt = new Date(now).toISOString();
     state.lastPushOk = res?.ok === true;
     state.lastError = res?.ok ? '' : String(res?.reason || res?.error || `HTTP ${res?.status || '?'}`);
@@ -154,15 +207,19 @@ export async function restoreMoneyOnBoot() {
   let snapshot = readLocalCopy();
   let source = snapshot ? 'local' : '';
   if (!snapshot) {
-    try {
-      const text = await pullVaultTextFile(SNAPSHOT_PATH);
-      snapshot = decodeSnapshotText(text);
-      if (snapshot) source = 'cloud';
-    } catch { /* network issue — local par chalta hai */ }
+    const remote = await pullRemoteSnapshot(SNAPSHOT_PATH, decodeSnapshotText);
+    if (remote.readable && remote.snapshot) {
+      snapshot = remote.snapshot;
+      source = 'cloud';
+    } else if (remote.present) {
+      // File hai par khul nahi rahi — ye wo khatra hai jisse data erase hota tha.
+      recordAlert(state, PUSH_BLOCK.REMOTE_UNREADABLE,
+        'Cloud par paisa/UTR snapshot hai par is key se khul nahi raha (VAULT_ENCRYPTION_KEY badli lagti hai) — restore nahi hua, aur backup ROK diya hai taaki purana data mite na.');
+    }
   }
   if (!snapshot) {
     state.restoredAt = '';
-    return { restored: false, reason: 'snapshot nahi mila' };
+    return { restored: false, reason: state.blockedPush?.line || 'snapshot nahi mila' };
   }
   if (!needsMoneyRestore(db, snapshot)) {
     // Local db me pehle se data hai — merge phir bhi karo (union, paisa kam nahi).
@@ -226,6 +283,10 @@ export function durabilityStatus() {
     lastError: state.lastError,
     restoredAt: state.restoredAt,
     restoredSummary: state.restoredSummary,
+    // Round 24: push ruka hai ya nahi + asli wajah (UI/DM isi se bolta hai).
+    pushBlocked: state.blockedPush,
+    alerts: state.alerts,
+    safetyLine: describePushSafety({ blocked: state.blockedPush, alerts: state.alerts }),
     wallets,
     utrs,
     // Round 22: login IDs ka sach bhi isi status me.
@@ -291,7 +352,24 @@ export async function backupIdentityNow({ force = false } = {}) {
   identityState.pushing = true;
   try {
     const db = getDb();
-    const snapshot = buildIdentitySnapshot(db);
+    let snapshot = buildIdentitySnapshot(db);
+    // Round 24: push se pehle cloud ka sach — login ID kabhi kam nahi hote.
+    const remote = await pullRemoteSnapshot(IDENTITY_PATH, decodeIdentityText);
+    if (remote.readable && remote.snapshot) {
+      const merged = mergeIdentitySnapshot(db, remote.snapshot, { reviveDead: false });
+      if (merged.changed) {
+        saveDb(db);
+        writeRestoredWorkspaces(merged.workspacesToRestore);
+        snapshot = buildIdentitySnapshot(db);
+      }
+    }
+    const verdict = assessPush({ kind: 'identity', local: snapshot, remote: remote.snapshot, remotePresent: remote.present, remoteReadable: remote.readable });
+    if (!verdict.allow) {
+      recordAlert(identityState, verdict.code, verdict.line);
+      identityState.lastError = verdict.line;
+      return { ok: false, blocked: verdict.code, reason: verdict.line };
+    }
+    identityState.blockedPush = null;
     // Mirror row se naya disk file ho to wahi snapshot me jaye — warna 1.5s ke
     // debounce me hua aakhri change deploy par chhut sakta hai.
     try {
@@ -314,6 +392,7 @@ export async function backupIdentityNow({ force = false } = {}) {
     }
     const text = JSON.stringify({ __identitySnapshot: true, at: snapshot.at, payload: encryptVaultPayloadObject(snapshot) });
     const res = await pushVaultTextFile(IDENTITY_PATH, text, 'chore(vault): login IDs + mini-app workspaces (deploy-proof)');
+    if (res?.ok) forgetRemoteSnapshot(IDENTITY_PATH);
     identityState.lastPushAt = new Date(now).toISOString();
     identityState.lastPushOk = res?.ok === true;
     identityState.lastError = res?.ok ? '' : String(res?.reason || res?.error || `HTTP ${res?.status || '?'}`);
@@ -354,29 +433,20 @@ export async function restoreIdentityOnBoot() {
   let snapshot = readIdentityLocalCopy();
   let source = snapshot ? 'local' : '';
   if (!snapshot) {
-    try {
-      const text = await pullVaultTextFile(IDENTITY_PATH);
-      snapshot = decodeIdentityText(text);
-      if (snapshot) source = 'cloud';
-    } catch { /* network issue — local par chalta hai */ }
+    const remote = await pullRemoteSnapshot(IDENTITY_PATH, decodeIdentityText);
+    if (remote.readable && remote.snapshot) {
+      snapshot = remote.snapshot;
+      source = 'cloud';
+    } else if (remote.present) {
+      recordAlert(identityState, PUSH_BLOCK.REMOTE_UNREADABLE,
+        'Cloud par login IDs ka snapshot hai par is key se khul nahi raha (VAULT_ENCRYPTION_KEY badli lagti hai) — restore nahi hua, aur backup ROK diya hai taaki purana data mite na.');
+    }
   }
-  if (!snapshot) return { restored: false, reason: 'identity snapshot nahi mila' };
+  if (!snapshot) return { restored: false, reason: identityState.blockedPush?.line || 'identity snapshot nahi mila' };
   const db = getDb();
   const merge = mergeIdentitySnapshot(db, snapshot);
   // Workspace files bhi disk par wapas — warna user ko dobara login karna padta.
-  let workspacesWritten = 0;
-  for (const item of merge.workspacesToRestore) {
-    try {
-      const file = path.join(getDataDir(), 'pro-workspaces');
-      fs.mkdirSync(file, { recursive: true, mode: 0o700 });
-      const target = path.join(file, `${require_sha256(item.userId)}.json`);
-      if (fs.existsSync(target)) continue;
-      const tmp = `${target}.${process.pid}.restore.tmp`;
-      fs.writeFileSync(tmp, item.envelope, { mode: 0o600 });
-      fs.renameSync(tmp, target);
-      workspacesWritten += 1;
-    } catch { /* ek workspace fail ho to baaki chalte rahen */ }
-  }
+  const workspacesWritten = writeRestoredWorkspaces(merge.workspacesToRestore);
   if (merge.changed) {
     saveDb(db);
     identityState.restoredAt = new Date().toISOString();
@@ -389,6 +459,24 @@ export async function restoreIdentityOnBoot() {
     summary: { ...merge.summary, workspacesWritten },
     reason: merge.changed ? '' : 'local db me IDs pehle se hain'
   };
+}
+
+/** Snapshot se aaye workspace envelopes disk par wapas. Kabhi throw nahi. */
+function writeRestoredWorkspaces(items = []) {
+  let written = 0;
+  for (const item of items || []) {
+    try {
+      const file = path.join(getDataDir(), 'pro-workspaces');
+      fs.mkdirSync(file, { recursive: true, mode: 0o700 });
+      const target = path.join(file, `${require_sha256(item.userId)}.json`);
+      if (fs.existsSync(target)) continue;
+      const tmp = `${target}.${process.pid}.restore.tmp`;
+      fs.writeFileSync(tmp, item.envelope, { mode: 0o600 });
+      fs.renameSync(tmp, target);
+      written += 1;
+    } catch { /* ek workspace fail ho to baaki chalte rahen */ }
+  }
+  return written;
 }
 
 function require_sha256(value) {
@@ -421,6 +509,10 @@ export function identityStatus() {
     lastError: identityState.lastError,
     restoredAt: identityState.restoredAt,
     restoredSummary: identityState.restoredSummary,
+    // Round 24: push ruka hai ya nahi + asli wajah.
+    pushBlocked: identityState.blockedPush,
+    alerts: identityState.alerts,
+    safetyLine: describePushSafety({ blocked: identityState.blockedPush, alerts: identityState.alerts }),
     workspaceHealth,
     accounts,
     line: describeIdentityDurability({
@@ -441,7 +533,10 @@ export function _resetDurabilityState() {
   identityState.lastPushAt = ''; identityState.lastPushOk = null; identityState.lastError = '';
   identityState.restoredAt = ''; identityState.restoredSummary = null;
   identityState.pushing = false; identityState.pending = false;
+  identityState.blockedPush = null; identityState.alerts = [];
   state.lastPushAt = ''; state.lastPushOk = null; state.lastError = '';
   state.restoredAt = ''; state.restoredSummary = null; state.bootChecked = false;
   state.pushing = false; state.pending = false;
+  state.blockedPush = null; state.alerts = [];
+  remoteCache.clear();
 }

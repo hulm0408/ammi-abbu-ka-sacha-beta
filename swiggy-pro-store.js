@@ -224,7 +224,7 @@ const mirrorTimers = new Map();
  * hai; fail hone par error chhupta nahi.
  */
 export const proBackupState = {
-  cloud: { enabled: true, lastOkAt: '', lastError: '', pushed: 0 },
+  cloud: { enabled: true, lastOkAt: '', lastError: '', pushed: 0, blocked: null },
   mirror: { lastAt: '', rows: 0, wrote: 0 },
   restored: { count: 0, lastAt: '', lastFrom: '' }
 };
@@ -255,7 +255,20 @@ export function writeProWorkspaceMirror(userId, envelope) {
   try {
     const db = getDb();
     const bucket = mirrorOn(db);
-    bucket[mirrorRowKey(userId)] = {
+    const rowKey = mirrorRowKey(userId);
+    // Round 24: khaali workspace kabhi bhare hue mirror ko overwrite na kare.
+    try {
+      const incoming = openEnvelope(envelope, String(userId));
+      const existing = openEnvelope(bucket[rowKey]?.envelope, String(userId));
+      if (incoming !== null && existing && workspaceHasContent(existing) && !workspaceHasContent(incoming)) {
+        proBackupState.cloud.blocked = {
+          at: new Date().toISOString(), reason: 'LOCAL_WORKSPACE_EMPTY', where: 'db-mirror',
+          line: 'Khaali workspace se purana mirror data nahi mitaya (round 24).'
+        };
+        return false;
+      }
+    } catch { /* guard best-effort */ }
+    bucket[rowKey] = {
       v: 1, userId: String(userId), savedAt: new Date().toISOString(),
       checksum: crypto.createHash('sha256').update(String(envelope)).digest('hex').slice(0, 32),
       envelope: String(envelope)
@@ -299,12 +312,75 @@ function scheduleProWorkspaceMirror(userId, envelope) {
   mirrorTimers.set(key, timer);
 }
 
+/**
+ * Round 24 (boss: "TAAKI KOI DATA ERASE NA HO"):
+ * Ek workspace khaali (accounts/cart/address kuch nahi) ho par cloud/db-mirror par
+ * usi user ka bhara hua workspace pada ho, to us khaali blob se purana data
+ * mitana bilkul galat hoga. Isliye push se pehle check.
+ */
+export function workspaceHasContent(workspace) {
+  if (!workspace || typeof workspace !== 'object') return false;
+  const accounts = workspace.accounts && typeof workspace.accounts === 'object' ? Object.keys(workspace.accounts).length : 0;
+  const addresses = Array.isArray(workspace.addressCandidates) ? workspace.addressCandidates.length : 0;
+  const orders = Array.isArray(workspace.orders) ? workspace.orders.length : 0;
+  return accounts > 0 || addresses > 0 || orders > 0
+    || Boolean(workspace.cart) || Boolean(workspace.selectedAddress) || Boolean(workspace.activeAccountKey);
+}
+
+/** Encrypted envelope kholo — fail ho to null (kabhi throw nahi). */
+function openEnvelope(envelopeText, userId) {
+  try {
+    const envelope = JSON.parse(String(envelopeText || ''));
+    if (envelope.version !== 1) return null;
+    const decipher = crypto.createDecipheriv('aes-256-gcm', secretKey(), Buffer.from(envelope.iv, 'base64'));
+    decipher.setAAD(aad(String(userId)));
+    decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
+    const plain = Buffer.concat([decipher.update(Buffer.from(envelope.data, 'base64')), decipher.final()]);
+    const value = JSON.parse(plain.toString('utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch { return null; }
+}
+
+/**
+ * Push safe hai? Local khaali ho aur kahin bhi purana bhara hua workspace pada ho
+ * to push ROK do (naya data nahi mitega).
+ */
+export async function guardWorkspacePush(userId, envelopeText) {
+  const key = String(userId);
+  const local = openEnvelope(envelopeText, key);
+  if (local === null) return { allow: true, reason: 'local-unreadable' };
+  if (workspaceHasContent(local)) return { allow: true, reason: '' };
+  const older = [];
+  if (cloudBackupEnabled()) {
+    try {
+      const pulled = await pullVaultTextFile(proWorkspaceVaultPath(path.basename(workspacePath(key))));
+      const opened = openEnvelope(pulled, key);
+      if (opened && workspaceHasContent(opened)) older.push('cloud');
+    } catch { /* network — mirror check neeche */ }
+  }
+  try {
+    const mirrored = readProWorkspaceMirror(key);
+    const opened = openEnvelope(mirrored?.envelope, key);
+    if (opened && workspaceHasContent(opened)) older.push('db-mirror');
+  } catch {}
+  if (older.length === 0) return { allow: true, reason: '' };
+  const line = `Local workspace khaali hai par ${older.join(' + ')} par purana bhara hua data pada hai — push ROK diya, purana data mitega nahi.`;
+  proBackupState.cloud.blocked = { at: new Date().toISOString(), reason: 'LOCAL_WORKSPACE_EMPTY', where: older.join(','), line };
+  return { allow: false, reason: 'LOCAL_WORKSPACE_EMPTY', line, where: older.join(',') };
+}
+
 /** Boss ke "Abhi backup karein" button ke liye — turant, debounce ke bina. */
 export async function backupProWorkspaceNow(userId) {
   const key = String(userId);
   const file = workspacePath(key);
   if (!fs.existsSync(file)) throw Object.assign(new Error('Is user ka workspace file server par nahi hai.'), { statusCode: 404 });
   const envelope = fs.readFileSync(file, 'utf8');
+  // Round 24: pehle guard — khaali workspace se purana data (mirror/cloud) na mite.
+  const guard = cloudBackupEnabled() ? await guardWorkspacePush(key, envelope) : { allow: true };
+  if (!guard.allow) {
+    proBackupState.cloud.lastError = guard.line;
+    return { mirrored: false, cloud: { ok: false, skipped: true, blocked: guard.reason, reason: guard.line } };
+  }
   const mirrored = writeProWorkspaceMirror(key, envelope);
   let cloud = { ok: false, skipped: true };
   if (cloudBackupEnabled()) {
@@ -360,6 +436,7 @@ export function proBackupStatus() {
       lastError: proBackupState.cloud.lastError
     },
     dbMirror: { enabled: true, rows, lastAt: proBackupState.mirror.lastAt },
+    blockedPush: proBackupState.cloud.blocked,
     restored: { ...proBackupState.restored },
     vaultSource: getProVaultSource()
   };
@@ -374,7 +451,13 @@ function scheduleProWorkspaceBackup(userId) {
     try {
       const file = workspacePath(key);
       if (!fs.existsSync(file)) return;
-      await pushVaultTextFile(proWorkspaceVaultPath(path.basename(file)), fs.readFileSync(file, 'utf8'));
+      const envelope = fs.readFileSync(file, 'utf8');
+      const guard = await guardWorkspacePush(key, envelope);
+      if (!guard.allow) {
+        proBackupState.cloud.lastError = guard.line;
+        return;
+      }
+      await pushVaultTextFile(proWorkspaceVaultPath(path.basename(file)), envelope);
       proBackupState.cloud.lastOkAt = new Date().toISOString();
       proBackupState.cloud.lastError = '';
       proBackupState.cloud.pushed += 1;
@@ -440,6 +523,7 @@ export async function ensureProWorkspaceHydrated(userId) {
 
 /** Tests ke liye. */
 export function resetProWorkspaceHydrationCache() {
+  proBackupState.cloud.blocked = null;
   hydratedUsers.clear();
   for (const timer of backupTimers.values()) clearTimeout(timer);
   backupTimers.clear();

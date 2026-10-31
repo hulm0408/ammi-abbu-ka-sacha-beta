@@ -116,7 +116,7 @@ function isTombstoned(deleted, key, phone) {
  *  • baaki sab missing IDs add ho jaate hain
  *  • workspaces sirf wahi return hote hain jo local db me nahi hain
  */
-export function mergeIdentitySnapshot(db, snapshot, { at = Date.now() } = {}) {
+export function mergeIdentitySnapshot(db, snapshot, { at = Date.now(), reviveDead = true } = {}) {
   const summary = { accounts: 0, accountsSkippedLive: 0, accountsSkippedTombstone: 0, sessionVault: 0, tombstones: 0, workspaces: 0 };
   const workspacesToRestore = [];
   if (!snapshot || typeof snapshot !== 'object') return { changed: false, summary, workspacesToRestore };
@@ -147,6 +147,9 @@ export function mergeIdentitySnapshot(db, snapshot, { at = Date.now() } = {}) {
     }
     const existing = db.config.accounts[key];
     if (existing) {
+      // Round 24: backup se pehle mila rahe hain to local sach hi jeetta hai —
+      // verified-expired ID ko purane cloud copy se zinda nahi karte.
+      if (!reviveDead) { summary.accountsSkippedLive += 1; continue; }
       const live = existing.isLoggedOut !== true && existing.isLoggedIn !== false && existing.sessionExpired !== true;
       if (live && (existing.cookies || existing.tid || existing.token)) { summary.accountsSkippedLive += 1; continue; }
       // Local copy dead hai — snapshot wali zinda session wapas laao.

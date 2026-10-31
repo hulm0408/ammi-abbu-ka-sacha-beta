@@ -345,3 +345,43 @@ POST JSON pehle; 404/405/501 par GET; 8s timeout.
 button hamesha chalu, line: "jitna paisa sach me aaya utna hi judega").
 
 **Test:** `test_v112_utr_fetch_and_credit.mjs` — **12/12**.
+
+---
+
+## M. Data erase ka aakhri rasta band (Round 24)
+
+**Boss:** "BHAI TU PEHLE YE FIX KAR DE TAAKI KOI DATA ERASE NA HO."
+
+Round 19/22 ne data **wapas laane** ka rasta bana diya (cloud vault + local copy + db mirror).
+Bacha hua khatra **ulta** tha — aur wahi sabse mehnga:
+
+```
+boot par restore fail (key badli / network / token expire)
+   → app khaali db ke saath chalta hai
+   → agla backup us KHAALI snapshot ko cloud par push kar deta hai
+   → purana asli data hamesha ke liye overwrite
+```
+
+Ab har push se pehle cloud ka sach padha jata hai (`vault-safety.js` ka faisla):
+
+| Case | Pehle | Ab |
+|---|---|---|
+| M1 | Cloud file hai par key se khul nahi rahi | chupchaap khaali snapshot push → **data gaya** | **push BAND**, cloud waisa hi, status me "backup RUKA" + asli wajah |
+| M2 | Local me kuch nahi bacha | khaali snapshot push | **push BAND** (`LOCAL_EMPTY`) |
+| M3 | Cloud par zyada data, local me kam | cloud wala kam ho jata | pehle **milaya**, phir push — kabhi kam nahi |
+| M4 | Verified-expired ID | backup merge usko purani cloud copy se zinda kar deta | backup-merge me `reviveDead:false` — local sach jeetta hai (boot restore me zinda session aaj bhi wapas aati hai) |
+| M5 | Paisa: local wallet khaali | cloud ka balance mit jata | cloud se balance/UTR mila kar push |
+| M6 | Boot restore fail | sirf console warn, panel "sab theek" jaisa | `restored:false` + asli wajah + `alerts[0]` + `safetyLine` |
+| M7 | Mini-app workspace khaali (deploy ke baad) | purana bhara workspace cloud/mirror par overwrite | `guardWorkspacePush` — **push BAND**, wajah `LOCAL_WORKSPACE_EMPTY` |
+| M8 | Khaali workspace db-mirror par | mirror row khaali ho jati | `writeProWorkspaceMirror` khaali envelope se bhara hua row nahi mitata |
+| M9 | Boss panel | sirf "Cloud ON/OFF" | `safetyLine` + `pushBlocked` + blocked reason dikhta hai (identities + backup card) |
+| M10 | Purana data chahiye | — | `bot-vault` branch ki git history me har version pada rehta hai (koi force-push nahi) |
+
+**Kahan:** `vault-safety.js` (naya, pure faisla), `db-durability.js` (pull → merge → assess → push,
+alerts, `safetyLine`), `identity-snapshot.js` (`reviveDead` option), `swiggy-pro-store.js`
+(`guardWorkspacePush`, mirror guard), `swiggy-pro-app.js` (boss card warnings).
+
+**Boss ko karna:** Render env me `GITHUB_VAULT_TOKEN` + `VAULT_ENCRYPTION_KEY` — aur **key kabhi na
+badalna**, warna backup khud ruk jayega (data mitega nahi, par naya backup nahi jayega).
+
+**Test:** `test_v113_no_data_erase.mjs` — **17/17**.
