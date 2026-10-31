@@ -13,7 +13,7 @@ import { getDb } from './store.js';
 import crypto from 'node:crypto';
 import { sameCartItems, sameDeliveryRecipient, exactPaise } from './swiggy-cart-integrity.js';
 import { executeSingleSwiggyPlacement } from './swiggy-placement-journal.js';
-import { validateUpiIntentForQr } from './payment-qr-guard.js';
+import { validateUpiIntentForQr, normalizeUpiIntentForQr } from './payment-qr-guard.js';
 export { sameCartItems, sameDeliveryRecipient } from './swiggy-cart-integrity.js';
 
 const bootFetch = globalThis.fetch;
@@ -339,6 +339,40 @@ function placementDetails(json) {
       data.payment_info_v2?.payment_transactions?.[0]?.marketplace_reference_id ||
       redirect?.upiRedirect?.upiIntentRedirect?.transactionId || '').slice(0, 200)
   };
+}
+
+/**
+ * Boss (31-10-2026, round 15): "qr nahi aata".
+ * Kabhi Swiggy place-response me intent nahi bhejta par uske **apne** payment
+ * page (payment_fallbacks ka URL) par UPI link hota hai. Wahi page se intent
+ * nikaalne ki koshish — sirf Swiggy ke apne jawab se, apna QR kabhi nahi
+ * banate. Fail ho to chup-chaap `''` (jhooth nahi).
+ */
+async function recoverUpiIntentFromPaymentPage(account, url, { timeoutMs = 4000 } = {}) {
+  if (!/^https:\/\//i.test(String(url || ''))) return '';
+  try {
+    const cookies = String(account?.cookies || account?.cookie || '').trim();
+    const response = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: {
+        'user-agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36',
+        accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+        ...(cookies ? { cookie: cookies } : {})
+      },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    const text = await response.text();
+    if (!text) return '';
+    const unescaped = text
+      .replace(/\\u0026/gi, '&')
+      .replace(/\\\//g, '/')
+      .replace(/&amp;/gi, '&');
+    const match = unescaped.match(/upi:\/\/pay\?[^"'\s<]+/i);
+    return match ? match[0] : '';
+  } catch {
+    return '';
+  }
 }
 
 function attemptedPlacementError(message, code, orderId = '') {
@@ -979,9 +1013,26 @@ export const proProvider = {
         return { placeRes: response, json };
       });
       const details = placementDetails(result?.json);
-      const check = details.upiIntentUrl
-        ? validateUpiIntentForQr(details.upiIntentUrl, { amount: expected, requireAmount: true })
-        : { valid: false, info: {} };
+      // Place-response me intent nahi mila → Swiggy ke apne payment page se
+      // ek baar maango (sirf tab jab order place ho gaya ho).
+      if (!details.upiIntentUrl && details.orderId && /^https:\/\//i.test(String(details.paymentPageUrl || ''))) {
+        const recovered = await recoverUpiIntentFromPaymentPage(account, details.paymentPageUrl);
+        if (recovered) {
+          details.upiIntentUrl = recovered;
+          details.intentSource = 'payment_page';
+        }
+      }
+      // Boss (31-10-2026, round 15): "qr nahi aata direct ye ajata". Swiggy ka
+      // intent kabhi `&amp;`/`\u0026` escaped aata hai, kabhi `amount` ke naam
+      // se, kabhi duplicate param ke saath — inhe "invalid" maan kar QR na
+      // dena hi galat tha. Pehle saaf karo, phir strict check.
+      const normalized = details.upiIntentUrl
+        ? normalizeUpiIntentForQr(details.upiIntentUrl)
+        : { uri: '', repairs: [], ok: false };
+      const qrUri = normalized.uri || details.upiIntentUrl || '';
+      const check = qrUri
+        ? validateUpiIntentForQr(qrUri, { amount: expected, requireAmount: true })
+        : { valid: false, info: {}, problems: ['Swiggy ne koi UPI intent nahi diya'] };
       if (!result?.placeRes?.ok || !successCode(result?.json?.statusCode) || !details.orderId) {
         throw attemptedPlacementError(
           'Swiggy did not return a verifiable order ID and matching UPI payment. An order may exist; check My Orders on this account. Do not retry.',
@@ -991,15 +1042,21 @@ export const proProvider = {
       const amountOk = exactPaise(check.info?.amount) !== null && exactPaise(check.info.amount) === exactPaise(expected);
       if (!check.valid || !amountOk) {
         // Order BAN gaya hai — "rejected" kehna jhooth hota. Bas QR nahi mila.
-        // Isko OUTCOME_UNKNOWN me daalna hi confusion tha; ab alag haalat.
+        // Aur wajah bhi asli honi chahiye: pehle har reject par "amount match
+        // nahi karta (QR ₹68, bill ₹68)" chhap jata tha — wahi jhooth tha.
+        const reasons = [...(check.problems || [])].slice(0, 3);
         const intentProblem = details.upiIntentUrl
-          ? `Swiggy ka QR amount bill se match nahi karta (QR ₹${check.info?.amount ?? '?'}, bill ₹${expected}).`
+          ? `Swiggy ka QR bhejne layak nahi tha: ${reasons.join(' · ') || 'wajah nahi mili'}`
           : 'Swiggy ne order accept kiya par UPI payment QR/intent nahi diya.';
         const err = unavailable(`${intentProblem} Order #${details.orderId} Swiggy par bana hua hai — dobara order na karein.`);
         err.code = 'SWIGGY_PLACED_NO_UPI_INTENT';
         err.diag = {
           code: 'SWIGGY_PLACED_NO_UPI_INTENT', placementAttempted: true, placedOrderId: details.orderId,
-          qrMissing: true, intentProblem, paymentFallbacks: details.paymentFallbacks || null,
+          qrMissing: true, intentProblem,
+          intentProblems: reasons,
+          intentWarnings: (check.warnings || []).slice(0, 5),
+          intentAmount: check.info?.amount ?? null, billAmount: expected,
+          paymentFallbacks: details.paymentFallbacks || null,
           paymentPageUrl: details.paymentPageUrl || '', paymentTxnId: details.paymentTxnId || ''
         };
         throw err;
@@ -1011,6 +1068,9 @@ export const proProvider = {
       const ofoProof = detectOfoFromPlaceResponse(result.json);
       return {
         ...details,
+        // QR me wahi string jaye jo guard ne saaf karke valid kaha.
+        upiIntentUrl: check.info?.uri || qrUri,
+        intentRepairs: check.info?.repaired || [],
         amount: expected,
         ofoConfirmed: ofoProof.ofo === true,
         ofoRequested: cart.forSomeoneElse === true,

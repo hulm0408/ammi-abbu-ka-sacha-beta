@@ -279,6 +279,8 @@ function publicCheckout(checkout, { restricted = false } = {}) {
     // diya ho to) uske payment page ka link. Koi apna banaya hua link nahi.
     qrMissing: checkout.qrMissing === true,
     qrMissingReason: String(checkout.qrMissingReason || ''),
+    // Asli wajahon ki list (round 15) — app inhe line-by-line dikhata hai.
+    qrMissingReasons: Array.isArray(checkout.qrMissingReasons) ? checkout.qrMissingReasons.slice(0, 3).map(String) : [],
     paymentPageUrl: /^https:\/\//i.test(String(checkout.paymentPageUrl || '')) ? String(checkout.paymentPageUrl) : ''
   };
   if (checkout.status === 'PAYMENT_PENDING' && checkout.paymentVerified !== true && checkout.upiIntentUrl && checkout.qrDataUrl) {
@@ -1362,16 +1364,21 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           result = await provider.checkout(account, ws.selectedAddress, ws.cart, placementKey);
           providerReturned = true;
           const orderId = normalizeSwiggyOrderId(result?.orderId);
+          // Boss (31-10-2026, round 15): provider ne jo intent diya wo pehle se
+          // saaf + validated hai. Yahan sirf wahi string QR me jaati hai —
+          // dobara kachra check karke QR rokna galat tha.
           const uri = String(result?.upiIntentUrl || '');
           const intent = validateUpiIntentForQr(uri, { amount: total, requireAmount: true });
           if (!orderId || uri.length > 6000 || !intent.valid || exactPaise(intent.info?.amount) === null ||
               exactPaise(intent.info.amount) !== exactPaise(total)) {
-            throw new Error('Provider response did not contain matching payment details.');
+            const reasons = (intent.problems || []).slice(0, 3);
+            throw new Error(`Payment details match nahi hue: ${reasons.join(' · ') || 'QR string khaali/galat hai'}.`);
           }
-          const qrDataUrl = await QRCode.toDataURL(uri, { errorCorrectionLevel: 'M', margin: 2, width: 320 });
+          const qrUri = intent.info?.uri || uri;
+          const qrDataUrl = await QRCode.toDataURL(qrUri, { errorCorrectionLevel: 'M', margin: 2, width: 320 });
           Object.assign(ws.checkout, {
             status: 'PAYMENT_PENDING', orderId, paymentTxnId: String(result.paymentTxnId || '').slice(0, 200),
-            upiIntentUrl: uri, qrDataUrl, ofoConfirmed: result.ofoConfirmed === true,
+            upiIntentUrl: qrUri, qrDataUrl, ofoConfirmed: result.ofoConfirmed === true,
             message: 'Swiggy returned payment details. Payment and restaurant acceptance are not yet verified.'
           });
           writeProWorkspace(user.id, ws);
@@ -1385,6 +1392,9 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
             ws.checkout.orderId = normalizeSwiggyOrderId(err.diag.placedOrderId);
             ws.checkout.qrMissing = true;
             ws.checkout.qrMissingReason = String(err.diag.intentProblem || err.message || '').slice(0, 300);
+            ws.checkout.qrMissingReasons = Array.isArray(err.diag.intentProblems)
+              ? err.diag.intentProblems.slice(0, 3).map(String)
+              : [];
             ws.checkout.paymentTxnId = String(err.diag.paymentTxnId || '').slice(0, 200);
             ws.checkout.paymentPageUrl = /^https:\/\//i.test(String(err.diag.paymentPageUrl || '')) ? String(err.diag.paymentPageUrl).slice(0, 1500) : '';
             ws.checkout.message = 'Swiggy ne order accept kar liya par payment QR nahi diya. Order Swiggy par bana hua hai — dobara order na karein; yahan se payment status check karte rahein.';

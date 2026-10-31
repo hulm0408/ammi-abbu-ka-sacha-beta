@@ -85,7 +85,12 @@ console.log('\n=== 2. Har QR validate hota hai (invalid kabhi customer tak nahi)
   check('amount mismatch is rejected', mm.valid === false && mm.problems.some((p) => /amount/i.test(p)), mm.problems.join(' | '));
 
   const dup = guard.validateUpiIntentForQr('upi://pay?pa=rahul@okaxis&am=43&am=43&cu=INR', { amount: 43 });
-  check('duplicate params rejected', dup.valid === false);
+  // Round 15: same-value duplicate sirf gandi encoding hai — QR rukna nahi chahiye.
+  check('duplicate param (same value) auto-fix, QR rukta nahi', dup.valid === true && dup.warnings.some(w => /auto-fix/.test(w)), dup.problems.join(' | '));
+  const dupDiff = guard.validateUpiIntentForQr('upi://pay?pa=rahul@okaxis&am=43&am=99&cu=INR', { amount: 43 });
+  check('duplicate param (different value) rejected', dupDiff.valid === false);
+  const swiggyBank = guard.validateUpiIntentForQr('upi://pay?pa=swiggy@axisbank&am=43&cu=INR', { amount: 43 });
+  check('naya Swiggy bank handle block nahi hota', swiggyBank.valid === true, swiggyBank.problems.join(' | '));
 
   const noPa = guard.validateUpiIntentForQr('upi://pay?pn=X&am=43&cu=INR', { amount: 43 });
   check('missing pa rejected', noPa.valid === false && noPa.problems.some((p) => /pa/i.test(p)));
@@ -97,7 +102,9 @@ console.log('\n=== 2. Har QR validate hota hai (invalid kabhi customer tak nahi)
   check('non-UPI QR data rejected', notUpi.valid === false);
 
   const spacey = guard.validateUpiIntentForQr('upi://pay?pa=rahul@okaxis&am=43&cu=INR&tn=Swiggy Order', { amount: 43 });
-  check('raw space in QR data rejected', spacey.valid === false);
+  check('raw space auto-encode (QR rukta nahi)', spacey.valid === true && /tn=Swiggy%20Order/.test(spacey.info.uri), spacey.info.uri);
+  const amp = guard.validateUpiIntentForQr('upi://pay?pa=upiswiggy@icici&amp;am=43&amp;cu=INR', { amount: 43 });
+  check('HTML-escaped intent (&amp;) saaf hota hai', amp.valid === true, amp.problems.join(' | '));
 
   const longTr = guard.validateUpiIntentForQr(`upi://pay?pa=rahul@okaxis&am=43&cu=INR&tr=${'X'.repeat(40)}`, { amount: 43 });
   check('over-long tr is a warning, not a block', longTr.valid === true && longTr.warnings.length > 0);

@@ -310,3 +310,54 @@ user ka chuna coupon hi chalta hai (auto band); One Lite sirf net saving par; `e
 sach. Sweep: `test:guards` **71/71 (127s)**, `test:pro` **41/41**, `npm test` **132/132**,
 bossbot **49/49**, aur mini-app suites v90…v103 sab green (v103 **6/6**, v102 **13/13**,
 v101 **10/10**, v100 **14/14**, v96 **12/12**, v97 **6/6**).
+
+## Round 15 (31-10-2026): QR sach me aaye, aur jo card aaye wo styled ho
+
+Boss: *"bc qr nahi aata direct ye ajata aur kitna ganda dikh raha hai ye text bilkul bhi style nahi kia tune."*
+
+### 1. QR na aane ki asli wajah
+Screenshot me card kehta tha: *"QR amount bill se match nahi karta (QR ₹68, bill ₹68)"* —
+dono number barabar the. Matlab amount ka masla hi nahi tha; code **har** reject par ek hi
+fixed line chhap deta tha (`swiggy-pro-provider.js`). Asli problem guard ki **strictness** thi:
+Swiggy ka intent `&amp;`/`\u0026` escaped, `amount` ke naam se, duplicate param ke saath, ya
+`tn` me space le kar aata hai — inme se koi bhi cheez paisa nahi badalti, par guard `valid:false`
+kar deta tha, aur QR kabhi customer tak nahi pahunchta tha.
+
+### 2. Ab kya hota hai (`payment-qr-guard.js`)
+* Naya `normalizeUpiIntentForQr(uri)` — **sirf transport ki gandi** theek karta hai:
+  `&amp;` / `&#38;` / `\u0026` / escape kiye `/` unescape; `amount=` → `am=` (jab `am` na ho);
+  same-value duplicate param hatao; `pn`/`tn` me space/non-ASCII/control char ko URL-safe encode.
+  **`am` ki value kabhi chhui nahi jaati.**
+* `validateUpiIntentForQr()` ab `problems` (asli blockers) + `warnings` (auto-fix) deta hai, aur
+  `info.uri` me **wahi saaf string** jo QR me jaani chahiye.
+* Naye Swiggy bank handles (`swiggy@axisbank` type) block nahi hote — sirf **exact** purane fake
+  handles (`swiggy@icici`, `swiggy@okaxis`, `swiggy@ybl`, `test@upi` …) block hote hain.
+* Block tabhi: `pa` missing/galat, fake VPA, `cu` non-INR, `am` missing ya **bill se alag**,
+  duplicate param jinki value alag hai, ya `upi://pay` na ho.
+
+### 3. Intent na mile to Swiggy ke apne page se
+Order place ho gaya par place-response me intent nahi — ab provider Swiggy ke **apne**
+`payment_fallbacks` page (`https://www.swiggy.com/payments…`) se ek baar intent maangta hai
+(4s timeout, sirf usi jawab se). Mila to QR ban jaata hai; nahi mila to sach likha jaata hai.
+Apna QR **kabhi nahi** banate.
+
+### 4. Jhooth nahi — asli wajah
+`diag.intentProblems` (list), `diag.intentAmount`, `diag.billAmount`, `diag.intentWarnings` ab
+error me aate hain aur app tak `qrMissingReasons[]` bankar pahunchte hain. Message ab
+*"QR ka amount ₹58 hai par bill ₹68 — scan par galat amount aayega"* jaisa hota hai,
+fixed "match nahi karta" nahi.
+
+### 5. Card ki styling (jo ganda dikh raha tha)
+Purane card me heading ek flex item tha — `UPI se pay karein` ek patlee column me toot kar 4
+line ban gaya tha. Ab:
+* `.card-title` me `<span class="title-copy"><strong>…</strong><small>…</small></span>` (heading block),
+* `.pay-hold` block: alert tile + "QR Swiggy ne nahi diya", `.pay-reasons` (asli wajahon ki list),
+  `.pay-order-chip` (monospace order ID), `.pay-steps` (3 numbered agle kadam),
+* dark-mode variants bhi; QR aane par wahi card QR image + "Open UPI app" dikhata hai.
+
+### Tests
+`test_v104_qr_intent_truth_and_style.mjs` **10 checks**: escaped `&`/duplicate/`amount` alias
+auto-fix; naya Swiggy bank handle allowed, purana fake blocked; galat amount block + dono numbers;
+provider escaped intent se QR deta hai; payment page se intent recovery; galat QR par asli wajah;
+DOM: hold card (heading/reasons/order chip/steps) aur QR card dono; CSS selectors maujood.
+Sweep: `test:guards` **72/72 (125s)**, `test:pro` **41/41**, `npm test` **132/132**, bossbot **49/49**.

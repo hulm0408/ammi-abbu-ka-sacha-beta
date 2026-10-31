@@ -367,6 +367,31 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 /* Payment screen + tracking */
 .pay-screen .payment-qr { margin: 10px auto; }
 .pay-screen .button { margin-top: 8px; }
+/* Round 15 — "kitna ganda dikh raha hai ye text": payment hold card ab proper
+   structure me (heading block + wajah + order chip + step list). */
+.pay-screen .card-title { align-items: flex-start; margin-bottom: 14px; }
+.pay-screen .card-title .title-copy strong { display: block; font-size: 17px; letter-spacing: -.02em; }
+.pay-screen .card-title .title-copy small { display: block; margin-top: 3px; font-size: 12.5px; line-height: 1.45; color: var(--muted); font-weight: 500; }
+.pay-hold { border: 1px solid #fae3b6; background: #fffaf0; border-radius: 16px; padding: 14px; }
+body.dark .pay-hold { background: #3b2f1c; border-color: #6d5730; }
+.pay-hold-head { display: flex; align-items: center; gap: 11px; }
+.pay-hold-head .icon-tile { width: 40px; height: 40px; border-radius: 13px; background: #fdecc8; color: #a46a12; }
+body.dark .pay-hold-head .icon-tile { background: #4c3a1d; color: #ffcf7d; }
+.pay-hold-head .title-copy strong { display: block; font-size: 15px; letter-spacing: -.02em; }
+.pay-hold-head .title-copy small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
+.pay-reasons { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 7px; }
+.pay-reasons li { position: relative; padding-left: 18px; font-size: 12.5px; line-height: 1.5; color: #81571e; }
+body.dark .pay-reasons li { color: #ffd996; }
+.pay-reasons li:before { content: ""; position: absolute; left: 5px; top: 7px; width: 5px; height: 5px; border-radius: 50%; background: #d9a13a; }
+.pay-reason-line { font-size: 12.5px; line-height: 1.5; color: #81571e; margin: 10px 0 0; }
+.pay-order-chip { display: inline-flex; align-items: baseline; gap: 7px; margin-top: 12px; padding: 7px 11px; border-radius: 10px; background: rgba(255,255,255,.72); border: 1px solid #f2dcb0; }
+body.dark .pay-order-chip { background: rgba(0,0,0,.22); border-color: #6d5730; }
+.pay-order-chip span { font-size: 10px; letter-spacing: .08em; font-weight: 800; text-transform: uppercase; color: var(--muted); }
+.pay-order-chip b { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; letter-spacing: -.01em; }
+.pay-steps { counter-reset: pay-step; list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 9px; }
+.pay-steps li { counter-increment: pay-step; position: relative; padding-left: 27px; font-size: 12.5px; line-height: 1.5; color: var(--text); }
+.pay-steps li:before { content: counter(pay-step); position: absolute; left: 0; top: 0; width: 18px; height: 18px; border-radius: 50%; background: #f0d8a6; color: #7a5210; font-size: 10.5px; font-weight: 900; display: grid; place-items: center; }
+body.dark .pay-steps li:before { background: #5b4524; color: #ffd996; }
 .track-card .track-steps { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 10px; }
 .track-steps li { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
 .track-steps li.done { color: var(--ink); font-weight: 600; }
