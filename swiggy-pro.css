@@ -179,3 +179,74 @@ button:focus-visible, a:focus-visible, .icon-button:focus-visible, .chip:focus-v
 .group-cart-toggle .title-copy { flex: 1; min-width: 0; }
 .group-cart-card form { display: flex; gap: 8px; padding: 0 13px 13px; }
 .group-cart-card form .input-wrap { flex: 1; }
+
+/* ── 31-10-2026 round 4: Swiggy jaisa checkout + outlet sheet ───────────── */
+.eta-strip {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--green-light, #eefaf4); border: 1px solid #cdeee0;
+  border-radius: 14px; padding: 10px 12px; margin-bottom: 10px;
+}
+.eta-clock { color: var(--green); display: grid; place-items: center; }
+.eta-copy { flex: 1; min-width: 0; }
+.eta-copy strong { display: block; font-size: 13px; }
+.eta-copy small { display: block; color: var(--muted); font-size: 11px; margin-top: 1px; }
+.pay-note { display: block; font-style: normal; color: var(--muted); font-size: 10px; margin-top: 2px; }
+.menu-outlet-row { margin: 4px 0 10px; }
+.sheet-overlay {
+  position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-end;
+  background: rgba(15, 23, 42, .45); backdrop-filter: blur(2px);
+}
+.sheet {
+  width: 100%; max-height: 82vh; overflow: auto; background: var(--surface, #fff);
+  border-radius: 20px 20px 0 0; padding: 10px 16px 22px;
+  box-shadow: 0 -18px 40px rgba(15, 23, 42, .25);
+  animation: sheet-up .18s ease-out;
+}
+.sheet-grip { width: 42px; height: 4px; border-radius: 99px; background: #d6dde5; margin: 0 auto 10px; }
+.sheet-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+.sheet-head > div { flex: 1; min-width: 0; }
+.sheet-head h2 { font-size: 18px; margin: 2px 0 2px; letter-spacing: -.02em; }
+.sheet-head p { color: var(--muted); font-size: 12px; margin: 0; }
+.sheet-list { display: grid; gap: 8px; }
+.sheet-option {
+  display: flex; align-items: center; gap: 10px; text-align: left; width: 100%;
+  border: 1px solid var(--line); background: var(--surface); border-radius: 14px;
+  padding: 12px; color: var(--text); font: inherit;
+}
+.sheet-option:active { transform: scale(.995); }
+.sheet-option.current { border-color: #b9e8d8; background: var(--green-light, #eefaf4); }
+.sheet-option:disabled { opacity: .65; }
+.sheet-option .row-content small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.sheet-pin { color: var(--blue); display: grid; place-items: center; width: 22px; }
+.sheet-option .icon { width: 16px; height: 16px; }
+@keyframes sheet-up { from { transform: translateY(18px); opacity: .6; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }
+@media (min-width: 560px) {
+  .sheet-overlay { align-items: center; justify-content: center; padding: 20px; }
+  .sheet { max-width: 460px; border-radius: 20px; }
+}
+
+/* ── 31-10-2026 round 4: hover/focus saaf, Swiggy jaisa smooth ──────────── */
+button:focus-visible, a:focus-visible { outline: 2px solid rgba(22, 149, 173, .55); outline-offset: 2px; border-radius: 14px; }
+input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; box-shadow: none; }
+.input-wrap { transition: border-color .16s ease, box-shadow .16s ease, background .16s ease; }
+.input-wrap:hover { border-color: #b9d8e4; }
+.input-wrap:focus-within { border-color: #2fb0d8; box-shadow: 0 0 0 3px rgba(47, 176, 216, .14); background: var(--surface); }
+@media (hover: hover) {
+  .restaurant-row:hover, .account-row:hover, .address-row:hover, .sheet-option:hover:not(:disabled),
+  .outlet-option:hover:not(:disabled), .outlet-row:hover, .action-tile:hover, .group-cart-toggle:hover {
+    border-color: #b7dbe7; box-shadow: 0 10px 26px rgba(25, 48, 67, .09);
+  }
+  .button:hover:not(:disabled) { filter: brightness(1.04); }
+  .button.soft:hover:not(:disabled), .button.outline:hover:not(:disabled) { border-color: #b7dbe7; }
+  .icon-button:hover:not(:disabled) { background: #e7eef4; }
+  .text-button:hover { text-decoration: underline; }
+  .stepper button:hover { background: rgba(255, 255, 255, .22); border-radius: 8px; }
+}
+.button, .restaurant-row, .account-row, .address-row, .outlet-row, .sheet-option, .action-tile {
+  transition: box-shadow .18s ease, border-color .18s ease, transform .12s ease, filter .16s ease;
+}
+.button:active:not(:disabled), .sheet-option:active:not(:disabled) { transform: scale(.994); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}

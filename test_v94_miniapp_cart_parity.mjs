@@ -313,3 +313,116 @@ test('CSS: naye cart blocks ke styles maujood hain', () => {
     assert.ok(cssSource.includes(selector), selector);
   }
 });
+
+// ── Round 4: Swiggy jaisa checkout + restaurant kholne par outlet chunna ──
+test('DOM: restaurant kholne par pehle outlet/location sheet (Swiggy jaisa)', async () => {
+  const base = state();
+  const results = [
+    { id: '201', name: 'Pizza Junction', area: 'Kothrud', distance: '2.1 km', time: '25 min', isOpen: true, cuisines: 'Pizza' },
+    { id: '202', name: 'Pizza Junction', area: 'Baner', distance: '5.4 km', time: '38 min', isOpen: false, opens: '11 am', cuisines: 'Pizza' },
+    { id: '203', name: 'Pizza Junction', area: 'Hadapsar', distance: '9.0 km', time: '45 min', isOpen: true, cuisines: 'Pizza' }
+  ];
+  const app = harness({ responder: call => {
+    if (call.url.includes('/search?q=')) return { ok: true, restaurants: results };
+    if (call.url.includes('/menu?id=')) return { ok: true, restaurant: { id: '203', name: 'Pizza Junction', area: 'Hadapsar', isOpen: true }, categories: [{ title: 'Pizza', items: [] }] };
+    return base;
+  } });
+  try {
+    await waitFor(() => app.document.querySelector('form[data-form="send-otp"]'), 'accounts ready');
+    app.document.querySelector('[data-action="nav"][data-tab="search"]').click();
+    await waitFor(() => app.document.querySelector('form[data-form="search"]'), 'search form');
+    const form = app.document.querySelector('form[data-form="search"]');
+    form.querySelector('input[name="q"]').value = 'Pizza';
+    form.dispatchEvent(new app.window.Event('submit', { bubbles: true, cancelable: true }));
+    await waitFor(() => app.document.querySelectorAll('.restaurant-row').length === 3, 'results');
+    // Pehle row dabane par seedha menu nahi — location sheet.
+    app.document.querySelector('.restaurant-row').click();
+    await waitFor(() => app.document.querySelector('.sheet-overlay'), 'outlet sheet');
+    assert.equal(app.calls.some(c => c.url.includes('/menu?id=')), false, 'sheet se pehle menu nahi khulta');
+    const options = [...app.document.querySelectorAll('[data-sheet-outlet]')];
+    assert.equal(options.length, 3);
+    assert.ok(options.some(b => b.textContent.includes('Baner') && b.disabled), 'band outlet disabled');
+    const hadapsar = options.find(b => b.textContent.includes('Hadapsar'));
+    hadapsar.click();
+    await waitFor(() => app.calls.some(c => c.url.includes('/menu?id=203')), 'menu khula');
+    await waitFor(() => app.document.querySelector('.sheet-overlay') === null, 'sheet band');
+    await waitFor(() => app.document.querySelector('.menu-outlet-row'), 'menu outlet row');
+    assert.match(app.document.querySelector('.menu-outlet-row').textContent, /Hadapsar/);
+  } finally { app.close(); }
+});
+
+test('DOM: ek hi outlet ho to seedha menu, sheet nahi', async () => {
+  const single = [{ id: '501', name: 'Only Cafe', area: 'Baner', distance: '1 km', time: '20 min', isOpen: true }];
+  const app = harness({ responder: call => {
+    if (call.url.includes('/search?q=')) return { ok: true, restaurants: single };
+    if (call.url.includes('/menu?id=')) return { ok: true, restaurant: { id: '501', name: 'Only Cafe', area: 'Baner', isOpen: true }, categories: [{ title: 'All', items: [] }] };
+    return state();
+  } });
+  try {
+    await waitFor(() => app.document.querySelector('form[data-form="send-otp"]'), 'accounts ready');
+    app.document.querySelector('[data-action="nav"][data-tab="search"]').click();
+    await waitFor(() => app.document.querySelector('form[data-form="search"]'), 'search form');
+    const form = app.document.querySelector('form[data-form="search"]');
+    form.querySelector('input[name="q"]').value = 'Only';
+    form.dispatchEvent(new app.window.Event('submit', { bubbles: true, cancelable: true }));
+    await waitFor(() => app.document.querySelector('.restaurant-row'), 'result');
+    app.document.querySelector('.restaurant-row').click();
+    await waitFor(() => app.calls.some(c => c.url.includes('/menu?id=501')), 'menu');
+    assert.equal(app.document.querySelector('.sheet-overlay'), null);
+    await new Promise(r => setTimeout(r, 20));
+  } finally { app.close(); }
+});
+
+test('DOM: checkout page Swiggy jaisa — ETA, address, Your Order, bill, payment, Pay Now', async () => {
+  const app = harness({ responder: call => (call.url.endsWith('/bootstrap') ? state() : state()) });
+  try {
+    await waitFor(() => app.document.querySelector('form[data-form="send-otp"]'), 'accounts ready');
+    app.document.querySelector('[data-action="nav"][data-tab="cart"]').click();
+    await waitFor(() => app.document.querySelector('.eta-strip'), 'checkout page');
+    const text = app.document.body.textContent;
+    assert.match(text, /Checkout/);
+    assert.match(text, /Delivery in 25 min/);
+    assert.match(text, /DELIVERING TO/i);
+    assert.match(text, /Your Order/);
+    assert.match(text, /Bill Details/);
+    assert.match(text, /Payment Method/);
+    // Section order Swiggy jaisa: address pehle, order uske baad, payment sabse neeche.
+    const html = app.document.querySelector('#content').innerHTML;
+    const at = needle => html.indexOf(needle);
+    assert.ok(at('eta-strip') < at('DELIVERING TO'), 'ETA pehle, address baad me');
+    assert.ok(at('DELIVERING TO') < at('Your Order'), 'address pehle, order baad me');
+    assert.ok(at('Bill Details') < at('Payment Method'), 'bill pehle, payment baad me');
+    const pay = app.document.querySelector('.pay-bar button');
+    assert.equal(pay.disabled, false, 'Pay Now active hai');
+    assert.match(pay.textContent, /Pay Now/);
+  } finally { app.close(); }
+});
+
+test('DOM: bill na ho to bhi Pay Now chalta hai — pehle bill, phir order', async () => {
+  const noQuote = state({ cart: { restaurantId: '201', restaurantName: 'Pizza Junction', restaurantArea: 'Kothrud', restaurantTime: '25 min', forSomeoneElse: false, quote: null, items: [{ lineKey: 'l', name: 'Margherita', price: 137, qty: 2, isVeg: true }] } });
+  const withQuote = state();
+  const app = harness({ responder: call => {
+    if (call.url.endsWith('/cart/sync')) return { ok: true, cart: withQuote.cart, selectedAddress: receiver };
+    if (call.url.endsWith('/checkout')) return { ok: true, checkout: { status: 'PAYMENT_PENDING', orderId: '999', amount: 335 }, cart: null };
+    return noQuote;
+  } });
+  try {
+    await waitFor(() => app.document.querySelector('form[data-form="send-otp"]'), 'accounts ready');
+    app.document.querySelector('[data-action="nav"][data-tab="cart"]').click();
+    await waitFor(() => app.document.querySelector('.pay-bar button'), 'pay bar');
+    const pay = app.document.querySelector('.pay-bar button');
+    assert.equal(pay.disabled, false, 'bill ke bina bhi Pay Now dab sakta hai');
+    assert.match(pay.textContent, /Pay Now/);
+    pay.click();
+    // Pehle bill, phir confirm dialog.
+    await waitFor(() => app.calls.some(c => c.url.endsWith('/cart/sync')), 'auto bill');
+    await waitFor(() => app.document.querySelector('.confirm-dialog'), 'confirm');
+    assert.match(app.document.querySelector('.confirm-dialog').textContent, /Pay ₹335/);
+    app.document.querySelector('.confirm-dialog .button.primary').click();
+    await waitFor(() => app.calls.some(c => c.url.endsWith('/checkout')), 'checkout call');
+    const call = app.calls.find(c => c.url.endsWith('/checkout'));
+    assert.equal(call.body.confirmCheckout, true);
+    assert.equal(call.body.expectedTotal, 335);
+    assert.equal(call.body.quoteFetchedAt, quote.fetchedAt);
+  } finally { app.close(); }
+});
