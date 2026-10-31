@@ -107,11 +107,16 @@ function resetLimits() {
 beforeEach(resetLimits);
 
 // ── 1. Paisa: har darwaza ────────────────────────────────────────────────
-test('matrix: wallet claim — bina UTR, galat UTR, bina top-up, chhota UTR — sab band', async () => {
+test('matrix: wallet claim — bina UTR, galat UTR, bina amount, chhota UTR — sab band', async () => {
   seed(8001);
   assert.equal((await req(8001, 'wallet/claim', { amountRupees: 15 })).body.code, 'UTR_REQUIRED');
   assert.equal((await req(8001, 'wallet/claim', { amountRupees: 15, utr: '123' })).body.code, 'UTR_INVALID');
-  assert.equal((await req(8001, 'wallet/claim', { amountRupees: 15, utr: '123456789012' })).body.code, 'NO_TOPUP_INTENT');
+  // Round 23: amount + UTR diya to claim chalta hai (implicit top-up), par
+  // payment fetch na hone tak ek paisa bhi nahi judta.
+  const claim = await req(8001, 'wallet/claim', { amountRupees: 15, utr: '123456789012' });
+  assert.equal(claim.status, 200, JSON.stringify(claim.body));
+  assert.equal(claim.body.creditedPaise, 0);
+  assert.equal(claim.body.pending, true);
   assert.equal(walletBalancePaise(getDb(), '8001'), 0);
 });
 

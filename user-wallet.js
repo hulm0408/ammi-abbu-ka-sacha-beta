@@ -28,6 +28,7 @@
  * Pure module (no Telegram, no network except injectable fetch) => offline tests.
  */
 import { evaluateUtrCredit } from './upi-credit-policy.js';
+import { fetchUtrPaymentDetails, describeLookup } from './utr-lookup.js';
 
 /** ₹15 default; env se badla ja sakta hai (`SERVICE_FEE_PAISE=1500`). */
 export function serviceFeePaise() {
@@ -618,26 +619,29 @@ export async function submitTopupRequest(db, {
     //   statement entry (bank/UPI) ya provider verify → payee Misbahul Islam,
     //   status SUCCESS, aur jitna paisa aaya utna hi. Proof na ho → PENDING,
     //   balance me kuch nahi judta.
-    const res = await verifyUtrWithProvider({ utr: checked.utr, amountPaise: amount, userId }, { fetchImpl });
-    req.providerConfigured = res.configured;
-    const providerPayment = res.configured && res.verified
-      ? {
-        utr: checked.utr,
-        amountPaise: Number(res.amountPaise) || 0,
-        payeeName: String(res.payeeName || ''),
-        payeeVpa: String(res.payeeVpa || ''),
-        status: 'SUCCESS',
-        at: Number(res.at) || at,
-        source: 'provider',
-        ref: String(res.providerRef || '')
-      }
+    // Round 23 (boss): "UTR SE PAYMENT DETAILS ... THAT WILL BE FETCHED AND
+    // ADDED". Provider se poori payment detail fetch hoti hai (amount, payee,
+    // status) — credit usi asli amount par, claim par nahi.
+    const lookup = await fetchUtrPaymentDetails(checked.utr, { fetchImpl, userId })
+      .catch((err) => ({ configured: false, found: false, reason: String(err?.message || err), tried: [] }));
+    req.providerConfigured = lookup.configured === true;
+    req.lookup = {
+      configured: lookup.configured === true,
+      found: lookup.found === true,
+      tried: Array.isArray(lookup.tried) ? lookup.tried : [],
+      reason: String(lookup.reason || '').slice(0, 200),
+      line: describeLookup(lookup, { utr: checked.utr })
+    };
+    const providerPayment = lookup.found && lookup.payment
+      ? { ...lookup.payment, utr: checked.utr, source: 'provider', at: Number(lookup.payment.at) || at }
       : null;
     // Bank/UPI statement me boss ne ye payment dekhi hai? (`upi-statement.js`)
     const statementPayment = (() => {
       const entry = (c.upiStatement && typeof c.upiStatement === 'object') ? c.upiStatement[checked.utr] : null;
       return entry ? { ...entry, source: entry.source || 'statement' } : null;
     })();
-    const payment = providerPayment || statementPayment || null;
+    // Sabse pehle asli statement (boss ne dekhi), warna live provider fetch.
+    const payment = statementPayment || providerPayment || null;
     const decision = evaluateUtrCredit({
       claim: { utr: checked.utr, claimedPaise: amount, userId },
       intent: { amountPaise: amount, createdAt: Date.parse(req.at || '') || at },

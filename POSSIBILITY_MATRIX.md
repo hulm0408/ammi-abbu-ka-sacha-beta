@@ -302,3 +302,46 @@ snapshot bana tha, **IDs** ka nahi.
 | K14 | Vault key badal gayi | `workspaceHealth.failed` + saaf line "key se khul nahi rahe, data safe hai" |
 | K15 | Non-boss identities maange | 403 |
 | K16 | Cookies UI me | kabhi nahi — sirf masked number (`98••••3210`) |
+
+---
+
+## L. UTR se payment details khud fetch (Round 23)
+
+**Boss ka order:** "BAS USER KO BOL SEND HOW MUCH MONEY YOU WANT — THAT WILL BE FETCHED AND
+ADDED UPON SUBMITTING UTR."
+
+Yani flow badal gaya: pehle QR → intent → phir UTR. Ab user **jitna bhejna hai utna likhta hai**
++ UTR daalta hai. Server us UTR ki asli payment **khud fetch** karta hai (`utr-lookup.js`) aur
+**jitna paisa sach me aaya utna hi** wallet me jodta hai.
+
+**Env (Render):** `UPI_UTR_LOOKUP_URL` (ya purana `UPI_UTR_VERIFY_URL`), optional
+`UPI_UTR_VERIFY_TOKEN` (bearer). Set na ho to claim fail nahi hota — `lookupLine` me saaf
+likha aata hai ki fetch nahi ho paya aur claim PENDING rehta hai (jhootha credit kabhi nahi).
+
+`fetchUtrPaymentDetails(utr)` → `{ configured, found, payment: { utr, amountPaise, payeeName,
+payeeVpa, payerName, status, at, ref, source }, reason, tried: ['POST','GET'] }`.
+POST JSON pehle; 404/405/501 par GET; 8s timeout.
+
+| # | Case | Behaviour |
+|---|---|---|
+| L1 | QR khula hai + UTR | wahi intent use hota hai (`topupId`) |
+| L2 | Koi QR nahi khula | **implicit intent** ₹1–₹500, user ke likhe amount se (`implicit: true`) |
+| L3 | Purana/stale `topupId` | 409 `NO_TOPUP_INTENT` — chupchaap naya intent nahi |
+| L4 | User ₹20 likhta hai, provider ₹12.50 deta hai | **sirf ₹12.50** judta hai, response `creditedPaise: 1250` |
+| L5 | Provider ne amount nahi diya | `found: false`, wajah "provider ne amount nahi diya", claim PENDING |
+| L6 | Provider URL set hi nahi | `lookupLine` me env ka naam, claim PENDING, credit 0 |
+| L7 | Provider "pending"/"processing" | credit nahi — PENDING |
+| L8 | Provider UTR match nahi karta | `UTR_MISMATCH` — dusre ka paisa kabhi nahi |
+| L9 | Payee Misbahul Islam nahi | `PAYEE_MISMATCH` (round 20 ka niyam bacha hua) |
+| L10 | Wahi UTR dobara | 409 duplicate — ek UTR ek hi baar |
+| L11 | Claim PENDING reh gaya, baad me paisa aa gaya | background `retryPendingUtrs({limit:5})` (db save ke saath) phir se fetch + credit |
+| L12 | Amount ₹500 se zyada | 400 — ek baar me ₹500 tak |
+| L13 | Amount 0 / text / missing | 400, saaf Hinglish wajah |
+| L14 | User ka likha amount credit par asar | **koi asar nahi** — credit `submitTopupRequest` ke fetched amount se |
+
+**Kahan:** `utr-lookup.js` (fetch + tolerant parse), `user-wallet.js` `claimWalletTopup` +
+`submitTopupRequest` (credit = fetched amount), `upi-statement.js` `retryPendingUtrs`,
+`swiggy-pro-api.js` claim endpoint, `swiggy-pro-app.js` `renderWalletCard()` (amount + UTR form,
+button hamesha chalu, line: "jitna paisa sach me aaya utna hi judega").
+
+**Test:** `test_v112_utr_fetch_and_credit.mjs` — **12/12**.
