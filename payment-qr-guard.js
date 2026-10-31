@@ -19,7 +19,7 @@ import { escapeLight } from './account-views.js';
 import { exactPaise } from './swiggy-cart-integrity.js';
 
 /** VPA jo Swiggy ke merchant ke hain ya placeholder hain — inse QR nahi banega. */
-export const PLACEHOLDER_UPI_IDS = new Set([
+export const FAKE_PLACEHOLDER_UPI_IDS = new Set([
   'swiggy@icici',
   'swiggy@okaxis',
   'swiggy@okhdfcbank',
@@ -32,6 +32,9 @@ export const PLACEHOLDER_UPI_IDS = new Set([
   'upi@upi',
   'none'
 ]);
+
+/** @deprecated purana naam — wahi set. */
+export const PLACEHOLDER_UPI_IDS = FAKE_PLACEHOLDER_UPI_IDS;
 
 /** Swiggy ke asli merchant VPAs (intent Swiggy se aaya ho to yahi hote hain). */
 // Asli Swiggy merchant handles: `upiswiggy@icici` (app ka dynamic QR) aur
@@ -60,6 +63,15 @@ export function isValidUpiVpa(value) {
 
 export function isSwiggyMerchantVpa(value) {
   return SWIGGY_MERCHANT_VPA_RE.test(String(value || '').trim());
+}
+
+/**
+ * Swiggy ke kisi bhi bank handle ka VPA (`swiggy@axisbank`, `swiggypay@hdfc` …).
+ * Ye payee Swiggy ka hi hota hai; payment app ise accept karta hai. Exact fake
+ * list (`swiggy@icici` etc.) alag se block hoti hai.
+ */
+export function isSwiggyFamilyVpa(value) {
+  return /^(?:upi)?swiggy[a-z0-9.\-_]*@[a-z][a-z0-9.\-]*$/i.test(String(value || '').trim());
 }
 
 /** Parse `upi://pay?...` into key/value pairs, keeping duplicates visible. */
@@ -99,27 +111,114 @@ export function parseUpiIntent(uri) {
 }
 
 /**
+ * Swiggy ka intent har baar ek jaisa nahi aata. Kuch cheezein sirf **transport
+ * ki gandi** hoti hain (`&amp;`, `\u0026`, escape kiya `/`, `amount` vs `am`,
+ * duplicate param jinki value same hai, `tn` me space). Inhe "invalid QR" maan
+ * kar customer ko QR na dena hi boss ki shikayat thi —
+ *   "qr nahi aata direct ye ajata".
+ * Isliye pehle intent ko SAaf karte hain, phir strict check chalate hain.
+ * Paisa kabhi nahi badalta: `am` ki value yahan chhui bhi nahi jaati.
+ *
+ * @returns {{ uri: string, repairs: string[], ok: boolean }}
+ */
+export function normalizeUpiIntentForQr(uri) {
+  const repairs = [];
+  let raw = String(uri === undefined || uri === null ? '' : uri).trim();
+  if (!raw) return { uri: '', repairs, ok: false };
+  // Transport escapes — value nahi, sirf encoding.
+  const unescaped = raw
+    .replace(/&amp;/gi, '&')
+    .replace(/&AMP;/g, '&')
+    .replace(/&#38;/g, '&')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\\//g, '/');
+  if (unescaped !== raw) {
+    repairs.push('HTML/JSON escape hata diya (&amp; / \\u0026)');
+    raw = unescaped;
+  }
+  const m = raw.match(/^([a-zA-Z][a-zA-Z0-9+.\-]*):\/\/([^?#]*)(?:\?([^#]*))?/);
+  if (!m) return { uri: raw, repairs, ok: false };
+  const scheme = m[1];
+  const path = m[2] || '';
+  const query = m[3] || '';
+  const safeDecode = (value) => {
+    try { return decodeURIComponent(String(value).replace(/\+/g, ' ')); } catch { return String(value); }
+  };
+  let pairs = query.split('&').filter(Boolean).map((seg) => {
+    const i = seg.indexOf('=');
+    return { key: i === -1 ? seg : seg.slice(0, i), value: i === -1 ? '' : seg.slice(i + 1) };
+  });
+
+  // `amount` aur `am` ek hi cheez hai. Jab `am` hai aur `amount` ki value wahi
+  // hai to `amount` hata do; jab `am` hi nahi hai to `amount` ko `am` banao.
+  const amPair = pairs.find((p) => p.key === 'am');
+  const amountPairs = pairs.filter((p) => p.key === 'amount');
+  if (amountPairs.length) {
+    if (!amPair) {
+      pairs = pairs.map((p) => (p.key === 'amount' ? { ...p, key: 'am' } : p));
+      repairs.push('`amount` ko `am` me badla');
+    } else if (amountPairs.every((p) => String(p.value) === String(amPair.value))) {
+      pairs = pairs.filter((p) => p.key !== 'amount');
+      repairs.push('duplicate `amount` (value same thi) hata diya');
+    }
+    // Value alag hai → chhedenge nahi, neeche ka check hi block karega.
+  }
+
+  const kept = [];
+  const seen = new Map();
+  for (const pair of pairs) {
+    const previous = seen.get(pair.key);
+    if (previous) {
+      if (String(previous.value) === String(pair.value)) {
+        repairs.push(`duplicate \`${pair.key}\` hata diya (value same thi)`);
+        continue;
+      }
+      kept.push(pair); // alag value → validation ko dikhne do
+      continue;
+    }
+    seen.set(pair.key, pair);
+    kept.push(pair);
+  }
+
+  const encoded = kept.map((pair) => {
+    let value = pair.value;
+    if (/[^\x21-\x7E]/.test(value) || /[\u0000-\u001f\u007f]/.test(safeDecode(value))) {
+      value = encodeURIComponent(safeDecode(value).replace(/[\u0000-\u001f\u007f]/g, ''));
+      repairs.push(`\`${pair.key}\` ko URL-safe banaya`);
+    }
+    return `${pair.key}=${value}`;
+  });
+
+  const built = `${scheme}://${path}${encoded.length ? `?${encoded.join('&')}` : ''}`;
+  return { uri: built, repairs, ok: true };
+}
+
+/**
  * Ek QR bhejne se pehle ka final check.
+ * `problems` = jo sach me block karta hai (paisa/galat payee). `warnings` =
+ * auto-fix aur chhoti baatein, jo QR bhejne se nahi rokteen.
  * @returns {{ valid: boolean, problems: string[], warnings: string[], info: object }}
  */
 export function validateUpiIntentForQr(uri, { amount = 0, requireAmount = true, allowPlaceholder = false } = {}) {
-  const parsed = parseUpiIntent(uri);
+  const normalized = normalizeUpiIntentForQr(uri);
+  const parsed = parseUpiIntent(normalized.uri);
   const problems = [...parsed.problems];
-  const warnings = [];
+  const warnings = normalized.repairs.map((repair) => `auto-fix: ${repair}`);
 
-  if (parsed.raw) {
-    if (/[\u0000-\u001f\u007f]/.test(parsed.raw)) problems.push('QR data me control characters hain');
-    if (/[^\x20-\x7E]/.test(parsed.raw)) problems.push('QR data me non-ASCII characters hain (encode nahi hue)');
-    if (/\s/.test(parsed.raw)) problems.push('QR data me space hai');
-    if (parsed.duplicateKeys.length) problems.push(`duplicate params: ${[...new Set(parsed.duplicateKeys)].join(', ')}`);
-  }
+  if (parsed.raw && /[\u0000-\u001f\u007f]/.test(parsed.raw)) problems.push('QR data me control characters hain');
+  if (parsed.raw && /[^\x20-\x7E]/.test(parsed.raw)) problems.push('QR data me non-ASCII characters hain (encode nahi hue)');
+  if (parsed.raw && /\s/.test(parsed.raw)) problems.push('QR data me space hai');
+  if (parsed.duplicateKeys.length) problems.push(`duplicate params alag value ke saath: ${[...new Set(parsed.duplicateKeys)].join(', ')}`);
 
   const pa = parsed.map.pa ? String(parsed.map.pa).trim() : '';
   if (!pa) problems.push('pa (payee UPI ID) missing hai');
   else if (!isValidUpiVpa(pa)) problems.push(`pa "${pa}" valid UPI ID nahi hai`);
-  // Swiggy ka asli merchant VPA (`upiswiggy@icici`) valid payee hai — sirf
-  // woh "placeholder" family galat hai jo Swiggy ka merchant bhi nahi hai.
-  else if (!allowPlaceholder && isPlaceholderUpiId(pa) && !isSwiggyMerchantVpa(pa)) {
+  // Swiggy ka asli merchant VPA (`upiswiggy@icici`, `swiggy…online@…`) valid
+  // payee hai. Sirf **exact** purane fake handles block hote hain — warna
+  // Swiggy ka naya bank handle aane par QR hi nahi aata tha.
+  else if (!allowPlaceholder && FAKE_PLACEHOLDER_UPI_IDS.has(normalizeUpiId(pa))) {
+    problems.push(`pa "${pa}" purana fake/placeholder Swiggy ID hai — is QR par payment kabhi nahi hoga`);
+  } else if (!allowPlaceholder && isPlaceholderUpiId(pa) && !isSwiggyMerchantVpa(pa) && !isSwiggyFamilyVpa(pa)) {
     problems.push(`pa "${pa}" placeholder hai — is QR par payment kabhi nahi hoga`);
   }
 
@@ -128,7 +227,7 @@ export function validateUpiIntentForQr(uri, { amount = 0, requireAmount = true, 
 
   const amRaw = parsed.map.am !== undefined ? parsed.map.am : parsed.map.amount;
   const am = Number(amRaw);
-  if (parsed.map.am !== undefined && parsed.map.amount !== undefined) problems.push('multiple amount params');
+  if (parsed.map.am !== undefined && parsed.map.amount !== undefined) problems.push('multiple amount params (value alag)');
   if (amRaw !== undefined && amRaw !== '') {
     if (!/^\d+(?:\.\d{1,2})?$/.test(String(amRaw)) || exactPaise(amRaw) === null || am <= 0) problems.push(`amount "${amRaw}" valid nahi hai`);
   } else if (requireAmount) {
@@ -152,7 +251,10 @@ export function validateUpiIntentForQr(uri, { amount = 0, requireAmount = true, 
       amount: Number.isFinite(am) && am > 0 ? am : null,
       tr,
       isSwiggyMerchant: isSwiggyMerchantVpa(pa),
-      params: parsed.pairs.map((p) => p.key)
+      params: parsed.pairs.map((p) => p.key),
+      // QR me bas YE string jaani chahiye (auto-fix ke baad).
+      uri: normalized.ok ? normalized.uri : String(uri || '').trim(),
+      repaired: [...normalized.repairs]
     }
   };
 }

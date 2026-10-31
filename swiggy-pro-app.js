@@ -53,6 +53,7 @@
     sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.4 1.4m11.2 11.2L19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/>',
     receipt:'<path d="M5 3h14v18l-2-1-2 1-3-1-3 1-2-1-2 1zM8 8h8M8 12h8M8 16h5"/>',
     userplus:'<path d="M16 21a7 7 0 0 0-14 0"/><circle cx="9" cy="8" r="4"/><path d="M19 8v6M16 11h6"/>',
+    alert:'<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>',
     coins:'<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>'
   };
   const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name] || ''}</svg>`;
@@ -619,10 +620,24 @@
     const hasQr = Boolean(c.qrDataUrl && /^data:image\/png;base64,/.test(c.qrDataUrl) && c.upiIntentUrl && /^upi:\/\/pay\?/i.test(c.upiIntentUrl));
     // Boss (31-10-2026, round 12): "QR NAHI AYA". Ab jab Swiggy order bana de
     // par QR na de, app chhupata nahi — order ID, asli wajah, aur agla kadam.
+    // Boss (31-10-2026, round 15): "kitna ganda dikh raha hai ye text, bilkul
+    // style nahi kia". Purane card me heading ek flex item tha, isliye
+    // "UPI se pay karein" ek patlee column me toot kar 4 line ban raha tha.
+    // Ab poora block structure ke saath: heading + sach + agla kadam.
+    const reasons = Array.isArray(c.qrMissingReasons) ? c.qrMissingReasons.filter(Boolean).slice(0, 3) : [];
     const qr = hasQr
       ? `<img class="payment-qr" src="${esc(c.qrDataUrl)}" alt="Swiggy UPI payment QR"><a class="button green block" href="${esc(c.upiIntentUrl)}">Open UPI app</a>`
-      : `<div class="warning"><b>Swiggy ne order le liya par payment QR nahi diya.</b>${c.qrMissingReason ? `<br>${esc(c.qrMissingReason)}` : ''}<br>Order #${esc(c.orderId || '—')} Swiggy par bana hua hai — <b>dobara order mat karein</b>. Payment status neeche se check karte rahein; Swiggy unpaid order apne aap cancel bhi kar sakta hai.</div>${/^https:\/\//.test(String(c.paymentPageUrl || '')) ? `<a class="button soft block" href="${esc(c.paymentPageUrl)}">Swiggy ka payment page kholein</a>` : ''}`;
-    return `${head('PAYMENT', `Pay ${money(c.amount)}`, c.orderId ? `Swiggy order #${esc(c.orderId)}` : 'Swiggy order bana hai')}<div class="card pay-screen"><div class="card-title">${icon('receipt')} UPI se pay karein<small>${esc(c.message || '')}</small></div>${qr}<p class="hint">${hasQr ? 'Paisa sirf isi QR par dein — ek hi baar.' : ''} ${c.paymentVerified ? 'Payment report hui hai, order confirm hone ka intezaar hai — dobara na dein.' : ''}</p><button class="button primary block" type="button" data-action="checkout-status">${icon('refresh')} Payment check karein</button>${c.orderId ? `<button class="button soft block" type="button" data-action="track-open" data-id="${esc(c.orderId)}">Order track karein</button>` : ''}<button class="button soft block" type="button" data-action="checkout-orders">Original account ke orders</button></div>`;
+      : `<div class="pay-hold">
+          <div class="pay-hold-head">${tile('alert')}<div class="title-copy"><strong>QR Swiggy ne nahi diya</strong><small>Order ban gaya hai — paisa abhi nahi kata.</small></div></div>
+          ${reasons.length ? `<ul class="pay-reasons">${reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : (c.qrMissingReason ? `<p class="pay-reason-line">${esc(c.qrMissingReason)}</p>` : '')}
+          <div class="pay-order-chip"><span>Order</span><b>#${esc(c.orderId || '—')}</b></div>
+          <ol class="pay-steps">
+            <li><b>Dobara order mat karein</b> — Swiggy par order pehle se bana hua hai.</li>
+            <li>Neeche <b>Payment check karein</b> dabaiye — status Swiggy se aata hai.</li>
+            <li>Swiggy unpaid order thodi der me khud cancel kar deta hai${c.orderId ? '' : ''}.</li>
+          </ol>
+        </div>${/^https:\/\//.test(String(c.paymentPageUrl || '')) ? `<a class="button soft block" href="${esc(c.paymentPageUrl)}">Swiggy ka payment page kholein</a>` : ''}`;
+    return `${head('PAYMENT', `Pay ${money(c.amount)}`, c.orderId ? `Swiggy order #${esc(c.orderId)}` : 'Swiggy order bana hai')}<div class="card pay-screen"><div class="card-title">${tile(hasQr ? 'receipt' : 'orders')}<span class="title-copy"><strong>${hasQr ? 'UPI se pay karein' : 'Payment abhi ruka hua hai'}</strong><small>${esc(hasQr ? (c.message || 'QR Swiggy se aaya hai — scan karke pay karein.') : 'Swiggy ne order le liya, bas QR nahi diya.')}</small></span></div>${qr}<p class="hint">${hasQr ? 'Paisa sirf isi QR par dein — ek hi baar.' : ''} ${c.paymentVerified ? 'Payment report hui hai, order confirm hone ka intezaar hai — dobara na dein.' : ''}</p><button class="button primary block" type="button" data-action="checkout-status">${icon('refresh')} Payment check karein</button>${c.orderId ? `<button class="button soft block" type="button" data-action="track-open" data-id="${esc(c.orderId)}">Order track karein</button>` : ''}<button class="button soft block" type="button" data-action="checkout-orders">Original account ke orders</button></div>`;
   }
   function renderCart() {
     if (state.track) return renderTrack();

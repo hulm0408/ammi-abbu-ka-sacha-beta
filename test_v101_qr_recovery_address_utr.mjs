@@ -110,7 +110,11 @@ test('QR: QR ka amount bill se match na kare to wo QR kabhi nahi dikhaya jaata',
   let caught = null;
   try { await proProvider.checkout({ ...account }, { ...receiver }, cart(), 'v101:bad-amount'); } catch (e) { caught = e; }
   assert.equal(caught?.code, 'SWIGGY_PLACED_NO_UPI_INTENT');
-  assert.match(caught.diag.intentProblem, /match nahi/i);
+  // Round 15: wajah asli hoti hai — "amount match nahi karta" fixed line nahi.
+  assert.match(caught.diag.intentProblem, /amount/i);
+  assert.ok(caught.diag.intentProblems.some(t => /amount/i.test(t)), 'asli problem list me amount hai');
+  assert.equal(caught.diag.intentAmount, 99);
+  assert.equal(caught.diag.billAmount, 70);
 });
 
 // ── 2. API: qrMissing checkout OUTCOME_UNKNOWN nahi banta ─────────────────

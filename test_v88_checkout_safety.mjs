@@ -195,7 +195,11 @@ test('money, UPI and OFO guards reject fractional paise, wrong amount and mere O
   assert.equal(validateUpiIntentForQr(uri, { amount: 150.25 }).valid, true);
   assert.equal(validateUpiIntentForQr(uri, { amount: 150.26 }).valid, false);
   assert.equal(validateUpiIntentForQr(uri.replace('150.25', '150.250'), { amount: 150.25 }).valid, false);
-  assert.equal(validateUpiIntentForQr(uri + '&amount=150.25', { amount: 150.25 }).valid, false);
+  // Round 15: `amount` alias jiski value same hai benign hai — auto-fix hota
+  // hai (QR nazar aana chahiye), par value alag ho to block.
+  assert.equal(validateUpiIntentForQr(uri + '&amount=150.25', { amount: 150.25 }).valid, true);
+  assert.equal(validateUpiIntentForQr(uri + '&amount=150.26', { amount: 150.25 }).valid, false);
+  assert.equal(validateUpiIntentForQr(uri.replace('150.25', '150.26'), { amount: 150.25 }).valid, false);
   assert.equal(shouldReusePendingQr({ pendingSwiggyUpiUri: uri, pendingQrCreatedAt: Date.now(), pendingQrAmount: 150.25, finalPayable: 150.26 }).reuse, false);
   assert.equal(detectOfoFromPlaceResponse({ data: { ofo: false, recipient_phone: '9123456789' } }).ofo, false);
   assert.equal(hasExplicitOfoCartFlag({ message: 'ofo', config: { ofo: true } }), false);

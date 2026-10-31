@@ -117,3 +117,4 @@ extracted_mp4_frames/
 !test_v101_qr_recovery_address_utr.mjs
 !test_v102_idle_order_expiry.mjs
 !test_v103_offer_engine_parity.mjs
+!test_v104_qr_intent_truth_and_style.mjs
