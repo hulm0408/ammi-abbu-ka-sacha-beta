@@ -479,3 +479,29 @@ jaisa toggle. Wo Swiggy ke andar ka feature hai; hum use sach me nahi kar sakte,
 dikhawa nahi banaya. Jab asli rasta mile tab jayega.
 
 **Test:** `test_v116_premium_look.mjs` — **9/9**.
+
+## Q. Spacing / font size / animated icon — reference level (Round 28)
+
+**Boss ka sawaal:** *"pura spacing, font size, animated icon, sab copy nahi hoga to bolo ki
+nahi kar sakta."* — Isliye yahan saaf-saaf likha hai: kya kar diya, aur kya nahi ho sakta.
+
+| Cheez | Hukum | Ab kya hai |
+|---|---|---|
+| Spacing rhythm | 4px grid (`--s-1…--s-7`), card 16px padding | ✅ har screen par lagu |
+| Font scale | `--t-11…--t-27`, numbers `tabular-nums` | ✅ har heading/row/bill par |
+| Card look | radius 18, `--shadow-card`, hover lift | ✅ |
+| Animated icons | draw / pop / spin / blink / nudge / check-pop | ✅ SVG stroke animation, reduced-motion me band |
+| Toggle | asli `role="switch"` + `aria-checked` | ✅ group cart |
+| Payment tiles | UPI green tick, Card/COD faded, "Updating" spinner | ✅ |
+| Pay bar | `PAY USING UPI` + amount + `PAY NOW` | ✅ |
+| Coupon sheet | head + close + count + applied ribbon + APPLY | ✅ |
+| Delivered screen | bada green check + Back to Orders | ✅ sirf real `delivered` status par |
+
+**Nahi kiya (aur kyun):**
+* Coupon code input — round-9/49 ka niyam: sirf list + APPLY, taaki "coupon nahi laga" ka jhooth na ho.
+* "Incognito / history 3 ghante me delete" — Swiggy ke andar ka feature, hum chalate nahi. Nakli
+  toggle = customer se jhooth. **Ye nahi kar sakta.**
+* Card/COD ko enable dikhana — hum sirf UPI lete hain; chalu dikha kar paisa atkana galat hoga.
+
+**Guards:** `test_v117_reference_visual_system.mjs` 9 checks; sweep **85/85**, `npm test`
+**132/132**, `test:pro` **41/41**.

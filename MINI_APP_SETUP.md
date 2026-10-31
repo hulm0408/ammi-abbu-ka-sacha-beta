@@ -767,3 +767,56 @@ feature hai. Dikhawa nahi banaya — jab asli rasta milega tab.
 `test_v116_premium_look.mjs` **9 checks** (CSS system 5, toast variants 1, finding coupon 1,
 coupon count 1, backward-compat 1). Sweep: guards **84/84 (143s)**, `npm test` **132/132**,
 `test:pro` **41/41**.
+
+---
+
+## Round 28 — Spacing, font size, animated icon: poora rhythm reference jaisa
+
+Boss: *"PURA SPACING AND FONT SIZE ANIMATED ICON AND EVERYTHING COPY KARNA HAI."*
+Is baar **craft** copy kiya (naap, rhythm, animation) — **brand nahi** (logo/naam/colours
+wahi Swiggy ke hain hi nahi; hum unke app ki nakal nahi ban rahe).
+
+### Ab kya hai
+* **Spacing grid** — `--s-1 4px` … `--s-6 24px`, `--s-7 32px`. Har card `16px` padding,
+  `18px` radius (`--r-lg`), `--shadow-card: 0 4px 16px rgba(24,49,70,.05)` — pehle
+  random 10/14/22px the, ab har jagah wahi 4 ke gunaj.
+* **Type scale** — `--t-11 … --t-27`. Body `14`, list title `15`, section head `17`,
+  pay bar amount `20`, hero `27`. Line-height 1.28–1.45, numbers par `tabular-nums`.
+* **Animated icons** — `icon-draw` (SVG stroke khud ko "likhta" hai), `icon-pop` (tile
+  icon halka bounce), `icon-spin-slow` (loading), `dot-blink` (live dot), `chevron-nudge`
+  (dabane par `›` aage), `check-pop` (delivered ✓). `prefers-reduced-motion` par sab band.
+* **Group cart card** — icon tile + title + asli `role="switch"` toggle (46×27, `aria-checked`).
+  Toggle off karne par card halka fade hota hai, par **import button hamesha saamne rehta
+  hai** (round 17 ka niyam: import button ke pehle koi dropdown nahi).
+* **Address row** — pin icon + `DELIVERING TO` + naam/address + `›`, poora row tappable.
+* **Payment tiles** — 3 tiles (UPI/QR selected green radio + tick, Card & COD faded +
+  "Not available"). Bill aane se pehle right side par **"Updating" spinner pill** — jhooth
+  nahi, bas sach: abhi quote aa raha hai.
+* **Pay bar** — `PAY USING UPI` + amount (`--t-20`) + `PAY NOW` pill.
+* **Coupon sheet** — head me "Apply Coupon" + close icon-button; `AVAILABLE COUPONS n`;
+  applied ribbon; har coupon par APPLY.
+* **Delivered hero** — bada green check (`check-pop`) + "Order Delivered" + `Back to Orders`
+  pill, upar dono action pills. Sirf jab Swiggy ka status `delivered` ho aur "out for
+  delivery"/"on the way" na ho — warna purana honest card hi dikhta hai.
+* **Chhote phone** — `@media (max-width: 380px)` par padding `12px`, kuch bahar nahi jaata.
+
+### Kya copy NAHI kiya — aur asli wajah
+1. **Coupon code type karne wala input** — reference me hai, par boss ka round-9/49 niyam
+   pakka hai: *"coupon available nahi hai" mat bolo, list dikhao, sirf APPLY buttons*. Code
+   box wapas laane se log haath se galat code daal ke "coupon nahi laga" ka shor karte hain.
+   Isliye list + APPLY rakha. (Test v96 isi ko pakadta hai — `input[name="coupon"]` = null.)
+2. **"Incognito" / "order history 3 ghante me delete"** — ye Swiggy ke andar ka feature hai.
+   Hum usse chala nahi sakte, aur nakli toggle banane ka matlab jhooth hota. **Nahi kar sakta.**
+3. **Card / COD ko chalu dikhana** — hum sirf UPI se paisa lete hain. Tile dikhta hai
+   (reference jaisa) par faded + "Not available". Chalu dikhana = customer ka paisa atakna.
+4. **Group-cart ka data hum khud nahi bana sakte** — button asli `cart/import` chalata hai;
+   juicetext/OCR ka natija wahi dikhta hai jo Swiggy deta hai.
+5. **Swiggy ka logo/font-as-is** — Manrope (open font) reference jaisa feel deta hai;
+   unka brand logo uthana legal aur pehchaan dono ka issue hai.
+
+### Tests
+`test_v117_reference_visual_system.mjs` **9 checks** — tokens, card rhythm, 6 icon
+animations, switch/address/pay-tile/pay-bar/delivered-hero CSS, ≤380px media, aur DOM:
+toggle chal raha hai + import button saamne, address row, payment tiles + Updating pill,
+delivered hero + Back to Orders pill.
+Sweep: guards **85/85 (157s)**, `npm test` **132/132**, `test:pro` **41/41**.
