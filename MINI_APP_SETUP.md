@@ -914,3 +914,53 @@ padh kar nahi dikhte.
   reference ke against nahi ho saka. Jo compare hua wo: render vs. documented inventory
   (`docs/REFERENCE_INVENTORY.md`) aur render vs. pichhle round ke screenshots.
 * Swiggy ka asli app is machine par nahi khulta; cart ka data demo hai.
+
+---
+
+## Round 31 — Accounts screen reference jaisa + "copy JSON" asli
+
+Boss: *"ISKO AS IT IS COPY KAR — FONT SIZE, SPACING, ID AND ALL THE FEATURES IT PROVIDE
+LIKE WHEN CLICK COPY THE JSON."*
+
+Reference PNG (692 px wide = 390 CSS px, scale 1.79) se naap nikaal kar screen dobara banayi.
+
+### Screen (naap `docs/REFERENCE_INVENTORY.md` §2 me)
+* Topbar chhota (60px), brand tile 38, **PRO** badge, chip me person icon + number,
+  theme button icon (pehle `☾` text tha — ab SVG).
+* **Add Account** card: `Add Account` + **Number / JSON** pill toggle, `Mobile Number`
+  label, input me **CSS tiranga** + `+91` (emoji nahi — emoji font na ho to tofu), gradient
+  **Send OTP** with send icon.
+* **Saved Accounts** heading + hairline + count pill, **Search Account...**, phir rows:
+  avatar tile, naam, `+91 number`, aur right side **Used** pill → **copy JSON** →
+  **green check** (select) → **delete**.
+* Har row real data se banti hai (`used` = active/USED, blocked row faded, shared ID par
+  "Claim: sirf operator"). Koi fake row nahi.
+
+### Copy JSON — dikhawa nahi, asli
+* Naya route `GET /pro/api/accounts/session?key=…` — **wahi** JSON deta hai jo
+  `/accounts/import` wapas leta hai (internal flags jaise `isLoggedIn` hata kar).
+* Sirf apna account: shared/vault ID par non-boss ko **403**, token response me aata hi
+  nahi (test isko pakadta hai). Rate limit `accountExport` = 30/hour.
+* UI: `navigator.clipboard.writeText` → na ho to `textarea + execCommand` fallback →
+  dono fail ho to **laal toast** ("copy nahi ho paya"), chup-chaap kuch nahi.
+* Live browser me verify: clipboard me asli JSON gaya, toast `✓ skk ka JSON copy ho gaya.`
+
+### Search
+Client-side filter (naam **ya** number se), re-render ke bina — isliye typing par keyboard
+band nahi hota. Koi match na ho to line dikhti hai.
+
+### Chhoti cheezein jo saath theek hui
+* Free-cash emoji (`💵`) hata kar text — emoji tofu risk tha.
+* Offer chip me emoji sirf tab jab server de; warna chhota dot (🎁 fallback hata).
+
+### Verification
+* `npm run shots:miniapp` → accounts screen **do baar** capture ki, farak dekh kar spacing
+  chhoti ki (title ek line me, actions 26px, hint ek line).
+* Live Chromium: copy JSON, toast, search filter — sab chalte dekhe.
+* naya guard `test_v120_accounts_reference_and_copy_json.mjs` **12 checks** (DOM 9 + server 3).
+* Sweep: guards **88/88 (148s)**, `npm test` **132/132**, `test:pro` **41/41**.
+
+### Nahi kiya (sach)
+* Reference me "JSON" tab par click karne ka screenshot nahi tha — hum wahi session-import
+  form dikhate hain jo pehle se tha (asli verify hota hai).
+* Copy JSON me token jata hai — isliye note bhi saath: "Kisi ke saath share na karein."

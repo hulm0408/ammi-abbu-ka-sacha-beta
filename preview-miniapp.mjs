@@ -84,6 +84,10 @@ const previewBoot = `<script>
     if (target.includes('/bootstrap')) return json(STATE);
     if (target.includes('/coupons')) return json({ ok: true, coupons: STATE.coupons, note: '' });
     if (target.includes('/orders')) return json({ ok: true, orders: STATE.orders || [] });
+    if (target.includes('/accounts/session')) {
+      const key = new URL(target, 'http://x').searchParams.get('key') || '';
+      return json({ ok: true, key, session: { phone: '9031204105', token: 'preview-demo-token', tid: 'preview-tid' }, note: 'Preview demo JSON — asli app me asli session aata hai.' });
+    }
     return json({ ok: true, ...STATE });
   };
 })();

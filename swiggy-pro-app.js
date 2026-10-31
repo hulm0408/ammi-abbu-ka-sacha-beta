@@ -11,7 +11,7 @@
     menuLoading: false, orders: null, ordersScope: 'active', order: null, orderTracking: null, ordersLoading: false, ordersDetailAllowed: true,
     cachedAccounts: [], busy: false, loading: 0, resultsLoading: false, deleteFlow: null, claimBusyKey: '', claimResult: null, couponOpen: false,
     outlets: null, outletsOpen: false, outletsLoading: false, backup: null, backupBusy: false,
-    coupons: null, couponsNote: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, billOpen: false, ordersFilter: 'all',
+    coupons: null, couponsNote: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, billOpen: false, ordersFilter: 'all', accountQuery: '',
     meal: null, mealFor: '', mealLoading: false, couponDraft: '', groupCartDraft: '', groupCartOn: true,
     track: null, trackData: null, trackError: '', trackBusy: false,
     // Boss (31-10-2026, round 11): wallet ₹15 gate + UPI top-up.
@@ -57,6 +57,11 @@
     userplus:'<path d="M16 21a7 7 0 0 0-14 0"/><circle cx="9" cy="8" r="4"/><path d="M19 8v6M16 11h6"/>',
     alert:'<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>',
     spark:'<path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18 15.5 18.8 18l2.5.8-2.5.8L18 22l-.8-2.4-2.5-.8 2.5-.8z"/>',
+    phone:'<rect x="6.5" y="2.5" width="11" height="19" rx="2.6"/><path d="M10.5 18.6h3"/>',
+    code:'<path d="m9 7.5-4.5 4.5L9 16.5M15 7.5l4.5 4.5L15 16.5"/>',
+    send:'<path d="M21.4 3.2 2.9 10.1l6.7 2.5 2.4 6.7z"/><path d="M21.4 3.2 9.6 12.6"/>',
+    copy:'<rect x="8.5" y="8.5" width="12" height="11.5" rx="2.4"/><path d="M15.5 8.5V6.2a2 2 0 0 0-2-2H5.9a2 2 0 0 0-2 2v7.4a2 2 0 0 0 2 2h2.6"/>',
+    used:'<path d="M4.5 7.5h15v11h-15z"/><path d="M8.5 7.5v-2h7v2"/><path d="m9 13 2 2 4-4"/>',
     coins:'<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>'
   };
   const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name] || ''}</svg>`;
@@ -315,57 +320,119 @@
     $('#bottom-nav').innerHTML = tabs.map(([id, label]) => `<button type="button" data-action="nav" data-tab="${id}" class="${state.tab === id ? 'selected' : ''}" ${state.tab === id ? 'aria-current="page"' : ''} ${state.auth ? '' : 'disabled'}>${icon(id)}<span>${label}</span></button>`).join('');
     const chip = $('#account-chip');
     const chipPhone = state.activeAccount?.phone || state.activeAccount?.phoneMasked || '';
-    chip.textContent = state.auth ? (chipPhone ? `+91 ${chipPhone}` : 'Select account') : 'Not connected';
+    // Round 31: reference me chip me person icon + number hai (text node nahi).
+    const chipText = chip.querySelector('#account-chip-text') || chip;
+    chipText.textContent = state.auth ? (chipPhone ? `+91 ${chipPhone}` : 'Select account') : 'Not connected';
     chip.disabled = !state.auth;
     const cart = state.auth ? state.cart : null;
     const quantity = cart?.items?.reduce((n, i) => n + Number(i.qty || 0), 0) || 0;
     $('#cart-dock').innerHTML = cart && quantity && state.tab !== 'cart' ? `<button type="button" class="cart-dock" data-action="nav" data-tab="cart"><span class="dock-icon">${icon('cart')}</span><span class="dock-copy"><strong>${quantity} item${quantity === 1 ? '' : 's'} · ${esc(cart.restaurantName)}</strong><small>${cart.quote ? `Swiggy bill ${money(cart.quote.total)}` : 'Bill not checked yet'}</small></span><span class="dock-cta">View cart →</span></button>` : '';
   }
+  /**
+   * Boss (01-11-2026, round 31): reference screenshot — "Add Account" card,
+   * Number/JSON pill, flag wala mobile field, gradient Send OTP, "Saved Accounts"
+   * heading + ginti, "Search Account…", aur har row par Used / JSON copy /
+   * green check / delete.
+   *
+   * Niym still same: OTP asli Swiggy flow se jata hai, JSON import asli verify
+   * hota hai, delete ka do-choice flow wahi hai. Koi nakli success nahi.
+   */
   function renderAccounts() {
-    const intro = head('YOUR SPACE', 'Accounts', 'Add a Swiggy account to start ordering.');
     const lockedNotice = cartLocked() ? '<div class="warning">Checkout pending or unknown hai. Account switching locked hai; sirf wahi original account dobara connect ho sakta hai.</div>' : '';
-    const controls = state.mode === 'phone'
-      ? `<form data-form="${state.otpSent ? 'verify-otp' : 'send-otp'}">${state.otpSent
-          ? `${field('OTP from Swiggy', 'otp', 'Enter 6-digit OTP', '', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6" required')}<p class="hint">OTP Swiggy bhejta hai. Kisi ko na batayein.</p><button class="button primary block" type="submit">Verify & add account ${icon('arrow')}</button><button class="text-button" type="button" data-action="otp-reset">Change mobile number</button>`
-          : `<label class="field"><span class="field-label">Mobile number</span><span class="input-wrap"><span class="phone-prefix">+91</span><input name="phone" placeholder="Enter mobile number" inputmode="tel" autocomplete="tel-national" required></span></label><button class="button primary block" type="submit">Send OTP ${icon('arrow')}</button>`}</form>`
-      : `<form data-form="import"><label class="field"><span class="field-label">Session JSON</span><span class="input-wrap"><textarea name="session" placeholder='{"mobile":"…", "token":"…", "tid":"…"}' required></textarea></span></label><p class="hint">Sirf apni session use karein. Token/OTP chat me kabhi na bhejein.</p><button class="button primary block" type="submit">Login via JSON ${icon('arrow')}</button></form>`;
+    const phoneMode = state.mode !== 'json';
+    const modePill = `<div class="ac-mode" role="tablist" aria-label="Add account mode">
+      <button type="button" role="tab" aria-selected="${phoneMode}" class="${phoneMode ? 'on' : ''}" data-action="account-mode" data-mode="phone">${icon('phone')} Number</button>
+      <button type="button" role="tab" aria-selected="${!phoneMode}" class="${!phoneMode ? 'on' : ''}" data-action="account-mode" data-mode="json">${icon('code')} JSON</button>
+    </div>`;
+    const phoneForm = state.otpSent
+      ? `<form data-form="verify-otp" class="ac-form">
+          <label class="ac-label" for="ac-otp">Enter OTP</label>
+          <div class="ac-input"><span class="ac-prefix">${icon('phone')}</span><input id="ac-otp" name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit OTP" required></div>
+          <button class="ac-cta" type="submit">Verify &amp; add account ${icon('arrow')}</button>
+          <button class="text-button ac-switch" type="button" data-action="otp-reset">Change mobile number</button>
+        </form>`
+      : `<form data-form="send-otp" class="ac-form">
+          <label class="ac-label" for="ac-phone">Mobile Number</label>
+          <div class="ac-input"><span class="ac-prefix"><span class="ac-flag" aria-hidden="true"></span>+91</span><input id="ac-phone" name="phone" inputmode="tel" autocomplete="tel-national" placeholder="Enter Mobile Number" required></div>
+          <button class="ac-cta" type="submit">${icon('send')} Send OTP</button>
+        </form>`;
+    const jsonForm = `<form data-form="import" class="ac-form">
+        <label class="ac-label" for="ac-json">Session JSON</label>
+        <div class="ac-input ac-textarea"><textarea id="ac-json" name="session" placeholder='{"mobile":"…","token":"…","tid":"…"}' required></textarea></div>
+        <button class="ac-cta" type="submit">${icon('code')} Login via JSON</button>
+      </form>`;
+    const addCard = `<div class="card ac-card">
+      <div class="ac-head">${tile('userplus')}<h2>Add Account</h2>${modePill}</div>
+      ${phoneMode ? phoneForm : jsonForm}
+      <p class="hint ac-hint">${phoneMode ? 'OTP Swiggy bhejta hai — aapke phone ka Swiggy app login nahi hota.' : 'Sirf apni session use karein. Token/OTP chat me kabhi na bhejein.'}</p>
+    </div>`;
+
     const statusPill = (a) => {
       const cls = a.status === 'READY' ? 'green' : (a.status === 'USED' ? 'grey' : (a.status === 'UNVERIFIED' || a.status === 'BUSY' ? 'amber' : 'red'));
       return `<span class="pill ${cls}">${esc(a.status || '—')}</span>`;
     };
-    const rows = state.accounts.length ? state.accounts.map(a => {
+    const query = String(state.accountQuery || '').trim().toLowerCase();
+    const matches = (a) => !query
+      || String(a.name || '').toLowerCase().includes(query)
+      || String(a.phone || '').includes(query)
+      || String(a.phoneMasked || '').replace(/\D/g, '').includes(query.replace(/\D/g, '') || '~');
+    const visible = state.accounts.filter(matches);
+    const rows = visible.length ? visible.map(a => {
       const blocked = a.selectable === false;
-      // Used ID: pehle warning, phir select (boss 31-10-2026). Suspended /
-      // expired / busy ID band hi rehti hai.
       const needsConfirm = a.needsConfirm === true;
-      // Boss (31-10-2026): "OPERATOR AND OFFER KE LIYE ICON SELECTED HO, AUR
-      // AGAR NA HO TO WO CUT KARDE." Claim hua = green tick, nahi hua = kati
-      // hui line.
       const trackIcons = (a.offerTracks || []).map(t => {
         const on = t.verified === true || ['CLAIMED', 'ALREADY_ACTIVE', 'ACTIVE'].includes(String(t.status || '').toUpperCase());
-        return `<span class="offer-chip ${on ? 'on' : 'off'}" title="${esc(t.label)}">${t.emoji || '🎁'}${on ? ' ✓' : ''}</span>`;
+        // Emoji sirf tab jab server de — warna 🎁 tofu ban sakta hai. Fallback
+        // par chhota dot + label ka pehla akshar.
+        const glyph = t.emoji ? esc(t.emoji) : `<i class="offer-dot" aria-hidden="true"></i>`;
+        return `<span class="offer-chip ${on ? 'on' : 'off'}" title="${esc(t.label)}">${glyph}${on ? ' ✓' : ''}</span>`;
       }).join('');
-      const extras = [a.freeCash > 0 ? `💵 ₹${esc(a.freeCash)}` : '', trackIcons].filter(Boolean).join(' ');
+      const extras = [a.freeCash > 0 ? `₹${esc(a.freeCash)} free cash` : '', trackIcons].filter(Boolean).join(' ');
       const phoneLine = a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned';
-      const ownerPill = `<span class="pill ${a.owner === 'operator' ? 'blue' : ''}">${a.owner === 'operator' ? 'Operator' : 'Aapka'}</span>`;
-      const claimNote = a.canClaim === false ? '<span class="pill grey">Claim: sirf operator</span>' : '';
-      const action = a.active
-        ? '<span class="pill green">Active</span>'
-        : (needsConfirm
-            ? `<button class="button mini warn" data-action="account-select" data-key="${esc(a.key)}" data-confirm-used="1" ${cartLocked() ? 'disabled' : ''}>Use</button>`
-            : (blocked
-                ? '<span class="pill grey">Not available</span>'
-                : `<button class="button mini outline" data-action="account-select" data-key="${esc(a.key)}" ${cartLocked() ? 'disabled' : ''}>Use</button>`));
-      const remove = a.canRemove === false ? '' : `<button class="icon-button" data-action="account-remove" data-key="${esc(a.key)}" aria-label="Remove account" ${cartLocked() ? 'disabled' : ''}>${icon('trash')}</button>`;
-      return `<div class="account-row ${a.active ? 'active' : ''} ${blocked && !needsConfirm ? 'is-blocked' : ''}"${blocked && !needsConfirm ? ' style="opacity:.55"' : ''}>${tile('accounts', true)}<div class="row-content"><strong>${esc(a.name)} ${a.icons ? esc(a.icons) : ''}${a.active ? '' : ' ' + statusPill(a)}</strong><p>${phoneLine}${a.reason ? ' · ' + esc(a.reason) : ''}</p><p class="pill-line">${ownerPill}${claimNote}</p>${extras ? `<p>${extras}</p>` : ''}</div><div class="row-actions">${action}${remove}</div></div>`;
-    }).join('') : empty('accounts', 'No accounts yet', 'Apna account OTP se ya verified session JSON se add karein.');
-    // Server par account na mile par phone par pehle dikha tha — chup-chaap
-    // khaali screen nahi, seedha batao ki kya hua.
+      const ownerNote = a.owner === 'operator' ? '<span class="ac-owner">Operator</span>' : '';
+      const claimNote = a.canClaim === false ? '<span class="ac-owner">Claim: sirf operator</span>' : '';
+      // "Used" = jo ID pehle chali hai (active ya USED). Ready/new ID par status.
+      const usedPill = a.active || a.status === 'USED'
+        ? `<span class="ac-used">${icon('used')} Used</span>`
+        : '';
+      const selectBtn = a.active
+        ? `<span class="ac-check on" role="img" aria-label="Selected account">${icon('check')}</span>`
+        : blocked && !needsConfirm
+          ? `<span class="ac-check off" role="img" aria-label="Not available">${icon('check')}</span>`
+          : `<button class="ac-check" type="button" data-action="account-select" data-key="${esc(a.key)}"${needsConfirm ? ' data-confirm-used="1"' : ''} aria-label="Use ${esc(a.name)}" ${cartLocked() ? 'disabled' : ''}>${icon('check')}</button>`;
+      const copyBtn = `<button class="ac-json" type="button" data-action="account-copy-json" data-key="${esc(a.key)}" data-name="${esc(a.name)}" aria-label="Copy JSON" title="Copy JSON">${icon('copy')}</button>`;
+      const remove = a.canRemove === false ? '' : `<button class="ac-del" type="button" data-action="account-remove" data-key="${esc(a.key)}" aria-label="Remove account" ${cartLocked() ? 'disabled' : ''}>${icon('trash')}</button>`;
+      return `<div class="ac-row ${a.active ? 'active' : ''}${blocked && !needsConfirm ? ' is-blocked' : ''}" data-search="${esc([a.name, a.phone, a.phoneMasked].filter(Boolean).join(' ').toLowerCase())}">
+        <span class="ac-avatar">${icon('accounts')}</span>
+        <div class="ac-copy">
+          <strong>${esc(a.name)}</strong>
+          <small>${phoneLine}</small>
+          ${a.reason && !a.active ? `<small class="ac-reason">${esc(a.reason)}</small>` : ''}
+          ${(ownerNote || claimNote || extras) ? `<span class="ac-tags">${ownerNote}${claimNote}${extras ? `<span class="ac-extras">${extras}</span>` : ''}</span>` : ''}
+        </div>
+        <div class="ac-actions">${usedPill}${!a.active && a.status && a.status !== '—' ? statusPill(a) : ''}${copyBtn}${selectBtn}${remove}</div>
+      </div>`;
+    }).join('') : (state.accounts.length
+      ? `<p class="hint ac-noresult">"${esc(state.accountQuery)}" se koi account nahi mila.</p>`
+      : empty('accounts', 'No accounts yet', 'Apna account OTP se ya verified session JSON se add karein.'));
+
     const remembered = state.accounts.length ? '' : (state.cachedAccounts || []).map(a =>
-      `<div class="account-row is-blocked">${tile('accounts', true)}<div class="row-content"><strong>${esc(a.name || 'Saved ID')} <span class="pill grey">RE-LOGIN</span></strong><p>${a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Saved on this phone'} · Server par session nahi mila — ye ID dobara add karni hogi (data delete nahi hua).</p></div></div>`
+      `<div class="ac-row is-blocked"><span class="ac-avatar">${icon('accounts')}</span><div class="ac-copy"><strong>${esc(a.name || 'Saved ID')}</strong><small>${a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Saved on this phone'} · Server par session nahi mila — dobara add karein (data delete nahi hua).</small></div></div>`
     ).join('');
     const rememberedNote = remembered ? `<div class="warning">Aapke phone par pehle se saved ID mili. Session server par nahi hai — neeche wahi number daal kar OTP se dobara add karein.</div>${remembered}` : '';
-    return `${intro}${lockedNotice}<div class="card"><div class="card-title">${tile('userplus')}<span class="title-copy">Add account<small>${state.user?.isBoss ? 'Shared operator vault me jata hai' : 'Sirf aapko dikhta hai — kisi doosre user ko nahi'}</small></span></div><div class="divider"></div><div class="segmented"><button type="button" data-action="account-mode" data-mode="phone" class="${state.mode === 'phone' ? 'selected' : ''}">Phone number</button><button type="button" data-action="account-mode" data-mode="json" class="${state.mode === 'json' ? 'selected' : ''}">Session JSON</button></div>${controls}<p class="hint">Ye server-side session add karta hai; aapke phone ka Swiggy app login nahi hota.</p></div><div class="line-heading">${icon('accounts')} Saved accounts <span class="pill right">${state.accounts.length}</span></div>${rememberedNote}${rows}${state.deleteFlow ? `<div class="card delete-card"><div class="card-title">${icon('trash')} Swiggy delete OTP<small>Swiggy ne ${esc(state.deleteFlow.phoneMasked || 'account phone')} par 6-digit delete OTP bheja hai. Ye account Swiggy se hamesha ke liye delete ho jayega.</small></div><form data-form="delete-otp">${field('Delete OTP', 'otp', '6-digit OTP', '', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6" required')}<button class="button danger block" type="submit">Swiggy se delete karein ${icon('trash')}</button><button class="text-button" type="button" data-action="delete-cancel">Cancel</button></form></div>` : ''}`;
+
+    const savedHead = `<div class="ac-saved-head">
+      <span class="ac-saved-icon">${icon('accounts')}</span>
+      <h2>Saved Accounts</h2>
+      <span class="ac-hairline" aria-hidden="true"></span>
+      <span class="ac-count">${state.accounts.length}</span>
+    </div>`;
+    const noResultLive = `<p class="hint ac-noresult-live" hidden>Is naam se koi account nahi mila.</p>`;
+    const search = state.accounts.length
+      ? `<div class="ac-search">${icon('search')}<input type="search" data-input="account-search" value="${esc(state.accountQuery || '')}" placeholder="Search Account..." aria-label="Search account"></div>`
+      : '';
+
+    return `${lockedNotice}${addCard}${savedHead}${search}${noResultLive}${rememberedNote}${rows}${state.deleteFlow ? `<div class="card delete-card"><div class="card-title">${icon('trash')} Swiggy delete OTP<small>Swiggy ne ${esc(state.deleteFlow.phoneMasked || 'account phone')} par 6-digit delete OTP bheja hai. Ye account Swiggy se hamesha ke liye delete ho jayega.</small></div><form data-form="delete-otp">${field('Delete OTP', 'otp', '6-digit OTP', '', 'inputmode=\"numeric\" autocomplete=\"one-time-code\" maxlength=\"6\" required')}<button class="button danger block" type="submit">Swiggy se delete karein ${icon('trash')}</button><button class="text-button" type="button" data-action="delete-cancel">Cancel</button></form></div>` : ''}`;
   }
   function addressCard(a, selected = false) {
     const lockAttr = cartLocked() ? 'disabled' : '';
@@ -1419,6 +1486,22 @@
   }
   // Menu ke andar dish search — re-render ke bina, isliye typing smooth rehti hai.
   document.addEventListener('input', event => {
+    // Accounts search: rows DOM me hi filter hoti hain, isliye re-render nahi
+    // hota aur keyboard band nahi hota (typing smooth).
+    const acSearch = event.target.closest('[data-input="account-search"]');
+    if (acSearch) {
+      const q = String(acSearch.value || '').trim().toLowerCase();
+      state.accountQuery = acSearch.value || '';
+      let any = false;
+      for (const row of document.querySelectorAll('.ac-row[data-search]')) {
+        const hit = !q || String(row.dataset.search || '').includes(q);
+        row.hidden = !hit;
+        if (hit) any = true;
+      }
+      const none = document.querySelector('.ac-noresult-live');
+      if (none) none.hidden = any || !q;
+      return;
+    }
     const input = event.target.closest('[data-input="menu-search"]');
     if (!input) return;
     const q = String(input.value || '').trim().toLowerCase();
@@ -1488,6 +1571,37 @@
     if (action === 'contact-edit') { state.contactEdit = !state.contactEdit; render(); return; }
     if (action === 'menu-back') { state.menu = null; render(); return; }
     if (action === 'orders-back') { state.order = null; state.orderTracking = null; render(); return; }
+    if (action === 'account-copy-json') {
+      const key = String(button.dataset.key || '');
+      const label = String(button.dataset.name || 'account');
+      button.disabled = true;
+      api('accounts/session?key=' + encodeURIComponent(key))
+        .then(async out => {
+          const text = JSON.stringify(out.session ?? {}, null, 2);
+          try {
+            if (!navigator.clipboard?.writeText) throw new Error('clipboard nahi');
+            await navigator.clipboard.writeText(text);
+            toast(`${label} ka JSON copy ho gaya.`, 'ok');
+          } catch {
+            // Purane WebView me clipboard API nahi hoti — textarea + execCommand
+            // se copy karte hain, warna user ko chup-chaap kuch na milta.
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.append(ta);
+            ta.select();
+            let ok = false;
+            try { ok = document.execCommand('copy'); } catch { ok = false; }
+            ta.remove();
+            toast(ok ? `${label} ka JSON copy ho gaya.` : 'Copy nahi ho paya — is phone ka browser clipboard band karta hai.', ok ? 'ok' : 'bad');
+          }
+        })
+        .catch(err => toast(err?.message || 'JSON nahi mila.', 'bad'))
+        .finally(() => { button.disabled = false; });
+      return;
+    }
     if (action === 'orders-filter') {
       state.ordersFilter = button.dataset.filter === 'hour' ? 'hour' : 'all';
       render(); return;

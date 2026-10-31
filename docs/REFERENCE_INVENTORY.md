@@ -46,19 +46,39 @@ States: loading skeleton (shimmer), empty (74px circle icon + 17px title + 14px 
 
 ---
 
-## 2. Accounts screen
+## 2. Accounts screen (round 31 — reference screenshot se naapa)
 
-Hierarchy: `topbar` → eyebrow `YOUR SPACE` (11px/850, letter-spacing .1em, blue) →
-H1 `Accounts` (27px/850, -.045em) → sub (14px muted) → **Add account card** (16px padding,
-r18) → segmented `Phone number / Session JSON` → field `+91` + input → `Send OTP` button
-(full width, 46px, r13) → hint → **Saved accounts** line-heading → account cards
-(15px padding, r18, active = green tint + green border) → delete icon-button 37×37 r11.
+Reference image 692 px wide = 390 CSS px → **scale 1.79**. Har naap usi se nikala:
 
-Interactions: tab switch (segmented), OTP send → busy → success/error; account select
-(updates activeAccount + cart context); delete → two-choice confirm dialog (DB only /
-Swiggy too — Swiggy par OTP mandatory).
+| Element | Reference px | CSS px (used) |
+|---|---|---|
+| Topbar height | 112 | 60 (+ safe) |
+| Brand tile | 68 | 38 r13 |
+| Brand text | 32 | 17/850 |
+| PRO badge | 24 tall | 9.5px/900, r7 |
+| Account chip | 46 tall | 8px 11px, r11, 12/800, icon 14 |
+| Theme button | 62 round | 34 r50% |
+| Add card padding | 22 | 16, r18 |
+| "Add Account" text | 28 | 16/850 |
+| Number/JSON pill | 56 tall | 6px 10px, 11/800, r999 |
+| "Mobile Number" label | 22 | 12/800, #5b6b7c |
+| Input row | 84 tall | min 46, r12, bg #f1f5f9 |
+| Flag + +91 | | CSS tiranga 18×12, +91 15/700 |
+| Send OTP | 84 tall | 46, r12, gradient #79d0f4→#4cb1e8, 16/850, icon 17 |
+| Saved Accounts heading | 22 | 15/850 + hairline + count 24 r999 |
+| Search row | 66 tall | 46, r12 |
+| Account row | 100 tall | padding 11/12, r16, avatar 34 r12 |
+| Used pill | 32 tall | 11/800, r7, green border |
+| JSON / check / delete buttons | 46/46/40 | 26/26/26 |
 
----
+Interactions: Number/JSON switch (asli forms), Send OTP (real Swiggy flow), search
+(instant client-side filter, re-render ke bina — keyboard band nahi hota), Used pill,
+**copy JSON** (server se asli session, clipboard + `execCommand` fallback), green check
+= select (used ID par pehle confirm dialog), delete (2-choice: DB only / Swiggy + OTP).
+
+Copy JSON ka sach: `/pro/api/accounts/session?key=…` sirf wahi account deta hai jo user
+khud manage karta hai (`canRemove`); shared/operator vault ID par non-boss ko **403** —
+token response me aata hi nahi. Rate limit `accountExport` (30/hour).
 
 ## 3. Cart / Checkout screen
 

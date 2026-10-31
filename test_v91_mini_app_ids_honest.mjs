@@ -147,7 +147,8 @@ const fakeDb = {
   check('UI par status pill dikhta hai', /statusPill\(a\)/.test(appSrc));
   check('UI par blocked ID "Not available" hoti hai', /Not available/.test(appSrc));
   // 31-10-2026: offers ab icon chips me — claimed = tick, nahi = kaata hua.
-  check('UI par free cash + offers dikhte hain', /💵 ₹/.test(appSrc) && /offer-chip \$\{on \? 'on' : 'off'\}/.test(appSrc));
+  // Free cash ab emoji ke bina (emoji font na ho to tofu banta hai), par dikhta zaroor hai.
+  check('UI par free cash + offers dikhte hain', /₹\$\{esc\(a\.freeCash\)\} free cash/.test(appSrc) && /offer-chip \$\{on \? 'on' : 'off'\}/.test(appSrc) && /offer-dot/.test(appSrc));
 
   const indexSrc = fs.readFileSync('./index.js', 'utf8');
   check('duplicate /app mini app hai hi nahi (ek hi app)', !/pathname === '\/app'/.test(indexSrc));
