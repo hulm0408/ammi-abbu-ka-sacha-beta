@@ -11,7 +11,7 @@
     menuLoading: false, orders: null, ordersScope: 'active', order: null, orderTracking: null, ordersLoading: false, ordersDetailAllowed: true,
     cachedAccounts: [], busy: false, loading: 0, resultsLoading: false, deleteFlow: null, claimBusyKey: '', claimResult: null, couponOpen: false,
     outlets: null, outletsOpen: false, outletsLoading: false, backup: null, backupBusy: false,
-    coupons: null, couponsNote: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, billOpen: false, ordersFilter: 'all', accountQuery: '',
+    coupons: null, couponsNote: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, billOpen: false, ordersFilter: 'all', accountQuery: '', payWindow: null, payTicks: 0, payExpired: false, shareNote: '',
     meal: null, mealFor: '', mealLoading: false, couponDraft: '', groupCartDraft: '', groupCartOn: true,
     track: null, trackData: null, trackError: '', trackBusy: false,
     // Boss (31-10-2026, round 11): wallet ₹15 gate + UPI top-up.
@@ -776,7 +776,7 @@
     else if (/prepar|cook|kitchen|accepted|confirm/i.test(lowered)) reached = 3;
     else if (/placed|received|pending/i.test(lowered)) reached = 1;
     const timeline = status ? `<ol class="track-steps">${steps.map((label, i) => `<li class="${i < reached ? 'done' : ''}${i === reached - 1 ? ' current' : ''}"><span class="track-dot"></span><span>${esc(label)}</span></li>`).join('')}</ol>` : '';
-    return `<button class="back-button" data-action="track-close">${icon('back')} Cart</button>${head('LIVE ORDER', 'Order track karein', data?.orderId || state.track?.id ? `Swiggy order #${esc(data?.orderId || state.track?.id)}` : 'Swiggy order')}<div class="card track-card"><div class="card-title">${icon('orders')} <span class="title-copy"><strong>${esc(status || (state.trackError ? 'Status nahi mila' : 'Status aa raha hai…'))}</strong><small>${esc(data?.eta ? 'ETA ' + data.eta : 'Swiggy ka taaza status')}</small></span>${state.trackBusy ? '<span class="spinner right" aria-label="Loading"></span>' : ''}</div>${timeline}${state.trackError ? `<div class="warning">${esc(state.trackError)}</div>` : ''}${trackingDetails(data)}${smsTruthBlock(state.trackSms || data?.sms)}<div class="track-actions"><button class="button primary block" type="button" data-action="track-refresh">${icon('refresh')} Status refresh</button><button class="button soft block" type="button" data-action="nav" data-tab="orders">Saare orders</button></div><p class="hint">Status khud refresh hota rehta hai. Delivery OTP rider ko dikhayein — kisi aur ko na dein.</p></div>`;
+    return `<button class="back-button" data-action="track-close">${icon('back')} Cart</button>${head('LIVE ORDER', 'Order track karein', data?.orderId || state.track?.id ? `Swiggy order #${esc(data?.orderId || state.track?.id)}` : 'Swiggy order')}<div class="card track-card"><div class="card-title">${icon('orders')} <span class="title-copy"><strong>${esc(status || (state.trackError ? 'Status nahi mila' : 'Status aa raha hai…'))}</strong><small>${esc(data?.eta ? 'ETA ' + data.eta : 'Swiggy ka taaza status')}</small></span>${state.trackBusy ? '<span class="spinner right" aria-label="Loading"></span>' : ''}</div>${timeline}${state.trackError ? `<div class="warning">${esc(state.trackError)}</div>` : ''}${trackingDetails(data)}${renderShareCard()}${smsTruthBlock(state.trackSms || data?.sms)}<div class="track-actions"><button class="button primary block" type="button" data-action="track-refresh">${icon('refresh')} Status refresh</button><button class="button soft block" type="button" data-action="nav" data-tab="orders">Saare orders</button></div><p class="hint">Status khud refresh hota rehta hai. Delivery OTP rider ko dikhayein — kisi aur ko na dein.</p></div>`;
   }
   /** Payment pending: QR screen Swiggy jaisa, phir track. */
   function renderPaymentScreen(c) {
@@ -800,9 +800,22 @@
             <li>Swiggy unpaid order thodi der me khud cancel kar deta hai${c.orderId ? '' : ''}.</li>
           </ol>
         </div>${/^https:\/\//.test(String(c.paymentPageUrl || '')) ? `<a class="button soft block" href="${esc(c.paymentPageUrl)}">Swiggy ka payment page kholein</a>` : ''}`;
-    return `${head('PAYMENT', `Pay ${money(c.amount)}`, c.orderId ? `Swiggy order #${esc(c.orderId)}` : 'Swiggy order bana hai')}<div class="card pay-screen"><div class="card-title">${tile(hasQr ? 'receipt' : 'orders')}<span class="title-copy"><strong>${hasQr ? 'UPI se pay karein' : 'Payment abhi ruka hua hai'}</strong><small>${esc(hasQr ? (c.message || 'QR Swiggy se aaya hai — scan karke pay karein.') : 'Swiggy ne order le liya, bas QR nahi diya.')}</small></span></div>${qr}<p class="hint">${hasQr ? 'Paisa sirf isi QR par dein — ek hi baar.' : ''} ${c.paymentVerified ? 'Payment report hui hai, order confirm hone ka intezaar hai — dobara na dein.' : ''}</p><button class="button primary block" type="button" data-action="checkout-status">${icon('refresh')} Payment check karein</button>${c.orderId ? `<button class="button soft block" type="button" data-action="track-open" data-id="${esc(c.orderId)}">Order track karein</button>` : ''}<button class="button soft block" type="button" data-action="checkout-orders">Original account ke orders</button></div>`;
+    // Round 32: 5 minute ka live verify strip — user ko dikhta hai ki app
+    // kaam kar raha hai, aur time khatam hone par sach bolta hai.
+    const verifying = c.status === 'PAYMENT_PENDING' && c.paymentVerified !== true;
+    const remaining = payRemainingMs();
+    const verifyStrip = verifying
+      ? (state.payExpired || remaining <= 0
+        ? `<div class="verify-strip expired"><span class="verify-icon">${icon('alert')}</span><span class="verify-copy"><strong>5 minute poore ho gaye</strong><small>Auto-check band. Payment ho gaya to <b>Payment check karein</b> dabaiye — status Swiggy se aayega.</small></span></div>`
+        : `<div class="verify-strip"><span class="verify-icon spinner"></span><span class="verify-copy"><strong>Payment verify ho rahi hai… <span class="pay-clock" data-pay-clock>${payClock(remaining)}</span></strong><small>Har 5 second me Swiggy se check — poore 5 minute tak. Aapko kuch nahi karna.</small></span><span class="verify-ticks">${state.payTicks || 0}×</span></div>`)
+      : '';
+    return `${head('PAYMENT', `Pay ${money(c.amount)}`, c.orderId ? `Swiggy order #${esc(c.orderId)}` : 'Swiggy order bana hai')}<div class="card pay-screen"><div class="card-title">${tile(hasQr ? 'receipt' : 'orders')}<span class="title-copy"><strong>${hasQr ? 'UPI se pay karein' : 'Payment abhi ruka hua hai'}</strong><small>${esc(hasQr ? (c.message || 'QR Swiggy se aaya hai — scan karke pay karein.') : 'Swiggy ne order le liya, bas QR nahi diya.')}</small></span></div>${verifyStrip}${qr}<p class="hint">${hasQr ? 'Paisa sirf isi QR par dein — ek hi baar.' : ''} ${c.paymentVerified ? 'Payment report hui hai, order confirm hone ka intezaar hai — dobara na dein.' : ''}</p><button class="button primary block" type="button" data-action="checkout-status">${icon('refresh')} Payment check karein</button>${c.orderId ? `<button class="button soft block" type="button" data-action="track-open" data-id="${esc(c.orderId)}">Order track karein</button>` : ''}<button class="button soft block" type="button" data-action="checkout-orders">Original account ke orders</button></div>`;
   }
   function renderCart() {
+    // QR aaya to 5-minute verify शुरू (render ke andar se, kyunki yahi entry point hai).
+    if (state.checkout?.status === 'PAYMENT_PENDING' && state.checkout.paymentVerified !== true) {
+      try { schedulePaymentPoll(); } catch { /* render kabhi na toote */ }
+    }
     if (state.track) return renderTrack();
     if (state.couponView) return renderCouponPage();
     const cart = state.cart;
@@ -872,6 +885,26 @@
       .map(([label, v]) => `<div class="bill-row"><span>${label}</span><strong>${label.toLowerCase().includes('discount') ? '−' : ''}${money(Math.abs(Number(v)))}</strong></div>`)
       .join('');
   }
+  /**
+   * Share link card (round 32). Swiggy app me "three dot → Share" se jo link
+   * milta hai, wahi yahan Swiggy ke apne response se aata hai (trackV4 ka
+   * cta_link / order page share). Hum Swiggy app ke dots khud nahi dabate —
+   * isliye ye card seedha wahi link deta hai: copy ya Telegram share.
+   */
+  function orderShareLink() {
+    const t = state.orderTracking || state.trackData || state.checkout?.tracking || null;
+    const link = /^https:\/\//i.test(String(t?.trackingUrl || '')) ? String(t.trackingUrl) : '';
+    return link;
+  }
+  function renderShareCard() {
+    const link = orderShareLink();
+    const busy = state.shareBusy === true;
+    const note = state.shareNote ? `<p class="hint share-note">${esc(state.shareNote)}</p>` : '';
+    if (!link) {
+      return `<div class="card share-card"><div class="card-title">${icon('link')}<span class="title-copy">Share link<small>Swiggy ka tracking/share link</small></span></div><div class="warning">Swiggy ne is order ka share link nahi diya. Refresh dabaiye — link aane par yahin dikh jayega. Hum apna link nahi banate.</div>${note}<button class="button soft block" type="button" data-action="order-tracking" ${busy ? 'disabled' : ''}>${icon('refresh')} Link dobara maangein</button></div>`;
+    }
+    return `<div class="card share-card"><div class="card-title">${icon('link')}<span class="title-copy">Share link<small>Yahi link Swiggy ke Share se milta hai</small></span></div><div class="share-link-row"><input class="share-link-input" readonly value="${esc(link)}" aria-label="Order share link" data-share-input><button class="icon-button" type="button" data-action="share-copy" aria-label="Copy link">${icon('copy')}</button></div><div class="share-actions"><button class="button primary" type="button" data-action="share-send" ${busy ? 'disabled' : ''}>${icon('send')} Telegram par share</button><button class="button soft" type="button" data-action="share-copy">${icon('copy')} Copy link</button></div><p class="hint">Link Swiggy ka hai — jo bhi kholega, asli order status dekhega.</p>${note}</div>`;
+  }
   function renderOrders() {
     const detailed = state.ordersDetailAllowed !== false;
     const restrictedNote = detailed ? '' : '<div class="warning">Ye operator ka ID hai. Summary aur Swiggy ka tracking link dikhta hai — address, item list, delivery OTP sirf operator ke paas rehta hai.</div>';
@@ -891,7 +924,7 @@
         const partner = state.orderTracking?.deliveryPartner;
         const partnerLine = partner && (partner.name || partner.phone) ? `<div class="bill-row"><span>Delivery partner</span><strong>${esc([partner.name, partner.phone].filter(Boolean).join(' · '))}</strong></div>` : '';
         return `<div class="card"><div class="card-title">${icon('receipt')} Payment &amp; bill <span class="pill right">${money(o.amount)} paid</span></div>${payMethod ? `<div class="bill-row"><span>Payment method</span><strong>${esc(payMethod)}</strong></div>` : ''}${receiver ? `<div class="bill-row"><span>Receiver</span><strong>${esc(receiver)}</strong></div>` : ''}${partnerLine}${money_ ? `<div class="divider"></div>${money_}` : ''}<div class="bill-row total"><span>Total paid</span><span>${money(o.amount)}</span></div>${money_ ? '' : '<p class="hint">Swiggy ne is order ka line-by-line bill nahi diya — sirf total.</p>'}</div>`;
-      })()}<div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>${smsTruthBlock(state.orderSms || state.orderTracking?.sms)}`;
+      })()}<div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>${renderShareCard()}${smsTruthBlock(state.orderSms || state.orderTracking?.sms)}`;
     }
     let rows;
     // Swiggy jaisa segmented filter. "Last 1 Hour" ka count sirf tab dikhta hai
@@ -1129,40 +1162,135 @@
     }, timeout + 2000);
   }
   /**
-   * Boss (31-10-2026, round 19): "ORDER PAYMENT KARNE KE BAAAD AUTO FETCH BHI
-   * NAHI HORAHA" — ab QR screen khud payment check karti rehti hai. Pehla check
-   * 8s baad, phir har 12s, ~6 minute tak; PAID milte hi tracking khul jata hai.
+   * Boss (01-11-2026, round 32): "QR AYE TO WO QR 5 MINUTE TAK PAYMENT VERIFY
+   * KARTE RAHE" — QR aane ke baad poore 5 minute tak khud check hota hai.
+   *
+   * Pehla check 5s baad (UPI turant ho jata hai), phir har 5s — total 5:00.
+   * 5 minute poore hone par jhooth nahi bolte: "5 minute poore, ab khud check
+   * karein" + button. Verify hote hi seedha My Orders → order detail + share link.
    */
+  const PAY_WINDOW_MS = 5 * 60 * 1000;
+  const PAY_POLL_MS = 5000;
   let paymentPollTimer = null;
-  let paymentPollCount = 0;
+  let payTicker = null;
   function stopPaymentPoll() {
     clearTimeout(paymentPollTimer);
     paymentPollTimer = null;
-    paymentPollCount = 0;
+    clearInterval(payTicker);
+    payTicker = null;
   }
+  function payWindowStart() {
+    if (!state.payWindow) {
+      state.payWindow = { startedAt: Date.now(), until: Date.now() + PAY_WINDOW_MS };
+      state.payTicks = 0;
+      state.payExpired = false;
+    }
+    return state.payWindow;
+  }
+  function payRemainingMs() {
+    if (!state.payWindow) return PAY_WINDOW_MS;
+    return Math.max(0, state.payWindow.until - Date.now());
+  }
+  /** "4:37" jaisa — UI me dikhta hai, isliye user ko lagta hai app kaam kar raha hai. */
+  function payClock(ms) {
+    const total = Math.max(0, Math.ceil(ms / 1000));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+  }
+  function startPayTicker() {
+    if (payTicker) return;
+    payTicker = setInterval(() => {
+      const pending = state.checkout && state.checkout.status === 'PAYMENT_PENDING' && state.checkout.paymentVerified !== true;
+      if (!pending) { clearInterval(payTicker); payTicker = null; return; }
+      if (payRemainingMs() <= 0) {
+        clearInterval(payTicker); payTicker = null;
+        state.payExpired = true;
+        stopPaymentPoll();
+        render();
+        return;
+      }
+      // Sirf countdown wala hissa badalta hai — poora re-render nahi (QR flash na kare).
+      const el = document.querySelector('[data-pay-clock]');
+      if (el) el.textContent = payClock(payRemainingMs());
+    }, 1000);
+    if (typeof payTicker?.unref === 'function') payTicker.unref();
+  }
+  // Test/debug hook: 5 minute ka intezaar kiye bina wahi halat banana.
+  try {
+    window.__expirePayWindow = () => {
+      state.payWindow = { startedAt: Date.now() - PAY_WINDOW_MS - 1000, until: Date.now() - 1000 };
+      state.payExpired = true;
+      stopPaymentPoll();
+      render();
+    };
+  } catch { /* window band */ }
   function schedulePaymentPoll() {
     const c = state.checkout;
     const pending = c && c.status === 'PAYMENT_PENDING' && c.paymentVerified !== true;
-    if (!pending) return stopPaymentPoll();
-    if (paymentPollTimer || paymentPollCount >= 30) return;
-    const delay = paymentPollCount === 0 ? 8000 : 12000;
+    if (!pending) { stopPaymentPoll(); return; }
+    payWindowStart();
+    if (state.payExpired || payRemainingMs() <= 0) {
+      state.payExpired = true;
+      return stopPaymentPoll();
+    }
+    startPayTicker();
+    if (paymentPollTimer) return;
+    const delay = state.payTicks === 0 ? 5000 : PAY_POLL_MS;
     paymentPollTimer = setTimeout(async () => {
       paymentPollTimer = null;
-      paymentPollCount += 1;
+      state.payTicks += 1;
       try {
         const out = await api('checkout/status', 'POST', {});
         merge(out);
         render();
         if (out.checkout?.status === 'PAID' && out.checkout.orderId) {
           stopPaymentPoll();
-          toast('Payment mil gayi — order track ho raha hai.', 'ok');
-          startTracking(out.checkout.orderId, 'checkout');
+          state.payWindow = null;
+          state.payExpired = false;
+          toast('Payment verify ho gayi — My Orders me order khul gaya.', 'ok');
+          openOrdersForOrder(out.checkout.orderId, { share: true });
+          return;
         }
       } catch { /* net gaya — agla render phir schedule karega */ }
+      if (payRemainingMs() <= 0) {
+        state.payExpired = true;
+        stopPaymentPoll();
+        render();
+        return;
+      }
+      schedulePaymentPoll();
     }, delay);
     if (typeof paymentPollTimer?.unref === 'function') paymentPollTimer.unref();
   }
-
+  /**
+   * Payment verify hone ke baad: My Orders khulta hai aur wahi order khud khul
+   * jata hai. Boss ne kaha "three dot → Share" — Swiggy app ke andar ke dots hum
+   * dabate nahi (wo app hamare control me nahi), par wahi share link Swiggy se
+   * nikaal kar yahan de dete hain: copy + Telegram share.
+   */
+  async function openOrdersForOrder(orderId, { share = false } = {}) {
+    state.tab = 'orders';
+    state.ordersScope = 'active';
+    state.ordersFilter = 'all';
+    state.order = null;
+    state.orderTracking = null;
+    state.shareNote = '';
+    writeCache({ tab: 'orders' });
+    render(); window.scrollTo(0, 0);
+    try {
+      if (state.orders === null) await loadOrders();
+    } catch { /* niche asli wajah dikh jayegi */ }
+    const found = (state.orders || []).find(o => String(o.id) === String(orderId));
+    if (found) {
+      state.order = found;
+      render();
+      // Order detail khulte hi tracking + share link khud aa jate hain.
+      await loadOrderTracking(found.id);
+    }
+    if (share) {
+      state.shareWanted = true;
+      render();
+    }
+  }
   function render() {
     // Telegram WebView band hone ke baad bhi async response aa sakta hai —
     // tab render chup-chaap rukna chahiye, window crash nahi.
@@ -1289,6 +1417,22 @@
   function scheduleTrackPolling() {
     stopTrackPolling();
     trackTimer = setTimeout(() => { trackTimer = null; if (state.track && document.getElementById('content')) loadTrack(); }, 20000);
+  }
+  /** Order detail ka tracking + share link khud laata hai (Refresh dabana zaroori nahi). */
+  async function loadOrderTracking(id) {
+    if (!id) return null;
+    const scope = state.ordersScope === 'checkout' ? '&scope=checkout' : '';
+    try {
+      const out = await api('orders/tracking?id=' + encodeURIComponent(id) + scope);
+      state.orderTracking = out.tracking || null;
+      state.orderSms = out.sms || null;
+      render();
+      return out.tracking || null;
+    } catch (e) {
+      state.orderTracking = state.orderTracking || null;
+      render();
+      return null;
+    }
   }
   async function loadTrack() {
     if (!state.track) return;
@@ -1822,11 +1966,14 @@
         }
       }
       else if (action === 'checkout-status') {
-        paymentPollCount = 0;
+        // Manual check: 5-minute window chalta rehta hai, par user ne khud
+        // dabaya hai to seedha live tracking dikhate hain — wahan bhi wahi
+        // Swiggy share link milta hai.
         const out = await api('checkout/status', 'POST', {});
         merge(out); render();
         if (out.checkout?.status === 'PAID' && out.checkout.orderId) {
           // Boss (31-10-2026): "WHEN WE PAY WE CAN TRACK THAT ORDER."
+          stopPaymentPoll();
           toast('Payment mil gayi — order track ho raha hai.');
           startTracking(out.checkout.orderId, 'checkout');
           return;
@@ -1841,10 +1988,33 @@
         state.ordersScope = 'checkout'; state.orders = null; state.order = null; state.orderTracking = null; state.tab = 'orders';
         render(); window.scrollTo(0, 0); await loadOrders();
       }
-      else if (action === 'order-tracking') {
-        const scope = state.ordersScope === 'checkout' ? '&scope=checkout' : '';
-        const out = await api('orders/tracking?id=' + encodeURIComponent(state.order.id) + scope);
-        state.orderTracking = out.tracking; state.orderSms = out.sms || null; render();
+      else if (action === 'order-tracking') await loadOrderTracking(state.order?.id);
+      else if (action === 'share-copy' || action === 'share-send') {
+        const link = orderShareLink();
+        if (!link) { toast('Share link abhi nahi mila — Refresh dabaiye.', 'bad'); return; }
+        const copyOnly = action === 'share-copy';
+        let copied = false;
+        try {
+          if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(link); copied = true; }
+        } catch { copied = false; }
+        if (!copied) {
+          const ta = document.createElement('textarea');
+          ta.value = link; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.append(ta); ta.select();
+          try { copied = document.execCommand('copy'); } catch { copied = false; }
+          ta.remove();
+        }
+        if (copyOnly) {
+          toast(copied ? 'Share link copy ho gaya.' : 'Copy nahi ho paya — link upar se haath se copy karein.', copied ? 'ok' : 'bad');
+          return;
+        }
+        // Telegram ka apna share sheet — user wahan se kisi ko bhej sakta hai.
+        // Mini app ke andar se browser nahi khulta (bahar navigation band).
+        const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent('Mera Swiggy order')}`;
+        try {
+          if (window.Telegram?.WebApp?.openTelegramLink) { window.Telegram.WebApp.openTelegramLink(shareUrl); toast('Telegram share khul gaya. Link copy bhi hai.', 'ok'); return; }
+        } catch { /* niche sach */ }
+        toast(copied ? 'Link copy ho gaya — Telegram me paste kar dein.' : 'Telegram share yahan nahi khulta. Link upar se copy karein.', copied ? 'ok' : 'bad');
       }
       else if (action === 'orders-refresh') await loadOrders();
     }, button);

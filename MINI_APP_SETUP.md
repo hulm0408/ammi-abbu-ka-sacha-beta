@@ -964,3 +964,22 @@ band nahi hota. Koi match na ho to line dikhti hai.
 * Reference me "JSON" tab par click karne ka screenshot nahi tha — hum wahi session-import
   form dikhate hain jo pehle se tha (asli verify hota hai).
 * Copy JSON me token jata hai — isliye note bhi saath: "Kisi ke saath share na karein."
+
+## Round 32 — 5 minute verify + share link
+
+* QR aane ke baad `renderCart()` khud `schedulePaymentPoll()` chalata hai: pehla check **5s**,
+  phir har **5s**, poore **5:00** tak. Countdown `[data-pay-clock]` par (`m:ss`) — sirf text
+  badalta hai, page re-render nahi hota, isliye QR flash nahi karta.
+* Payment `PAID` aaya → `openOrdersForOrder(orderId, { share: true })`: My Orders tab khulta
+  hai, wahi order khud khulta hai aur `orders/tracking` se Swiggy ka share link aa jata hai.
+* 5 minute poore → strip `expired` ho jati hai ("5 minute poore ho gaye") aur Payment check
+  button aa jata hai. Spinner chhupta nahi — sach likha jata hai.
+* Share card (order detail + track screen dono me): readonly link, **Copy link**, **Telegram
+  par share** (`https://t.me/share/url?url=…`). Mini app ke andar se browser nahi khulta
+  (purana guard abhi bhi lagu) — Telegram API na ho to link copy hota hai aur saaf toast aata hai.
+* Swiggy link nahi deta → "Swiggy ne is order ka share link nahi diya… Hum apna link nahi
+  banate" + Refresh. Kabhi bhi apna banaya link nahi.
+* Guard: `test_v121_five_minute_verify_and_share_link.mjs` **7 checks**. Sweep: guards
+  **89/89**, `npm test` **132/132**, `test:pro` **41/41**.
+* Preview me dekhne ke liye: `npm run preview:miniapp` → `?scene=paypending` (QR + verify
+  strip) aur `?scene=share` (share card).
