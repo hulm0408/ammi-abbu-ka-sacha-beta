@@ -208,6 +208,8 @@ test('DOM: link paste karke parse karne par request jaati hai aur cart khulta ha
   const cart = { restaurantId: '201', restaurantName: 'Pizza Junction', restaurantArea: 'Kothrud', restaurantTime: '25 min', forSomeoneElse: true, quote: null, items: [{ lineKey: 'l', name: 'Margherita', price: 137, qty: 2, isVeg: true }] };
   const app = harness({ responder: call => {
     if (call.url.endsWith('/cart/import-group')) return { ok: true, cart };
+    // Round 11: cart khulte hi bill automatic aata hai — wahi jawab do.
+    if (call.url.endsWith('/cart/sync')) return { ok: true, cart, selectedAddress: state().selectedAddress };
     return state();
   } });
   try {

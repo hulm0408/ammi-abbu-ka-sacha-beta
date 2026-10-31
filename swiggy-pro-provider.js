@@ -3,7 +3,7 @@ import {
   dapiFetch, fetchAccountAddresses, fetchSwiggyAndroidProfile, getSwiggySessionAuth, isValidIndianDeliveryCoordinates,
   parseDapiCartPayload, resolveSharedOfoAddress, saveAddressToAccount,
   swiggyCartGet, swiggyCartUpdate, verifySwiggySessionLive, withSwiggyAccountLock,
-  checkRealSwiggyPaymentAndExtractTracking, detectOfoFromPlaceResponse, hasExplicitOfoCartFlag, normalizeSwiggyOrderId,
+  checkRealSwiggyPaymentAndExtractTracking, detectOfoFromPlaceResponse, normalizeSwiggyOrderId,
   extractSwiggyProvidedTrackingUrl, extractSwiggyDeliveryOtp, isZeroSmsTestSandboxActive,
   extractDeepLinkFromReferrerOrUrl, fetchLiveGroupCart, resolveSwiggyLink, callSwiggyFoodMcpTool
 } from './swiggy-cart.js';
@@ -550,9 +550,15 @@ export const proProvider = {
       note: 'APPLY dabaiye — Swiggy par asli bill aayega. Discount tabhi dikhega jab Swiggy deta hai; jo code lagta nahi uski asli wajah dikh jayegi.'
     };
   },
+  /**
+   * Bill = Swiggy ka hi bill. Boss (31-10-2026, round 11):
+   * "AUTO SAARE COUPON LAG KAR AISA SUMMARY NAHI AARHA" — isliye coupon khud
+   * lagta hai (sabse bada discount), aur bill ki har line wahin se aati hai.
+   */
   async quoteCart(account, address, cart, coupon) {
     const { lat, lng } = coords(address);
     if (!address.name || !normalizeIndianMobileNumber(address.mobile)) throw badRequest('Confirm the receiver name and 10-digit mobile number first.');
+    const requestedCoupon = String(coupon || '').trim().toUpperCase();
     return withSwiggyAccountLock(checkoutLockKey(account), async () => {
       const saved = await saveAddressToAccount(account, address);
       if (!saved?.addressId || !saved?.addressDetails) throw unavailable(saved?.error || 'Swiggy did not confirm the delivery address.');
@@ -562,25 +568,60 @@ export const proProvider = {
       if (!confirmedAddress || !sameDeliveryRecipient(address, confirmedAddress)) {
         throw unavailable('Swiggy did not read back the same receiver, street and location. No bill or order was created.');
       }
-      const payload = {
-        restaurantId: cart.restaurantId, address_id: String(saved.addressId), couponCode: coupon || '',
-        cartItems: buildSwiggyCartItemsPayload(cart.items), mealItems: [], subscriptionItems: [],
-        ...(cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: address }) : {})
+      const pushAndRead = async (couponCode) => {
+        const payload = {
+          restaurantId: cart.restaurantId, address_id: String(saved.addressId), couponCode: couponCode || '',
+          cartItems: buildSwiggyCartItemsPayload(cart.items), mealItems: [], subscriptionItems: [],
+          ...(cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: address }) : {})
+        };
+        const result = await swiggyCartUpdate(account, payload, { lat, lng, flushFirst: true });
+        // The update wrapper can echo the requested address ID. Fetch the cart
+        // independently before displaying a bill or treating an ID as bound.
+        const readback = successCode(result?.json?.statusCode) ? await swiggyCartGet(account, { lat, lng }) : null;
+        const data = readback?.json?.data;
+        const meta = data?.cartMeta || data;
+        const parsed = data && parseDapiCartPayload(data);
+        if (!successCode(readback?.json?.statusCode) || !parsed || !meta || !Array.isArray(parsed.items)) throw unavailable('Swiggy did not confirm the cart. Refresh in Swiggy before trying again.');
+        const boundAddress = String(meta.address_id || meta.delivery_address?.id || data.address_id || data.delivery_address?.id || '');
+        if (!sameCartItems(cart.items, parsed.items) || boundAddress !== String(saved.addressId)) {
+          throw unavailable('Swiggy returned different items or address. No bill is being shown; check the Swiggy cart.');
+        }
+        const total = Number(meta.order_total);
+        if (exactPaise(total) === null || total <= 0) throw unavailable('Swiggy did not return a valid payable amount.');
+        return { parsed, meta, total, coupon: String(parsed?.couponCode || '').toUpperCase() };
       };
-      const result = await swiggyCartUpdate(account, payload, { lat, lng, flushFirst: true });
-      // The update wrapper can echo the requested address ID. Fetch the cart
-      // independently before displaying a bill or treating an ID as bound.
-      const readback = successCode(result?.json?.statusCode) ? await swiggyCartGet(account, { lat, lng }) : null;
-      const data = readback?.json?.data;
-      const meta = data?.cartMeta || data;
-      const parsed = data && parseDapiCartPayload(data);
-      if (!successCode(readback?.json?.statusCode) || !parsed || !meta || !Array.isArray(parsed.items)) throw unavailable('Swiggy did not confirm the cart. Refresh in Swiggy before trying again.');
-      const boundAddress = String(meta.address_id || meta.delivery_address?.id || data.address_id || data.delivery_address?.id || '');
-      if (!sameCartItems(cart.items, parsed.items) || boundAddress !== String(saved.addressId)) {
-        throw unavailable('Swiggy returned different items or address. No bill is being shown; check the Swiggy cart.');
+      let best = { code: requestedCoupon, ...(await pushAndRead(requestedCoupon)) };
+      // Auto-coupon: sirf jab user ne koi code na chuna ho. Har candidate ka
+      // asli bill dekh kar sabse kam total wala rakhte hain — jhoothi saving nahi.
+      let autoApplied = false;
+      let triedCodes = [];
+      if (!requestedCoupon && cart?.autoCoupon !== false) {
+        let candidates = [];
+        try {
+          const list = await proProvider.coupons(account, confirmedAddress, cart.restaurantId);
+          candidates = (Array.isArray(list?.coupons) ? list.coupons : [])
+            .filter(c => c && c.applicable !== false && /^[A-Z0-9_-]{3,28}$/.test(String(c.code || '')))
+            .map(c => String(c.code).toUpperCase())
+            .filter((code, i, arr) => arr.indexOf(code) === i)
+            .slice(0, 3);
+        } catch { candidates = []; }
+        for (const code of candidates) {
+          triedCodes.push(code);
+          let attempt = null;
+          try { attempt = await pushAndRead(code); } catch { continue; }
+          if (Number(attempt.total) < Number(best.total) - 0.005) {
+            best = { code, ...attempt };
+            autoApplied = true;
+          }
+        }
+        // Aakhri push kisi doosre code ka ho sakta hai — cart ko best par lauta.
+        if (best.code !== requestedCoupon) {
+          const settled = await pushAndRead(best.code);
+          best = { code: best.code, ...settled };
+        }
+        autoApplied = autoApplied && best.coupon === best.code;
       }
-      const total = Number(meta.order_total);
-      if (exactPaise(total) === null || total <= 0) throw unavailable('Swiggy did not return a valid payable amount.');
+      const { parsed, meta, total } = best;
       const returnedNumber = (...values) => {
         const raw = values.find(v => v !== undefined && v !== null && v !== '');
         return raw === undefined || !Number.isFinite(Number(raw)) ? null : Number(raw);
@@ -596,10 +637,13 @@ export const proProvider = {
           deliveryFee: returnedNumber(parsed?.deliveryFee, meta.positiveDeliveryChargesExclusive, meta.delivery_charges),
           deliverySaved: parsed?.freeDeliveryDiscount ?? null,
           deliveryFree: Number(parsed?.deliveryFee ?? 0) <= 0,
+          deliveryDistance: String(meta?.delivery_distance || meta?.delivery_distance_in_km || parsed?.deliveryDistance || '').slice(0, 40),
           packingCharges: returnedNumber(parsed?.packingCharges, meta.total_packing_charges, meta.restaurant_packing_charges),
           taxes: returnedNumber(parsed?.taxesAndCharges, meta.taxesAndCharges, meta.total_tax),
           discount: parsed?.couponCode ? returnedNumber(parsed.discountAmount, meta.coupon_discount_total, meta.coupon_discount_effective) : null,
           coupon: String(parsed?.couponCode || ''),
+          autoCoupon: autoApplied,
+          couponTried: triedCodes,
           freeCash: parsed?.freeCashApplied ?? null,
           freeCashWallet: parsed?.walletSplitPayAmount ?? null,
           tradeDiscount: parsed?.merchantTradeDiscount ?? null,
@@ -676,9 +720,6 @@ export const proProvider = {
         }
       }
       if (addressId && addressId !== String(address.id)) fail('ADDRESS', `Delivery address Swiggy par alag hai (bill ${address.id}, Swiggy ${addressId}).`);
-      if (cart.forSomeoneElse && meta && !hasExplicitOfoCartFlag(meta)) {
-        fail('OFO', 'Swiggy ne "order for someone else" flag confirm nahi kiya — address/receiver ka OFO flag nahi mila.');
-      }
       if (exactPaise(liveTotal) === null) fail('AMOUNT_MISSING', 'Swiggy ne payable amount nahi diya.');
       else if (exactPaise(liveTotal) !== exactPaise(expected)) {
         fail('AMOUNT', `Bill ka amount badal gaya — aapne ₹${expected} dekh kar Pay dabaya, Swiggy ab ₹${liveTotal} keh raha hai.`);
@@ -693,7 +734,7 @@ export const proProvider = {
         // Recoverable: bill/coupon badla hai par items/address wahi hain. Tab
         // naya bill bhej dete hain taaki app use dikha kar dobara confirm kare
         // (dead-end loop nahi).
-        const hardStop = problems.some(p => ['CART_FETCH', 'CART_PARSE', 'CART_ID', 'CART_ITEMS', 'RESTAURANT', 'ADDRESS', 'OFO'].includes(p.code));
+        const hardStop = problems.some(p => ['CART_FETCH', 'CART_PARSE', 'CART_ID', 'CART_ITEMS', 'RESTAURANT', 'ADDRESS'].includes(p.code));
         // Code hamesha set — app isi se decide karta hai ki retry safe hai ya
         // nahi (aur "outcome unknown" ka darr dikhana hai ya nahi).
         err.code = hardStop ? problems[0].code : 'BILL_CHANGED';
@@ -746,7 +787,22 @@ export const proProvider = {
           'SWIGGY_PLACEMENT_RESPONSE_UNCERTAIN', details.orderId
         );
       }
-      return { ...details, amount: expected, ofoConfirmed: detectOfoFromPlaceResponse(result.json).ofo === true };
+      // Boss (31-10-2026, round 11): Swiggy ka cart readback OFO flag deta hi
+      // nahi, isliye pehle har OFO order "flag nahi mila" par ruk jaata tha.
+      // Ab order nahi rukta; OFO ka sach sirf place-response se aata hai aur
+      // wahi (jhooth bina) app ko dikhta hai.
+      const ofoProof = detectOfoFromPlaceResponse(result.json);
+      return {
+        ...details,
+        amount: expected,
+        ofoConfirmed: ofoProof.ofo === true,
+        ofoRequested: cart.forSomeoneElse === true,
+        ofoNote: cart.forSomeoneElse
+          ? (ofoProof.ofo === true
+            ? 'Swiggy ne OFO flag place-response me diya.'
+            : 'Swiggy ne place-response me OFO flag nahi diya — order normal order ki tarah gaya, khana usi address par jayega.')
+          : ''
+      };
     });
   },
   async checkPayment(account, checkout) {

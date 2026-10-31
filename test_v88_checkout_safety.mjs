@@ -27,6 +27,7 @@ const { readProWorkspace, writeProWorkspace } = await import('./swiggy-pro-store
 const { handleSwiggyProHttp } = await import('./swiggy-pro-api.js');
 const { detectOfoFromPlaceResponse, hasExplicitOfoCartFlag, withSwiggyAccountLock, releaseStaleAccountLocks } = await import('./swiggy-cart.js');
 const { getDb, saveDb } = await import('./store.js');
+const { creditWallet } = await import('./user-wallet.js');
 const { executeRealQrGenerationForOrder, executeOrderBillSyncOnAccount, applyBossOrderUpdate } = await import('./forwarded-order-flow.js');
 
 const id = '123456789012';
@@ -80,6 +81,10 @@ async function req(user, route, body) {
   return { status: r.status, body: await r.json() };
 }
 function seed(user) {
+  // Round 11: order place karne se pehle wallet me ₹15 fee ka balance chahiye.
+  const wdb = getDb();
+  creditWallet(wdb, String(user), 1500, { reason: 'test top-up', actor: 'test' });
+  saveDb(wdb);
   const quote = { total: 150.25, coupon: '', fetchedAt: new Date().toISOString() };
   writeProWorkspace(String(user), {
     version: 1,

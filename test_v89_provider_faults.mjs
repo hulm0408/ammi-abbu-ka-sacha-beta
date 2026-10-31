@@ -63,18 +63,28 @@ test('real provider path revalidates and sends exactly one POST with receiver de
   assert.equal(calls, 1); assert.deepEqual(unknownUrls, []);
 });
 
-test('stale quote, changed address, recipient, quantity or OFO flag stop before POST', async () => {
+test('stale quote, changed address, recipient or quantity stop before POST', async () => {
   for (const mutate of [
     () => { meta.order_total = 150.26; },
     () => { meta.address_id = 'another'; },
     () => { remoteAddress.mobile = '9345678901'; },
-    () => { meta.cart_menu_items[0].quantity = 2; },
-    () => { meta.is_order_for_someone_else = false; }
+    () => { meta.cart_menu_items[0].quantity = 2; }
   ]) {
     reset(); mutate();
     await assert.rejects(attempt('provider:preflight-' + Math.random()), /Swiggy|receiver|recipient/i);
     assert.equal(calls, 0); assert.deepEqual(unknownUrls, []);
   }
+});
+
+test('cart OFO flag na aaye to order rukta nahi — OFO ka sach note me (round 11)', async () => {
+  reset();
+  remoteAddress = { ...address };
+  meta.is_order_for_someone_else = false; // Swiggy ne flag echo nahi kiya
+  const out = await attempt('provider:ofo-soft');
+  assert.equal(out.orderId, id);
+  assert.equal(calls, 1);
+  assert.equal(out.ofoConfirmed, false);
+  assert.match(out.ofoNote, /OFO flag nahi diya|normal order/i);
 });
 
 test('differing receiver cannot be silently sent as a normal order', async () => {

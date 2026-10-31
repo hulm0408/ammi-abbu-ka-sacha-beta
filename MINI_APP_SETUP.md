@@ -173,3 +173,31 @@ Pehle **ek hi generic line** thi — user ko pata hi nahi chalta tha kya badla. 
 * **30-second cooldown bug:** naya number par "account banayein" dabane ke baad bhi 30s tak retry block tha (cooldown fail par bhi set ho raha tha). Ab cooldown sirf success par lagta hai.
 * `verify-otp`: brand-new account par Swiggy ka profile kabhi `customer_id` nahi deta → account save hi nahi hota tha. Ab OTP-verified session ke JWT se **asli** `user_id` liya jaata hai (koi invent nahi). Sirf jab wahan bhi na mile to saaf error.
 * Error JSON me ab `code` aata hai (`SWIGGY_ACCOUNT_NOT_REGISTERED`, `OTP_IDENTITY_MISSING`, `BILL_CHANGED`, …) — app usi se sahi agla kadam dikhata hai.
+
+## Round 11 (31-10-2026): OFO ka jhootha block, auto coupon bill, wallet ₹15 + UPI
+
+### 1. "Swiggy ne order for someone else flag confirm nahi kiya" — ye block hata diya
+Swiggy ka cart readback (jisse hum bill banate hain) OFO flag **deti hi nahi**, isliye `cart.forSomeoneElse` wala har order `OFO` hard-stop par ruk jaata tha — order jaata hi nahi tha. Ab:
+* `OFO` ab **hard stop nahi** hai (problems list se hata diya, `hardStop` se bhi).
+* OFO ka sach sirf **place-response** se aata hai: `result.ofoConfirmed` (jhooth nahi) + `result.ofoNote` (Hinglish me saaf: "Swiggy ne place-response me OFO flag nahi diya — order normal order ki tarah gaya, khana usi address par jayega").
+* OFO fields (recipient name/phone, alternate_mobile, delivery instructions) ab bhi cart aur place payload me jaate hain — bas unka echo na aana order nahi rokta.
+
+### 2. "AUTO SAARE COUPON LAG KAR AISA SUMMARY NAHI AARHA"
+* `provider.quoteCart(account, address, cart, '')` — jab user ne koi code na chuna ho aur `cart.autoCoupon !== false` ho, provider Swiggy ke coupons (MCP `fetch_food_coupons` + promo list) se **top 3** codes try karta hai, har attempt ka **asli bill** padhta hai, aur **sabse kam total** wala coupon rakhta hai. Saboot bill me: `autoCoupon: true`, `couponTried: [...]`.
+* User ne code chuna ho to wahi chalta hai (auto band). `Remove` dabane par `autoCoupon: false` jaata hai — jaan-boojh kar hataya hua coupon wapas nahi lagta.
+* **Puraana bug:** Pay Now aur `bill-refresh` dono `coupon: ''` bhejte the — yani jaan-boojh kar coupon hata kar naya bill le rahe the. Ab dono **pehle se laga coupon** bhejte hain + `autoCoupon: true`.
+* **Automatic bill:** cart kholte hi (items + poora receiver hone par) app khud `cart/sync` karta hai — Pay dabane ka intezaar nahi. Ek hi baar per cart+address (loop nahi), aur receiver adhoora ho to bilkul nahi.
+* **Bill ka plain text:** `billText()` bilkul Swiggy ke summary jaisa organized block deta hai (`Paneer Kolhapuri ₹230 × 1 = ₹230` → `1 Item • Subtotal: ₹230` → `Bill Summary` → `Items Total` → `Coupon FLASHSALE: −₹160` → `Extra Discount ( Free Cash ): −₹70` → `Swiggy One Lite Membership: +₹1` → `Free Delivery upto 7km` → `Delivery Fee: FREE (₹49 saved)` → `Packing Charges: ₹5` → `GST & Other Charges: ₹27.85` → `────────` → `Total Savings: ₹279` → `To Pay: ₹29`). Card me `<pre class="bill-plain">` ke roop me dikhta hai. Koi number invent nahi — jo Swiggy ne diya wahi.
+
+### 3. Wallet: ₹15 fee + UPI top-up (`mius@ybl`) + jitna bheja utna credit
+* **Gate:** order place karne se **pehle** wallet me fee (default **₹15**) chahiye. Balance kam ho to `409 WALLET_LOW_BALANCE` + asli message: "Wallet balance ₹0 hai — order place karne ke liye ₹15 chahiye. ₹15 add karein (UPI: mius@ybl)" + `wallet` payload (balance/shortfall/upiId). Bill dekhne par kuch nahi rukta.
+* **Fee kab katti hai:** checkout start hote hi (QR/order stage) `chargeServiceFee` — ek order par ek hi baar. Order place **na** ho (pre-placement failure / `BILL_CHANGED`) to `refundServiceFee` se **fee wapas**.
+* **Routes:**
+  * `GET /pro/api/wallet` → balance, fee, exempt, ready, shortfall, `upiId`, presets, history.
+  * `POST /pro/api/wallet/topup {amountPaise|amountRupees}` → asli `upi://pay?pa=mius@ybl&am=15.00&cu=INR` intent + PNG QR (Telegram ke andar hi dikhta hai).
+  * `POST /pro/api/wallet/claim {amountRupees, utr?}` → **jitna user kehta hai ki usne bheja, utna hi credit** (boss: "IF USER PAY LESS AND SAY I HAVE PAID YOU HAVE TO ADD HOW MUCH THEY PAID"). Ledger me `CLAIMED`, audit ke liye `db.config.topupClaims`. UTR diya aur provider configured hai to `AUTO_VERIFIED` (jhootha verified nahi). Response me seedha: "₹10 jama hua. Abhi balance ₹10 hai — ₹5 aur add karein."
+  * `POST /pro/api/wallet/upi {upiId}` → **sirf boss**. Default `mius@ybl`; `WALLET_UPI_ID` env se bhi.
+* **UI:** cart aur tools tab me **Wallet card** — balance, fee, "Low balance" pill + kitna add karna hai, ₹15/₹50/₹100 quick buttons, QR + "UPI app me ₹15 bhejein", aur **"Paisa bhej diya?"** form (amount + optional UTR). Boss ko `UPI badlein` ka option bhi wahi card me.
+* **Tests:** `test_v100_miniapp_wallet_ofo_autobill.mjs` (14 checks) — OFO soft (order jaata hai, `ofoConfirmed:false`, note sach), auto coupon (best total, `couponTried`), `cart/sync` me `autoCoupon`, wallet default UPI/fee/low balance, ₹10 → ₹5 → ready, topup QR `pa=mius%40ybl`, boss-only UPI change, `WALLET_LOW_BALANCE` par provider tak baat nahi, fee charge + refund, bill text ki exact lines, auto bill.
+* `test_v89` (7) aur `test_v88` (41) update kiye — OFO flag ab blocking nahi, aur checkout tests wallet funded karte hain.
+* Sweep: `test:guards` **68/68 (126s)**, `test:pro` **41/41**, `npm test` **132/132**, DOM v90/v93/v94/v96/v97/v98 **58/58**, v99 **7/7**, v100 **14/14**.
