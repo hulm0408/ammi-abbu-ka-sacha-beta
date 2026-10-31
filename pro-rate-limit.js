@@ -12,6 +12,8 @@
 export const RATE_LIMITS = {
   // Bahut mehnga / khatarnaak — Swiggy session import (galat JSON spam).
   accountImport: { max: 8, windowMs: 60 * 60 * 1000 },
+  // Session JSON copy — bahut mehnga nahi, par spam se bachne ke liye capped.
+  accountExport: { max: 30, windowMs: 60 * 60 * 1000 },
   // OTP spam (Swiggy ko SMS jata hai, account ban ho sakta hai).
   otpSend: { max: 8, windowMs: 60 * 60 * 1000 },
   otpVerify: { max: 15, windowMs: 15 * 60 * 1000 },
@@ -93,6 +95,7 @@ export function rateLimitMessage(bucket, result) {
   const minutes = Math.max(1, Math.ceil(Number(result?.retryAfterSec || 0) / 60));
   const what = {
     accountImport: 'ID import',
+    accountExport: 'session JSON copy',
     otpSend: 'OTP bhejna',
     otpVerify: 'OTP verify',
     walletClaim: 'wallet claim',

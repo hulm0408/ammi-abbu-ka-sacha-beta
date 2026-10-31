@@ -870,3 +870,149 @@ main { padding-bottom: calc(var(--nav-height) + 96px + env(safe-area-inset-botto
 .coupon-sheet .sheet-grip { margin-bottom: var(--s-3); }
 .coupon-sheet .coupon-sheet-head { margin: 0 0 var(--s-3); }
 .coupon-sheet .coupon-sheet-head h2 { font-size: var(--t-20); letter-spacing: -.03em; }
+
+/* ── Round 31: Accounts screen, reference screenshot ke naap par ────────────
+   Image 692px wide = 390 CSS px → scale 1.79. Har naap usi se nikala hai. */
+main.ac-main { padding-top: var(--s-4); }
+.ac-card { padding: var(--s-4); border-radius: var(--r-lg); }
+.ac-head { display: flex; align-items: center; gap: 10px; }
+.ac-head .icon-tile { width: 36px; height: 36px; border-radius: 12px; }
+.ac-head .icon-tile .icon { width: 20px; height: 20px; }
+.ac-head h2 { margin: 0 auto 0 0; font-size: var(--t-16); font-weight: 850; letter-spacing: -.03em; color: var(--text); white-space: nowrap; }
+
+/* Number / JSON pill toggle */
+.ac-mode { display: flex; gap: 2px; padding: 3px; border-radius: 999px; background: #eef3f8; }
+.ac-mode button {
+  display: inline-flex; align-items: center; gap: 4px; border: 0; border-radius: 999px;
+  padding: 6px 10px; font-size: var(--t-11); font-weight: 800; color: #5b6b7c; background: transparent; white-space: nowrap;
+}
+.ac-mode button .icon { width: 13px; height: 13px; stroke-width: 2.1; }
+.ac-mode button.on { color: #fff; background: linear-gradient(120deg, #2fb3ea, #6ecdf3); box-shadow: 0 3px 8px rgba(47,179,234,.28); }
+
+.ac-form { margin-top: var(--s-4); }
+.ac-label { display: block; margin: 0 0 var(--s-2); font-size: var(--t-12); font-weight: 800; color: #5b6b7c; letter-spacing: .01em; }
+.ac-input {
+  display: flex; align-items: center; gap: var(--s-2); min-height: 46px; padding: 0 var(--s-3);
+  border: 1px solid var(--line); border-radius: 12px; background: #f1f5f9;
+}
+.ac-input:focus-within { border-color: #4fb4e8; box-shadow: 0 0 0 3px rgba(79,180,232,.14); background: #fff; }
+.ac-input input { padding: 12px 0; font-size: var(--t-15); }
+.ac-input .ac-prefix {
+  display: inline-flex; align-items: center; gap: 6px; padding-right: var(--s-2); margin-right: 2px;
+  border-right: 1px solid #dbe3ec; font-size: var(--t-15); font-weight: 700; color: var(--text); white-space: nowrap;
+}
+.ac-input .ac-prefix .icon { width: 15px; height: 15px; color: #7b8b9c; }
+/* Flag emoji har device par nahi hota — isliye CSS se tiranga banate hain */
+.ac-flag {
+  width: 18px; height: 12px; border-radius: 2px; display: inline-block; flex: 0 0 auto;
+  background: linear-gradient(#ff9933 0 33.3%, #fff 33.3% 66.6%, #138808 66.6% 100%);
+  box-shadow: inset 0 0 0 1px rgba(16,40,60,.12); position: relative;
+}
+.ac-flag:after { content: ""; position: absolute; inset: 0; margin: auto; width: 3.4px; height: 3.4px; border-radius: 50%; background: #000080; }
+.ac-input.ac-textarea { padding: 0; align-items: stretch; }
+.ac-input.ac-textarea textarea { min-height: 96px; padding: var(--s-3); font-size: var(--t-13); background: transparent; }
+
+/* Send OTP — reference ka halka blue gradient */
+.ac-cta {
+  width: 100%; margin-top: var(--s-3); min-height: 46px; border: 0; border-radius: 12px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  font-size: var(--t-16); font-weight: 850; color: #fff; letter-spacing: -.01em;
+  background: linear-gradient(120deg, #79d0f4, #4cb1e8);
+  box-shadow: 0 6px 14px rgba(76,177,232,.28);
+  transition: transform var(--dur-1) var(--ease-soft), filter var(--dur-2) var(--ease-soft);
+}
+.ac-cta .icon { width: 17px; height: 17px; stroke-width: 2.1; }
+.ac-cta:active { transform: scale(.98); }
+.ac-cta:disabled { filter: saturate(.5); }
+.ac-switch { display: block; margin: var(--s-2) auto 0; color: var(--blue); }
+
+/* Saved Accounts heading */
+.ac-saved-head { display: flex; align-items: center; gap: 9px; margin: var(--s-5) 2px var(--s-3); }
+.ac-saved-icon { color: #2b7fd4; display: grid; place-items: center; }
+.ac-saved-icon .icon { width: 18px; height: 18px; stroke-width: 2; }
+.ac-saved-head h2 { margin: 0; font-size: var(--t-15); font-weight: 850; letter-spacing: -.02em; }
+.ac-hairline { flex: 1; height: 1px; background: linear-gradient(90deg, #cfe3ea, rgba(207,227,234,0)); }
+.ac-count { display: grid; place-items: center; min-width: 24px; height: 24px; border-radius: 999px; background: #eef3f8; color: #55677a; font-size: var(--t-12); font-weight: 800; }
+
+/* Search */
+.ac-search {
+  display: flex; align-items: center; gap: 9px; min-height: 46px; padding: 0 var(--s-3);
+  background: #f1f5f9; border: 1px solid var(--line); border-radius: 12px; margin-bottom: var(--s-3); color: #7b8b9c;
+}
+.ac-search .icon { width: 17px; height: 17px; }
+.ac-search input { padding: 11px 0; font-size: var(--t-14); }
+.ac-noresult, .ac-noresult-live { margin: 0 2px var(--s-3); }
+
+/* Account row */
+.ac-row {
+  display: flex; align-items: center; gap: 10px; padding: 11px 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+  margin-bottom: var(--s-2); box-shadow: 0 2px 10px rgba(24,49,70,.04);
+  animation: card-in var(--dur-2) var(--ease-soft) both;
+}
+.ac-row.active { background: #eefaf3; border-color: #b7e8cf; }
+.ac-row.is-blocked { opacity: .6; }
+.ac-avatar {
+  width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center;
+  border-radius: 12px; background: rgba(7,155,115,.1); color: #0c8f68;
+}
+.ac-row.active .ac-avatar { background: rgba(7,155,115,.16); }
+.ac-avatar .icon { width: 19px; height: 19px; stroke-width: 2; }
+.ac-copy { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.ac-copy strong { font-size: 15px; font-weight: 850; letter-spacing: -.02em; overflow: hidden; text-overflow: ellipsis; }
+.ac-copy small { font-size: 12.5px; color: #55677a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ac-copy .ac-reason { color: #8a6a17; }
+.ac-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.ac-owner { font-size: 10px; font-weight: 800; color: #55677a; background: #eef3f8; border-radius: 6px; padding: 2px 6px; }
+.ac-extras { font-size: 10px; color: #55677a; }
+.ac-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+
+.ac-used {
+  display: inline-flex; align-items: center; gap: 3px; padding: 3px 6px; border-radius: 7px;
+  border: 1px solid #9fdcbf; background: #fff; color: #0c8f68; font-size: 11px; font-weight: 800;
+}
+.ac-used .icon { width: 12px; height: 12px; stroke-width: 2.2; }
+.ac-json, .ac-check, .ac-del {
+  width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 9px;
+  background: #eaf5fd; color: #2b8bd0; padding: 0;
+}
+.ac-json .icon { width: 15px; height: 15px; stroke-width: 2; }
+.ac-check { background: transparent; color: #0c8f68; }
+.ac-check .icon { width: 17px; height: 17px; stroke-width: 2.6; }
+.ac-check.on { background: #0c8f68; color: #fff; border-radius: 999px; }
+.ac-check.off { color: #c3ccd6; }
+.ac-del { background: transparent; color: #8b98a6; }
+.ac-del .icon { width: 17px; height: 17px; stroke-width: 1.9; }
+.ac-json:active, .ac-check:active, .ac-del:active { transform: scale(.92); }
+@media (max-width: 360px) {
+  .ac-mode button { padding: 6px 9px; font-size: 11px; }
+  .ac-actions { gap: 4px; }
+  .ac-used { display: none; }
+}
+
+/* Round 31 — compact topbar + PRO badge + icon chip (reference jaisa) */
+.topbar { min-height: 60px; padding: 9px 16px; gap: 8px; }
+.brand-mark { width: 38px; height: 38px; border-radius: 13px; font-size: 24px; }
+.brand-copy strong { font-size: var(--t-17); letter-spacing: -.03em; }
+.brand-copy .pro-badge, .brand-copy small.pro-badge {
+  border: 0; border-radius: 7px; background: #eaf6fe; color: #1b9be0;
+  font-size: 9.5px; font-weight: 900; letter-spacing: .1em; padding: 3px 6px;
+}
+.account-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border-radius: 11px; padding: 8px 11px; font-size: var(--t-12); font-weight: 800; max-width: 170px;
+}
+.account-chip .icon { width: 14px; height: 14px; stroke-width: 2.1; flex: 0 0 auto; }
+.account-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-button { width: 34px; height: 34px; }
+.theme-button .icon { width: 17px; height: 17px; stroke-width: 1.9; }
+main { padding-top: 18px; }
+@media (max-width: 390px) {
+  .topbar { padding-left: 14px; padding-right: 14px; }
+  .brand-copy strong { font-size: 16px; }
+  .account-chip { max-width: 138px; padding: 7px 9px; }
+}
+
+.ac-hint { margin-top: var(--s-3); font-size: 11.5px; line-height: 1.45; }
+.ac-row .ac-avatar { margin-right: -2px; }
+.offer-chip .offer-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; display: inline-block; }

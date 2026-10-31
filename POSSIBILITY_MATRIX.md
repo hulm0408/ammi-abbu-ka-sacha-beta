@@ -546,3 +546,20 @@ jo Swiggy deta hai + `Total paid`).
 
 **Guards:** `test_v119_visual_qa_fixes.mjs` 8 checks; sweep **87/87**, `npm test` **132/132**,
 `test:pro` **41/41**. Inventory: `docs/REFERENCE_INVENTORY.md`.
+
+## T. Accounts screen — reference jaisa, copy JSON asli (Round 31)
+
+| Cheez | Reference | Ab |
+|---|---|---|
+| Topbar | 60px, PRO badge, icon chip | ✅ wahi naap |
+| Add Account card | Number/JSON pill, flag + +91, gradient Send OTP | ✅ CSS tiranga, icon CTA |
+| Saved Accounts | heading + count + hairline | ✅ |
+| Search | "Search Account..." | ✅ naam **ya** number se instant filter |
+| Row | Used pill, JSON copy, green check, delete | ✅ |
+| Copy JSON | JSON clipboard me | ✅ **asli session** server se (apne account ka) |
+
+**Sach (jhooth nahi):** shared/operator vault ID ka session non-boss ko **403** — token
+response me aata hi nahi. Copy fail ho to laal toast, chup-chaap success nahi.
+
+**Guards:** `test_v120_accounts_reference_and_copy_json.mjs` 12 checks; sweep **88/88**,
+`npm test` **132/132**, `test:pro` **41/41**.

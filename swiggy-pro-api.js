@@ -1362,6 +1362,29 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
       }
+      /**
+       * Boss (01-11-2026): reference me har account ke saath "copy JSON" button hai.
+       * Yahan wo asli session JSON deta hai — par sirf usi account ka jise user
+       * khud manage karta hai (canRemove). Shared/vault ID ka session kabhi
+       * kisi client ko nahi jata. Jo copy hota hai wahi import me wapas chalta hai.
+       */
+      if (route === '/pro/api/accounts/session' && req.method === 'GET') {
+        enforceRateLimit(user, 'accountExport');
+        const key = String(url.searchParams.get('key') || '');
+        const map = accountMap(user, ws);
+        const account = Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+        if (!account || !account.isLoggedIn || account.isLoggedOut) throw error(404, 'Account not found.');
+        const shared = isSharedAccountFor(user, ws, key);
+        if (shared && !isBoss(user.id)) {
+          const e = error(403, 'Ye ID operator ke vault me hai — uska session sirf operator khud dekh sakta hai.');
+          e.code = 'ACCOUNT_SESSION_OPERATOR_ONLY';
+          throw e;
+        }
+        // Sirf hamare apne internal flags hata kar wahi JSON jise import samajhta hai.
+        const { isLoggedIn, isLoggedOut, sessionExpired, offerAutoActivation, ...rest } = account;
+        json(res, 200, { ok: true, key, session: rest, note: 'Yahi JSON import me wapas chalta hai. Kisi ke saath share na karein.' });
+        return;
+      }
       if (route === '/pro/api/accounts/select' && req.method === 'POST') {
         const body = await bodyJson(req);
         const key = String(body.key || '');
