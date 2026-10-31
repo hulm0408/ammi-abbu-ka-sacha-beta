@@ -95,22 +95,44 @@ test('a Main Mini App launch authenticates without query_id and rejects altered 
   assert.equal((await request('/pro/api/bootstrap', mainLaunch.replace('start_param=demo', 'start_param=other'))).status, 401);
 });
 
-test('missing vault key fails closed before OTP; an existing fallback key still works', async () => {
+// 31-10-2026: pehle `PRO_VAULT_KEY` na hone par app DEAD-END tha ("Server setup
+// needed", 503). Boss: "ISKO THEEK KAR". Ab key server khud manage karta hai,
+// par data ki safety waisi hi hai: purana data galat key se NAHI khulta aur OTP
+// tab provider tak nahi jata.
+test('vault key khud banti hai (dead-end nahi), par purana data galat key se nahi khulta', async () => {
   const savedPro = process.env.PRO_VAULT_KEY;
   const savedFallback = process.env.VAULT_ENCRYPTION_KEY;
-  const otpCount = seen.otp.length;
-  delete process.env.PRO_VAULT_KEY;
-  delete process.env.VAULT_ENCRYPTION_KEY;
   try {
-    const bootstrap = await request('/pro/api/bootstrap', alice);
-    assert.equal(bootstrap.status, 503);
-    assert.equal(bootstrap.body.code, 'PRO_VAULT_NOT_CONFIGURED');
-    const send = await request('/pro/api/accounts/send-otp', alice, { phone: '9234567890' });
-    assert.equal(send.status, 503);
-    assert.equal(send.body.code, 'PRO_VAULT_NOT_CONFIGURED');
+    delete process.env.PRO_VAULT_KEY;
+    delete process.env.VAULT_ENCRYPTION_KEY;
+
+    // (a) NAYA user, koi explicit key nahi → app khulta hai (setup dead-end khatam).
+    const fresh = sign(7011);
+    const bootstrap = await request('/pro/api/bootstrap', fresh);
+    assert.equal(bootstrap.status, 200);
+    assert.equal(bootstrap.body.ok, true);
+    assert.equal(bootstrap.body.accounts.length, 0);
+
+    // (b) Us user ka data ban jaye (import) — ab encrypted workspace maujood hai.
+    const imported = await request('/pro/api/accounts/import', fresh, { session: { mobile: '9123456789', token: 'vault-sentinel-token', tid: 'vault-tid' } });
+    assert.equal(imported.status, 200);
+    assert.equal(imported.body.accounts.length, 1);
+
+    // (c) Galat key → chupchaap "khaali" nahi, saaf 503 PRO_VAULT_DECRYPT_FAILED.
+    process.env.PRO_VAULT_KEY = 'galat-key-jo-purana-data-nahi-kholti';
+    const broken = await request('/pro/api/bootstrap', fresh);
+    assert.equal(broken.status, 503);
+    assert.equal(broken.body.code, 'PRO_VAULT_DECRYPT_FAILED');
+    const otpCount = seen.otp.length;
+    const send = await request('/pro/api/accounts/send-otp', fresh, { phone: '9234567890' });
+    assert.notEqual(send.status, 200);
     assert.equal(seen.otp.length, otpCount);
-    process.env.VAULT_ENCRYPTION_KEY = 'offline-fallback-key-only';
-    assert.equal((await request('/pro/api/bootstrap', alice)).status, 200);
+
+    // (d) Key hata do → data waisa hi khulta hai (kuch delete nahi hua).
+    delete process.env.PRO_VAULT_KEY;
+    const back = await request('/pro/api/bootstrap', fresh);
+    assert.equal(back.status, 200);
+    assert.ok(back.body.accounts.length >= 1);
   } finally {
     if (savedPro === undefined) delete process.env.PRO_VAULT_KEY; else process.env.PRO_VAULT_KEY = savedPro;
     if (savedFallback === undefined) delete process.env.VAULT_ENCRYPTION_KEY; else process.env.VAULT_ENCRYPTION_KEY = savedFallback;

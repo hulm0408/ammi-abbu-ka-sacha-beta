@@ -104,3 +104,4 @@ extracted_mp4_frames/
 !test_v89_provider_faults.mjs
 !test_v90_miniapp_ui.mjs
 !test_v91_mini_app_ids_honest.mjs
+!test_v92_miniapp_vault_selfsetup.mjs
