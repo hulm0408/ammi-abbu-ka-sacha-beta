@@ -713,3 +713,30 @@ kaun bheja, credit hoga ya nahi.
 ### Tests
 `test_v114_utr_truth.mjs` **17 checks**. Sweep: guards **82/82 (148s)**, `npm test` **132/132**,
 `test:pro` **41/41**, v112 12/12, v113 17/17.
+
+## Round 26 (31-10-2026): "deploy hote hi sab erase" — doctor + ek button restore
+
+Boss: *"PHIR DEPLOY HOTE HI SAB ERASE HOGAYA."*
+
+* **Naya `durability-doctor.js`** — 9 live checks: disk, cloud switch, token (masked fingerprint),
+  key, repo access, `bot-vault` branch, login-ID snapshot (kitni ID/workspace, khulta hai ya nahi),
+  paisa snapshot (wallet/UTR/balance), aur **write test** (heartbeat push + read-back — read-only
+  token yahin pakda jata hai). Return: `{steps[], failed[], canBackup, canRestore, verdictLine, nextStep[]}`.
+* **`db-durability.js`** — `restoreFromVaultNow()`: forced cloud restore (identity + money, union
+  merge, workspaces disk par wapas, `saveDb` ke saath) — ek button se, bina naya deploy.
+* **`vault-sync.js`** — `pullVaultTextFileDetailed()`: **1 MB se badi** vault file ab `git/blob` se
+  poori padhi jati hai (pehle contents API khaali content deta tha → restore chupchaap fail).
+  `vaultTarget()`, `vaultTokenFingerprint()` bhi.
+* **API** — `GET /pro/api/boss/durability` (doctor) aur `POST /pro/api/boss/durability/restore`
+  (force restore + turant backup). Dono sirf boss.
+* **Boot** — restore ke baad doctor chalta hai; `canRestore:false` ho to log me asli wajah.
+* **Panel** — Tools → **"Backup ka asli check"**: ✅/❌ rows, `verdictLine`, "Karna hai:" line,
+  aur **"Vault se abhi restore karein"** button.
+
+### Deploy erase ho gaya ho to turant
+Boss panel → Tools → *Backup ka asli check* → **Poori jaanch karein** → phir
+**"Vault se abhi restore karein"**. Vault me data tha to wahi wapas aa jayega (bina naya deploy).
+
+### Tests
+`test_v115_durability_doctor.mjs` **13 checks**. Sweep: guards **83/83 (142s)**, `npm test` **132/132**,
+`test:pro` **41/41**.

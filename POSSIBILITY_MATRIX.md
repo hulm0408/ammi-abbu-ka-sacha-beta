@@ -414,3 +414,38 @@ Kahan dikhta hai:
 * Har lookup `config.utrLookups` me yaad rehta hai (500 tak) — baad me bhi poochha ja sake.
 
 **Test:** `test_v114_utr_truth.mjs` — **17/17**.
+
+---
+
+## O. "Deploy hote hi sab erase" — ab har kadam live check (Round 26)
+
+**Boss:** "PHIR DEPLOY HOTE HI SAB ERASE HOGAYA."
+
+Backup ka poora system tha par **chal raha tha ya nahi, kisi ko pata nahi chalta tha**. Ab
+`durability-doctor.js` ek ek kadam **sach me** check karta hai:
+
+| # | Check | Fail hone par kya dikhta hai |
+|---|---|---|
+| O1 | Server disk likha ja sakta hai? | path + asli error |
+| O2 | `PRO_VAULT_CLOUD_BACKUP` chalu? | "cloud backup band hai" |
+| O3 | `GITHUB_VAULT_TOKEN` set? | fingerprint (8 char) — poora token kabhi nahi |
+| O4 | `VAULT_ENCRYPTION_KEY` set? | "set nahi — vault plaintext/khula nahi hoga" |
+| O5 | GitHub repo access (token chalta hai?) | HTTP status + message |
+| O6 | `bot-vault` branch bani? | 404 = pehla backup nahi hua |
+| O7 | Login-ID snapshot | kitni ID / workspace, ya "khul nahi raha (key?)" |
+| O8 | Paisa + UTR snapshot | kitne wallet / UTR / balance |
+| O9 | **Write test** — chhota heartbeat vault me push + wapas padho | token read-only ho to yahin pakda jata hai |
+
+Saath me:
+* **`restoreFromVaultNow()`** — boss ke ek button se poora vault turant wapas (bina naya deploy).
+* **`POST /pro/api/boss/durability`** — doctor ka poora jawab.
+* **`POST /pro/api/boss/durability/restore`** — force restore + turant naya backup.
+* Panel card: **"Backup ka asli check"** (✅/❌ rows + "Karna hai:" line + restore button).
+* Boot par doctor chalta hai; restore possible na ho to log me saaf warning.
+
+**Asli bug jo isi jaanch me mila:** GitHub contents API **1 MB se badi file ka content khaali**
+(`encoding: "none"`) deta hai. Purana code use "file nahi mili" maan leta tha → restore fail →
+backup guard ko remote khaali lagta → data overwrite. Ab bade file ke liye `git/blob` se poora
+content aata hai (`via: 'blob'`).
+
+**Test:** `test_v115_durability_doctor.mjs` — **13/13**.

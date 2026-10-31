@@ -84,6 +84,18 @@ export function decryptVaultPayloadText(rawText) {
   }
 }
 
+/** Vault ka target (doctor/status ke liye) — koi secret nahi. */
+export function vaultTarget() {
+  return { owner: VAULT_OWNER, repo: VAULT_REPO, branch: VAULT_BRANCH, encrypted: Boolean((process.env.VAULT_ENCRYPTION_KEY || '').trim()) };
+}
+
+/** Token ka masked fingerprint — poora token kabhi nahi. */
+export function vaultTokenFingerprint() {
+  const token = resolveVaultToken();
+  if (!token) return { present: false, fingerprint: '' };
+  return { present: true, fingerprint: crypto.createHash('sha256').update(token).digest('hex').slice(0, 8), length: token.length };
+}
+
 function ghHeaders(token) {
   return {
     Authorization: `Bearer ${token}`,
@@ -414,28 +426,75 @@ export async function pushVaultTextFile(relativePath, text, message = 'chore(vau
   }
 }
 
-/** Read one vault file back. Token ke bina public raw URL se try karta hai. */
-export async function pullVaultTextFile(relativePath) {
+/**
+ * Vault se ek file padho — saath me asli wajah bhi.
+ *
+ * Round 26 (boss: "PHIR DEPLOY HOTE HI SAB ERASE HOGAYA"): GitHub ka contents
+ * API **1 MB se badi file ka `content` khaali** (`encoding: "none"`) deta hai.
+ * Pehle hum use "file nahi mili" maan lete the → restore fail → aur backup
+ * guard ko remote khaali lagta → data overwrite ka rasta. Ab bade file ke liye
+ * `download_url` / git blob API se poora content aata hai, aur har fail ki asli
+ * wajah bhi wapas jaati hai (doctor isi ko dikhata hai).
+ */
+export async function pullVaultTextFileDetailed(relativePath) {
   const token = resolveVaultToken();
-  // Token ke bina koi network try nahi — warna har read par 8s ka stall aur
-  // tests me GitHub call. Backup bhi token ke bina nahi hota.
-  if (!token || process.env.PRO_VAULT_CLOUD_BACKUP === '0') return '';
+  if (process.env.PRO_VAULT_CLOUD_BACKUP === '0') return { text: '', reason: 'PRO_VAULT_CLOUD_BACKUP=0 — cloud backup band hai', status: 0 };
+  if (!token) return { text: '', reason: 'GITHUB_VAULT_TOKEN set nahi hai — cloud vault padha nahi ja sakta', status: 0 };
+  const rawPath = String(relativePath).split('/').map(encodeURIComponent).join('/');
+  const rawUrl = `https://raw.githubusercontent.com/${VAULT_OWNER}/${VAULT_REPO}/${VAULT_BRANCH}/${rawPath}`;
+  const readRaw = async () => {
+    const res = await fetch(rawUrl, { signal: AbortSignal.timeout(8000) }).catch(() => null);
+    if (res?.ok) {
+      const text = await res.text();
+      if (text && text.length > 20) return text;
+    }
+    return '';
+  };
   try {
-    {
-      const res = await fetch(vaultContentsUrl(relativePath), { headers: ghHeaders(token), signal: AbortSignal.timeout(8000) });
-      if (res.ok) {
-        const meta = await res.json().catch(() => null);
-        if (meta?.content) return Buffer.from(String(meta.content).replace(/\s+/g, ''), 'base64').toString('utf8');
+    const res = await fetch(vaultContentsUrl(relativePath), { headers: ghHeaders(token), signal: AbortSignal.timeout(8000) });
+    if (res.status === 404) {
+      // Branch/file ho sakta hai abhi bana hi na ho.
+      const fromRaw = await readRaw();
+      return fromRaw
+        ? { text: fromRaw, reason: '', status: 200, via: 'raw' }
+        : { text: '', reason: 'vault me ye file nahi hai (404) — pehle backup nahi hua', status: 404 };
+    }
+    if (!res.ok) return { text: '', reason: `GitHub contents API HTTP ${res.status}`, status: res.status };
+    const meta = await res.json().catch(() => null);
+    if (meta?.content && meta.encoding !== 'none') {
+      const text = Buffer.from(String(meta.content).replace(/\s+/g, ''), 'base64').toString('utf8');
+      return { text, reason: '', status: 200, via: 'contents', size: meta.size };
+    }
+    // 1 MB se bada file: contents API content nahi deta.
+    if (meta?.sha) {
+      const blobRes = await fetch(`https://api.github.com/repos/${VAULT_OWNER}/${VAULT_REPO}/git/blobs/${meta.sha}`, {
+        headers: ghHeaders(token), signal: AbortSignal.timeout(15000)
+      }).catch(() => null);
+      if (blobRes?.ok) {
+        const blob = await blobRes.json().catch(() => null);
+        if (blob?.content) {
+          const text = Buffer.from(String(blob.content).replace(/\s+/g, ''), 'base64').toString('utf8');
+          return { text, reason: '', status: 200, via: 'blob', size: meta.size };
+        }
       }
     }
-    const encoded = String(relativePath).split('/').map(encodeURIComponent).join('/');
-    const rawRes = await fetch(`https://raw.githubusercontent.com/${VAULT_OWNER}/${VAULT_REPO}/${VAULT_BRANCH}/${encoded}`, {
-      signal: AbortSignal.timeout(8000)
-    }).catch(() => null);
-    if (rawRes?.ok) {
-      const text = await rawRes.text();
-      return text && text.length > 20 ? text : '';
+    if (meta?.download_url) {
+      const dl = await fetch(meta.download_url, { headers: ghHeaders(token), signal: AbortSignal.timeout(15000) }).catch(() => null);
+      if (dl?.ok) {
+        const text = await dl.text();
+        if (text && text.length > 20) return { text, reason: '', status: 200, via: 'download_url', size: meta.size };
+      }
     }
-  } catch {}
-  return '';
+    const fromRaw = await readRaw();
+    if (fromRaw) return { text: fromRaw, reason: '', status: 200, via: 'raw', size: meta?.size };
+    return { text: '', reason: `file mili (${Number(meta?.size || 0)} bytes) par padhi nahi ja saki`, status: 200, size: meta?.size };
+  } catch (err) {
+    return { text: '', reason: String(err?.message || err).slice(0, 160), status: 0 };
+  }
+}
+
+/** Read one vault file back. Token ke bina public raw URL se try karta hai. */
+export async function pullVaultTextFile(relativePath) {
+  const out = await pullVaultTextFileDetailed(relativePath);
+  return out.text || '';
 }

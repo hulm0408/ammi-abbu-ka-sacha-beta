@@ -19,7 +19,7 @@ import path from 'node:path';
 import { getDataDir, getDb, saveDb } from './store.js';
 import { buildMoneySnapshot, snapshotHasData, needsMoneyRestore, mergeMoneySnapshot, describeDurableState } from './money-snapshot.js';
 import { buildIdentitySnapshot, snapshotHasIdentities, mergeIdentitySnapshot, describeIdentityDurability, summarizeIdentities } from './identity-snapshot.js';
-import { pushVaultTextFile, pullVaultTextFile, resolveVaultToken, encryptVaultPayloadObject, decryptVaultPayloadText } from './vault-sync.js';
+import { pushVaultTextFile, pullVaultTextFile, pullVaultTextFileDetailed, resolveVaultToken, encryptVaultPayloadObject, decryptVaultPayloadText } from './vault-sync.js';
 import { proWorkspaceKeyHealth } from './swiggy-pro-store.js';
 import { assessPush, describePushSafety, PUSH_BLOCK } from './vault-safety.js';
 
@@ -63,13 +63,21 @@ async function pullRemoteSnapshot(pathKey, decode) {
   const cached = remoteCache.get(pathKey);
   if (cached && Date.now() - cached.at < REMOTE_PULL_CACHE_MS) return cached;
   let text = '';
-  try { text = await pullVaultTextFile(pathKey); } catch { text = ''; }
+  let reason = '';
+  let via = '';
+  try {
+    const detail = await pullVaultTextFileDetailed(pathKey);
+    text = detail.text || '';
+    reason = detail.reason || '';
+    via = detail.via || '';
+  } catch (err) { reason = String(err?.message || err); text = ''; }
   const present = Boolean(text && String(text).trim().length > 20);
   let snapshot = null;
   if (present) {
     try { snapshot = decode(text); } catch { snapshot = null; }
   }
-  const entry = { at: Date.now(), present, readable: present && Boolean(snapshot), snapshot };
+  if (present && !snapshot) reason = 'file mili par is key se khul nahi rahi (VAULT_ENCRYPTION_KEY?)';
+  const entry = { at: Date.now(), present, readable: present && Boolean(snapshot), snapshot, reason, via };
   remoteCache.set(pathKey, entry);
   return entry;
 }
@@ -526,6 +534,57 @@ export function identityStatus() {
       ? ` · ${workspaceHealth.failed} mini-app workspace is vault key se khul nahi rahe — PRO_VAULT_KEY/VAULT_ENCRYPTION_KEY badla lagta hai (data safe hai, par padha nahi ja sakta).`
       : '')
   };
+}
+
+/**
+ * Round 26 (boss: "PHIR DEPLOY HOTE HI SAB ERASE HOGAYA"):
+ * boot restore fail ho gaya ho (network/key) to bhi boss ke ek button se poora
+ * vault wapas aana chahiye — bina naya deploy kiye. Ye **forced** restore hai:
+ * cloud se padhta hai, union merge karta hai (data kabhi kam nahi), aur saaf
+ * summary deta hai ki kitni ID / kitna paisa / kitne workspace wapas aaye.
+ */
+export async function restoreFromVaultNow({ actor = 'boss', at = Date.now() } = {}) {
+  // Cache clear — warna purana "mil nahi raha" wala jawab hi laut aayega.
+  forgetRemoteSnapshot(IDENTITY_PATH);
+  forgetRemoteSnapshot(SNAPSHOT_PATH);
+  const report = { ok: false, identity: null, money: null, at: new Date(at).toISOString(), actor: String(actor || 'boss') };
+  try {
+    const db = getDb();
+    const idRemote = await pullRemoteSnapshot(IDENTITY_PATH, decodeIdentityText);
+    if (idRemote.readable && idRemote.snapshot) {
+      const merged = mergeIdentitySnapshot(db, idRemote.snapshot, { at, reviveDead: true });
+      if (merged.changed) saveDb(db);
+      const written = writeRestoredWorkspaces(merged.workspacesToRestore);
+      report.identity = {
+        source: idRemote.via || 'cloud', restored: merged.changed,
+        accounts: merged.summary.accounts, workspaces: merged.summary.workspaces,
+        workspacesWritten: written, total: (identityStatus().total || 0)
+      };
+    } else {
+      report.identity = { restored: false, reason: idRemote.present ? (idRemote.reason || 'snapshot khula nahi') : (idRemote.reason || 'identity snapshot vault me nahi hai') };
+    }
+  } catch (err) { report.identity = { restored: false, reason: String(err?.message || err) }; }
+  try {
+    const db = getDb();
+    const moneyRemote = await pullRemoteSnapshot(SNAPSHOT_PATH, decodeSnapshotText);
+    if (moneyRemote.readable && moneyRemote.snapshot) {
+      const merged = mergeMoneySnapshot(db, moneyRemote.snapshot, { at });
+      if (merged.changed) saveDb(db);
+      report.money = { source: moneyRemote.via || 'cloud', restored: merged.changed, summary: merged.summary || null, wallets: Object.keys(db?.config?.wallets || {}).length };
+    } else {
+      report.money = { restored: false, reason: moneyRemote.present ? (moneyRemote.reason || 'snapshot khula nahi') : (moneyRemote.reason || 'paisa snapshot vault me nahi hai') };
+    }
+  } catch (err) { report.money = { restored: false, reason: String(err?.message || err) }; }
+  const idOk = report.identity && (report.identity.restored || Number(report.identity.total) > 0);
+  const moneyOk = report.money && (report.money.restored || Number(report.money.wallets) > 0);
+  report.ok = Boolean(idOk || moneyOk);
+  if (report.ok) {
+    identityState.restoredAt = new Date(at).toISOString();
+    state.restoredAt = new Date(at).toISOString();
+    state.blockedPush = null;
+    identityState.blockedPush = null;
+  }
+  return report;
 }
 
 /** Test ke liye — state reset. */

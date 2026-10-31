@@ -128,3 +128,4 @@ extracted_mp4_frames/
 !test_v112_utr_fetch_and_credit.mjs
 !test_v113_no_data_erase.mjs
 !test_v114_utr_truth.mjs
+!test_v115_durability_doctor.mjs

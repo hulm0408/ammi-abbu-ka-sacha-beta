@@ -5,7 +5,8 @@ import { validateUpiIntentForQr } from './payment-qr-guard.js';
 import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { checkRateLimit, rateLimitMessage, rateLimitState } from './pro-rate-limit.js';
 import { reconcileBill, describeBillState } from './bill-reconcile.js';
-import { backupMoneyNow, backupIdentityNow, durabilityStatus, identityStatus } from './db-durability.js';
+import { backupMoneyNow, backupIdentityNow, durabilityStatus, identityStatus, restoreFromVaultNow } from './db-durability.js';
+import { runDurabilityDoctor } from './durability-doctor.js';
 import { importStatementText, recordStatementPayment, statementStatus, retryPendingUtrs } from './upi-statement.js';
 import { describeSmsTruth, describeTrackingTruth, scanRecipientSmsEvidence } from './tracking-truth.js';
 import { summarizeIdentity } from './identity-snapshot.js';
@@ -1133,6 +1134,33 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           imported: { parsed: imported.parsed, accepted: imported.accepted.length, rejected: imported.rejected },
           settled: imported.settled,
           statement: statementStatus(db)
+        });
+        return;
+      }
+      // ── Round 26: "deploy hote hi sab erase" ka asli check + ek button restore ──
+      if (route === '/pro/api/boss/durability' && req.method === 'GET') {
+        if (!isBoss(user.id)) throw error(403, 'Backup ka sach sirf boss dekh sakta hai.');
+        const doctor = await runDurabilityDoctor();
+        json(res, 200, { ok: true, doctor });
+        return;
+      }
+      if (route === '/pro/api/boss/durability/restore' && req.method === 'POST') {
+        if (!isBoss(user.id)) throw error(403, 'Vault se restore sirf boss kar sakta hai.');
+        const report = await restoreFromVaultNow({ actor: `boss:${user.id}` });
+        // Restore ke baad dobara backup — taaki naya data bhi vaapas vault me ho.
+        backupIdentityNow({ force: true }).catch(() => {});
+        backupMoneyNow({ force: true }).catch(() => {});
+        const lines = [];
+        if (report.identity?.restored) lines.push(`${report.identity.accounts || 0} login ID wapas`);
+        if (report.money?.restored) lines.push('paisa/UTR wapas');
+        json(res, 200, {
+          ok: report.ok,
+          restored: report,
+          identities: identityStatus(),
+          durability: durabilityStatus(),
+          message: report.ok
+            ? `Vault se data wapas aa gaya — ${lines.join(' · ') || 'jo vault me tha wo merge ho gaya'}.`
+            : `Vault me restore karne layak data nahi mila. Wajah: ${report.identity?.reason || report.money?.reason || 'pata nahi'}`
         });
         return;
       }
