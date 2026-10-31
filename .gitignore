@@ -132,3 +132,12 @@ extracted_mp4_frames/
 !test_v116_premium_look.mjs
 !test_v117_reference_visual_system.mjs
 !test_v118_one_page_no_lecture.mjs
+!test_v119_visual_qa_fixes.mjs
+
+# Screenshot QA (local only) — generated PNGs aur browser libs commit nahi
+screenshots/
+tools/chromedeps/libnss-stub/
+tools/chromedeps/*.txt
+tools/chromedeps/*.c
+tools/chromedeps/*.map
+scratch/

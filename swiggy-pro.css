@@ -573,6 +573,7 @@ body.dark #toast { background: #16232f; border-color: #24394a; color: #e8f1f7; }
 
 @media (prefers-reduced-motion: reduce) {
   .card, .brand-mark, .pay-bar .pay-now, .savings-banner, .pill.green, .saving-badge.on, .track-dot,
+  .coupon-sheet, .coupon-overlay,
   .sheet, .sheet-overlay, #toast, .sheet-grip, .skeleton-line, .skeleton-tile, .skeleton-pill, .skeleton-hero {
     animation: none !important;
   }
@@ -839,3 +840,33 @@ body.dark #toast { background: #16232f; border-color: #24394a; color: #e8f1f7; }
 
 /* Idle rule chip — pay bar ke andar, ek line, baaki page saaf */
 .pay-bar .idle-note { display: block; margin-top: 2px; font-size: 10px; font-weight: 600; color: var(--muted); max-width: 130px; line-height: 1.25; }
+
+/* Round 30 — orders filter + savings banner icon + pay-bar clearance */
+.orders-filter-gap { height: var(--s-3); }
+main .segmented { margin: 0 0 var(--s-3); }
+.savings-banner .icon { width: 17px; height: 17px; stroke-width: 2; flex: 0 0 auto; color: #0f8a4a; }
+.pay-bar .idle-note + .updating-pill { margin-top: var(--s-1); }
+.order-row .row-link { display: grid; place-items: center; color: var(--muted); }
+.order-row .row-link .icon { width: 16px; height: 16px; }
+
+/* Round 30 — fixed cart dock ke neeche kuch bhi hamesha ke liye na chhupe
+   (Rule 6: content hidden behind fixed elements). */
+main { padding-bottom: calc(var(--nav-height) + 96px + env(safe-area-inset-bottom, 0px)); }
+
+/* Round 30 — coupon bottom sheet (Rule 3C): cart peeche dimmed, sheet slide-up */
+.coupon-overlay {
+  position: fixed; inset: 0; z-index: 12; background: rgba(15, 23, 42, .45);
+  animation: backdrop-in var(--dur-2) var(--ease-soft) both;
+}
+/* translateX(-50%) mat use karo — sheet-rise keyframes transform overwrite kar dete
+   hain aur sheet side me khisak jati hai (screenshot QA me pakda gaya). */
+.coupon-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; margin-inline: auto;
+  width: min(100%, 720px); max-height: 88dvh; overflow-y: auto; z-index: 13;
+  background: var(--bg); border-radius: 22px 22px 0 0; box-shadow: var(--shadow-float);
+  padding: var(--s-3) var(--s-4) calc(var(--s-6) + env(safe-area-inset-bottom, 0px));
+  animation: sheet-rise var(--dur-3) var(--ease-spring) both; overscroll-behavior: contain;
+}
+.coupon-sheet .sheet-grip { margin-bottom: var(--s-3); }
+.coupon-sheet .coupon-sheet-head { margin: 0 0 var(--s-3); }
+.coupon-sheet .coupon-sheet-head h2 { font-size: var(--t-20); letter-spacing: -.03em; }

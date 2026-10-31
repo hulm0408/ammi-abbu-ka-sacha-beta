@@ -11,7 +11,7 @@
     menuLoading: false, orders: null, ordersScope: 'active', order: null, orderTracking: null, ordersLoading: false, ordersDetailAllowed: true,
     cachedAccounts: [], busy: false, loading: 0, resultsLoading: false, deleteFlow: null, claimBusyKey: '', claimResult: null, couponOpen: false,
     outlets: null, outletsOpen: false, outletsLoading: false, backup: null, backupBusy: false,
-    coupons: null, couponsNote: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, billOpen: false,
+    coupons: null, couponsNote: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, billOpen: false, ordersFilter: 'all',
     meal: null, mealFor: '', mealLoading: false, couponDraft: '', groupCartDraft: '', groupCartOn: true,
     track: null, trackData: null, trackError: '', trackBusy: false,
     // Boss (31-10-2026, round 11): wallet ₹15 gate + UPI top-up.
@@ -56,6 +56,7 @@
     receipt:'<path d="M5 3h14v18l-2-1-2 1-3-1-3 1-2-1-2 1zM8 8h8M8 12h8M8 16h5"/>',
     userplus:'<path d="M16 21a7 7 0 0 0-14 0"/><circle cx="9" cy="8" r="4"/><path d="M19 8v6M16 11h6"/>',
     alert:'<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>',
+    spark:'<path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18 15.5 18.8 18l2.5.8-2.5.8L18 22l-.8-2.4-2.5-.8 2.5-.8z"/>',
     coins:'<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>'
   };
   const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name] || ''}</svg>`;
@@ -244,7 +245,21 @@
   function field(label, name, placeholder, value = '', extra = '') {
     return `<label class="field"><span class="field-label">${esc(label)}</span><span class="input-wrap"><input name="${esc(name)}" placeholder="${esc(placeholder)}" value="${esc(value)}" ${extra}></span></label>`;
   }
-  function addressLabel(a) { return a?.annotation || 'Delivery address'; }
+  /** Order ka asli time — sirf jab parse ho. Swiggy "31/10/26, 12:19 am" bheje
+   *  to hum uska hisaab nahi banate; wo bhi sach hai (Last 1 Hour band rehta hai). */
+  function orderTime(o) {
+    for (const v of [o?.placedAtIso, o?.placedAtAt, o?.placedAt]) {
+      if (!v) continue;
+      const t = Date.parse(String(v));
+      if (Number.isFinite(t)) return t;
+    }
+    return null;
+  }
+  function addressLabel(a) {
+    // Swiggy jaisa: heading me address ka naam (Skk / Home), neeche poora address.
+    // Annotation (HOME/WORK) ho to wahi, warna name, warna honest fallback.
+    return a?.annotation || a?.name || a?.label || 'Delivery address';
+  }
   const normName = value => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   /**
    * Boss (31-10-2026): "RESTAURANT KA LOCATION CHOOSE KARNE WALA SEARCH PAR
@@ -503,7 +518,12 @@
     if (!w) return '';
     const ready = w.ready === true;
     const shortText = ready ? '' : `Balance ${money(w.balance)} hai — order ke liye ${money(w.fee)} chahiye. ${money(w.shortfall)} add karein.`;
-    const presets = (w.presets || []).slice(0, 3).map(p => `<button class="button mini outline" type="button" data-action="wallet-topup" data-paise="${Number(p.paise)}">₹${esc(p.rupees)}</button>`).join('');
+    // Server kabhi {paise,rupees} bhejta hai, kabhi seedha paisa (1500). Dono
+    // chalein — warna button par sirf "₹" dikhta tha (screenshot me pakda gaya).
+    const presets = (w.presets || []).map(p => (p && typeof p === 'object' ? { paise: Number(p.paise), rupees: p.rupees } : { paise: Number(p), rupees: String(Math.round(Number(p) / 100)) }))
+      .filter(p => Number.isFinite(p.paise) && p.paise > 0)
+      .slice(0, 3)
+      .map(p => `<button class="button mini outline" type="button" data-action="wallet-topup" data-paise="${p.paise}">₹${esc(p.rupees ?? Math.round(p.paise / 100))}</button>`).join('');
     const topup = state.walletTopup
       ? `<div class="wallet-topup"><p class="hint">${esc(state.walletTopup.note || '')}</p>${state.walletTopup.qrDataUrl ? `<img class="payment-qr" src="${esc(state.walletTopup.qrDataUrl)}" alt="Wallet top-up UPI QR">` : ''}<a class="button green block" href="${esc(state.walletTopup.upiUri || '#')}">UPI app me ₹${esc(state.walletTopup.amount)} bhejein</a><p class="hint">UPI id: <b>${esc(state.walletTopup.upiId || '')}</b></p></div>`
       : '';
@@ -513,7 +533,7 @@
     // ki asli payment detail fetch karta hai aur jitna aaya utna hi judta hai.
     const topupAmount = state.walletTopup?.amount || '';
     const suggested = topupAmount || String(w.shortfall || w.fee || '15');
-    const claim = `<form data-form="wallet-claim" class="wallet-claim" novalidate><p class="section-title">Kitna paisa bhejna hai?</p><p class="hint">UPI <b>${esc(w.upiId || '')}</b> par bhejein, 12-digit <b>UTR</b> daaliye — jitna paisa sach me aaya utna hi judega.</p><div class="field-row">${field('Amount (₹)', 'amount', 'jaise 15', suggested)}${field('UTR (12 digit)', 'utr', 'jaise 123456789012', '')}</div><button class="button primary block" type="submit" ${state.walletClaimBusy ? 'disabled' : ''}>${state.walletClaimBusy ? 'UTR se payment fetch ho rahi hai…' : 'UTR se payment fetch karke add karein'}</button>${state.walletClaimNote ? `<p class="hint">${esc(state.walletClaimNote)}</p>` : ''}</form>`;
+    const claim = `<form data-form="wallet-claim" class="wallet-claim" novalidate><p class="section-title">Kitna paisa bhejna hai?</p><p class="hint">UPI <b>${esc(w.upiId || '')}</b> par bhejein, 12-digit <b>UTR</b> daaliye — jitna paisa sach me aaya utna hi judega.</p><div class="field-row">${field('Amount (₹)', 'amount', 'jaise 15', suggested)}${field('UTR (12 digit)', 'utr', '12 digits', '')}</div><button class="button primary block" type="submit" ${state.walletClaimBusy ? 'disabled' : ''}>${state.walletClaimBusy ? 'UTR se payment fetch ho rahi hai…' : 'UTR se payment fetch karke add karein'}</button>${state.walletClaimNote ? `<p class="hint">${esc(state.walletClaimNote)}</p>` : ''}</form>`;
     const upiEditor = state.user?.isBoss
       ? (state.walletUpiEdit
         ? `<form data-form="wallet-upi" class="wallet-usi" novalidate>${field('Boss ka UPI id', 'upiId', 'name@bank', w.upiId || '')}<button class="button outline block" type="submit">UPI save karein</button></form>`
@@ -672,7 +692,9 @@
     const sheetHead = `<div class="coupon-sheet-head"><span class="icon-tile">${icon('receipt')}</span><h2>Apply Coupon</h2><button class="icon-button" type="button" data-action="coupon-back" aria-label="Band karein">${icon('close')}</button></div>`;
     // Round 49 ka niyam: coupon list hamesha, sirf APPLY buttons — code type
     // karne ka box nahi (reference me hai, par wahan humara niyam upar hai).
-    return `<button class="back-button" data-action="coupon-back">${icon('back')} Cart</button>${sheetHead}${applied}<div class="coupon-count">AVAILABLE COUPONS <b>${Array.isArray(list) ? list.length : 0}</b></div><p class="section-title">Aapke liye offers</p>${body}<p class="hint">${esc(state.couponsNote || 'APPLY dabaiye — asli bill Swiggy se aayega. Discount tabhi dikhega jab Swiggy deta hai.')}</p>`;
+    // Rule 3C: coupon ek bottom sheet hai — peeche cart dimmed dikhta hai.
+    // Band karne ke 3 raste: close button, backdrop tap, Escape.
+    return `<div class="coupon-overlay" data-action="coupon-back" aria-hidden="true"></div><section class="coupon-sheet" role="dialog" aria-modal="true" aria-label="Apply Coupon"><div class="sheet-grip"></div>${sheetHead}${applied}<div class="coupon-count">AVAILABLE COUPONS <b>${Array.isArray(list) ? list.length : 0}</b></div><p class="section-title">Aapke liye offers</p>${body}<p class="hint">${esc(state.couponsNote || 'APPLY dabaiye — asli bill Swiggy se aayega. Discount tabhi dikhega jab Swiggy deta hai.')}</p></section>`;
   }
   /** Payment ke baad asli tracking — status Swiggy se, guess nahi. */
   function renderTrack() {
@@ -759,11 +781,29 @@
     // SAME AND PAY NOW KA BUTTON ACTIVE KARNA." ETA strip → savings → address →
     // Your Order → coupon/savings → bill → payment → pay bar.
     const saved = savedAmount(q);
-    const savingsBanner = saved > 0 ? `<div class="savings-banner">✨ ${money(saved)} saved!${q?.coupon ? ` · ${esc(q.coupon)}` : ''}</div>` : '';
+    const savingsBanner = saved > 0 ? `<div class="savings-banner">${icon('spark')} ${money(saved)} saved!${q?.coupon ? ` · ${esc(q.coupon)}` : ''}</div>` : '';
     const eta = `<div class="eta-strip"><span class="eta-clock">${icon('orders')}</span><span class="eta-copy"><strong>${cart.restaurantTime ? `Delivery in ${esc(cart.restaurantTime)}` : 'Delivery time Swiggy se aayega'}</strong><small>${esc([cart.restaurantName, cart.restaurantArea].filter(Boolean).join(' · '))}</small></span></div>`;
     // Pay bar: Swiggy jaisa — bada amount + bill link left, green pay right.
     const payBar = `<div class="pay-bar"><button class="button green pay-now" type="button" data-action="checkout-start" ${locked || !state.checkoutEnabled ? 'disabled' : ''} ${!state.checkoutEnabled ? `title="${esc(state.checkoutBlockReason || '')}"` : ''}>${state.checkoutEnabled ? `Pay Now · Proceed to Pay ${icon('arrow')}` : 'Payment band'}</button><div class="pay-left"><strong>${q ? money(q.total) : '—'}</strong><span class="link-button" role="button" tabindex="0" data-action="bill-open">${state.billOpen ? 'Bill band karein' : 'View Detailed Bill'}</span><small>PAY USING UPI</small>${idleNote}</div>${q ? '' : '<span class="updating-pill"><span class="spinner"></span>Updating</span>'}</div>${state.checkoutEnabled ? '' : `<div class="warning pay-blocked">Payment abhi band hai — wahi asli wajah: ${esc(state.checkoutBlockReason || 'server ne reason nahi diya')}</div>`}`;
     return `${head('CHECKOUT', 'Checkout', '')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${!q ? renderFindingCoupon() : ''}${renderSavingsCorner(q)}${renderBill(q, cart)}${renderPayment(cart)}${renderWalletCard()}${payBar}`;
+  }
+  /**
+   * Order detail ka bill/payment hissa (round 30). Rule: sirf wahi line jo
+   * Swiggy ne di — jo nahi aaya wo row hi nahi banti. Kuch bhi guess nahi.
+   */
+  function orderMoneyRows(o) {
+    const rows = [
+      ['Item total', o.itemTotal],
+      ['Platform fee', o.platformFee ?? o.platformFeePaise / 100],
+      ['Subscription fee', o.subscriptionFee ?? o.oneMembershipFee],
+      ['Coupon discount', o.couponDiscount ?? o.discount],
+      ['Offer discount', o.offerDiscount ?? o.unlistedDiscount],
+      ['Taxes & other charges', o.taxes ?? o.taxAndCharges]
+    ];
+    return rows
+      .filter(([, v]) => v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v)) && Number(v) !== 0)
+      .map(([label, v]) => `<div class="bill-row"><span>${label}</span><strong>${label.toLowerCase().includes('discount') ? '−' : ''}${money(Math.abs(Number(v)))}</strong></div>`)
+      .join('');
   }
   function renderOrders() {
     const detailed = state.ordersDetailAllowed !== false;
@@ -777,19 +817,40 @@
       const hero = delivered
         ? `<div class="delivered-hero"><div class="delivered-check">${icon('check')}</div><h1>Order Delivered</h1><span class="pill green">${icon('orders')} ${esc(o.restaurant || 'Swiggy order')}</span><p>${esc(o.placedAt ? 'Delivered · placed ' + o.placedAt : 'Swiggy ne delivered bataya hai.')}</p></div>`
         : '';
-      return `<div class="order-top-actions"><button class="back-pill" data-action="orders-back">${icon('back')} Back to Orders</button><button class="back-pill" type="button" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${hero}${head('ORDER DETAILS', o.restaurant || 'Swiggy order', 'Only information returned by Swiggy is shown.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div>${o.address ? `<div class="bill-row"><span>Address</span><strong>${esc(o.address)}</strong></div>` : ''}</div><div class="card"><div class="card-title">${icon('cart')} Ordered items</div>${o.items.length ? o.items.map(i => `<div class="bill-row"><span>${esc(i.name)}</span><strong>× ${Number(i.qty)}</strong></div>`).join('') : '<p class="hint">Swiggy did not return item details.</p>'}</div><div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>${smsTruthBlock(state.orderSms || state.orderTracking?.sms)}`;
+      return `<div class="order-top-actions"><button class="back-pill" data-action="orders-back">${icon('back')} Back to Orders</button><button class="back-pill" type="button" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${hero}${head('ORDER DETAILS', o.restaurant || 'Swiggy order', 'Only information returned by Swiggy is shown.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div>${o.address ? `<div class="bill-row"><span>Address</span><strong>${esc(o.address)}</strong></div>` : ''}</div><div class="card"><div class="card-title">${icon('cart')} Ordered items</div>${o.items.length ? o.items.map(i => `<div class="bill-row"><span>${esc(i.name)}${i.price !== undefined ? '' : ''}</span><strong>${Number.isFinite(Number(i.price)) ? money(Number(i.price) * (Number(i.qty) || 1)) : ''} × ${Number(i.qty)}</strong></div>`).join('') : '<p class="hint">Swiggy did not return item details.</p>'}</div>${(() => {
+        const money_ = orderMoneyRows(o);
+        const payMethod = String(o.paymentMethod || o.paymentMode || '').trim();
+        const receiver = [o.receiverName || o.receiver, o.receiverPhone].filter(Boolean).join(' · ');
+        const partner = state.orderTracking?.deliveryPartner;
+        const partnerLine = partner && (partner.name || partner.phone) ? `<div class="bill-row"><span>Delivery partner</span><strong>${esc([partner.name, partner.phone].filter(Boolean).join(' · '))}</strong></div>` : '';
+        return `<div class="card"><div class="card-title">${icon('receipt')} Payment &amp; bill <span class="pill right">${money(o.amount)} paid</span></div>${payMethod ? `<div class="bill-row"><span>Payment method</span><strong>${esc(payMethod)}</strong></div>` : ''}${receiver ? `<div class="bill-row"><span>Receiver</span><strong>${esc(receiver)}</strong></div>` : ''}${partnerLine}${money_ ? `<div class="divider"></div>${money_}` : ''}<div class="bill-row total"><span>Total paid</span><span>${money(o.amount)}</span></div>${money_ ? '' : '<p class="hint">Swiggy ne is order ka line-by-line bill nahi diya — sirf total.</p>'}</div>`;
+      })()}<div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>${smsTruthBlock(state.orderSms || state.orderTracking?.sms)}`;
     }
     let rows;
+    // Swiggy jaisa segmented filter. "Last 1 Hour" ka count sirf tab dikhta hai
+    // jab Swiggy ne parse-hone wala time diya ho — warna button band + asli
+    // wajah, kyunki jhoota count dena galat hoga.
+    const times = Array.isArray(state.orders) ? state.orders.map(orderTime) : [];
+    const timeKnown = times.some(t => Number.isFinite(t));
+    const hourCount = timeKnown ? times.filter(t => Number.isFinite(t) && Date.now() - t < 3600e3).length : null;
+    const filter = state.ordersFilter === 'hour' ? 'hour' : 'all';
+    const segmented = `<div class="segmented" role="tablist" aria-label="Order filter">
+      <button type="button" role="tab" aria-selected="${filter === 'all'}" class="${filter === 'all' ? 'selected' : ''}" data-action="orders-filter" data-filter="all">This Account</button>
+      <button type="button" role="tab" aria-selected="${filter === 'hour'}" class="${filter === 'hour' ? 'selected' : ''}" data-action="orders-filter" data-filter="hour" ${timeKnown ? '' : 'disabled title="Swiggy ne order ka time nahi diya, isliye ghante ka hisaab nahi bana sakte."'}>Last 1 Hour${hourCount === null ? '' : ` · ${hourCount}`}</button>
+    </div>`;
+    const visibleOrders = Array.isArray(state.orders) && filter === 'hour'
+      ? state.orders.filter(o => { const t = orderTime(o); return Number.isFinite(t) && Date.now() - t < 3600e3; })
+      : state.orders;
     if (state.ordersLoading) rows = skeletonRows(3, 2);
     else if (state.orders === null) rows = empty('orders', 'Your orders', 'Refresh dabaiye — order history selected account se aati hai.');
-    else if (!state.orders.length) rows = empty('orders', 'No orders returned', 'Swiggy ne is account ke liye koi order nahi diya.');
-    else rows = state.orders.map(o => detailed
+    else if (!visibleOrders.length) rows = empty('orders', filter === 'hour' ? 'Last 1 hour me koi order nahi' : 'No orders returned', 'Swiggy ne is account ke liye koi order nahi diya.');
+    else rows = visibleOrders.map(o => detailed
       ? `<button class="restaurant-row" data-action="order-detail" data-id="${esc(o.id)}">${tile('orders', true)}<span class="row-content"><strong>${esc(o.restaurant || 'Swiggy order')}</strong><p>${esc(o.placedAt || 'Time not returned')}</p><p>${esc((o.items || []).map(i => i.name).join(', ') || 'Item detail not returned')}</p><span class="order-id">#${esc(o.id)}</span></span><span class="pill ${/delivered/i.test(o.status) && !/cancel/i.test(o.status) ? 'green' : ''}">${esc(o.status)}</span></button>`
       // Boss (31-10-2026): user ko bas chhota card, poora detail sirf operator ko.
-      : `<button class="restaurant-row compact" data-action="order-detail" data-id="${esc(o.id)}">${tile('orders', true)}<span class="row-content"><strong>${esc(o.restaurant || 'Swiggy order')}</strong><p>${esc(o.placedAt || 'Time not returned')} · #${esc(o.id)}</p></span><span class="order-bill">${money(o.amount)}</span><span class="pill ${/delivered/i.test(o.status) && !/cancel/i.test(o.status) ? 'green' : ''}">${esc(o.status)}</span></button>`).join('');
+      : `<button class="restaurant-row compact" data-action="order-detail" data-id="${esc(o.id)}">${tile('orders', true)}<span class="row-content"><strong>${esc(o.restaurant || 'Swiggy order')}</strong><p>${esc(o.placedAt || 'Time not returned')} · #${esc(o.id)}</p></span><span class="order-bill">${money(o.amount)}</span><span class="pill ${/delivered/i.test(o.status) && !/cancel/i.test(o.status) ? 'green' : ''}">${esc(o.status)}</span>${o.trackingUrl && /^https:\/\//.test(String(o.trackingUrl)) ? `<span class="row-link" aria-hidden="true">${icon('arrow')}</span>` : ''}</button>`).join('');
     const original = state.ordersScope === 'checkout';
     const note = original ? '<div class="warning">Original checkout account dikh raha hai. Khaali ya der se aayi list ka matlab order fail nahi — jab tak outcome pata na chale doosra order na karein.</div>' : restrictedNote;
-    return `${head('ORDER HISTORY', original ? 'Original account orders' : 'Your orders', original ? 'Checkout wale account ke recent orders.' : 'Is account ke purane aur chalte orders.', `<button class="button mini soft" data-action="orders-refresh">${icon('refresh')} Refresh</button>`)}${note}${rows}`;
+    return `${head('ORDER HISTORY', original ? 'Original account orders' : 'Your orders', original ? 'Checkout wale account ke recent orders.' : 'Is account ke purane aur chalte orders.', `<button class="button mini soft" data-action="orders-refresh">${icon('refresh')} Refresh</button>`)}${segmented}${note}${rows}`;
   }
   /**
    * Boss (31-10-2026): "DATA TO ERASE HOJATA HAI." Ab backup ki asli haalat
@@ -1205,6 +1266,9 @@
     return true;
   }
   /** Coupon APPLY — seedha Swiggy bill. Koi code type nahi, koi extra tap nahi. */
+  function closeCouponSheet() {
+    state.couponView = false; state.coupons = null; render(); window.scrollTo(0, 0);
+  }
   async function applyCoupon(code, button) {
     const value = String(code || '').trim().toUpperCase();
     if (!value || value === state.couponBusy) return;
@@ -1398,7 +1462,8 @@
       return;
     }
     if (action === 'toggle-coupon' || action === 'coupon-open') { state.couponView = true; state.couponOpen = true; render(); window.scrollTo(0, 0); if (state.coupons === null) loadCoupons(); return; }
-    if (action === 'coupon-back') { state.couponView = false; state.coupons = null; render(); window.scrollTo(0, 0); return; }
+    if (action === 'coupon-back') { closeCouponSheet(); return; }
+    if (action === 'coupon-sheet-stop') { return; }
     if (action === 'bill-open') {
       state.billOpen = !state.billOpen;
       render();
@@ -1423,6 +1488,10 @@
     if (action === 'contact-edit') { state.contactEdit = !state.contactEdit; render(); return; }
     if (action === 'menu-back') { state.menu = null; render(); return; }
     if (action === 'orders-back') { state.order = null; state.orderTracking = null; render(); return; }
+    if (action === 'orders-filter') {
+      state.ordersFilter = button.dataset.filter === 'hour' ? 'hour' : 'all';
+      render(); return;
+    }
     if (action === 'order-detail') {
       state.order = state.orders?.find(o => o.id === button.dataset.id) || null;
       state.orderTracking = null; render(); window.scrollTo(0,0);

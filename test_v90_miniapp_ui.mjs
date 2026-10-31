@@ -120,7 +120,9 @@ test('coupon APPLY seedha asli cart sync karta hai — koi code type nahi, koi c
     assert.equal(app.document.querySelector('input[name="coupon"]'), null, 'code type karne ka box nahi');
     app.document.querySelector('[data-action="coupon-pick"]').click();
     await waitFor(() => app.calls.some(c => c.url.endsWith('/cart/sync')), 'sync call');
-    assert.equal(app.document.querySelector('[role="dialog"]'), null, 'extra confirm nahi');
+    // Coupon ab bottom sheet hai (khud role="dialog"), par extra CONFIRM nahi aana chahiye —
+    // confirm dialog ka apna class hai.
+    assert.equal(app.document.querySelector('.confirm-dialog, .confirm-overlay'), null, 'extra confirm nahi');
     const syncCalls = app.calls.filter(c => c.url.endsWith('/cart/sync'));
     assert.equal(syncCalls.length, 1);
     assert.equal(syncCalls[0].body.confirmReplaceSwiggyCart, true);

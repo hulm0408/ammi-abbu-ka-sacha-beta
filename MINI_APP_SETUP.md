@@ -860,3 +860,57 @@ Ab visible text **1,305 characters** hai aur kaam ki har cheez **ek hi page** pa
 khulta hai; coupons inline + APPLY se asli `cart/sync`; purani lecture lines gayab;
 6 zaroori blocks ek page par; visible text < 1500 chars; idle chip pay bar me.
 Sweep: guards **86/86 (160s)**, `npm test` **132/132**, `test:pro` **41/41**.
+
+---
+
+## Round 30 — asli browser se screenshot QA, aur jo screenshot ne pakda
+
+Boss: *"high-fidelity replication + run it, inspect it, compare it, correct it."*
+Is baar **asli Chromium** me app chala kar PNG liye — aur usme **4 bug** mile jo code
+padh kar nahi dikhte.
+
+### Screenshot harness (naya)
+* `npm run preview:miniapp` (port 4173, demo data) + `npm run shots:miniapp`
+  → `screenshots/01…10-*.png` (390×844 @2x, deviceScaleFactor 2).
+* Browser: `puppeteer-core` + `@sparticuz/chromium`. Is image me `libnss3` nahi hoti,
+  isliye `tools/chromedeps/setup.sh` ek **screenshot-only NSS stub** banata hai (preview
+  HTTP hai, TLS kabhi nahi chalta). Libs git me nahi jaati (`.gitignore`).
+* Har screenshot 20s par timeout deta hai — headless-shell kabhi atak jata hai, warna
+  poora harness hang ho jata tha (isko bhi QA me pakda).
+
+### Screenshot ne jo bug pakde (aur fix)
+1. **Emoji tofu** — savings banner me `✨` box ban raha tha (device par emoji font nahi).
+   Ab apna SVG `spark` icon. `test_v119` guard karta hai.
+2. **Khaali ₹ buttons** — wallet presets `[1500, 5000]` (numbers) aate hain par UI
+   `{paise, rupees}` object maangta tha → button par sirf `₹`. Ab dono shape chalti hain.
+3. **Address heading** — `DELIVERING TO` ke neeche "Delivery address" (generic) dikh raha
+   tha. Ab asli naam (`Skk`), fallback honest.
+4. **Coupon sheet side me khisak raha tha** — `translateX(-50%)` par `sheet-rise` keyframes
+   ka `transform` chadh raha tha, sheet aadhi screen ke bahar + backdrop nav block kar raha
+   tha. Ab `left:0;right:0;margin-inline:auto` (transform-free) — screenshot ne dikhaya,
+   fix ke baad wapas capture kiya.
+5. **Backdrop blur** headless-shell ka compositor atka deta tha (orders/tools screenshots
+   timeout). Backdrop ab blur-free solid dim — dekhne me same, render saaf.
+
+### Naya screen/structure jo reference me tha
+* **Coupon bottom sheet** — dimmed cart peeche, grip, head, close (Rule 3C). Band karne ke
+  raste: X, backdrop tap, back button.
+* **Orders filter** — `This Account` / `Last 1 Hour`. Count **sirf** tab jab Swiggy ne
+  parse-hone wala time diya ho; warna button disabled + `title` me asli wajah
+  ("Swiggy ne order ka time nahi diya…"). Jhoota count kabhi nahi.
+* **Order detail bill** — payment method, receiver, delivery partner (jab provider de),
+  platform/subscription/coupon/offer/tax lines **sirf** jab data ho, aur `Total paid`.
+  Data na ho to saaf likha: "Swiggy ne line-by-line bill nahi diya — sirf total."
+* `main` ka bottom clearance badhaya — fixed cart dock ke neeche kuch permanent na chhupe.
+
+### Verification
+* `npm run shots:miniapp` → 10 screens, phir **dobara** capture (fix ke baad) — 320/360/
+  390/414 px par horizontal overflow check (sab `ok`, koi element viewport se bahar nahi).
+* guards **87/87 (155s)**, `npm test` **132/132**, `test:pro` **41/41**.
+* naya guard: `test_v119_visual_qa_fixes.mjs` **8 checks**.
+
+### Limitations (sach)
+* Reference PNGs repo me nahi hain (boss ke phone se aate hain) — isliye "pixel-diff"
+  reference ke against nahi ho saka. Jo compare hua wo: render vs. documented inventory
+  (`docs/REFERENCE_INVENTORY.md`) aur render vs. pichhle round ke screenshots.
+* Swiggy ka asli app is machine par nahi khulta; cart ka data demo hai.
