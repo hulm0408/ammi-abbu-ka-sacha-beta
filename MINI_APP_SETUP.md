@@ -258,3 +258,55 @@ Boss: *"koi ID active karke order kar raha aur order chhod kar chala gaya — 2 
 ### Tests
 `test_v102_idle_order_expiry.mjs` **13 checks**: default 120000 + clamp; classify (paid/unknown/placed-unpaid); 3 min vs 30 s plan; in-flight placement block; fee refund/no-refund; last activity max; API bootstrap par band + fee refund + message ek hi baar; 30 s par kuch nahi; placed-unpaid band par generation aage; paid/unknown kabhi nahi; activity touch; DOM hint + toast.
 Sweep: `test:guards` **70/70 (124s)**, `test:pro` **41/41**, `npm test` **132/132**, bossbot **49/49**, DOM v90…v101 **89/89**.
+
+## Round 14 (31-10-2026): delivery fee FREE + ₹50 off — bot wala hi engine, mini app me
+
+Boss: *"na delivery fee off ho raha, na ₹50 off wala coupon lag raha… jhootha 'lag gaya' nahi."*
+
+### Kya galat tha
+Mini app ka `quoteCart()` sirf ek plain cart push karta tha aur ~3 coupon try karta tha. Wo
+kabhi `activateAllEventOffers()` (₹50 free cash) call nahi karta tha aur na Swiggy One Lite
+attach karta tha — isliye delivery fee bilkul waise hi rehti thi.
+
+### Ab kya hota hai (`swiggy-pro-provider.js` → `quoteCart()`)
+Ek hi order me, ek ke baad ek:
+
+1. **Event offers claim** — `activateAllEventOffers(account)` (wahi jo bot har file import par
+   chalata hai: `OFFER_TRACKS`/`EVENT_OFFER_KEYS`, count hardcode nahi). Claim 6s se zyada
+   na le, warna bill aage badh jaye; jo claim hua wo `engine.offersClaimed` me.
+2. **Swiggy One Lite auto-add** — delivery fee `> ₹1` ho to `subscriptionItems:[{plan_id, quantity:1}]`
+   (plan `eligibleSuperPlan.planId`, warna `'773'`). Lagne ke baad **asli** total compare hota
+   hai: sirf tab rakha jata hai jab `total` sach me kam ho, warna usi call me **revert**.
+   (`engine.oneLite`: `applied` / `not_profitable` / `not_needed` / `not_tried`.)
+3. **Poori coupon discovery** — MCP `fetch_food_coupons` + `get_food_cart` ka auto-suggested +
+   `/dapi/offers/payment` + `/dapi/offers/restaurant` + promo codes
+   SNACKIT/TRYNEW/STEALDEAL/SWIGGYIT/WELCOME50/FLAT150/MEALDEAL/DELULU4FOOD.
+   Har coupon **apne asli bill** ke saath push hota hai; sabse kam `total` wala jeetta hai
+   aur jeetne wala **last me dobara** push hota hai (taaki cart par wahi laga rahe).
+   Budget: `PRO_COUPON_BUDGET_MS` (default 9000), `PRO_COUPON_TRIALS` (default 6).
+4. **Free cash re-push** — claim ke baad bill par free cash 0 ho to ek baar aur push, sirf tab
+   lena jab free cash sach me bill me aaye.
+
+### Sach, jhooth nahi
+Bill ke saath `bill.engine` jaata hai: `offersClaimed`, `offersNote`, `oneLite`,
+`couponTrials[] {code, ok, total, discount, reason}`, `couponsSeen`, `freeCash`, `deliveryFee`,
+`notes[]`. Bill screen par engine line dikhti hai (jaise *"+₹1 One Lite se delivery FREE · ₹50
+free cash · 6 coupon ka asli bill check hua"*) — jo nahi laga, uska asli reason
+`couponTrials` me hota hai.
+
+### Coupon page (`coupons()`)
+Wahi 4 discovery sources, merge + dedupe (`swiggy` pehle, `promo` baad me), `applicable`/`reason`,
+`discovery` flag, max 24 — list **kabhi khaali nahi**. Address me coords na hon to bhi list
+dikhti hai (sirf lat/lng wale sources chhootte hain) — "coupon nahi hai" kabhi nahi bolna padta.
+
+### Cart sync
+`/pro/api/cart/sync` ab `quote.bill.subscriptionItems` ko `ws.cart.activeSubscriptionItems` me
+save karta hai — One Lite agle sync/place tak bacha rehta hai.
+
+### Tests
+`test_v103_offer_engine_parity.mjs` **6 checks**: ₹50 free cash claim + bill me; delivery FREE
+(One Lite +₹1, total sach me kam); `/offers/payment` ka coupon try + sabse kam bill jeetta;
+user ka chuna coupon hi chalta hai (auto band); One Lite sirf net saving par; `engine` ka
+sach. Sweep: `test:guards` **71/71 (127s)**, `test:pro` **41/41**, `npm test` **132/132**,
+bossbot **49/49**, aur mini-app suites v90…v103 sab green (v103 **6/6**, v102 **13/13**,
+v101 **10/10**, v100 **14/14**, v96 **12/12**, v97 **6/6**).

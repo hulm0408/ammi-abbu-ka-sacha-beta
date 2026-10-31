@@ -82,7 +82,8 @@ const TESTS = [
   "test_v99_miniapp_checkout_reasons_and_signup.mjs",
   "test_v100_miniapp_wallet_ofo_autobill.mjs",
   "test_v101_qr_recovery_address_utr.mjs",
-  "test_v102_idle_order_expiry.mjs"
+  "test_v102_idle_order_expiry.mjs",
+  "test_v103_offer_engine_parity.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];

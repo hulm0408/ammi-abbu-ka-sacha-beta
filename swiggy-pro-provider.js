@@ -8,6 +8,7 @@ import {
   extractDeepLinkFromReferrerOrUrl, fetchLiveGroupCart, resolveSwiggyLink, callSwiggyFoodMcpTool
 } from './swiggy-cart.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
+import { activateAllEventOffers } from './event-offers.js';
 import { getDb } from './store.js';
 import crypto from 'node:crypto';
 import { sameCartItems, sameDeliveryRecipient, exactPaise } from './swiggy-cart-integrity.js';
@@ -544,24 +545,49 @@ export const proProvider = {
       });
     };
     let discovery = false;
-    try {
-      const mcp = await callSwiggyFoodMcpTool(account, 'fetch_food_coupons', {
-        restaurantId: rid,
-        ...(addressId ? { addressId } : {})
-      }, 6000).catch(() => null);
-      const list = Array.isArray(mcp?.structured?.coupons) ? mcp.structured.coupons : [];
-      for (const cp of list) {
-        push(cp?.coupon_code || cp?.couponCode || cp?.code || '', cp?.title || cp?.header || cp?.coupon_code, cp?.description || cp?.subtitle || '', {
-          applicable: cp?.is_applicable !== false && cp?.applicable !== false,
-          reason: cp?.ineligible_reason || cp?.reason || '',
-          source: 'swiggy'
-        });
+    // Address ke coords na hon to bhi coupon list khaali nahi dikhegi —
+    // sirf lat/lng wale sources chhoot jayenge (MCP + promo chalenge).
+    let lat = '', lng = '';
+    try { ({ lat, lng } = coords(address || {})); } catch { lat = ''; lng = ''; }
+    // Boss (31-10-2026, round 14): coupon page wahi list dikhaye jo bill engine
+    // use karta hai — MCP coupons, auto-suggested, /offers/payment,
+    // /offers/restaurant. Pehle sirf MCP + 5 promo the.
+    const [mcp, mcpCart, offersPay, offersRest] = await Promise.all([
+      callSwiggyFoodMcpTool(account, 'fetch_food_coupons', { restaurantId: rid, ...(addressId ? { addressId } : {}) }, 6000).catch(() => null),
+      callSwiggyFoodMcpTool(account, 'get_food_cart', { addressId }, 4000).catch(() => null),
+      lat && lng
+        ? dapiFetch(account, `offers/payment?lat=${lat}&lng=${lng}&restaurantId=${rid}&restaurant_id=${rid}&sourcePage=cart&source_page=cart&page_type=PAYMENT_OFFERS_PAGE`, { lat, lng, timeoutMs: 4000 }).catch(() => null)
+        : Promise.resolve(null),
+      lat && lng
+        ? dapiFetch(account, `offers/restaurant?lat=${lat}&lng=${lng}&restaurantId=${rid}`, { lat, lng, timeoutMs: 4000 }).catch(() => null)
+        : Promise.resolve(null)
+    ]);
+    const list = Array.isArray(mcp?.structured?.coupons) ? mcp.structured.coupons : [];
+    for (const cp of list) {
+      push(cp?.coupon_code || cp?.couponCode || cp?.code || '', cp?.title || cp?.header || cp?.coupon_code, cp?.description || cp?.subtitle || '', {
+        applicable: cp?.is_applicable !== false && cp?.applicable !== false,
+        reason: cp?.ineligible_reason || cp?.reason || '',
+        source: 'swiggy'
+      });
+    }
+    discovery = Boolean(mcp?.ok) || list.length > 0;
+    const suggested = mcpCart?.structured?.offers?.coupon_applied || mcpCart?.structured?.coupon_code || mcpCart?.structured?.data?.coupon_code || '';
+    if (suggested) {
+      push(suggested, 'Swiggy ka best suggested coupon', 'Swiggy khud is bill ke liye ye suggest karta hai', { source: 'swiggy' });
+      discovery = true;
+    }
+    for (const [blob, label] of [[offersPay?.json, 'Payment page offer'], [offersRest?.json, 'Restaurant offer']]) {
+      if (!blob) continue;
+      let text = '';
+      try { text = JSON.stringify(blob); } catch { continue; }
+      for (const m of text.matchAll(/"coupon_?code"\s*:\s*"([A-Za-z0-9_]{3,25})"/g)) {
+        push(m[1], label, 'Swiggy ke live offer se', { source: 'swiggy' });
+        discovery = true;
       }
-      discovery = Boolean(mcp?.ok) || list.length > 0;
-    } catch { /* promo codes neeche hamesha aate hain */ }
+    }
     // Bot ka engine inhe har order par test karta hai — isliye list kabhi
     // khaali nahi dikhti aur user ko "coupon nahi hai" nahi bolna padta.
-    for (const code of ['SNACKIT', 'TRYNEW', 'STEALDEAL', 'SWIGGYIT', 'WELCOME50']) {
+    for (const code of ['SNACKIT', 'TRYNEW', 'STEALDEAL', 'SWIGGYIT', 'WELCOME50', 'FLAT150', 'MEALDEAL', 'DELULU4FOOD']) {
       push(code, code === 'SNACKIT' ? 'Snackit offer' : 'Swiggy promo code', 'Swiggy ke promo code — APPLY karke asli bill dekhein', { source: 'promo' });
     }
     const all = [...found.values()];
@@ -574,82 +600,232 @@ export const proProvider = {
       note: 'APPLY dabaiye — Swiggy par asli bill aayega. Discount tabhi dikhega jab Swiggy deta hai; jo code lagta nahi uski asli wajah dikh jayegi.'
     };
   },
+
   /**
-   * Bill = Swiggy ka hi bill. Boss (31-10-2026, round 11):
-   * "AUTO SAARE COUPON LAG KAR AISA SUMMARY NAHI AARHA" — isliye coupon khud
-   * lagta hai (sabse bada discount), aur bill ki har line wahin se aati hai.
+   * Bot wala ASLI offer engine (boss 31-10-2026, round 14):
+   *   "na delivery fee off ho raha, na ₹50 off wala coupon lag raha."
+   *
+   * Pehle Mini App ka bill sirf cart push + 3 coupon try karta tha. Bot ke
+   * engine me ye sab hota hai — ab bilkul wahi rasta, isi order me:
+   *   1. ₹50-off (event) offers claim — free cash bill me aata hai
+   *   2. Swiggy One Lite (+₹1) auto-add — delivery FREE (sirf jab total kam ho)
+   *   3. Poori coupon discovery: MCP coupons + auto-suggested + /offers/payment
+   *      + /offers/restaurant + promo codes
+   *   4. Har coupon ka ASLI bill compare — sabse kam total wala hi rehta hai
+   *
+   * Har step time-bounded hai (koi stall nahi) aur jo na ho sake uska sach
+   * `engine` field me jaata hai — jhootha "sab lag gaya" nahi.
    */
   async quoteCart(account, address, cart, coupon) {
     const { lat, lng } = coords(address);
     if (!address.name || !normalizeIndianMobileNumber(address.mobile)) throw badRequest('Confirm the receiver name and 10-digit mobile number first.');
     const requestedCoupon = String(coupon || '').trim().toUpperCase();
+    const budget = {
+      // Boss ko speed chahiye par offers bhi — dono: discovery 2.5s, trials 9s.
+      trialBudgetMs: Math.max(3_000, Math.min(Number(process.env.PRO_COUPON_BUDGET_MS) || 9_000, 20_000)),
+      maxTrials: Math.max(1, Math.min(Number(process.env.PRO_COUPON_TRIALS) || 6, 12))
+    };
     return withSwiggyAccountLock(checkoutLockKey(account), async () => {
       const saved = await saveAddressToAccount(account, address);
       if (!saved?.addressId || !saved?.addressDetails) throw unavailable(saved?.error || 'Swiggy did not confirm the delivery address.');
-      // A create-address response that only echoes our input is not readback.
       const savedList = await fetchAccountAddresses(account);
       const confirmedAddress = savedList.find(a => String(a.id || '') === String(saved.addressId));
       if (!confirmedAddress || !sameDeliveryRecipient(address, confirmedAddress)) {
         throw unavailable('Swiggy did not read back the same receiver, street and location. No bill or order was created.');
       }
-      const pushAndRead = async (couponCode) => {
-        const payload = {
-          restaurantId: cart.restaurantId, address_id: String(saved.addressId), couponCode: couponCode || '',
-          cartItems: buildSwiggyCartItemsPayload(cart.items), mealItems: [], subscriptionItems: [],
-          ...(cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: address }) : {})
-        };
-        const result = await swiggyCartUpdate(account, payload, { lat, lng, flushFirst: true });
-        // The update wrapper can echo the requested address ID. Fetch the cart
-        // independently before displaying a bill or treating an ID as bound.
-        const readback = successCode(result?.json?.statusCode) ? await swiggyCartGet(account, { lat, lng }) : null;
+      const addressId = String(saved.addressId);
+      const itemsPayload = buildSwiggyCartItemsPayload(cart.items);
+      const ofoFields = cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: address }) : {};
+      const engine = { offersClaimed: 0, offersNote: '', oneLite: 'not_tried', couponTrials: [], couponsSeen: 0, notes: [] };
+
+      const push = async ({ couponCode = '', subscriptionItems = [], timeoutMs = 9000 } = {}) => {
+        const out = await swiggyCartUpdate(account, {
+          restaurantId: cart.restaurantId,
+          address_id: addressId,
+          couponCode,
+          cartItems: itemsPayload,
+          mealItems: [],
+          subscriptionItems,
+          ...ofoFields
+        }, { lat, lng, flushFirst: true, timeoutMs });
+        if (!successCode(out?.json?.statusCode)) {
+          const msg = String(out?.json?.statusMessage || '').slice(0, 120) || `HTTP ${out?.status || '?'}`;
+          throw unavailable(`Swiggy ne cart update reject kiya (${msg}).`);
+        }
+        const readback = await swiggyCartGet(account, { lat, lng, timeoutMs: 8000 });
         const data = readback?.json?.data;
         const meta = data?.cartMeta || data;
         const parsed = data && parseDapiCartPayload(data);
-        if (!successCode(readback?.json?.statusCode) || !parsed || !meta || !Array.isArray(parsed.items)) throw unavailable('Swiggy did not confirm the cart. Refresh in Swiggy before trying again.');
+        if (!successCode(readback?.json?.statusCode) || !parsed || !meta || !Array.isArray(parsed.items)) {
+          throw unavailable('Swiggy did not confirm the cart. Refresh in Swiggy before trying again.');
+        }
         const boundAddress = String(meta.address_id || meta.delivery_address?.id || data.address_id || data.delivery_address?.id || '');
-        if (!sameCartItems(cart.items, parsed.items) || boundAddress !== String(saved.addressId)) {
+        if (!sameCartItems(cart.items, parsed.items) || boundAddress !== addressId) {
           throw unavailable('Swiggy returned different items or address. No bill is being shown; check the Swiggy cart.');
         }
         const total = Number(meta.order_total);
         if (exactPaise(total) === null || total <= 0) throw unavailable('Swiggy did not return a valid payable amount.');
-        return { parsed, meta, total, coupon: String(parsed?.couponCode || '').toUpperCase() };
+        return {
+          parsed, meta, total,
+          coupon: String(parsed?.couponCode || '').toUpperCase(),
+          originalTotal: Number(parsed?.itemTotal || meta.item_total || 0) + Number(parsed?.packingCharges || 0) + Number(parsed?.taxesAndCharges || 0)
+        };
       };
-      let best = { code: requestedCoupon, ...(await pushAndRead(requestedCoupon)) };
-      // Auto-coupon: sirf jab user ne koi code na chuna ho. Har candidate ka
-      // asli bill dekh kar sabse kam total wala rakhte hain — jhoothi saving nahi.
-      let autoApplied = false;
-      let triedCodes = [];
-      if (!requestedCoupon && cart?.autoCoupon !== false) {
-        let candidates = [];
-        try {
-          const list = await proProvider.coupons(account, confirmedAddress, cart.restaurantId);
-          candidates = (Array.isArray(list?.coupons) ? list.coupons : [])
-            .filter(c => c && c.applicable !== false && /^[A-Z0-9_-]{3,28}$/.test(String(c.code || '')))
-            .map(c => String(c.code).toUpperCase())
-            .filter((code, i, arr) => arr.indexOf(code) === i)
-            .slice(0, 3);
-        } catch { candidates = []; }
-        for (const code of candidates) {
-          triedCodes.push(code);
+
+      // ── Step 0: ₹50-off / free-cash offers claim (bot ka same call) ────────
+      // Ye claim hi bill me "Extra Discount (Free Cash)" laata hai. Pehle Mini
+      // App ise kabhi nahi karta tha — isliye ₹50 kabhi nahi lagta tha.
+      const claimPromise = Promise.race([
+        activateAllEventOffers(account).catch(err => ({ success: false, reason: String(err?.message || err).slice(0, 120) })),
+        new Promise(resolve => { const t = setTimeout(() => resolve(null), 6000); if (typeof t.unref === 'function') t.unref(); })
+      ]);
+
+      // ── Step 1: plain cart + One Lite (delivery free) ─────────────────────
+      let base = await push({ couponCode: requestedCoupon });
+      const deliveryFee = Number(base.parsed?.deliveryFee || 0);
+      let subscriptionItems = Array.isArray(cart.activeSubscriptionItems) ? cart.activeSubscriptionItems : [];
+      if (cart.autoOneLite !== false && deliveryFee > 1 && Number(base.parsed?.swiggyOneMembershipFee || 0) === 0) {
+        const planIds = [...new Set([
+          String(base.parsed?.eligibleSuperPlan?.planId || '').trim(),
+          '773'
+        ].filter(Boolean))];
+        let bestOne = null;
+        for (const planId of planIds) {
+          const sub = [{ plan_id: planId, quantity: 1 }];
           let attempt = null;
-          try { attempt = await pushAndRead(code); } catch { continue; }
-          if (Number(attempt.total) < Number(best.total) - 0.005) {
-            best = { code, ...attempt };
-            autoApplied = true;
+          try { attempt = await push({ couponCode: requestedCoupon, subscriptionItems: sub }); } catch { continue; }
+          const oneFee = Number(attempt.parsed?.swiggyOneMembershipFee || 0);
+          const deliveryNow = Number(attempt.parsed?.deliveryFee || 0);
+          // Sirf tab rakho jab total SACH me kam ho (fee delivery saving se kam).
+          if (oneFee > 0 && attempt.total < base.total - 0.005) {
+            bestOne = { attempt, sub, planId };
+            break;
+          }
+          if (deliveryNow > 0 && oneFee === 0) engine.notes.push(`plan ${planId} ne delivery free nahi ki`);
+        }
+        if (bestOne) {
+          base = bestOne.attempt;
+          subscriptionItems = bestOne.sub;
+          engine.oneLite = 'applied';
+        } else {
+          engine.oneLite = deliveryFee > 1 ? 'not_profitable' : 'not_needed';
+          // Revert: agar pichla attempt cart me One fee chhod gaya ho.
+          if (Number(base.parsed?.swiggyOneMembershipFee || 0) === 0 && subscriptionItems.length) {
+            try { base = await push({ couponCode: requestedCoupon }); } catch {}
           }
         }
-        // Aakhri push kisi doosre code ka ho sakta hai — cart ko best par lauta.
-        if (best.code !== requestedCoupon) {
-          const settled = await pushAndRead(best.code);
-          best = { code: best.code, ...settled };
-        }
-        autoApplied = autoApplied && best.coupon === best.code;
+      } else if (deliveryFee <= 1) {
+        engine.oneLite = 'not_needed';
       }
+
+      // ── Step 2: poori coupon discovery (bot ke 5 engine) ──────────────────
+      const found = new Map();
+      const add = (code, title = '', description = '', priority = 50, applicable = true) => {
+        const c = String(code || '').trim().toUpperCase();
+        if (!/^[A-Z0-9_-]{3,28}$/.test(c)) return;
+        if (['NOT', 'NONE', 'NULL', 'UNDEFINED', 'NOFOMO'].includes(c)) return;
+        const prev = found.get(c);
+        if (prev && prev.priority <= priority) return;
+        found.set(c, {
+          code: c,
+          title: String(title || c).slice(0, 90),
+          description: String(description || '').slice(0, 200),
+          priority, applicable: applicable !== false, source: 'swiggy'
+        });
+      };
+      if (requestedCoupon) add(requestedCoupon, requestedCoupon, 'Aapne chuna', 1);
+      if (base.coupon) add(base.coupon, base.coupon, 'Bill me laga hua', 2);
+      if (base.parsed?.suggestedCouponCode) add(base.parsed.suggestedCouponCode, base.parsed.suggestedCouponCode, 'Swiggy ka best suggested', 3);
+
+      const estCartVal = Math.round(Number(base.parsed?.itemTotal || 250));
+      const [mcpCoupons, mcpCart, offersPay, offersRest] = await Promise.all([
+        callSwiggyFoodMcpTool(account, 'fetch_food_coupons', { restaurantId: String(cart.restaurantId), addressId }, 2500).catch(() => null),
+        callSwiggyFoodMcpTool(account, 'get_food_cart', { addressId }, 2000).catch(() => null),
+        dapiFetch(account, `offers/payment?lat=${lat}&lng=${lng}&restaurantId=${cart.restaurantId}&cart_value=${estCartVal}&restaurant_id=${cart.restaurantId}&sourcePage=cart&source_page=cart&page_type=PAYMENT_OFFERS_PAGE`, { lat, lng, timeoutMs: 2500 }).catch(() => null),
+        dapiFetch(account, `offers/restaurant?lat=${lat}&lng=${lng}&restaurantId=${cart.restaurantId}`, { lat, lng, timeoutMs: 2200 }).catch(() => null)
+      ]);
+      const ineligible = new Set();
+      for (const cp of (Array.isArray(mcpCoupons?.structured?.coupons) ? mcpCoupons.structured.coupons : [])) {
+        const code = cp?.coupon_code || cp?.couponCode || cp?.code || '';
+        const applicable = cp?.is_applicable !== false && cp?.applicable !== false;
+        add(code, cp?.title || cp?.header || code, cp?.description || cp?.subtitle || '', applicable ? 5 : 25, applicable);
+        if (!applicable && code) ineligible.add(String(code).toUpperCase());
+      }
+      for (const blob of [mcpCoupons?.structured, mcpCart?.structured, offersPay?.json, offersRest?.json]) {
+        if (!blob) continue;
+        let text = '';
+        try { text = JSON.stringify(blob); } catch { continue; }
+        for (const m of text.matchAll(/"coupon_?code"\s*:\s*"([A-Za-z0-9_]{3,25})"/g)) add(m[1], m[1], 'Swiggy live offer', 10);
+      }
+      const mcpSuggested = mcpCart?.structured?.offers?.coupon_applied || mcpCart?.structured?.coupon_code || mcpCart?.structured?.data?.coupon_code || '';
+      if (mcpSuggested) add(mcpSuggested, mcpSuggested, 'Swiggy auto-suggested', 3);
+      for (const code of ['SNACKIT', 'TRYNEW', 'STEALDEAL', 'SWIGGYIT', 'WELCOME50', 'FLAT150', 'MEALDEAL', 'DELULU4FOOD']) {
+        add(code, code, 'Swiggy promo code', 35);
+      }
+      engine.couponsSeen = found.size;
+
+      // ── Step 3: har coupon ka asli bill — sabse kam total jeetta hai ──────
+      let best = base;
+      // User ne khud koi code chuna ho to wahi chalta hai — auto use nahi
+      // badalta (user ka faisla upar hai). Auto mode me hi sabse kam bill dhoondte hain.
+      const candidates = (requestedCoupon ? [] : [...found.values()])
+        .filter(c => c.applicable !== false || c.code === base.coupon)
+        .filter(c => !ineligible.has(c.code) || c.code === base.coupon)
+        .filter(c => c.code !== base.coupon)
+        .sort((a, b) => a.priority - b.priority)
+        .slice(0, budget.maxTrials);
+      const startedAt = Date.now();
+      for (const cand of candidates) {
+        if (Date.now() - startedAt > budget.trialBudgetMs) { engine.notes.push('coupon trial budget khatam'); break; }
+        let attempt = null;
+        try {
+          attempt = await push({ couponCode: cand.code, subscriptionItems, timeoutMs: 7000 });
+        } catch (err) {
+          engine.couponTrials.push({ code: cand.code, ok: false, reason: String(err?.message || err).slice(0, 100) });
+          continue;
+        }
+        const applied = attempt.coupon === cand.code && Number(attempt.parsed?.discountAmount || 0) > 0;
+        engine.couponTrials.push({
+          code: cand.code, ok: applied,
+          discount: applied ? Number(attempt.parsed.discountAmount) : 0,
+          total: attempt.total
+        });
+        if (attempt.total < best.total - 0.005) best = attempt;
+      }
+
+      // ── Step 4: jeetne wala coupon cart par final rakho ──────────────────
+      if (best.coupon !== base.coupon || best !== base) {
+        try {
+          const settled = await push({ couponCode: best.coupon, subscriptionItems });
+          if (settled.total <= best.total + 0.005) best = settled;
+        } catch { engine.notes.push('winning coupon dobara lagane par Swiggy ne alag total diya'); }
+      }
+
+      // ── Step 5: claim ka sach + free cash bill me aaya ya nahi ───────────
+      const claimAnswer = await claimPromise.catch(() => null);
+      if (claimAnswer) {
+        engine.offersClaimed = Number(claimAnswer.claimed || 0);
+        engine.offersNote = claimAnswer.success === false
+          ? String(claimAnswer.reason || 'offer claim nahi hua').slice(0, 160)
+          : `${engine.offersClaimed} offer claim hua, ${Number(claimAnswer.already || 0)} pehle se active`;
+        // Free cash late credit hota hai — ek hi baar cart dobara push karke
+        // poochhte hain (bot bhi yahi karta hai).
+        if (Number(best.parsed?.freeCashApplied || 0) === 0 && (engine.offersClaimed > 0 || Number(claimAnswer.already || 0) > 0)) {
+          try {
+            const again = await push({ couponCode: best.coupon, subscriptionItems });
+            if (Number(again.parsed?.freeCashApplied || 0) > 0 && again.total <= best.total + 0.005) best = again;
+            else if (Number(again.parsed?.freeCashApplied || 0) > 0) best = again.total < best.total ? again : best;
+          } catch {}
+        }
+      }
+
       const { parsed, meta, total } = best;
       const returnedNumber = (...values) => {
         const raw = values.find(v => v !== undefined && v !== null && v !== '');
         return raw === undefined || !Number.isFinite(Number(raw)) ? null : Number(raw);
       };
+      engine.freeCash = Number(parsed?.freeCashApplied || 0);
+      engine.deliveryFee = Number(parsed?.deliveryFee || 0);
       return {
         address: confirmedAddress,
         bill: {
@@ -666,14 +842,16 @@ export const proProvider = {
           taxes: returnedNumber(parsed?.taxesAndCharges, meta.taxesAndCharges, meta.total_tax),
           discount: parsed?.couponCode ? returnedNumber(parsed.discountAmount, meta.coupon_discount_total, meta.coupon_discount_effective) : null,
           coupon: String(parsed?.couponCode || ''),
-          autoCoupon: autoApplied,
-          couponTried: triedCodes,
+          autoCoupon: Boolean(best.coupon) && !requestedCoupon,
+          couponTried: engine.couponTrials.map(t => t.code).slice(0, 12),
           freeCash: parsed?.freeCashApplied ?? null,
           freeCashWallet: parsed?.walletSplitPayAmount ?? null,
           tradeDiscount: parsed?.merchantTradeDiscount ?? null,
           oneMembershipFee: parsed?.swiggyOneMembershipFee ?? null,
           oneApplied: parsed?.swiggyOneApplied === true,
           totalSavings: parsed?.totalSavings ?? null,
+          subscriptionItems,
+          engine,
           total
         },
         // Sending OFO fields is not proof that Swiggy accepted OFO placement.
