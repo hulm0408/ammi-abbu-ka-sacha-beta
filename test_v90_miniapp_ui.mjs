@@ -50,13 +50,18 @@ test('preview and missing vault do not show a fake empty account list; retry con
     assert.equal(preview.document.querySelector('form[data-form="send-otp"]'), null);
   } finally { preview.close(); }
 
+  // 31-10-2026: "Server setup needed" dead-end hata. Storage jab tak taiyar ho
+  // raha ho, screen retry maangti hai (jhoothi khaali account list nahi) aur
+  // retry ke baad app khud chalu ho jati hai.
   let ready = false;
   const app = harness({ responder: call => call.url.endsWith('/bootstrap')
     ? ready ? response(normalState()) : response({ ok: false, code: 'PRO_VAULT_NOT_CONFIGURED', error: 'Mini App vault is not configured.' }, 503)
     : response({ ok: false, error: 'unexpected' }, 500) });
   try {
-    await waitFor(() => app.document.querySelector('[data-action="retry-auth"]'), 'vault setup screen');
-    assert.match(app.document.body.textContent, /not a problem with your phone number/i);
+    await waitFor(() => app.document.querySelector('[data-action="retry-auth"]'), 'storage retry screen');
+    assert.match(app.document.body.textContent, /Ek baar retry karein/i);
+    assert.match(app.document.body.textContent, /Try again/i);
+    assert.doesNotMatch(app.document.body.textContent, /Server setup needed/i);
     assert.equal(app.document.querySelector('form[data-form="send-otp"]'), null);
     assert.equal(app.calls.filter(c => c.url.includes('send-otp')).length, 0);
     ready = true;
@@ -64,6 +69,15 @@ test('preview and missing vault do not show a fake empty account list; retry con
     await waitFor(() => app.document.querySelector('form[data-form="send-otp"]'), 'account form after reconnect');
     assert.equal(app.calls.filter(c => c.url.endsWith('/bootstrap')).length, 2);
   } finally { app.close(); }
+
+  // Purana data is key se na khule to UI JHOTH nahi bolti ki sab theek hai —
+  // saaf batati hai ki data jaisa hai waisa hai aur owner ko kya karna hai.
+  const broken = harness({ responder: () => response({ ok: false, code: 'PRO_VAULT_DECRYPT_FAILED', error: 'Unable to decrypt the Mini App workspace.' }, 503) });
+  try {
+    await waitFor(() => broken.document.querySelector('[data-action="retry-auth"]'), 'decrypt failure screen');
+    assert.match(broken.document.body.textContent, /kuch delete nahi hua/i);
+    assert.match(broken.document.body.textContent, /PRO_VAULT_KEY/);
+  } finally { broken.close(); }
 });
 
 test('OTP request and verification stay inside the app and only reflect provider responses', async () => {

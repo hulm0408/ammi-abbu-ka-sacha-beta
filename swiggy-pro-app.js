@@ -255,11 +255,13 @@
     let title = 'Unable to connect';
     let message = state.authError || 'Please retry, or reopen the app from your Telegram bot.';
     if (state.authErrorCode === 'PRO_VAULT_NOT_CONFIGURED') {
-      title = 'Server setup needed';
-      message = 'This is not a problem with your phone number. The bot owner needs to configure secure account storage on the server.';
+      // 31-10-2026: ye haalat ab normally nahi aati — server khud stable key
+      // bana leta hai. Phir bhi aaye to dead-end nahi, seedha next step.
+      title = 'Ek baar retry karein';
+      message = 'Server ne storage key abhi taiyar ki hai. Neeche "Try again" dabaiye — data safe hai.';
     } else if (state.authErrorCode === 'PRO_VAULT_DECRYPT_FAILED') {
-      title = 'Saved account space unavailable';
-      message = 'The server could not open the saved workspace. Do not create or delete accounts; ask the bot owner to restore the original vault key.';
+      title = 'Purana data is key se nahi khul raha';
+      message = 'Aapka saved data waisa hi rakha hai (kuch delete nahi hua). Bot owner ko batayein: server par wahi purana PRO_VAULT_KEY wapas lagana hoga.';
     }
     return `${head('CONNECTION', title, 'Your account data has not been changed.')}<div class="card connection-card" role="alert"><strong>${esc(title)}</strong><p>${esc(message)}</p><button class="button primary block" type="button" data-action="retry-auth">Try again ${icon('refresh')}</button></div>`;
   }

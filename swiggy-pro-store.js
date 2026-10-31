@@ -7,15 +7,130 @@ import { getDataDir } from './store.js';
 // Each Telegram user's workspace is authenticated and encrypted separately.
 // Back this directory up on an encrypted persistent volume: it is deliberately
 // NOT included in the bot's existing shared-account cloud vault.
-function secretKey() {
-  const secret = String(process.env.PRO_VAULT_KEY || process.env.VAULT_ENCRYPTION_KEY || '').trim();
-  if (Buffer.byteLength(secret) < 16) {
-    const err = new Error('Mini App vault is not configured. Set PRO_VAULT_KEY (at least 16 characters) on the server.');
-    err.statusCode = 503;
-    err.code = 'PRO_VAULT_NOT_CONFIGURED';
-    throw err;
+// ---------------------------------------------------------------------------
+// VAULT KEY — boss (31-10-2026): "Server setup needed … Try again ISKO THEEK KAR"
+//
+// Pehle jab tak owner PRO_VAULT_KEY na daale, app dead-end tha: har user ko
+// "Server setup needed" dikhta tha. Ab key khud manage hoti hai, par safe
+// tarteeb me — jo data pehle se encrypted hai wo kabhi silently na toote:
+//
+//   1. PRO_VAULT_KEY / VAULT_ENCRYPTION_KEY  (owner ka explicit key — best)
+//   2. DATA_DIR/pro-vault.key               (pehle se bani hui key file)
+//   3. BOT_TOKEN se derive                  (deploy ke baad bhi same rehti hai,
+//                                            ephemeral disk par bhi stable)
+//   4. random generate + file me save       (sirf jab BOT_TOKEN bhi na ho)
+//
+// Sach ka rule: agar kisi user ka purana workspace is key se khulta nahi, to
+// read path PRO_VAULT_DECRYPT_FAILED deta hai aur likhne ki koshish nahi hoti —
+// purana data overwrite nahi hota (sirf "kuch nahi kiya" ka jhooth nahi).
+// ---------------------------------------------------------------------------
+const KEY_FILE_NAME = 'pro-vault.key';
+// scrypt mehnga hai (~50ms) — sirf derived key cache karte hain, secret se
+// keyed. Isse env badalne par nayi key turant lagti hai (stale cache nahi).
+const derivedKeyCache = new Map();
+let lastSource = '';
+
+function keyFile() {
+  return path.join(getDataDir(), KEY_FILE_NAME);
+}
+
+function workspaceDir() {
+  return path.join(getDataDir(), 'pro-workspaces');
+}
+
+function keyFromSecret(secret) {
+  const hit = derivedKeyCache.get(secret);
+  if (hit) return hit;
+  const key = crypto.scryptSync(secret, 'sacha-beta-miniapp-v1', 32);
+  if (derivedKeyCache.size > 8) derivedKeyCache.clear();
+  derivedKeyCache.set(secret, key);
+  return key;
+}
+
+function readKeyFile() {
+  try {
+    const raw = fs.readFileSync(keyFile(), 'utf8').trim();
+    return raw.length >= 16 ? raw : '';
+  } catch {
+    return '';
   }
-  return crypto.scryptSync(secret, 'sacha-beta-miniapp-v1', 32);
+}
+
+function writeKeyFile(secret) {
+  try {
+    const dir = getDataDir();
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const tmp = `${keyFile()}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, secret, { mode: 0o600 });
+    fs.renameSync(tmp, keyFile());
+    return true;
+  } catch (err) {
+    console.warn('[MiniAppVault] key file save nahi hui (read-only disk?):', err?.message || err);
+    return false;
+  }
+}
+
+/**
+ * Server par available secrets se deterministic key — redeploy ke baad bhi wahi,
+ * isliye ephemeral disk par bhi workspaces khulte rehte hain.
+ */
+function derivedSecret() {
+  // Sirf server ke asli secrets — DATA_DIR jaisa path nahi (wo machine badalne
+  // par badal sakta hai, aur key badalna = purana data band).
+  const parts = [
+    String(process.env.BOT_TOKEN || '').trim(),
+    String(process.env.PAY_WEBHOOK_SECRET || '').trim()
+  ].filter(Boolean);
+  if (!parts.length) return '';
+  return crypto.createHash('sha256').update(`pro-vault-v1:${parts.join('|')}`).digest('hex');
+}
+
+/** Tests / rotate ke liye — key cache clear. */
+export function resetProVaultKeyCache() {
+  derivedKeyCache.clear();
+  lastSource = '';
+}
+
+/** Ab kaunsi key source chal rahi hai (ENV / KEY_FILE / DERIVED / GENERATED). */
+export function getProVaultSource() {
+  try {
+    secretKey();
+    return lastSource;
+  } catch (err) {
+    return err?.code || 'UNKNOWN';
+  }
+}
+
+function secretKey() {
+  const explicit = String(process.env.PRO_VAULT_KEY || process.env.VAULT_ENCRYPTION_KEY || '').trim();
+  if (Buffer.byteLength(explicit) >= 16) {
+    lastSource = 'ENV';
+    return keyFromSecret(explicit);
+  }
+
+  const fromFile = readKeyFile();
+  if (fromFile) {
+    lastSource = 'KEY_FILE';
+    return keyFromSecret(fromFile);
+  }
+
+  // Server ke apne secrets se deterministic key — redeploy ke baad bhi wahi,
+  // isliye ephemeral disk par bhi purana data khulta rehta hai.
+  const derived = derivedSecret();
+  if (derived) {
+    lastSource = 'DERIVED';
+    // File nahi likhte: derived key har boot par khud banti hai (BOT_TOKEN se),
+    // isliye disk read-only ho ya na ho, key wahi rehti hai.
+    console.log('[MiniAppVault] PRO_VAULT_KEY set nahi hai — bot ke server secrets se stable key derive ki gayi (source=DERIVED).');
+    return keyFromSecret(derived);
+  }
+
+  // Kuch bhi available nahi — nayi random key banao aur disk par rakh do.
+  const generated = crypto.randomBytes(32).toString('hex');
+  lastSource = 'GENERATED';
+  writeKeyFile(generated);
+  console.warn('[MiniAppVault] Koi server secret nahi mila — nayi random vault key banayi (source=GENERATED).');
+  return keyFromSecret(generated);
 }
 
 function workspacePath(userId) {

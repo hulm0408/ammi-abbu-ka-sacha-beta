@@ -12,6 +12,7 @@ import http from 'http';
 import net from 'node:net';
 import { Telegraf, Markup } from 'telegraf';
 import { handleSwiggyProHttp } from './swiggy-pro-api.js';
+import { getProVaultSource } from './swiggy-pro-store.js';
 import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { logThrottled, startMemoryGuard, perfSnapshot } from './perf-guard.js';
 import { EVENT_OFFER_LINKS, activateAllEventOffers } from './event-offers.js';
@@ -16310,6 +16311,31 @@ async function startBotWithRetry() {
         console.log('⚙ Telegram Swiggy Real OTP Flow Bot is running live!');
         startWafKeepWarmLoop();
         startAutoEventOffersPrebookLoop();
+        // 🔐 Mini App vault: key khud manage hoti hai (boss 31-10-2026 —
+        // "Server setup needed" ka dead-end hata). Owner ko sach batate hain.
+        try {
+          const vaultSource = getProVaultSource();
+          if (vaultSource && vaultSource !== 'ENV') {
+            console.log(`[MiniAppVault] source=${vaultSource} — Mini App apni stable key khud use kar raha hai.`);
+            setTimeout(async () => {
+              for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
+                await bot.telegram.sendMessage(
+                  bossId,
+                  `🔐 <b>MINI APP STORAGE</b>\n` +
+                  `Source: <code>${escapeHtml(vaultSource)}</code>\n\n` +
+                  `<i>Mini App chal raha hai — koi setup zaroori nahi.\n` +
+                  (vaultSource === 'DERIVED'
+                    ? 'Key bot ke server secrets se banti hai, isliye redeploy ke baad bhi wahi rehti hai.'
+                    : 'Key file disk par save hai.') +
+                  `\nPura control chahiye to Render me <code>PRO_VAULT_KEY</code> (16+ chars) set kar do — <b>badalna mat</b>, warna purana mini-app data nahi khulega.</i>`,
+                  { parse_mode: 'HTML' }
+                ).catch(() => {});
+              }
+            }, 12_000).unref?.();
+          }
+        } catch (vaultErr) {
+          console.warn('[MiniAppVault] setup issue:', vaultErr?.message || vaultErr);
+        }
         // 🩺 Maintenance loop: bot khud ko sambhalta rahe — atke locks,
         // purani reservations aur phansi scans har 60s me saaf.
         startMaintenanceLoop({ cart, tracking, db: getDb, saveDb }, {
