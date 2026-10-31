@@ -46,13 +46,19 @@ const demoState = {
   },
   wallet: {
     balancePaise: 500, balance: '5', feePaise: 1500, fee: '15', ready: false, shortfall: '10',
-    upiId: 'mius@ybl', presets: [1500, 5000, 10000, 20000], history: []
+    upiId: 'mius@ybl', presets: [{ paise: 1500, rupees: '15' }, { paise: 5000, rupees: '50' }, { paise: 10000, rupees: '100' }], history: []
   },
   coupons: [
     { code: 'FLAT150', title: '₹150 OFF', description: 'Save ₹150 on this order!' },
     { code: 'TRYNEW', title: '70% OFF', description: 'Save ₹140 on this order!' },
     { code: 'DELULU4FOOD', title: '70% OFF', description: 'Save ₹140 on this order!' },
     { code: 'SAMSUNGPAY', title: '₹50 OFF', description: 'Save ₹50 on this order using Samsung Pay UPI!' }
+  ],
+  orders: [
+    { id: '252355785108792', status: 'Delivered', restaurant: 'Relax Corner Pure Veg', amount: 37,
+      placedAt: '31/10/26, 12:19 am', items: [{ name: 'Kaju Cream Milkshake', qty: 1 }] },
+    { id: '252348112903311', status: 'On the way', restaurant: 'Arabecue Fried Chicken', amount: 402,
+      placedAt: '30/10/26, 9:04 pm', items: [{ name: 'Arabian Chicken Longer Burger', qty: 2 }] }
   ],
   statement: { count: 1, totalPaise: 1500, bossPayeeCount: 1, pendingClaims: 0, recent: [] },
   durability: { cloud: true, wallets: 3, utrs: 2, line: 'Cloud backup ON — paisa aur UTR yaad rahenge.' },
@@ -77,7 +83,7 @@ const previewBoot = `<script>
     const json = (body, status = 200) => ({ ok: status < 400, status, json: async () => body });
     if (target.includes('/bootstrap')) return json(STATE);
     if (target.includes('/coupons')) return json({ ok: true, coupons: STATE.coupons, note: '' });
-    if (target.includes('/orders')) return json({ ok: true, orders: [] });
+    if (target.includes('/orders')) return json({ ok: true, orders: STATE.orders || [] });
     return json({ ok: true, ...STATE });
   };
 })();

@@ -526,3 +526,23 @@ Chhota likha, hataya nahi.
 
 **Guards:** `test_v118_one_page_no_lecture.mjs` 5 checks; sweep **86/86**, `npm test`
 **132/132**, `test:pro` **41/41**.
+
+## S. Screenshot QA — jo code padh kar nahi dikhta (Round 30)
+
+Asli Chromium (390×844 @2x) me 10 screens capture kiye (`npm run shots:miniapp`) aur render
+dekha. Chaar bug mile jo sirf render me dikhte hain:
+
+| Bug | Screen par kya dikh raha tha | Fix |
+|---|---|---|
+| Emoji tofu | savings banner me khaali box | apna SVG `spark` icon |
+| Khaali "₹" buttons | wallet presets ka amount gayab | number **aur** object dono shape |
+| Generic address | `DELIVERING TO` ke neeche "Delivery address" | asli naam (`Skk`) |
+| Sheet side me | coupon sheet aadhi screen ke bahar, nav block | `translateX(-50%)` hataya |
+| Blur hang | orders/tools screenshot timeout | backdrop blur hataya |
+
+Naya: coupon **bottom sheet** (dimmed backdrop, grip, close), orders ka `This Account /
+Last 1 Hour` filter (count sirf jab time parse ho), order detail ka bill section (sirf
+jo Swiggy deta hai + `Total paid`).
+
+**Guards:** `test_v119_visual_qa_fixes.mjs` 8 checks; sweep **87/87**, `npm test` **132/132**,
+`test:pro` **41/41**. Inventory: `docs/REFERENCE_INVENTORY.md`.
