@@ -119,3 +119,4 @@ extracted_mp4_frames/
 !test_v103_offer_engine_parity.mjs
 !test_v104_qr_intent_truth_and_style.mjs
 !test_v105_utr_and_qr_truth.mjs
+!test_v106_possibility_matrix.mjs
