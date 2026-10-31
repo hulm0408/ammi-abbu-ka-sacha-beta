@@ -505,3 +505,24 @@ nahi kar sakta."* — Isliye yahan saaf-saaf likha hai: kya kar diya, aur kya na
 
 **Guards:** `test_v117_reference_visual_system.mjs` 9 checks; sweep **85/85**, `npm test`
 **132/132**, `test:pro` **41/41**.
+
+## R. Ek page, saari information — bolne wala app nahi (Round 29)
+
+**Boss:** *"uska bot ek page me saari information de raha hai, tera wala batate batate dam
+tod de raha hai."*
+
+| Pehle | Ab |
+|---|---|
+| Cart page: 1,939 visible chars | **1,305** chars |
+| Bill ka poora plain-text copy dobara screen par | `hidden`, `Poora hisaab` par khulta hai |
+| Coupons ke liye alag page | 3 coupon + **APPLY** usi page par, `Saare coupons (n)` ek tap door |
+| Har card ke neeche samjhane wala paragraph | hati hui — sirf wahi line jo kaam ki hai |
+| 2-minute rule page ke beech paragraph | pay bar me chhoti chip (text wahi) |
+| ETA strip me duplicate address | hata diya |
+
+**Nahi hataya (kyunki ye jhooth se bachate hain):** UTR ka "jitna sach me aaya utna hi
+judega", fee ka sach, paisa kis UPI par jata hai, delivery OTP, operator-ID restriction.
+Chhota likha, hataya nahi.
+
+**Guards:** `test_v118_one_page_no_lecture.mjs` 5 checks; sweep **86/86**, `npm test`
+**132/132**, `test:pro` **41/41**.
