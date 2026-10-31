@@ -95,4 +95,12 @@ extracted_mp4_frames/
 !test_v82_ofo_placement.mjs
 !test_v83_ofo_proof_and_early_mode.mjs
 !test_v84_maintenance_and_zero_order_scan.mjs
-!test_v85_mini_app_ids_honest.mjs
+!test_v85_order_for_someone_else_e2e.mjs
+!test_v86_ofo_integrated_flow.mjs
+
+!test_v87_miniapp_security_and_flow.mjs
+
+!test_v88_checkout_safety.mjs
+!test_v89_provider_faults.mjs
+!test_v90_miniapp_ui.mjs
+!test_v91_mini_app_ids_honest.mjs

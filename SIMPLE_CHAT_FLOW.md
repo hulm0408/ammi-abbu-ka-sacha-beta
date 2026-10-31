@@ -2,7 +2,7 @@
 
 **Goal:** the customer sends **only two Swiggy links**, taps **one Confirm button**, and
 receives the **official Swiggy tracking link** — all inside the Telegram chat.
-No mini-app, no web app, no forms, no typing.
+This chat flow does not require the optional Mini App, forms, or typing. The separately configured Mini App and its limitations are described in [MINI_APP_SETUP.md](./MINI_APP_SETUP.md).
 
 ```
 Customer chat                                  Bot

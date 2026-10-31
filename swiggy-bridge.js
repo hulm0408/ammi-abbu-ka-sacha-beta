@@ -1745,7 +1745,7 @@ function closeBridgeSessionCleanly(session) {
   } catch {}
 }
 
-export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', targetAccName = null) {
+export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', targetAccName = null, options = {}) {
   const cleanPhone = normalizeIndianMobileNumber(phone) || '';
 
   if (cleanPhone.length !== 10) {
@@ -1779,6 +1779,12 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
     }
 
     const session = createSwiggyHttpAuthSession(cleanPhone, targetAcc || `acc_${cleanPhone}`, targetAccName || null);
+    // The Mini App owns a separate per-user vault. Never write its sessions to
+    // the shared bot vault, auto-create a Swiggy account, or auto-claim offers.
+    // Existing chat callers retain their original defaults.
+    session.persistAccount = options.persistAccount !== false;
+    session.allowSignup = options.allowSignup !== false;
+    session.claimOffers = options.claimOffers !== false;
 
     try {
       // Step 1: Dispatch primary SMS OTP with live `_csrf` + realistic mobile device cookies/headers (~350-600ms total!)
@@ -1823,6 +1829,10 @@ export async function requestSwiggyOtpViaBridge(userId, phone, targetAcc = '', t
       }
 
       if (isUnregistered) {
+        if (session.allowSignup === false) {
+          closeBridgeSessionCleanly(session);
+          return { success: false, code: 'SWIGGY_ACCOUNT_NOT_REGISTERED', message: 'This number is not registered on Swiggy. Create your account on Swiggy first.' };
+        }
         const signupName = sanitizeSwiggyName(targetAccName);
         let signupEmail = generateUniqueSwiggyEmail(cleanPhone, signupName);
         console.log(`[SwiggyBridge] Number ${cleanPhone} is new/unregistered on Swiggy. Dispatching signup flow as "${signupName}" (${signupEmail})...`);
@@ -2507,9 +2517,9 @@ async function finalizeAuthenticatedSwiggyAccount(userId, session, authResult, {
   const accKey = targetAcc || `acc_${phone}`;
 
   // Fast sub-second Today+Tomorrow offer pre-lock (bounded at 2.4s max so OTP verification NEVER stalls!)
-  let offersResult = { success: false, pendingBackgroundLock: true };
+  let offersResult = { success: false, pendingBackgroundLock: session.claimOffers !== false };
   try {
-    offersResult = await Promise.race([
+    if (session.claimOffers !== false) offersResult = await Promise.race([
       claimSwiggyBreakfastAndLateNightOffers({
         id: accKey,
         phone,
@@ -2545,7 +2555,9 @@ async function finalizeAuthenticatedSwiggyAccount(userId, session, authResult, {
     savedAt: new Date().toISOString()
   };
 
-  const persisted = updateAccount(accKey, savedData);
+  // Private Mini App logins return their session to the caller without ever
+  // touching config.accounts, sessionVault, accounts.json or the cloud vault.
+  const persisted = session.persistAccount === false ? null : updateAccount(accKey, savedData);
   const finalSavedKey = persisted?.id || accKey;
 
   closeBridgeSessionCleanly(session);
@@ -2662,6 +2674,11 @@ export async function verifySwiggyOtpViaBridge(userId, otp) {
     }
 
     if (needsNewSignupCompletion) {
+      if (session.allowSignup === false) {
+        closeBridgeSessionCleanly(session);
+        delete activeSessions[userId];
+        return { success: false, code: 'SWIGGY_ACCOUNT_NOT_REGISTERED', message: 'Swiggy did not verify an existing account. Create or recover the account on Swiggy first.' };
+      }
       const signupName = session.signupName || sanitizeSwiggyName(session.targetAccName);
       let signupEmail = session.signupEmail || generateUniqueSwiggyEmail(phone, signupName);
       session.signupName = signupName;

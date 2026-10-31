@@ -9,7 +9,10 @@ import {
   isTestRunner
 } from './channel-gate.js';
 import http from 'http';
+import net from 'node:net';
 import { Telegraf, Markup } from 'telegraf';
+import { handleSwiggyProHttp } from './swiggy-pro-api.js';
+import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { logThrottled, startMemoryGuard, perfSnapshot } from './perf-guard.js';
 import { EVENT_OFFER_LINKS, activateAllEventOffers } from './event-offers.js';
 
@@ -189,7 +192,6 @@ import { scanFailuresLine } from './scan-diagnostics.js';
 import * as wafPool from './waf-pool.js';
 import * as cart from './swiggy-cart.js';
 import * as tracking from './order-tracking.js';
-import { sendParentSmsNotification, sendDirectOrderSms, sendPaymentLinkSms } from './sms-notify.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, autoActivateEventOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
   getOrderCurrentTopic,
@@ -256,8 +258,6 @@ import {
   getOfoResolutionFailureReason,
   clearOfoResolutionFailures
 } from './swiggy-cart.js';
-import * as miniApp from './mini-app.js';
-import { renderMiniAppHtml } from './mini-app-page.js';
 import {
   runMaintenance,
   getMaintenanceSnapshot,
@@ -289,7 +289,8 @@ import {
   truncateDisplayField,
   lookupOrder,
   orderNotFoundDiag,
-  stopOrderPaymentPoller
+  stopOrderPaymentPoller,
+  isQrGenerationInFlight
 } from './forwarded-order-flow.js';
 import {
   buildBossPanelHome,
@@ -1359,39 +1360,16 @@ function getSimpleFocusOrder(userId) {
   return withTracking || null;
 }
 
-// 🛍 MINI APP button — boss (30-10-2026): "wo usko ek button dega ki OPEN MINI
-// APP AND COMPLETE YOUR ORDER, direct cart wale page par le jaye".
-// Link sirf us user ka hai (signed token); base URL Render se aata hai.
-function miniAppUrlFor(userId) {
-  const base = miniAppPublicBase();
-  if (!base) return '';
-  try {
-    return `${base}/app?t=${encodeURIComponent(miniApp.issueMiniAppToken(userId))}`;
-  } catch {
-    return '';
-  }
-}
-
-/** Screen me mini app button jodo — agar pehle se hai to dobara nahi. */
-function attachMiniAppButton(userId, screen) {
-  const url = miniAppUrlFor(userId);
-  if (!url || !screen?.keyboard?.reply_markup?.inline_keyboard) return screen;
-  const kb = screen.keyboard.reply_markup.inline_keyboard;
-  if (kb.some((row) => (row || []).some((b) => b && String(b.url || '').includes('/app?t=')))) return screen;
-  kb.push([{ text: '🛍 Open Mini App', url }]);
-  return screen;
-}
-
 // User Screen Generator - Short, direct single-card UI with colorful orange buttons (no slots)
 function getUserScreen(userId, user) {
   const simpleMode = simpleChatForUser(userId);
   const activeOrder = simpleMode ? (getActiveUserOrder(userId) || getSimpleFocusOrder(userId)) : getActiveUserOrder(userId);
   if (activeOrder) {
-    return simpleMode ? attachMiniAppButton(userId, buildSimpleOrderCard(activeOrder)) : formatUserOrderCard(activeOrder);
+    return simpleMode ? buildSimpleOrderCard(activeOrder) : formatUserOrderCard(activeOrder);
   }
 
   const draft = getDraft(userId);
-  if (simpleMode) return attachMiniAppButton(userId, buildSimpleHomeScreen(draft));
+  if (simpleMode) return buildSimpleHomeScreen(draft);
   const hasCart = Boolean(draft.cart);
   const hasAddr = Boolean(draft.address);
   const bothReady = hasCart && hasAddr;
@@ -1406,6 +1384,7 @@ function getUserScreen(userId, user) {
   const inlineButtons = [
     ...buildTopicNavKeyboardRows(1, 'draft'),
     [cartBtn, addressBtn],
+    [{ text: '👤 Order for Someone Else', callback_data: 'action_order_for_others', style: 'primary' }],
     [{ text: '🚀 Send to Beta', callback_data: 'action_send_to_boss', style: bothReady ? 'success' : 'primary' }],
     [{ text: '🆘 Admin se baat karein', callback_data: 'support_contact_admin', style: 'primary' }],
     [
@@ -1751,12 +1730,7 @@ async function sendPaymentQrToUser(order) {
       order.qrSent = true;
       order.qrDelivered = true;
       saveDb(getDb());
-      // Direct SMS to registered mobile with payment link (rare bot feature)
-      {
-        // Boss (30-10-2026): SMS me bhi sirf Swiggy ka payment link — boss ki UPI nahi.
-        const smsTarget = order.swiggyPaymentUrl || String(order.pendingSwiggyUpiUri || order.realUpiIntentUri || '');
-        if (smsTarget) sendPaymentLinkSms(order, smsTarget).catch(() => {});
-      }
+      // Recipient SMS is left to Swiggy; the bot does not send one.
       return;
     } catch (e) {
       console.error(`Failed to send custom QR photo: ${e.message}`);
@@ -1787,7 +1761,6 @@ async function sendPaymentQrToUser(order) {
       );
       order.qrSent = true;
       saveDb(getDb());
-      sendPaymentLinkSms(order, order.swiggyPaymentUrl).catch(()=>{});
       return;
     } catch (e) {
       console.error(`Failed to send payment URL: ${e.message}`);
@@ -2546,6 +2519,38 @@ bot.start(async (ctx) => {
   }
 });
 
+// Optional Mini App: the chat flow remains unchanged. Set an explicit HTTPS
+// origin rather than trusting request Host headers or a guessed deployment URL.
+function configuredMiniAppUrl(raw = process.env.PRO_MINIAPP_URL) {
+  try {
+    const url = new URL(String(raw || '').trim());
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (url.protocol !== 'https:' || url.username || url.password || !host.includes('.') || host === 'localhost' || host.endsWith('.localhost') || net.isIP(host)) return '';
+    if (!/^\/pro\/?$/.test(url.pathname) || url.search || url.hash) return '';
+    return url.toString();
+  } catch { return ''; }
+}
+
+async function authorizeMiniAppUser(user) {
+  if (isBoss(user.id)) return { allowed: true };
+  if (isServicePaused()) return { allowed: false, message: 'Service abhi paused hai. Please try again later.' };
+  if (isTestRunner()) return { allowed: true };
+  const membership = await checkUserChannelMembership(bot.telegram, user.id);
+  return membership.isMember
+    ? { allowed: true }
+    : { allowed: false, message: `Pehle ${REQUIRED_CHANNEL} join karein aur bot me Check Joined dabayein.` };
+}
+
+bot.command('pro', async (ctx) => {
+  const url = configuredMiniAppUrl();
+  if (!url) return ctx.reply('Mini App abhi configure nahi hai. Chat bot se order kar sakte hain.');
+  const checkoutNote = process.env.PRO_ENABLE_CHECKOUT === '1'
+    ? 'UPI checkout experimental hai; order aur payment ko Swiggy me verify karein.'
+    : 'In-app payment abhi available nahi hai.';
+  return ctx.reply(`Mini App kholo. Chat bot pehle ki tarah available hai. ${checkoutNote}`,
+    Markup.inlineKeyboard([[Markup.button.webApp('🍽 Open App', url)]]));
+});
+
 bot.command('waf', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.reply('⛔ Sirf Boss ye command use kar sakta hai.').catch(() => {});
   const s = wafPool.getSummary();
@@ -2604,22 +2609,6 @@ bot.action('boss_maintenance_heal', async (ctx) => {
   await ctx.answerCbQuery(freed > 0 ? `${freed} atki cheez free ki` : 'Kuch atka nahi tha').catch(() => {});
   const out = await runMaintenanceForBoss(ctx, { dryRun: true });
   return ctx.reply(out.text, { parse_mode: 'HTML', reply_markup: out.keyboard }).catch(() => {});
-});
-
-// 🛍 MINI APP — customer ka apna order screen (boss 30-10-2026)
-bot.command(['app', 'miniapp', 'mini'], async (ctx) => {
-  const userId = String(ctx.from?.id || '');
-  const base = miniAppPublicBase();
-  const card = miniApp.buildMiniAppInviteCard(userId, { baseUrl: base });
-  if (!card.url) {
-    // Sach: link tabhi banega jab public URL pata ho. Jhootha link nahi bhejte.
-    return ctx.reply(
-      '🛍 <b>Mini App</b>\n\nLink abhi nahi ban sakta — bot ko apna public URL nahi pata.\n' +
-      '<i>Render par <code>RENDER_EXTERNAL_URL</code> khud milta hai; agar phir bhi ye message aaye to bot ko ek baar restart karein.</i>',
-      { parse_mode: 'HTML' }
-    ).catch(() => {});
-  }
-  return ctx.reply(card.text, { parse_mode: 'HTML', reply_markup: card.keyboard }).catch(() => {});
 });
 
 bot.command('help', async (ctx) => {
@@ -6955,6 +6944,10 @@ bot.action(/^boss_prompt_cancel_(.+)$/, async (ctx) => {
   let order = lookupOrder(db, orderId);
 
   if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
+  if (hasPossibleSwiggyPlacement(order)) {
+    return ctx.answerCbQuery('Order Swiggy par ho sakta hai. Original Swiggy account me check/cancel karein; bot se cancel nahi hua.', { show_alert: true }).catch(() => {});
+  }
+
 
   if (!canTransitionOrder(order.status, 'CANCELLED')) {
     return ctx.answerCbQuery(`Cannot cancel: order is already ${order.status}`, { show_alert: true }).catch(() => {});
@@ -7008,6 +7001,10 @@ bot.action(/^(?:boss_confirm_cancel_|boss_cancel_order_)(.+)$/, async (ctx) => {
   let order = lookupOrder(db, orderId);
 
   if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
+  if (hasPossibleSwiggyPlacement(order)) {
+    return ctx.answerCbQuery('Order Swiggy par ho sakta hai. Original Swiggy account me check/cancel karein; bot se cancel nahi hua.', { show_alert: true }).catch(() => {});
+  }
+
 
   if (!canTransitionOrder(order.status, 'CANCELLED')) {
     return ctx.answerCbQuery(`Cannot cancel: order is already ${order.status}`, { show_alert: true }).catch(() => {});
@@ -8303,6 +8300,10 @@ bot.action(/^boss_action_sorry_(.+)$/, async (ctx) => {
   let order = lookupOrder(db, orderId);
 
   if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
+  if (hasPossibleSwiggyPlacement(order)) {
+    return ctx.answerCbQuery('Order Swiggy par ho sakta hai. Original Swiggy account me check/cancel karein; bot se cancel nahi hua.', { show_alert: true }).catch(() => {});
+  }
+
 
   order.status = 'REJECTED';
   order.rejectedAt = new Date().toISOString();
@@ -8346,6 +8347,10 @@ bot.action(/^boss_action_cancel_(.+)$/, async (ctx) => {
   if (!order) {
     console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
     return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {});
+  }
+
+  if (hasPossibleSwiggyPlacement(order)) {
+    return ctx.answerCbQuery('Order Swiggy par ho sakta hai. Original Swiggy account me check/cancel karein; bot se cancel nahi hua.', { show_alert: true }).catch(() => {});
   }
 
   if (order.status === 'CANCELLED') {
@@ -9136,18 +9141,32 @@ bot.on('text', async (ctx, next) => {
     }
   }
 
+  if (state?.action === 'waiting_recipient_name' && !isBoss(userId)) {
+    const recipientName = rawText.trim().slice(0, 60);
+    if (!recipientName || recipientName.length < 2 || /^(cancel|close|back)$/i.test(recipientName)) {
+      delete userWaitState[userId];
+      await ctx.reply('✖ Naam sahi likhein (jaise: Rahul, Abbu, Sir):', { parse_mode: 'HTML' });
+      return;
+    }
+    const draft = getDraft(userId);
+    updateDraft(userId, { recipientName });
+    userWaitState[userId] = { action: 'waiting_recipient_mobile' };
+    await ctx.reply(
+      `✅ <b>${escapeHtml(recipientName)}</b> ke liye order\n\n` +
+      '<i>Uska <b>10-digit mobile number</b> bhejein — yeh recipient contact ke liye use hoga. Swiggy ka SMS alag se verify karna hoga:</i>',
+      { parse_mode: 'HTML', reply_markup: { force_reply: true, selective: true, input_field_placeholder: '10-digit mobile number...' } }
+    ).catch(() => null);
+    return;
+  }
+
   if (state?.action === 'waiting_recipient_mobile' && !isBoss(userId)) {
     const recipientMobile = extractStandaloneMobileNumber(rawText);
     if (recipientMobile) {
       recordUserPhone(userId, recipientMobile);
       const draft = getDraft(userId);
-      if (!draft.addressDetails?.address) {
-        delete userWaitState[userId];
-        await ctx.reply('🟠 Pehle <b>Address link</b> ya Location bhejein 👇', { parse_mode: 'HTML' });
-        return;
-      }
-      const addressDetails = { ...draft.addressDetails, mobile: recipientMobile };
-      updateDraft(userId, { addressDetails });
+      const addressDetails = { ...(draft.addressDetails || {}), mobile: recipientMobile };
+      const recipientName = draft.recipientName || draft.addressDetails?.name || '';
+      updateDraft(userId, { addressDetails, recipientMobile, recipientName });
       delete userWaitState[userId];
       const updatedDraft = getDraft(userId);
       await renderUserCard(ctx, userId, { deleteIncoming: true, notice: '✓ Mobile saved' });
@@ -10603,8 +10622,8 @@ bot.on('text', async (ctx, next) => {
           ...Markup.inlineKeyboard([[Markup.button.url('Open Swiggy tracking', trackingUrl)]])
         }
       );
-      // Also trigger SMS to recipient's phone (mirrors Telegram notification)
-      sendParentSmsNotification(order, trackingUrl).catch(() => {});
+      // 📱 SMS band — Swiggy khud recipient ke number par SMS + tracking link bhejta hai
+      // (OFO order hone par). Bot false claim nahi karega.
       await ctx.reply(`✓ <b>Swiggy tracking link sent to ${escapeHtml(order.userName || 'customer')}.</b>`, { parse_mode: 'HTML' });
     } catch (err) {
       await ctx.reply(`! Failed to send tracking: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
@@ -11152,6 +11171,15 @@ async function handleAddressLinkFlow(ctx) {
 }
 
 // Cancel Order with short colorful Confirmation
+// Local cancellation does not cancel an order at Swiggy. Once placement may
+// have been sent, keep the original account/order intact and direct the user
+// to Swiggy instead of claiming that a provider order was cancelled.
+function hasPossibleSwiggyPlacement(order) {
+  if (!order?.id) return false;
+  return Boolean(isQrGenerationInFlight(order.id) || readSwiggyPlacement(`chat:${String(order.id).trim()}`) ||
+    order.pendingSwiggyOrderId || order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.swiggyPlacedUnpaid);
+}
+
 async function handleCancelOrderConfirm(ctx, orderId = null) {
   const userId = ctx.from.id;
   const db = getDb();
@@ -11160,6 +11188,9 @@ async function handleCancelOrderConfirm(ctx, orderId = null) {
 
   if (!activeOrder && !draft.cart && !draft.address) {
     return ctx.reply('i <b>Abhi koi active order ya draft nahi hai.</b>', { parse_mode: 'HTML' });
+  }
+  if (hasPossibleSwiggyPlacement(activeOrder)) {
+    return ctx.reply('Swiggy order ho sakta hai. Bot ise cancel nahi kar sakta; original Swiggy account me My Orders check/cancel karein.');
   }
 
   const targetId = activeOrder ? activeOrder.id : 'draft';
@@ -11450,7 +11481,15 @@ async function handleSendToBoss(ctx) {
     }
   }
   if (explicitRecipientMobile) deliveryDetails.mobile = explicitRecipientMobile;
-  updateDraft(userId, { addressDetails: deliveryDetails });
+  // 👤 AUTO-FILL FROM ADDRESS LINK (professor 30-10-2026): "order for others
+  // wali field address link se auto fill hoga" — jab address link resolve
+  // hota hai to recipient name + mobile draft me save hote hain (Agar user
+  // ne pehle se "Order for Someone Else" flow se fill nahi kara).
+  const autoRecipient = {
+    ...(deliveryDetails.name && !draft.recipientName ? { recipientName: deliveryDetails.name } : {}),
+    ...(deliveryDetails.mobile && !draft.recipientMobile ? { recipientMobile: deliveryDetails.mobile } : {})
+  };
+  updateDraft(userId, { addressDetails: deliveryDetails, ...autoRecipient });
   draft = getDraft(userId);
 
   const db = getDb();
@@ -11545,6 +11584,16 @@ async function handleSendToBoss(ctx) {
   if (newOrder.addressDetails?.mobile) {
     newOrder.recipientMobile = newOrder.addressDetails.mobile;
     newOrder.deliveryPhone = newOrder.addressDetails.mobile;
+  }
+  // 👤 ORDER FOR SOMEONE ELSE (professor 30-10-2026): draft se recipient details
+  // order par attach hote hain — tracking link + SMS recipient ke number par.
+  if (draft.recipientName) newOrder.recipientName = draft.recipientName;
+  if (draft.recipientMobile) {
+    newOrder.recipientMobile = draft.recipientMobile;
+    newOrder.deliveryPhone = draft.recipientMobile;
+    if (newOrder.addressDetails) {
+      newOrder.addressDetails = { ...newOrder.addressDetails, mobile: draft.recipientMobile, name: draft.recipientName || newOrder.addressDetails?.name || '' };
+    }
   }
 
   // Loophole fix: block ₹0 empty orders (e.g. tracking link mis-parsed as cart)
@@ -11731,6 +11780,42 @@ bot.action(SIMPLE_CHAT_CALLBACKS.pasteLinks, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await promptSimpleBothLinks(ctx);
 });
+
+// ── 👤 ORDER FOR SOMEONE ELSE (professor 30-10-2026) ─────────────────────────
+// "uspar click karne par uska name and mobile number daalne ka option aata".
+// Pehle naam, phir mobile — dono draft me save hote hain. Order creation par
+async function startOrderForSomeoneElse(ctx) {
+  const userId = ctx.from.id;
+  const draft = getDraft(userId);
+  // 👤 AUTO-FILL FROM ADDRESS LINK: agar address link se recipient name +
+  // mobile pehle se draft me hain, to puchna skip karo aur cart bhejne ko bolo.
+  if (draft.recipientName && draft.recipientMobile) {
+    delete userWaitState[userId];
+    await ctx.reply(
+      `👤 <b>Order for Someone Else</b>\n\n` +
+      `<i>Address link se auto-fill hua hai:</i>\n\n` +
+      `<b>Naam:</b> ${escapeHtml(draft.recipientName)}\n` +
+      `<b>Mobile:</b> ${escapeHtml(draft.recipientMobile)}\n\n` +
+      '<i>Cart link bhejein:</i>',
+      { parse_mode: 'HTML' }
+    ).catch(() => null);
+    return;
+  }
+  // Pehle naam, phir mobile — dono draft me save hote hain. Order creation par
+  delete userWaitState[userId];
+  userWaitState[userId] = { action: 'waiting_recipient_name' };
+  await ctx.reply(
+    '👤 <b>Order for Someone Else</b>\n\n' +
+    '<i>Kaun ke liye order hai? Naam likhein (jaise: Rahul, Abbu, Sir):</i>',
+    {
+      parse_mode: 'HTML',
+      reply_markup: { force_reply: true, selective: true, input_field_placeholder: 'Recipient name...' }
+    }
+  ).catch(() => null);
+}
+
+bot.action('action_order_for_others', startOrderForSomeoneElse);
+bot.action(SIMPLE_CHAT_CALLBACKS.orderForOthers, startOrderForSomeoneElse);
 
 bot.action(SIMPLE_CHAT_CALLBACKS.continueDraft, async (ctx) => {
   await ctx.answerCbQuery('Bill check kar raha hoon…').catch(() => {});
@@ -13055,6 +13140,10 @@ bot.action(/^user_confirm_cancel_(.+)$/, async (ctx) => {
   // Security check: Must be the order's customer or boss
   if (Number(order.userId) !== Number(userId) && !isBoss(userId)) {
     return ctx.answerCbQuery('Unauthorized: Not your order', { show_alert: true }).catch(() => {});
+  }
+
+  if (hasPossibleSwiggyPlacement(order)) {
+    return ctx.answerCbQuery('Order Swiggy par ho sakta hai. Original Swiggy account me check/cancel karein; bot se cancel nahi hua.', { show_alert: true }).catch(() => {});
   }
 
   // State machine transition check
@@ -15543,300 +15632,6 @@ bot.action(/^user_resend_approved_qr_([A-Za-z0-9_-]+)$/, async (ctx) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// 🛍 MINI APP (boss 30-10-2026)
-// "ID choose karne ka option ho… free cash icon… offer active hai ya nahi…
-//  OPEN MINI APP button direct cart wale page par le jaye."
-//
-// Design rules:
-//  • Sirf signed token se khulta hai (per-user, 7 din).
-//  • Har cheez ka SACH: jo live verify nahi hua usko "unverified" hi likha jata hai.
-//  • Chuni hui ID ke bina confirm nahi hota — chupchaap koi doosri ID nahi.
-//  • Order chat wale pipeline se hi aage badhta hai (bill → fee QR → order QR).
-// ---------------------------------------------------------------------------
-function miniAppPublicBase() {
-  try {
-    const origin = getPublicServiceBaseUrl?.();
-    if (origin) return String(origin).replace(/\/+$/, '');
-  } catch { /* origin abhi pata nahi */ }
-  const env = String(process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').trim();
-  return env ? env.replace(/\/+$/, '') : '';
-}
-
-async function readMiniAppBody(req, limit = 40_000) {
-  let raw = '';
-  for await (const chunk of req) {
-    raw += chunk;
-    if (raw.length > limit) return { ok: false, error: 'Body too large' };
-  }
-  try { return { ok: true, body: raw ? JSON.parse(raw) : {} }; } catch { return { ok: false, error: 'Bad JSON' }; }
-}
-
-export async function handleMiniAppApi({ pathname, reqUrl, body, userId }) {
-  const database = getDb();
-  const json = (status, payload) => ({ status, json: payload });
-
-  if (pathname === '/api/app/state') {
-    let ids = miniApp.buildMiniAppIdList(userId, { db: database });
-    let stateNow = miniApp.getMiniAppState(userId, { db: database });
-    // Boss: "direct cart wale page par le jaye EK AUTO ID SELECT karke".
-    // Sirf tab jab user ne khud koi ID na chuni ho — aur sirf READY/UNVERIFIED.
-    if (!stateNow.accountKey) {
-      const auto = ids.rows.find((r) => r.selectable);
-      if (auto) {
-        const picked = miniApp.selectMiniAppAccount(userId, auto.key, { db: getDb() });
-        if (picked.ok) {
-          ids = miniApp.buildMiniAppIdList(userId, { db: getDb() });
-          stateNow = miniApp.getMiniAppState(userId, { db: getDb() });
-        }
-      }
-    }
-    return json(200, {
-      ok: true,
-      user: { name: String(database?.users?.[userId]?.name || database?.users?.[userId]?.firstName || '').slice(0, 30) },
-      ...ids,
-      addressText: stateNow.addressText,
-      cartText: stateNow.cartText,
-      items: stateNow.items,
-      orderId: stateNow.orderId
-    });
-  }
-
-  if (pathname === '/api/app/select') {
-    const out = miniApp.selectMiniAppAccount(userId, String(body?.key || ''), { db: getDb() });
-    if (!out.ok) return json(400, out);
-    return json(200, { ok: true, selectedKey: out.row.key, row: out.row });
-  }
-
-  if (pathname === '/api/app/offers') {
-    const key = String(reqUrl.searchParams.get('key') || '');
-    const acc = database?.config?.accounts?.[key];
-    if (!acc) return json(404, { ok: false, error: 'Ye ID vault me nahi mili' });
-    const row = miniApp.describeAccountForPicker(key, acc, { db: database });
-    return json(200, {
-      ok: true,
-      active: row.offers,
-      preLocked: row.offersPreLocked,
-      freeCash: row.freeCash,
-      orders: row.orders,
-      status: row.status
-    });
-  }
-
-  if (pathname === '/api/app/address') {
-    const text = String(body?.text || '').slice(0, 4000).trim();
-    if (!text) return json(400, { ok: false, error: 'Address link ya address paste karo' });
-    let details = parseAddressDetails(text) || null;
-    try {
-      const meta = await resolveSwiggyLink(text);
-      if (meta?.addressDetails && !meta.addressDetails.unresolvableShortLink) {
-        details = { ...(details || {}), ...meta.addressDetails };
-      } else if (meta?.ofoUser && details && !details.name) {
-        details = { ...details, name: meta.ofoUser };
-      }
-    } catch { /* link fail → text parse hi rehta hai */ }
-    if (!details || !(details.address || details.area)) {
-      return json(200, {
-        ok: false,
-        code: 'ADDRESS_NOT_READ',
-        error: 'Address samajh nahi aaya — Swiggy app se "Share Address" ka poora message paste karo (link + naam + phone)'
-      });
-    }
-    const cleaned = {
-      name: String(details.name || '').slice(0, 40),
-      mobile: String(details.mobile || '').replace(/\D/g, '').slice(-10),
-      address: String(details.address || [details.flat_no, details.area, details.city].filter(Boolean).join(', ')).slice(0, 300),
-      area: String(details.area || '').slice(0, 80),
-      city: String(details.city || '').slice(0, 60),
-      lat: details.lat ? String(details.lat) : '',
-      lng: details.lng ? String(details.lng) : ''
-    };
-    miniApp.saveMiniAppState(userId, { addressText: text, addressDetails: cleaned }, { db: getDb() });
-    return json(200, {
-      ok: true,
-      address: {
-        ...cleaned,
-        label: [cleaned.address, cleaned.area, cleaned.city].filter(Boolean).join(', ')
-      }
-    });
-  }
-
-  if (pathname === '/api/app/cart') {
-    const text = String(body?.text || '').slice(0, 6000).trim();
-    if (!text) return json(400, { ok: false, error: 'Cart link paste karo' });
-    let restaurantId = '';
-    let restaurantName = '';
-    let items = [];
-    let total = 0;
-    try {
-      const meta = await resolveSwiggyLink(text);
-      restaurantId = String(meta?.restaurantId || '');
-      restaurantName = String(meta?.restaurantName || meta?.cartDetails?.restaurantName || '');
-      const cd = meta?.cartDetails || null;
-      if (cd?.items?.length) {
-        items = cd.items.map((it) => ({
-          id: String(it.menu_item_id || it.itemId || it.id || ''),
-          name: String(it.name || '').slice(0, 80),
-          price: Math.round(Number(it.price || it.itemPrice || 0)),
-          qty: Math.max(1, Number(it.qty || it.quantity || 1))
-        })).filter((it) => it.name);
-        total = Number(cd.itemsTotal || cd.subtotal || 0);
-      }
-    } catch { /* link fail → text parse */ }
-    if (!items.length) {
-      const parsed = parseCartDetails(text);
-      if (parsed?.items?.length) {
-        items = parsed.items.map((it) => ({
-          id: '',
-          name: String(it.name || '').slice(0, 80),
-          price: Math.round(Number(it.price || 0)),
-          qty: Math.max(1, Number(it.qty || 1))
-        }));
-        total = Number(parsed.itemsTotal || 0);
-      }
-      restaurantName = restaurantName || String(parsed?.restaurantName || '');
-    }
-    if (!items.length) {
-      return json(200, {
-        ok: false,
-        code: 'CART_NOT_READ',
-        error: 'Cart samajh nahi aaya — Swiggy app me cart kholo → Share → poora cart message paste karo'
-      });
-    }
-    miniApp.saveMiniAppState(userId, {
-      cartText: text,
-      cart: { restaurantId, restaurantName, total },
-      items
-    }, { db: getDb() });
-    return json(200, { ok: true, cart: { restaurantId, restaurantName, total }, items, total });
-  }
-
-  if (pathname === '/api/app/search') {
-    const q = String(body?.q || '').slice(0, 60).trim();
-    const stateNow = miniApp.getMiniAppState(userId, { db: getDb() });
-    const restaurantId = String(stateNow.cart?.restaurantId || '');
-    if (!restaurantId) {
-      return json(200, { ok: false, error: 'Pehle cart link do — uske baad restaurant ka menu search hoga' });
-    }
-    const chosen = miniApp.resolveSelectedAccount(userId, { db: getDb() });
-    const coords = stateNow.addressDetails || {};
-    const lat = String(coords.lat || '26.8658609');
-    const lng = String(coords.lng || '80.9307755');
-    const info = await cart.fetchFastRestaurantInfo(restaurantId, lat, lng, true).catch(() => null);
-    const menu = Array.isArray(info?.menuItems) ? info.menuItems : (Array.isArray(info?.items) ? info.items : []);
-    if (!menu.length) {
-      return json(200, {
-        ok: false,
-        error: chosen.ok ? 'Menu nahi mila (Swiggy ne jawab nahi diya) — dobara try karo' : (chosen.error || 'Menu nahi mila')
-      });
-    }
-    return json(200, { ok: true, items: miniApp.filterMenuItems(menu, q) });
-  }
-
-  if (pathname === '/api/app/confirm') {
-    const chosen = miniApp.resolveSelectedAccount(userId, { db: getDb() });
-    if (!chosen.ok) return json(400, chosen);
-    const stateNow = miniApp.getMiniAppState(userId, { db: getDb() });
-    const bodyItems = Array.isArray(body?.items) ? body.items : stateNow.items;
-    const items = bodyItems
-      .map((it) => ({
-        menu_item_id: Number(it.id || it.menu_item_id || 0),
-        name: String(it.name || '').slice(0, 80),
-        price: Math.round(Number(it.price || 0)),
-        qty: Math.max(1, Number(it.qty || it.quantity || 1))
-      }))
-      .filter((it) => it.menu_item_id > 0 && it.qty > 0);
-    if (!items.length) {
-      return json(200, {
-        ok: false,
-        code: 'ITEMS_WITHOUT_IDS',
-        error: 'In items ke Swiggy IDs nahi mile — cart ka share LINK dobara paste karo (plain text se order nahi ban sakta)'
-      });
-    }
-    const addressDetails = stateNow.addressDetails || null;
-    if (!addressDetails?.lat || !addressDetails?.lng) {
-      return json(200, { ok: false, code: 'ADDRESS_NEEDS_PIN', error: 'Address ka exact location nahi mila — Swiggy ka address share link dobara bhejo' });
-    }
-    const acc = chosen.account;
-    let saved;
-    try {
-      saved = await cart.saveAddressToAccount(acc, addressDetails);
-    } catch (err) {
-      saved = { error: String(err?.message || err) };
-    }
-    if (!saved?.addressId) {
-      return json(200, { ok: false, code: 'ADDRESS_SAVE_FAILED', error: saved?.error || 'Address is ID par save nahi hua' });
-    }
-    const restaurantId = String(stateNow.cart?.restaurantId || '');
-    if (!restaurantId) {
-      return json(200, { ok: false, code: 'NO_RESTAURANT', error: 'Restaurant ID nahi mila — cart link dobara paste karo' });
-    }
-    try {
-      await cart.swiggyCartUpdate(acc, {
-        restaurantId,
-        address_id: String(saved.addressId),
-        couponCode: String(stateNow.cart?.couponCode || ''),
-        cartItems: cart.buildSwiggyCartItemsPayload(items.map((it) => ({ menu_item_id: it.menu_item_id, qty: it.qty }))),
-        mealItems: [],
-        subscriptionItems: []
-      }, { lat: String(addressDetails.lat), lng: String(addressDetails.lng), flushFirst: true });
-    } catch (err) {
-      return json(200, { ok: false, code: 'CART_PUSH_FAILED', error: String(err?.message || err).slice(0, 160) });
-    }
-    const liveCart = await cart.swiggyCartGet(acc, { lat: String(addressDetails.lat), lng: String(addressDetails.lng) }).catch(() => null);
-    const liveTotal = Number(liveCart?.json?.data?.cartMeta?.order_total || liveCart?.json?.data?.order_total || 0);
-    if (!(liveTotal > 0)) {
-      return json(200, { ok: false, code: 'LIVE_CART_EMPTY', error: 'Swiggy ne cart confirm nahi kiya — items dobara check karo' });
-    }
-
-    const orderId = `MA${Date.now().toString(36).toUpperCase()}`;
-    const freshDb = getDb();
-    const order = {
-      id: orderId,
-      userId: String(userId),
-      userChatId: String(userId),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      status: 'PENDING',
-      cardStage: 'BILL_READY',
-      viaMiniApp: true,
-      cart: stateNow.cartText,
-      addressOriginalText: stateNow.addressText,
-      address: addressDetails.address || '',
-      restaurantId,
-      restaurantName: String(stateNow.cart?.restaurantName || ''),
-      selectedAccount: chosen.key,
-      orderAccount: String(acc.phone || chosen.key),
-      addressDetails: { ...addressDetails, id: String(saved.addressId) },
-      items: items.map((it) => ({ menu_item_id: it.menu_item_id, menuItemId: it.menu_item_id, name: it.name, qty: it.qty, quantity: it.qty, price: it.price })),
-      finalPayable: liveTotal,
-      swiggyVerified: true,
-      billShownAmount: liveTotal
-    };
-    freshDb.orders[orderId] = order;
-    saveDb(freshDb);
-    miniApp.saveMiniAppState(userId, { orderId }, { db: getDb() });
-    // Bill card chat me — aage ka QR/fee pipeline wahi purana (locked rules).
-    await updateOrderCards(order).catch(() => {});
-    for (const bossId of [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))]) {
-      await bot.telegram.sendMessage(
-        bossId,
-        `🛍 <b>MINI APP ORDER</b>\nOrder <code>#${escapeHtml(orderId)}</code> · ID <code>${escapeHtml(String(acc.phone || chosen.key))}</code>\n` +
-        `▪ Items: ${items.length} · Live bill: ₹${liveTotal}`,
-        { parse_mode: 'HTML' }
-      ).catch(() => {});
-    }
-    return json(200, {
-      ok: true,
-      orderId,
-      total: liveTotal,
-      billUrl: miniAppPublicBase() ? `${miniAppPublicBase()}/app?t=${encodeURIComponent(miniApp.issueMiniAppToken(userId))}` : ''
-    });
-  }
-
-  return json(404, { ok: false, error: 'Unknown mini app route' });
-}
-
 // Lightweight health check server + Swiggy tracking endpoints + 24x7 Keep-Alive (works on Render, Railway, etc.)
 const healthPort = Number(process.env.PORT || (process.env.RENDER ? 10000 : 0));
 // Health JSON must tell the truth: the old payload always said "online", so a
@@ -15847,6 +15642,7 @@ if (healthPort > 0) {
     try {
       notePublicServiceOrigin(req);
       const reqUrl = new URL(req.url || '/', `http://localhost:${healthPort}`);
+      if (await handleSwiggyProHttp(req, res, { authorizeUser: authorizeMiniAppUser })) return;
 
       // 🤖 PAYMENT AUTO-VERIFY WEBHOOK (boss 30-10-2026)
       // "utr auto verify nahi ho raha" — ab UTR type karne ki zaroorat nahi:
@@ -15969,44 +15765,6 @@ if (healthPort > 0) {
           'Cache-Control': 'no-store'
         });
         return res.end(JSON.stringify(resolved.payload));
-      }
-
-      // 🛍 MINI APP PAGE + API (boss 30-10-2026)
-      // Page: `/app?t=<token>` — sirf us user ke liye jo token.
-      if (reqUrl.pathname === '/app') {
-        const verified = miniApp.verifyMiniAppToken(reqUrl.searchParams.get('t'));
-        if (!verified.ok) {
-          res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-          return res.end(
-            '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">' +
-            '<body style="background:#0b1120;color:#f1f5f9;font-family:-apple-system,sans-serif;padding:28px;line-height:1.6">' +
-            '<h2>🔒 Link valid nahi hai</h2><p style="color:#94a3b8">Bot me dobara <b>🛍 Open Mini App</b> button dabao — naya link mil jayega.</p></body>'
-          );
-        }
-        res.writeHead(200, {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': 'no-store',
-          'X-Frame-Options': 'ALLOWALL',
-          'Content-Security-Policy': "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org"
-        });
-        return res.end(renderMiniAppHtml({ token: reqUrl.searchParams.get('t') }));
-      }
-
-      if (reqUrl.pathname.startsWith('/api/app/')) {
-        const verified = miniApp.verifyMiniAppToken(reqUrl.searchParams.get('t'));
-        const sendJson = (status, payload) => {
-          res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-          return res.end(JSON.stringify(payload));
-        };
-        if (!verified.ok) return sendJson(403, { ok: false, error: 'Link valid nahi hai — bot se naya button lo', code: verified.reason });
-        if (req.method === 'POST') {
-          const parsed = await readMiniAppBody(req);
-          if (!parsed.ok) return sendJson(400, { ok: false, error: parsed.error });
-          const out = await handleMiniAppApi({ pathname: reqUrl.pathname, reqUrl, body: parsed.body, userId: verified.userId });
-          return sendJson(out.status, out.json);
-        }
-        const out = await handleMiniAppApi({ pathname: reqUrl.pathname, reqUrl, body: {}, userId: verified.userId });
-        return sendJson(out.status, out.json);
       }
 
       // Live & Delivered Zero-Login Shareable Swiggy Order Tracking Web Page (`/track/:orderId?sig=...`)
@@ -16452,28 +16210,46 @@ function startAutoEventOffersPrebookLoop() {
   if (typeof autoEventPrebookTimer.unref === 'function') autoEventPrebookTimer.unref();
 }
 
-// Registers the command list + a plain "commands" menu button.
-// Kept dependency-free and fully guarded: a Telegram-side hiccup must never
-// stop the bot from serving /start or orders.
-let botMenuReady = false;
-async function setupBotMenu() {
-  if (botMenuReady) return true;
+// The private-chat menu is separate from the native Main Mini App buttons in
+// the profile/chat list, which the bot owner must enable in @BotFather.
+// Never overwrite a manually configured Telegram menu when no valid URL is set.
+export async function configureTelegramBotMenu(telegram, rawUrl = process.env.PRO_MINIAPP_URL) {
+  const miniAppUrl = configuredMiniAppUrl(rawUrl);
+  let ok = true;
   try {
-    await bot.telegram.setMyCommands([
+    await telegram.setMyCommands([
       { command: 'start', description: 'Start a new Swiggy order' },
+      ...(miniAppUrl ? [{ command: 'pro', description: 'Open the Mini App' }] : []),
       { command: 'help', description: 'How to place an order' },
       { command: 'cancel', description: 'Cancel the current draft order' }
     ]);
   } catch (e) {
+    ok = false;
     console.warn('[Menu] setMyCommands skipped:', e?.message || e);
   }
-  try {
-    await bot.telegram.setChatMenuButton({ menuButton: { type: 'commands' } });
-  } catch (e) {
-    console.warn('[Menu] setChatMenuButton skipped:', e?.message || e);
+  if (miniAppUrl) {
+    try {
+      await telegram.setChatMenuButton({
+        menuButton: { type: 'web_app', text: 'Open', web_app: { url: miniAppUrl } }
+      });
+    } catch (e) {
+      ok = false;
+      console.warn('[Menu] setChatMenuButton skipped:', e?.message || e);
+    }
   }
-  botMenuReady = true;
-  return true;
+  return ok;
+}
+
+let botMenuReady = false;
+let botMenuSetupPromise = null;
+function setupBotMenu() {
+  if (botMenuReady) return Promise.resolve(true);
+  if (!botMenuSetupPromise) {
+    botMenuSetupPromise = configureTelegramBotMenu(bot.telegram)
+      .then(ok => { botMenuReady = ok; return ok; })
+      .finally(() => { botMenuSetupPromise = null; });
+  }
+  return botMenuSetupPromise;
 }
 
 // Launch bot with retry resilience for cloud container handover
@@ -16559,11 +16335,13 @@ async function startBotWithRetry() {
           console.log('! Priming pre-warmed Chrome for instant OTP in background...');
           prewarmBrowser().catch(e => console.log('Prewarm init note:', e.message));
         }
+        // Telegraf's polling launch does not resolve until polling stops. Start
+        // menu setup without blocking polling rather than waiting until shutdown.
+        setupBotMenu().catch(e => console.error('Menu setup error:', e.message));
         await bot.launch({ dropPendingUpdates: true });
         launched = true;
         botRuntimeState.launched = true;
         botRuntimeState.launchedAt = new Date().toISOString();
-        try { await setupBotMenu(); } catch (e) { console.error('Menu setup error:', e.message); }
         resumeAutoTrackingForRecentOrders();
         break;
       } catch (err) {
@@ -16683,7 +16461,7 @@ async function pushTrackingReadyNotice(order, { scan } = {}) {
     }
   } catch {}
 
-  // 4) Friends/parents SMS (deduped inside the notice helper by link + OTP).
+  // 4) Update the notice record; the bot does not send recipient SMS.
   try {
     const bossChat = order.bossChatId || db.config?.bossIds?.[0] || fallbackBoss;
     if (bossChat) await sendOrderDeliveryInfoNotice(bot.telegram, bossChat, order);

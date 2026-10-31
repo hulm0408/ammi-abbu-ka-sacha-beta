@@ -2,7 +2,9 @@
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hulm0408/ammi-abbu-ka-sacha-beta)
 
-Telegram bot built for seamless Swiggy food ordering with real-time **Saved Address Fetching**, **Shared/Group Cart Fetching**, **Exact Address-Bound Checkout Billing**, **Auto Coupon Engine**, and **Render Docker Cloud Deployment**.
+Telegram bot built for Swiggy food ordering with saved-address, group-cart, billing, and tracking integrations.
+
+> **Verification note:** Historical feature descriptions and offline tests below are not proof of a real Swiggy order. The optional Mini App is a work in progress: its in-app payment, order placement, and live tracking are not enabled. See [Mini App setup and limitations](./MINI_APP_SETUP.md).
 
 ## 🚀 1-Click Render Deployment
 

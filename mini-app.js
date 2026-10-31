@@ -137,8 +137,8 @@ function offersFor(acc) {
  *   SESSION_EXPIRED → re-login chahiye
  *   UNVERIFIED    → live check nahi hua (jhooth nahi: "check karna hai")
  */
-export function describeAccountForPicker(key, acc, { db = null, now = Date.now() } = {}) {
-  const database = db || getDb();
+export function describeAccountForPicker(key, acc, { db = null, accounts = null, orders = null, now = Date.now() } = {}) {
+  const database = accounts || orders ? { config: { accounts: accounts || {} }, orders: orders || {} } : (db || getDb());
   const phone = String(acc?.phone || acc?.mobile || key || '');
   const truth = liveOrderTruth(acc);
   const offers = offersFor(acc);

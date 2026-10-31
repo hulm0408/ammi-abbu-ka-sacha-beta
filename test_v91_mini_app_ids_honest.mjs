@@ -37,8 +37,6 @@ const check = (name, ok, detail = '') => {
 };
 
 const miniApp = await import('./mini-app.js');
-const { renderMiniAppHtml } = await import('./mini-app-page.js');
-const { handleMiniAppApi } = await import('./index.js');
 
 // ── 1) Token ───────────────────────────────────────────────────────────────
 {
@@ -133,79 +131,24 @@ const fakeDb = {
   check('khaali query par poora menu (limit ke andar)', miniApp.filterMenuItems(menu, '').length === 3);
 }
 
-// ── 5) API: token ke bina kuch nahi ──────────────────────────────────────
+// ── 5) /pro mini app me wiring — ek hi mini app, do nahi ─────────────────
 {
-  const state = await handleMiniAppApi({
-    pathname: '/api/app/state',
-    reqUrl: new URL('http://x/api/app/state'),
-    body: {},
-    userId: '424242'
-  });
-  check('state API ok deta hai', state.status === 200 && state.json.ok === true, JSON.stringify(state.json).slice(0, 160));
-  check('state API me rows hain', Array.isArray(state.json.rows) && state.json.rows.length >= 1);
+  const proSrc = fs.readFileSync('./swiggy-pro-api.js', 'utf8');
+  check('/pro accounts sach ke saath aate hain', /describeAccountForPicker\(key, a,/.test(proSrc));
+  check('/pro row me status + reason + icons + freeCash + offers', /status: truth\.status/.test(proSrc) && /reason: truth\.reason/.test(proSrc) && /freeCash: truth\.freeCash/.test(proSrc) && /icons: truth\.icons/.test(proSrc));
+  check('/pro par used/suspended ID select block hoti hai', /row\.selectable === false\) throw error\(409/.test(proSrc));
+  check('/pro khud auto ID select karta hai', /function autoSelectAccount/.test(proSrc) && /if \(ws\.activeAccountKey\) return;/.test(proSrc));
+  check('auto-select sirf selectable ID chunta hai', /rows\.find\(r => r\.selectable\)/.test(proSrc));
 
-  const auto = state.json.selectedKey;
-  check('auto ID select hoti hai (boss: ek auto ID select karke)', Boolean(auto), String(auto));
+  const appSrc = fs.readFileSync('./swiggy-pro-app.js', 'utf8');
+  check('UI par status pill dikhta hai', /statusPill\(a\)/.test(appSrc));
+  check('UI par blocked ID "Not available" hoti hai', /Not available/.test(appSrc));
+  check('UI par free cash + offers dikhte hain', /💵 ₹/.test(appSrc) && /🎁 /.test(appSrc));
 
-  const badAddress = await handleMiniAppApi({
-    pathname: '/api/app/address',
-    reqUrl: new URL('http://x/api/app/address'),
-    body: { text: 'hello dosto' },
-    userId: '424242'
-  });
-  check('address na samajh aaye to jhootha success nahi', badAddress.json.ok === false && badAddress.json.code === 'ADDRESS_NOT_READ');
-
-  const goodAddress = await handleMiniAppApi({
-    pathname: '/api/app/address',
-    reqUrl: new URL('http://x/api/app/address'),
-    body: { text: 'Ammi\n9823305540\nFlat 4, Gomti Nagar, Lucknow 226010' },
-    userId: '424242'
-  });
-  check('typed address accept hota hai', goodAddress.json.ok === true, JSON.stringify(goodAddress.json).slice(0, 160));
-
-  const badCart = await handleMiniAppApi({
-    pathname: '/api/app/cart',
-    reqUrl: new URL('http://x/api/app/cart'),
-    body: { text: 'kuch bhi' },
-    userId: '424242'
-  });
-  check('cart na samajh aaye to jhootha success nahi', badCart.json.ok === false && badCart.json.code === 'CART_NOT_READ');
-
-  const confirmNoIds = await handleMiniAppApi({
-    pathname: '/api/app/confirm',
-    reqUrl: new URL('http://x/api/app/confirm'),
-    body: { items: [{ id: '', name: 'Paneer', price: 200, qty: 1 }] },
-    userId: '424242'
-  });
-  check('bina Swiggy item IDs order nahi banta', confirmNoIds.json.ok === false && confirmNoIds.json.code === 'ITEMS_WITHOUT_IDS', JSON.stringify(confirmNoIds.json));
+  const indexSrc = fs.readFileSync('./index.js', 'utf8');
+  check('duplicate /app mini app hai hi nahi (ek hi app)', !/pathname === '\/app'/.test(indexSrc));
+  check('bot ka mini app menu /pro par jata hai', /type: 'web_app', text: 'Open'/.test(indexSrc) && /configuredMiniAppUrl/.test(indexSrc));
 }
 
-// ── 6) Bot button — jhootha link kabhi nahi ───────────────────────────────
-{
-  const noBase = miniApp.buildMiniAppInviteCard('424242', { baseUrl: '' });
-  check('base URL na ho to koi url nahi', !noBase.url && !JSON.stringify(noBase.keyboard).includes('/app?t='));
-  check('card me steps saaf hain', /ID chuno/.test(noBase.text) && /Address link paste/.test(noBase.text));
-  const withBase = miniApp.buildMiniAppInviteCard('424242', { baseUrl: 'https://bot.example.com/' });
-  check('base URL ho to signed link banta hai', /^https:\/\/bot\.example\.com\/app\?t=/.test(withBase.url), withBase.url);
-  const tokenInUrl = decodeURIComponent(withBase.url.split('t=')[1]);
-  check('link ka token verify hota hai', miniApp.verifyMiniAppToken(tokenInUrl).userId === '424242');
-}
-
-// ── 7) Page + server wiring ───────────────────────────────────────────────
-{
-  const html = renderMiniAppHtml({ token: 'abc.def' });
-  check('page me token aata hai', html.includes('"abc.def"'));
-  check('page me ID list / steps hain', /Swiggy ID chuno/.test(html) && /Address/.test(html) && /Confirm order/.test(html));
-  check('page me koi inline eval/unsafe insert nahi', !/innerHTML\s*=\s*[^'"]/.test(html.replace(/innerHTML = ''/g, '')));
-
-  const src = fs.readFileSync('./index.js', 'utf8');
-  check('server /app route token verify karta hai', /reqUrl\.pathname === '\/app'[\s\S]{0,220}verifyMiniAppToken/.test(src));
-  check('API routes bhi token verify karte hain', /startsWith\('\/api\/app\/'\)[\s\S]{0,260}verifyMiniAppToken/.test(src));
-  check('confirm live cart se bill leta hai', /liveTotal/.test(src) && /swiggyVerified: true/.test(src));
-  check('/app command bot me hai', /bot\.command\(\['app', 'miniapp', 'mini'\]/.test(src));
-  check('user screen par mini app button jodta hai', /attachMiniAppButton\(userId/.test(src));
-  check('confirm par boss ko alert jata hai', /MINI APP ORDER/.test(src));
-}
-
-console.log(`\n${fail === 0 ? '✅' : '❌'} v85 mini app (ID truth): ${pass} pass, ${fail} fail`);
+console.log(`\n${fail === 0 ? '✅' : '❌'} v91 mini app ID truth: ${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

@@ -6,6 +6,8 @@ import puppeteer from 'puppeteer-core';
 import QRCode from 'qrcode';
 import { getDb, saveDb, updateAccount, syncAccountsJsonMirror } from './store.js';
 import { shouldReusePendingQr, validateUpiIntentForQr } from './payment-qr-guard.js';
+import { executeSingleSwiggyPlacement, readSwiggyPlacement, placementAlreadyAttemptedError } from './swiggy-placement-journal.js';
+import { sameCartItems, sameDeliveryRecipient, exactPaise } from './swiggy-cart-integrity.js';
 import { classifySwiggyAccountFailure, isAccountSuspended, markAccountSuspended, markAccountHealthy, noteAccountFailure, describeSuspendedAccount } from './account-health.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
@@ -385,7 +387,9 @@ export async function bootstrapSwiggyWebSessionFromAndroidTokens(accountOrCookie
     if (uid && !accountOrCookies.customerId) accountOrCookies.customerId = String(uid);
     sessionAuthCache.clear();
 
-    try {
+    // Mini App users hold isolated sessions, not the shared boss vault. Never
+    // match a private session by phone/customer ID and overwrite a boss entry.
+    if (!accountOrCookies.__proPrivate) try {
       const db = getDb();
       const targetPhone = String(accountOrCookies.phone || '').replace(/\D/g, '').slice(-10);
       const targetToken = String(accountOrCookies.token || '').trim();
@@ -2214,7 +2218,9 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
           console.warn(`[OfoResolve] token=${String(tok).slice(0, 16)} swiggy API says "${String(msg).slice(0, 60)}" — trying the share page`);
           // The API can reject a token the share page still renders. Try the
           // page before telling the customer anything.
-          const pageHit = await resolveOfoAddressFromPage(tok, ofoUser).catch(() => null);
+          // Stay on the explicitly supplied session; otherwise a private Mini
+          // App request could accidentally probe the shared boss vault.
+          const pageHit = await resolveOfoAddressFromPage(tok, ofoUser, accountOrCookies).catch(() => null);
           if (pageHit) return pageHit;
           noteOfoFailure(tok, 'EXPIRED');
           return null;
@@ -2255,7 +2261,7 @@ export async function resolveSharedOfoAddress(ofoToken, ofoUser = null, accountO
     // OUR side: report a transport/session problem, never "your link expired".
     // Before giving up, let the share *page* answer — it is plain HTML and keeps
     // working when the mobile API refuses (WAF, token-only session, A/B rollout).
-    const pageHit = await resolveOfoAddressFromPage(tok, ofoUser).catch(() => null);
+    const pageHit = await resolveOfoAddressFromPage(tok, ofoUser, accountOrCookies).catch(() => null);
     if (pageHit) return pageHit;
     const reason = sawTransportBlock || sawRealAnswer
       ? (hadWebSession ? 'NETWORK' : 'NO_ACCOUNT')
@@ -3834,7 +3840,7 @@ export function parseDapiCartPayload(data) {
     rawCartOrderTotal: Math.round(rawOrderTotal * 100) / 100,
     packingCharges: Math.round(packingCharges * 100) / 100,
     taxesAndCharges: Math.round(taxesAndCharges * 100) / 100,
-    finalPayable: Math.round(orderTotal > 0 ? orderTotal : Math.max(0, itemTotal - couponDiscount - tradeDiscountTotal + swiggyOneMembershipFee + deliveryFee + taxesAndCharges)),
+    finalPayable: Math.round((orderTotal > 0 ? orderTotal : Math.max(0, itemTotal - couponDiscount - tradeDiscountTotal + swiggyOneMembershipFee + deliveryFee + taxesAndCharges)) * 100) / 100,
     totalSavings
   };
 }
@@ -5110,49 +5116,17 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
   }
   enriched.mobile = rawPhone;
 
-  // 1. Match or reuse an existing address on THIS account.
-  // Address on Swiggy stores physical delivery location; receiver phone is passed with order instructions.
-  if (savedList.length > 0) {
-    const existing = savedList.find(sa => {
-      if (!sa.id) return false;
-      const textMatch = hasSameAddressText(enriched.address, sa.address);
-      const coordsValid = isValidIndianDeliveryCoordinates(enriched.lat, enriched.lng) && isValidIndianDeliveryCoordinates(sa.lat, sa.lng);
-      const dist = coordsValid ? distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng) : Infinity;
-      const saPhone = normalizeIndianMobile(sa.mobile || sa.phone);
-      // ONLY reuse existing address if it already carries the recipient's mobile number,
-      // or if sa has no phone bound. If sa is bound to a different mobile number (e.g. account owner),
-      // we must create a new address with the recipient's mobile number so Swiggy's delivery partner
-      // receives the recipient's phone number!
-      const phoneMatches = !saPhone || saPhone === rawPhone;
-      if (!phoneMatches) return false;
-      if (textMatch) return true;
-      if (coordsValid && dist < 120) return true;
-      return false;
-    });
-    if (existing) {
-      const savedMobile = normalizeIndianMobile(enriched.mobile) || rawPhone;
-      if (!savedMobile) {
-        return {
-          addressId: '',
-          addressDetails: enriched,
-          createdNew: false,
-          error: 'Recipient mobile number is missing or invalid. Add the receiver’s correct 10-digit Indian mobile number before ordering.'
-        };
-      }
-      return {
-        addressId: String(existing.id),
-        addressDetails: {
-          ...enriched,
-          id: String(existing.id),
-          lat: enriched.lat || existing.lat,
-          lng: enriched.lng || existing.lng,
-          name: enriched.name || existing.name,
-          mobile: savedMobile,
-          city: enriched.city || existing.city
-        },
-        createdNew: false
-      };
-    }
+  // Reuse only an actual saved address with the same receiver, street and
+  // verified coordinates. A missing phone or a merely nearby pin is not proof.
+  const existing = savedList.find(sa => sa?.id && sameDeliveryRecipient(enriched, {
+    ...sa, mobile: sa.mobile || sa.phone || ''
+  }));
+  if (existing) {
+    return {
+      addressId: String(existing.id),
+      addressDetails: { ...existing, id: String(existing.id), mobile: normalizeIndianMobile(existing.mobile || existing.phone) },
+      createdNew: false
+    };
   }
 
   // 2. Create the explicitly supplied delivery address on the selected Swiggy account.
@@ -5245,37 +5219,9 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
     }
   }
 
-  // Fallback: If address creation failed or was blocked by WAF, check if the account has
-  // ANY saved address (preferring closest) so cart, distance fees and coupons can be evaluated!
-  if (savedList && savedList.length > 0) {
-    const withCoords = savedList.filter(sa => sa.id && isValidIndianDeliveryCoordinates(sa.lat, sa.lng) && isValidIndianDeliveryCoordinates(enriched.lat, enriched.lng));
-    let bestNear = null;
-    let bestDist = Infinity;
-    for (const sa of withCoords) {
-      const d = distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng);
-      if (d < bestDist) {
-        bestDist = d;
-        bestNear = sa;
-      }
-    }
-    const fallbackSa = bestNear || savedList.find(sa => sa.id) || null;
-    if (fallbackSa) {
-      return {
-        addressId: String(fallbackSa.id),
-        addressDetails: {
-          ...enriched,
-          id: String(fallbackSa.id),
-          lat: enriched.lat || fallbackSa.lat,
-          lng: enriched.lng || fallbackSa.lng,
-          name: enriched.name || fallbackSa.name,
-          mobile: rawPhone,
-          city: enriched.city || fallbackSa.city
-        },
-        createdNew: false
-      };
-    }
-  }
-
+  // Never substitute the closest or first saved address when creation fails.
+  // That could route an order to another recipient while displaying the input
+  // address, and an address ID from a failed request is not provider proof.
   return {
     addressId: '',
     addressDetails: enriched,
@@ -7463,8 +7409,11 @@ export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = 25_0
   ]).finally(() => { if (waitTimer) clearTimeout(waitTimer); });
 
   if (waited === 'timeout') {
-    if (swiggyAccountLocks.get(lockId) === tail) swiggyAccountLocks.delete(lockId);
+    // The prior holder is still running. Resolve only this waiter's slot and
+    // retain the chain until the holder exits; deleting the map here would let
+    // the next caller mutate the same account concurrently with a placement.
     release();
+    tail.then(() => { if (swiggyAccountLocks.get(lockId) === tail) swiggyAccountLocks.delete(lockId); }, () => { if (swiggyAccountLocks.get(lockId) === tail) swiggyAccountLocks.delete(lockId); });
     const err = new Error('Swiggy ID is busy on another job — is ID par abhi kaam chal raha hai. 20-25 second me dobara try karein.');
     err.code = 'ACCOUNT_LOCK_TIMEOUT';
     err.diag = { code: 'ACCOUNT_LOCK_TIMEOUT', stage: 'ACCOUNT_LOCK', waitedMs: waitLimit };
@@ -7500,9 +7449,8 @@ export function getAccountLockStats() {
 }
 
 /**
- * Sirf wo locks chhodo jo `olderThanMs` se zyada purane hain (default 45s).
- * Jo abhi sach me kaam kar raha hai use haath nahi lagate — warna order beech
- * me toot jayega. Return me sach: kitne chhode, kitne chhode nahi.
+ * Report old in-process locks, but never force-release a running job merely
+ * because it is old. Doing so would allow concurrent cart/placement work.
  */
 export async function releaseStaleAccountLocks({ olderThanMs = 45_000 } = {}) {
   const now = Date.now();
@@ -7512,10 +7460,10 @@ export async function releaseStaleAccountLocks({ olderThanMs = 45_000 } = {}) {
   for (const [id, meta] of Array.from(swiggyAccountLockMeta.entries())) {
     const ageMs = now - Number(meta.since || now);
     if (ageMs <= limit) { kept += 1; continue; }
-    // Lock ka tail hata do — agla waiter turant aage badh jayega.
-    swiggyAccountLocks.delete(id);
-    swiggyAccountLockMeta.delete(id);
-    released.push({ id, ageMs, ageSec: Math.round(ageMs / 1000) });
+    // Age alone does not prove the asynchronous job is dead. Removing an
+    // active lock can race cart mutation against an in-flight placement.
+    // A real process restart clears in-memory locks; keep live holders intact.
+    kept += 1;
   }
   return { at: new Date().toISOString(), released, kept };
 }
@@ -8583,8 +8531,9 @@ function buildSwiggyPaymentsApiHeaders(account, auth, { cartId = '', addressId =
 const __bootNetworkFetchRef = globalThis.fetch;
 
 export function isZeroSmsTestSandboxActive() {
-  if (process.env.ALLOW_LIVE_SWIGGY_SMS_ORDER === '1') return false;
+  // An explicit safety block must never be bypassed by another flag.
   if (process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE === '1') return true;
+  if (process.env.ALLOW_LIVE_SWIGGY_SMS_ORDER === '1') return false;
   if (process.env.NODE_ENV === 'test') return true;
   const entry = String(process.argv?.[1] || '');
   return /(?:^|[\\/])test[_-].*\.(?:mjs|cjs|js)$/i.test(entry);
@@ -8769,8 +8718,10 @@ export async function ensureOfoCartMode(account, order, {
     out.ok = true;
     // OFO sirf tab \"confirmed\" jab cart ne marker echo kiya. Warna sach: push
     // accept hua par cart me OFO dikha nahi — link aa bhi sakta hai, nahi bhi.
-    out.ofo = out.proof === 'CART_READBACK' || out.proof === 'PUSH_ECHO';
-    out.confirmed = out.proof === 'CART_READBACK';
+    // A phone/name or request echo is not proof of OFO acceptance.
+    const rbMeta = readback?.json?.data?.cartMeta || readback?.json?.data;
+    out.confirmed = (readback?.json?.statusCode === 0 || readback?.json?.statusCode === '0') && hasExplicitOfoCartFlag(rbMeta);
+    out.ofo = out.confirmed;
     out.reason = out.ofo
       ? ''
       : 'OFO push accept hua par live cart me OFO marker wapas nahi aaya (Swiggy ne is cart par OFO set nahi kiya)';
@@ -8782,6 +8733,14 @@ export async function ensureOfoCartMode(account, order, {
     || `OFO cart push ne cart confirm nahi kiya (statusCode=${out.syncStatus}, items=${itemCount}, total=${total})`;
   remember();
   return out;
+}
+
+// Read only direct cart state flags: a phone/name or unrelated text/config
+// mentioning OFO does not show that this cart is set to order for someone else.
+export function hasExplicitOfoCartFlag(cartMeta) {
+  if (!cartMeta || typeof cartMeta !== 'object') return false;
+  return ['is_order_for_someone_else', 'ordering_for_someone_else', 'order_for_others', 'ofo']
+    .some(key => cartMeta[key] === true);
 }
 
 /** Place-response me OFO ka asli saboot (jhoot nahi). */
@@ -8799,7 +8758,10 @@ export function detectOfoFromPlaceResponse(placeJson) {
   if (explicit) out.recipientSeen = 'explicit_flag';
   const m = text.match(/"(?:recipient_phone|alternate_mobile|alternate_phone)"\s*:\s*"?(\d{10})/i);
   if (m) out.recipientSeen = out.recipientSeen || m[1];
-  out.ofo = Boolean(explicit) || (/\bofo\b/i.test(lower) && !out.markers.includes('ORDER'));
+  // Merely mentioning "ofo" (including an `ofo: false` field or an error
+  // message) is not acceptance. Only an explicit true provider flag counts.
+  const explicitOfo = /"ofo"\s*:\s*true/i.test(text);
+  out.ofo = Boolean(explicit || explicitOfo);
   return out;
 }
 
@@ -8835,20 +8797,15 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     throw err;
   }
 
-  // Swiggy ne pehle hi is order ko PLACE kar diya tha par intent nahi diya. Tab
-  // cart khaali ho chuka hota hai, aur QR dobara banane par bot "bill relock
-  // failed" jaisi confusing error deta tha. Honest state batao — naya QR
-  // maangne par (forceNewQr) hi dobara place hota hai.
-  if (order?.swiggyPlacedUnpaid && !forceNewQr) {
-    const placedAgoMs = Date.now() - (Date.parse(String(order.placedWithoutIntentAt || '')) || Date.now());
-    if (placedAgoMs < 30 * 60 * 1000) {
-      const err = new Error(
-        `Swiggy par ye order pehle hi place ho chuka hai (#${order.pendingSwiggyOrderId || '—'}) par payment nahi hua. ` +
-        `Payment link se pay karein, ya "Naya QR" dabaiye (tab ek naya place hoga).`
-      );
-      err.diag = { code: 'ORDER_ALREADY_PLACED_UNPAID', stage: 'GENERATE_REAL_QR', placedOrderId: order.pendingSwiggyOrderId || '' };
-      throw err;
-    }
+  // A missing intent is not evidence that the provider did not create an order.
+  // Neither elapsed time nor a "new QR" button authorizes a second placement.
+  if (order?.swiggyPlacedUnpaid) {
+    const err = new Error(
+      `Swiggy may already have an unpaid order (#${order.pendingSwiggyOrderId || '—'}). ` +
+      'Check the same account in Swiggy My Orders; a replacement order was not created.'
+    );
+    err.diag = { code: 'ORDER_ALREADY_PLACED_UNPAID', stage: 'GENERATE_REAL_QR', placementAttempted: true, placedOrderId: order.pendingSwiggyOrderId || '' };
+    throw err;
   }
 
   // A QR must never be generated from a city default, an unresolved short link, or an
@@ -8922,6 +8879,25 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     };
   }
 
+  if (!String(order?.id || '').trim()) {
+    const err = new Error('Cannot place a Swiggy order without a stable order ID.');
+    err.diag = { code: 'PLACEMENT_KEY_REQUIRED', stage: 'GENERATE_REAL_QR', placementAttempted: false };
+    throw err;
+  }
+  const placementKey = `chat:${String(order.id).trim()}`;
+  const priorPlacement = readSwiggyPlacement(placementKey);
+  if (priorPlacement) throw placementAlreadyAttemptedError(priorPlacement);
+  // Protect orders created by older versions, which have no journal entry.
+  if (order.pendingSwiggyOrderId || order.pendingSwiggyUpiUri || order.realUpiIntentUri) {
+    throw placementAlreadyAttemptedError({ state: 'LEGACY_PENDING', orderId: order.pendingSwiggyOrderId });
+  }
+  if (process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE === '1' ||
+      (globalThis.fetch === __bootNetworkFetchRef && isZeroSmsTestSandboxActive())) {
+    const err = new Error('Swiggy order placement is blocked in this environment. No test QR or order was generated.');
+    err.diag = { code: 'SWIGGY_LIVE_ORDER_BLOCKED', stage: 'GENERATE_REAL_QR', placementAttempted: false };
+    throw err;
+  }
+
   return withSwiggyAccountLock(account, async () => {
     if (!account || (!account.cookies && !account.tid && !account.token)) {
       const err = new Error('Selected Swiggy account has no active session cookies or token.');
@@ -8932,6 +8908,12 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     const reqLat = String(order.addressDetails.lat);
     const reqLng = String(order.addressDetails.lng);
     const unwrapCartMeta = (resp) => resp?.json?.data?.cartMeta || resp?.json?.data || {};
+    // Only use this on a GET readback: the POST wrapper may echo the supplied
+    // address ID into data.address_id even when Swiggy did not bind it.
+    const boundAddressFromReadback = (resp) => {
+      const data = resp?.json?.data || {}, meta = data.cartMeta || data;
+      return String(meta.address_id || meta.delivery_address?.id || data.address_id || data.delivery_address?.id || '');
+    };
     const extractCartCount = (cartResp, meta) =>
       Number(
         meta?.cart_total_count ??
@@ -8975,15 +8957,23 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     if (candidateRecipientPhone && order.addressDetails && !order.addressDetails.mobile) {
       order.addressDetails.mobile = candidateRecipientPhone;
     }
-    const savedRes = await saveAddressToAccount(account, order.addressDetails, prefetchedAddrs || []);
+    const requestedRecipient = { ...order.addressDetails };
+    const savedRes = await saveAddressToAccount(account, requestedRecipient, prefetchedAddrs || []);
     if (!savedRes?.addressId || !isUsableDeliveryAddress(savedRes.addressDetails) || !normalizeIndianMobile(savedRes.addressDetails.mobile)) {
       const err = new Error(savedRes?.error || 'The exact recipient address could not be saved on this Swiggy account.');
       err.diag = { code: 'QR_DELIVERY_ADDRESS_BIND_FAILED', stage: 'GENERATE_REAL_QR' };
       throw err;
     }
-    order.addressDetails = savedRes.addressDetails;
-    const requestedAddressId = String(savedRes.addressId);
-    let cartAddressId = String(cm.address_id || cm.delivery_address?.id || '');
+    const readbackAddresses = savedRes.createdNew ? await fetchAccountAddresses(account) : (prefetchedAddrs || []);
+    const readbackAddress = readbackAddresses.find(a => String(a?.id || '') === String(savedRes.addressId));
+    if (!readbackAddress || !sameDeliveryRecipient(requestedRecipient, readbackAddress)) {
+      const err = new Error('Swiggy did not read back the same recipient, address and location. No order was placed.');
+      err.diag = { code: 'QR_DELIVERY_ADDRESS_READBACK_MISMATCH', stage: 'GENERATE_REAL_QR', placementAttempted: false };
+      throw err;
+    }
+    order.addressDetails = readbackAddress;
+    let requestedAddressId = String(savedRes.addressId);
+    let cartAddressId = boundAddressFromReadback(curCart);
     let resolvedOwnAddressId = requestedAddressId;
     let cartAddressMismatch = cartAddressId !== requestedAddressId;
 
@@ -9002,7 +8992,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       cm = unwrapCartMeta(curCart);
       itemCount = extractCartCount(curCart, cm);
       requestedAddressId = String(order.addressDetails?.id || requestedAddressId);
-      cartAddressId = String(cm.address_id || cm.delivery_address?.id || '');
+      cartAddressId = boundAddressFromReadback(curCart);
       resolvedOwnAddressId = requestedAddressId;
       cartAddressMismatch = cartAddressId !== requestedAddressId;
     }
@@ -9074,12 +9064,17 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         },
         { lat: directLat, lng: directLng, flushFirst: true }
       );
-      const directMeta = unwrapCartMeta(directSync);
-      if (directMeta && (directMeta.order_total !== undefined || directMeta.cart_total_count !== undefined)) {
-        curCart = directSync;
+      // Read the cart back after mutation. The update wrapper may echo the
+      // requested address ID, which is not proof of a successful binding.
+      const directReadback = (directSync?.json?.statusCode === 0 || directSync?.json?.statusCode === '0')
+        ? await swiggyCartGet(account, { lat: directLat, lng: directLng }).catch(() => null) : null;
+      const directMeta = unwrapCartMeta(directReadback);
+      if ((directReadback?.json?.statusCode === 0 || directReadback?.json?.statusCode === '0') && directMeta &&
+          (directMeta.order_total !== undefined || directMeta.cart_total_count !== undefined)) {
+        curCart = directReadback;
         cm = directMeta;
-        itemCount = extractCartCount(directSync, directMeta);
-        cartAddressId = String(cm.address_id || cm.delivery_address?.id || '');
+        itemCount = extractCartCount(directReadback, directMeta);
+        cartAddressId = boundAddressFromReadback(directReadback);
         cartAddressMismatch = cartAddressId !== requestedAddressId;
       }
 
@@ -9143,12 +9138,8 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       console.warn('[OfferApply] skipped:', offerApplyErr?.message || offerApplyErr);
     }
 
-    // Agar live cart purane bill se SASTA ho gaya (offer lag gaya) to order par
-    // bhi wahi amount likho — customer ko kam hi dikhega, zyada kabhi nahi.
-    if (Number(cm.order_total || 0) > 0 && Number(order?.finalPayable || 0) > Number(cm.order_total)) {
-      order.finalPayable = Number(cm.order_total);
-      order.campaignFreeCash = Math.max(Number(order.campaignFreeCash || 0), Number(prePlaceOfferApply?.applied ? order.campaignFreeCash : 0));
-    }
+    // Even a lower price changes the approved bill. Do not silently replace it;
+    // the final readback below requires a fresh confirmation on any change.
 
     // ── AMOUNT INVARIANCE ────────────────────────────────────────────────────
     // Customer ko jo bill dikha tha, QR usse ZYADA ka nahi hona chahiye. Pehle
@@ -9177,7 +9168,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       throw err;
     }
 
-    const cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || '');
+    let cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || '');
     const addressId = requestedAddressId;
     const lat = reqLat;
     const lng = reqLng;
@@ -9242,23 +9233,16 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         cm = ofoMeta;
         itemCount = extractCartCount(ofoCart, ofoMeta);
       }
-      if (Number(cm.order_total || 0) > 0 && Number(order?.finalPayable || 0) > Number(cm.order_total)) {
-        order.finalPayable = Number(cm.order_total);
-      }
-      console.log(`[OFO] ${account?.phone || 'ID'}: cart OFO mode me (recipient ${ofoAttempt.recipientPhone}) — tracking link isi se banega.`);
-    } else if (ofoAttempt?.ok && !ofoAttempt?.ofo && String(process.env.OFO_STRICT || '').trim() !== '1') {
-      // Push accept hua par cart ne OFO echo nahi kiya — order place karo (customer
-      // ko rokna galat), par boss ko proof level ke saath sach batao.
-      if (order && typeof order === 'object') {
-        order.ofoWarning = `OFO push gaya par cart ne confirm nahi kiya: ${String(ofoAttempt?.reason || '').slice(0, 140)}`;
-      }
-      console.warn(`[OFO] ${account?.phone || 'ID'}: push accept, cart ne OFO echo nahi kiya (proof=${ofoAttempt?.proof}).`);
-    } else if (String(process.env.OFO_STRICT || '').trim() === '1') {
-      // Strict mode (boss chahe to): OFO na bane to order place hi na ho — kyunki
-      // OFO ke bina tracking link Swiggy kabhi nahi deta.
+      console.log('[OFO] The live cart returned an explicit order-for-someone-else marker; recipient SMS is not verified.');
+    } else if (!normalizeIndianMobile(account?.phone || account?.mobile || '') ||
+               normalizeIndianMobile(requestedRecipient.mobile) !== normalizeIndianMobile(account?.phone || account?.mobile || '') ||
+               String(process.env.OFO_STRICT || '').trim() === '1') {
+      // For a different receiver, do not knowingly place a normal order when
+      // the provider did not confirm OFO on the live cart. This marker still
+      // cannot guarantee that Swiggy will send the receiver an SMS.
       const err = new Error(
-        `OFO (order for others) cart nahi bana — isliye order place nahi kiya: ` +
-        `${ofoAttempt?.reason || 'wajah nahi mili'}. (OFO_STRICT=1)`
+        `Swiggy ne order-for-someone-else cart confirm nahi kiya; order place nahi hua. ` +
+        `${ofoAttempt?.reason || 'Swiggy app me recipient check karein'}.`
       );
       err.diag = {
         code: 'OFO_CART_MODE_FAILED',
@@ -9271,13 +9255,34 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       };
       throw err;
     } else {
-      // Default: order rok kar customer ko phasana galat hoga — place karo, par
-      // BOSS ko saaf batao ki OFO nahi bana (isliye link nahi aayega).
-      console.warn(`[OFO] ${account?.phone || 'ID'}: OFO cart nahi bana — ${ofoAttempt?.reason || 'wajah nahi mili'}. Order place ho raha hai (non-OFO), link nahi aayega.`);
-      if (order && typeof order === 'object') {
-        order.ofoWarning = `OFO cart nahi bana: ${String(ofoAttempt?.reason || 'wajah nahi mili').slice(0, 150)}`;
-      }
+      // A self-order can use the normal cart; never claim a recipient SMS.
+      order.ofoWarning = 'OFO was not confirmed on this cart.';
     }
+
+    // OFO/offer operations can change the cart. Read it again immediately
+    // before placement and fail closed if the address, items or payable differ.
+    const finalCart = await swiggyCartGet(account, { lat, lng, timeoutMs: 7000 }).catch(() => null);
+    const finalMeta = unwrapCartMeta(finalCart);
+    const finalParsed = finalCart?.json?.data ? parseDapiCartPayload(finalCart.json.data) : null;
+    const finalAddressId = boundAddressFromReadback(finalCart);
+    const finalTotal = Number(finalMeta.order_total);
+    const authorizedTotal = Number(order.billShownAmount || order.finalPayable || 0);
+    const finalAccountPhone = normalizeIndianMobile(account?.phone || account?.mobile || '');
+    const needsOfo = !finalAccountPhone || normalizeIndianMobile(requestedRecipient.mobile) !== finalAccountPhone || String(process.env.OFO_STRICT || '').trim() === '1';
+    if ((finalCart?.json?.statusCode !== 0 && finalCart?.json?.statusCode !== '0') ||
+        !finalParsed || !sameCartItems(order.items, finalParsed.items) || !doesCouponMatchExpectedOrder(finalParsed, order) ||
+        (needsOfo && !hasExplicitOfoCartFlag(finalMeta)) || finalAddressId !== String(addressId) ||
+        (finalParsed.restaurantId && order.restaurantId && String(finalParsed.restaurantId) !== String(order.restaurantId)) ||
+        exactPaise(finalTotal) === null || finalTotal <= 0 || exactPaise(authorizedTotal) === null || authorizedTotal <= 0 ||
+        exactPaise(finalTotal) !== exactPaise(authorizedTotal)) {
+      const err = new Error('Swiggy cart, recipient address, or payable amount changed. No order was placed; refresh the bill and review it again.');
+      err.diag = { code: 'QR_FINAL_CART_MISMATCH', stage: 'PRE_PLACE_VERIFY', placementAttempted: false };
+      throw err;
+    }
+    curCart = finalCart;
+    cm = finalMeta;
+    itemCount = extractCartCount(finalCart, finalMeta);
+    cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || cartId);
 
     // Swiggy kabhi `app_redirection_info` ke bajaye kisi doosre field me intent
     // bhejta hai (ya `payment_fallbacks` me). Pehle sirf ek path dekha jata tha,
@@ -9410,35 +9415,6 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       });
 
       let reqData = buildNativeReq();
-      if (globalThis.fetch === __bootNetworkFetchRef && isZeroSmsTestSandboxActive()) {
-        const effectiveAmt = Math.max(1, Math.round((Number(cm.order_total || 0) - Number(splitPayAmt || 0)) * 100) / 100);
-        const synRand = String(Math.floor(100 + Math.random() * 900));
-        const synSeed = `${String(account.phone || '0000').slice(-4)}${Date.now().toString().slice(-6)}${synRand}`;
-        const synOrderId = `2599${synSeed.slice(0, 11)}`;
-        const synTxnId = `2799${synSeed.slice(0, 11)}`;
-        const synJson = {
-          statusCode: 0,
-          statusMessage: 'Zero-SMS Test Sandbox QR (0 SMS sent to phone)',
-          tid: latestTid,
-          data: {
-            order_data: {
-              order_id: synOrderId,
-              order_total: effectiveAmt,
-              targeted_marketplace_payment_reference_id: synTxnId,
-              sla_time: '34',
-              app_redirection_info: {
-                upiRedirect: {
-                  upiIntentRedirect: {
-                    upiIntentUrl: `upi://pay?pa=swiggy1online.gpay@okpayaxis&pn=SWIGGY&tr=${synTxnId}&am=${effectiveAmt.toFixed(2)}&cu=INR&mc=5812&amount=${effectiveAmt.toFixed(2)}`
-                  }
-                }
-              }
-            }
-          }
-        };
-        return { placeRes: { ok: true, status: 200 }, rawText: JSON.stringify(synJson), json: synJson, splitPayUsed: splitPayAmt };
-      }
-
       let r = await fetch('https://chkout.swiggy.com/api/v2/order/place', {
         method: 'POST',
         headers: reqData.headers,
@@ -9453,32 +9429,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         account.jwtTid = parsed.tid;
       }
 
-      // If `statusCode === 8` ("Order amount has updated to ₹X"), refresh cart once and confirm updated amount immediately!
-      if (parsed?.statusCode === 8) {
-        const refreshed = await swiggyCartGet(account, { lat, lng, timeoutMs: 5000 }).catch(() => null);
-        const refMeta = unwrapCartMeta(refreshed);
-        if (refMeta && Number(refMeta.order_total || 0) > 0) {
-          cm = refMeta;
-          rawOrderTotal = Number(cm.order_total || 0);
-          cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || cartId);
-          if (refreshed?.json?.tid && String(refreshed.json.tid).includes('.')) {
-            latestTid = refreshed.json.tid;
-          }
-          reqData = buildNativeReq();
-          r = await fetch('https://chkout.swiggy.com/api/v2/order/place', {
-            method: 'POST',
-            headers: reqData.headers,
-            body: JSON.stringify(reqData.payload),
-            signal: AbortSignal.timeout(12000)
-          });
-          txt = await r.text();
-          parsed = null;
-          try { parsed = JSON.parse(txt); } catch {}
-          if (parsed?.tid && String(parsed.tid).includes('.')) {
-            account.jwtTid = parsed.tid;
-          }
-        }
-      }
+      // Even a changed-amount response is never followed by a second POST.
       return { placeRes: r, rawText: txt, json: parsed, splitPayUsed: splitPayAmt };
     };
 
@@ -9525,38 +9476,11 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
           intent_app_display_name: 'Google Pay'
         }
       };
-      if (globalThis.fetch === __bootNetworkFetchRef && isZeroSmsTestSandboxActive()) {
-        const effectiveAmt = Math.max(1, Math.round((Number(cm.order_total || 0) - Number(splitPayAmt || 0)) * 100) / 100);
-        const synRand = String(Math.floor(100 + Math.random() * 900));
-        const synSeed = `${String(account.phone || '0000').slice(-4)}${Date.now().toString().slice(-6)}${synRand}`;
-        const synOrderId = `2599${synSeed.slice(0, 11)}`;
-        const synTxnId = `2799${synSeed.slice(0, 11)}`;
-        const synJson = {
-          statusCode: 0,
-          statusMessage: 'Zero-SMS Test Sandbox QR (0 SMS sent to phone)',
-          data: {
-            order_data: {
-              order_id: synOrderId,
-              order_total: effectiveAmt,
-              targeted_marketplace_payment_reference_id: synTxnId,
-              sla_time: '34',
-              app_redirection_info: {
-                upiRedirect: {
-                  upiIntentRedirect: {
-                    upiIntentUrl: `upi://pay?pa=swiggy1online.gpay@okpayaxis&pn=SWIGGY&tr=${synTxnId}&am=${effectiveAmt.toFixed(2)}&cu=INR&mc=5812&amount=${effectiveAmt.toFixed(2)}`
-                  }
-                }
-              }
-            }
-          }
-        };
-        return { placeRes: { ok: true, status: 200 }, rawText: JSON.stringify(synJson), json: synJson, splitPayUsed: splitPayAmt };
-      }
-
       const r = await fetch('https://payments.swiggy.com/api/v3/order/place', {
         method: 'POST',
         headers: buildSwiggyPaymentsApiHeaders(account, auth, { cartId, addressId, lat, lng }),
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(12000)
       });
       const txt = await r.text();
       let parsed = null;
@@ -9564,32 +9488,18 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       return { placeRes: r, rawText: txt, json: parsed, splitPayUsed: splitPayAmt };
     };
 
-    // Note: if `user_swiggy_money > 0`, try `payments.swiggy.com/api/v3/order/place` FIRST only when no native trade discount would be lost,
-    // OR try Native Android `chkout/api/v2/order/place` first whenever native item/reward discounts are active!
-    let attemptOut = null;
-    if (desiredSplitPay > 0 && Number(cm.trade_discount_total || 0) === 0 && Number(cm.subscription_total || 0) === 0) {
-      attemptOut = await sendWebPaymentsPlaceOrder(desiredSplitPay).catch(() => null);
-      if (!attemptOut || !attemptOut.placeRes?.ok || attemptOut.json?.statusCode !== 0 || !extractUpiFromPlaceJson(attemptOut.json).upiIntentUrl) {
-        attemptOut = await sendWebPaymentsPlaceOrder(0).catch(() => null);
-      }
-    } else {
-      attemptOut = await sendNativeAndroidPlaceOrder(desiredSplitPay).catch(() => null);
-      if (desiredSplitPay > 0 && (!attemptOut || !attemptOut.placeRes?.ok || attemptOut.json?.statusCode !== 0 || !extractUpiFromPlaceJson(attemptOut.json).upiIntentUrl)) {
-        attemptOut = await sendNativeAndroidPlaceOrder(0).catch(() => null);
-      }
-      if (!attemptOut || !attemptOut.placeRes?.ok || attemptOut.json?.statusCode !== 0 || !extractUpiFromPlaceJson(attemptOut.json).upiIntentUrl) {
-        attemptOut = await sendWebPaymentsPlaceOrder(desiredSplitPay).catch(() => null);
-        if (desiredSplitPay > 0 && (!attemptOut || !attemptOut.placeRes?.ok || attemptOut.json?.statusCode !== 0 || !extractUpiFromPlaceJson(attemptOut.json).upiIntentUrl)) {
-          attemptOut = await sendWebPaymentsPlaceOrder(0).catch(() => null);
-        }
-      }
-    }
+    // Pick one endpoint before sending. After any POST, even a timeout or a
+    // rejection is ambiguous; never try another endpoint, amount or account.
+    const useWeb = desiredSplitPay > 0 && Number(cm.trade_discount_total || 0) === 0 && Number(cm.subscription_total || 0) === 0;
+    const attemptOut = await executeSingleSwiggyPlacement(placementKey, () =>
+      useWeb ? sendWebPaymentsPlaceOrder(desiredSplitPay) : sendNativeAndroidPlaceOrder(desiredSplitPay)
+    );
 
     const { placeRes, rawText, json, splitPayUsed } = attemptOut || { placeRes: { ok: false, status: 0 }, rawText: '', json: null, splitPayUsed: 0 };
 
     const { orderData, redir, upiIntentUrl } = extractUpiFromPlaceJson(json);
 
-    const swiggyOrderId = String(orderData?.order_id || orderData?.orderId || '');
+    const swiggyOrderId = normalizeSwiggyOrderId(orderData?.order_id || orderData?.orderId || '');
     const paymentTxnId = String(
       orderData?.targeted_marketplace_payment_reference_id ||
       orderData?.payment_info_v2?.payment_transactions?.[0]?.marketplace_reference_id ||
@@ -9608,16 +9518,24 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
           ? Math.max(0, Math.round((rawPlacedTotal - splitPayUsed) * 100) / 100)
           : rawPlacedTotal);
 
-    // A QR is only usable if the intent itself is well-formed (real VPA + amount).
-    // Otherwise the customer scans it and sees "invalid" — stop here instead.
+    // Compare the actual intent amount to the approved live bill, not to the
+    // amount read from the same intent (which would always match itself).
+    const orderTotalPaise = exactPaise(rawOrderTotal);
+    const splitPaise = exactPaise(Number(splitPayUsed || 0));
+    const expectedIntentAmount = orderTotalPaise === null || splitPaise === null ? NaN : (orderTotalPaise - splitPaise) / 100;
     const intentCheck = upiIntentUrl
-      ? validateUpiIntentForQr(upiIntentUrl, { amount: liveOrderTotal, requireAmount: false })
-      : { valid: false, problems: ['upi intent missing'] };
+      ? validateUpiIntentForQr(upiIntentUrl, { amount: expectedIntentAmount, requireAmount: true })
+      : { valid: false, problems: ['upi intent missing'], info: {} };
+    if (!(expectedIntentAmount > 0) || exactPaise(expectedIntentAmount) === null ||
+        exactPaise(intentCheck.info?.amount) !== exactPaise(expectedIntentAmount)) {
+      intentCheck.valid = false;
+      intentCheck.problems.push('UPI amount does not exactly match the reviewed Swiggy bill');
+    }
 
-    const placeAccepted = Boolean(placeRes.ok && json?.statusCode === 0);
-    const placedOrderId = String(orderData?.order_id || orderData?.orderId || '');
+    const placeAccepted = Boolean(placeRes.ok && (json?.statusCode === 0 || json?.statusCode === '0'));
+    const placedOrderId = normalizeSwiggyOrderId(orderData?.order_id || orderData?.orderId || '');
 
-    if (!placeAccepted || !upiIntentUrl || !upiIntentUrl.startsWith('upi://') || !intentCheck.valid) {
+    if (!placeAccepted || !placedOrderId || !upiIntentUrl || !upiIntentUrl.startsWith('upi://') || !intentCheck.valid) {
       // Do bilkul alag haalat hain — inhe ek hi error me mila dena hi confusion tha:
       //  (A) Swiggy ne mana kiya (statusCode != 0) -> asli rejection.
       //  (B) Swiggy ne ORDER PLACE kar diya par UPI intent nahi diya -> order
@@ -9625,8 +9543,8 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       //      doosre account par dobara try karne se ek AUR unpaid order ban jata tha.
       const err = new Error(
         placeAccepted
-          ? `Swiggy ne order place kar diya${placedOrderId ? ` (Order ID ${placedOrderId})` : ''} par UPI intent nahi mila — QR nahi ban sakta.`
-          : `Swiggy payment gateway rejected QR creation: HTTP ${placeRes.status}, statusCode=${json?.statusCode}, msg="${json?.statusMessage || 'Unknown'}"`
+          ? `Swiggy accepted the request${placedOrderId ? ` (order ${placedOrderId})` : ''}, but did not return a verifiable order ID and matching UPI intent. Check Swiggy My Orders; do not retry.`
+          : `Swiggy returned an inconclusive placement response (HTTP ${placeRes.status}). An order may exist; check Swiggy My Orders and do not retry.`
       );
       // Suspended ID: Swiggy order place par "account blocked" bolta hai.
       // Ise aam error samajhna hi order atakne ki wajah thi.
@@ -9655,6 +9573,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
           ? 'ACCOUNT_SUSPENDED'
           : (placeAccepted ? 'SWIGGY_PLACED_NO_UPI_INTENT' : 'SWIGGY_PLACE_ORDER_QR_FAILED'),
         placed: placeAccepted,
+        placementAttempted: true,
         placedOrderId,
         paymentFallbacks: json?.data?.payment_fallbacks || null,
         suspended: suspendFailure.suspended,
@@ -9678,8 +9597,8 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         order.placedWithoutIntentAt = new Date().toISOString();
         err.diag.alreadyPlacedOrderId = placedOrderId;
       }
-      if (!intentCheck.valid && !placeAccepted) {
-        err.diag.code = 'SWIGGY_UPI_INTENT_INVALID';
+      if (!placeAccepted) {
+        err.diag.code = 'SWIGGY_PLACEMENT_RESPONSE_UNCERTAIN';
         err.diag.stage = 'POST_PAYMENTS_ORDER_PLACE';
         err.diag.intentProblems = intentCheck.problems || [];
       }
@@ -10012,7 +9931,8 @@ async function fetchSecondaryOrderSharePayloads(accountOrCookies, orderId, custo
   ]);
   const payloads = [];
   for (const r of responses) {
-    const body = r?.json?.data ?? r?.json;
+    if (r?.status !== 200 || (r?.json?.statusCode !== 0 && r?.json?.statusCode !== '0')) continue;
+    const body = r.json?.data;
     if (!body || typeof body !== 'object') continue;
     // Reject cross-order responses if Swiggy returned a different order_id
     const nestedOrder = body?.orders?.[0] || body?.order || body;
@@ -10215,7 +10135,7 @@ export async function scanOrderAcrossAccounts(swiggyOrderId, {
       trkData?.order_status_details?.status_message,
       details?.order_status || details?.status || orderObject?.order_status || orderObject?.status,
       details?.post_status || orderObject?.post_status || orderObject?.order_delivery_status
-    ) || 'Order Confirmed';
+    ) || 'Swiggy status unavailable';
     const accPhone = String(acc?.phone || acc?.mobile || '').trim();
     const snap = extractSwiggyOrderSnapshotFields(orderObject, details, trkData, deData, { accKey: key, accPhone });
     rememberSwiggyOrderTracking(targetId, { trackingUrl: trackingUrl || '', deliveryOtp: otp, status: statusText, ...snap });
@@ -10528,41 +10448,55 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
   let targetOrderId = String(order?.pendingSwiggyOrderId || order?.swiggyOrderId || '');
   const pendingPaasId = String(order?.pendingSwiggyPaasId || '');
 
-  // Step 1: Non-destructive live gateway check on the exact QR `paas_id` (`transactionId`)
-  // Only block synthetic sandbox TXNs when actually in sandbox; live TXNs must not be blocked
-  if (pendingPaasId.startsWith('2799') && globalThis.fetch === __bootNetworkFetchRef && isZeroSmsTestSandboxActive()) {
-    return { paid: false, txnState: 'pending' };
-  }
+  // Step 1: check the exact provider transaction. Never infer payment from a
+  // transaction-number prefix or fabricate a successful test order.
   let gatewayFetchError = '';
   let orderConfirmJson = null;
   if (pendingPaasId) {
     try {
       const txnRes = await fetch(
         `https://payments.swiggy.com/api/v3/vpa-txn-status?paas_id=${encodeURIComponent(pendingPaasId)}&payment_code=UPIIntent`,
-        { method: 'GET', headers }
+        { method: 'GET', headers, signal: AbortSignal.timeout(8000) }
       );
+      const txnJson = await txnRes.json().catch(() => null);
       if (!txnRes.ok) {
         gatewayFetchError = `HTTP ${txnRes.status}`;
-      }
-      const txnJson = await txnRes.json().catch(() => null);
-      gatewayTxnState = String(txnJson?.data || '').toLowerCase();
-      // txnJson?.data may be wrapped as { data: 'success' } or { status: 'success' }
-      if (!gatewayTxnState && txnJson) {
-        gatewayTxnState = String(txnJson.status || txnJson.state || '').toLowerCase();
+      } else {
+        const returnedOrderId = String(txnJson?.data?.order_id || txnJson?.data?.orderId || '');
+        const returnedTxnId = String(txnJson?.data?.transaction_id || txnJson?.data?.transactionId || txnJson?.data?.paas_id || '');
+        if ((returnedOrderId && returnedOrderId !== targetOrderId) || (returnedTxnId && returnedTxnId !== pendingPaasId)) {
+          gatewayFetchError = 'Gateway response referenced a different order or transaction.';
+        } else {
+          // A top-level API status can mean HTTP/API success rather than
+          // payment success. Trust only the transaction data itself.
+          const state = typeof txnJson?.data === 'string' ? txnJson.data
+            : (txnJson?.data?.status || txnJson?.data?.state || '');
+          gatewayTxnState = String(state).trim().toLowerCase();
+        }
       }
 
-      // ONLY confirm order on Swiggy AFTER payment genuinely succeeded (`success` / `completed`)!
-      if (['success', 'completed', 'paid'].includes(gatewayTxnState) && targetOrderId) {
-        const confirmRes = await fetch(
-          `https://payments.swiggy.com/api/v3/order/confirm?order_id=${encodeURIComponent(targetOrderId)}`,
-          {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ order_id: targetOrderId, transaction_id: pendingPaasId })
-          }
-        ).catch(() => null);
-        if (confirmRes) {
-          orderConfirmJson = await confirmRes.json().catch(() => null);
+      // Confirm only this transaction/order after a positive gateway response.
+      // Never repeat a confirm POST after a timeout or process restart.
+      if (['success', 'completed', 'paid'].includes(gatewayTxnState) && normalizeSwiggyOrderId(targetOrderId)) {
+        try {
+          const confirm = await executeSingleSwiggyPlacement(`confirm:${targetOrderId}:${pendingPaasId}`, async () => {
+            const response = await fetch(
+              `https://payments.swiggy.com/api/v3/order/confirm?order_id=${encodeURIComponent(targetOrderId)}`,
+              {
+                method: 'POST', headers,
+                body: JSON.stringify({ order_id: targetOrderId, transaction_id: pendingPaasId }),
+                signal: AbortSignal.timeout(8000)
+              }
+            );
+            return { placeRes: response, json: await response.json().catch(() => null) };
+          });
+          const confirmedId = String(confirm?.json?.data?.order_id || confirm?.json?.data?.orderId || '');
+          orderConfirmJson = confirm?.placeRes?.ok &&
+            (confirm?.json?.statusCode === 0 || confirm?.json?.statusCode === '0') &&
+            (!confirmedId || confirmedId === targetOrderId) ? confirm.json : null;
+        } catch {
+          // Payment may be valid while confirmation is unknown. The exact
+          // order is independently checked below; do not re-send confirmation.
         }
       }
     } catch (e) {
@@ -10572,72 +10506,30 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
     gatewayFetchError = 'missing pendingSwiggyPaasId (no transaction ref — order may have been created before fix)';
   }
 
-  // Step 2: Re-fetch fresh `/dapi/order/all` to detect either:
-  //   - Exact paid `pendingSwiggyOrderId`, OR
-  //   - Any brand-new paid Swiggy order placed on this account after `baselineSwiggyOrderId`!
+  // Step 2: look up only the exact order ID. Another newer order on the same
+  // account is never evidence that this order was paid or placed.
   const freshAuth = await getSwiggySessionAuth(account, true);
   const recentOrders = freshAuth?.orders || auth?.orders || [];
   const baselineId = String(order?.baselineSwiggyOrderId || '');
+  targetOrderId = normalizeSwiggyOrderId(targetOrderId);
+  let matchedOrder = targetOrderId
+    ? recentOrders.find(o => String(o?.order_id || '') === targetOrderId) || null
+    : null;
 
-  const targetNumeric = /^\d+$/.test(targetOrderId) ? BigInt(targetOrderId) : null;
-  // A "newest order on the account" fallback is ONLY valid while we are waiting
-  // for OUR OWN payment QR to settle (we created that QR, so a brand-new paid
-  // order must be ours). For a plain order-id lookup (e.g. a pasted number) the
-  // match must be EXACT — otherwise an arbitrary id silently attaches a
-  // different order's tracking link (false order id / false tracking).
-  const awaitingOurPayment = Boolean(pendingPaasId || baselineId) && targetNumeric !== null;
-  let matchedOrder = null;
-  for (const o of recentOrders) {
-    const oid = String(o?.order_id || '');
-    if (!oid) continue;
-    if (baselineId && oid === baselineId) break;
-    // Strict monotonic snowflake guard: ANY historical order older than `targetOrderId` (`BigInt(oid) < BigInt(targetOrderId)`)
-    // was placed BEFORE this QR was ever created and can NEVER match this order!
-    if (targetNumeric !== null && /^\d+$/.test(oid) && BigInt(oid) < targetNumeric) break;
-    if (targetOrderId && oid === targetOrderId) {
-      matchedOrder = o;
-      break;
-    }
-    if (!matchedOrder && awaitingOurPayment) {
-      matchedOrder = o;
-    }
-  }
-
-  // If order hasn't surfaced in `/dapi/order/all` yet, also check `order/details?order_id=<targetOrderId>&type=full&version=V2`
   if (!matchedOrder && targetOrderId) {
     const det = await dapiFetch(account, `order/details?order_id=${encodeURIComponent(targetOrderId)}&type=full&version=V2`).catch(() => null);
-    const detOrder = det?.json?.data?.orders?.[0];
-    const detOrderId = String(detOrder?.order_id || '');
-    if (detOrder && detOrderId && detOrderId !== targetOrderId) {
-      // Swiggy answered with a different order — never borrow its tracking.
-      matchedOrder = null;
-    } else if (detOrder) {
-      const payState = String(detOrder?.payment_info_v2?.payment_transactions?.[0]?.state || '').toUpperCase();
-      const postSt = String(detOrder?.post_status || '').toLowerCase();
-      if (payState === 'STATE_SUCCESS' || ['processing', 'completed', 'delivered'].includes(postSt) || ['success', 'completed', 'paid'].includes(gatewayTxnState)) {
-        matchedOrder = detOrder;
-      }
-    }
-  }
-
-  // If `vpa-txn-status` confirmed genuine gateway payment on a token-only account (`ZERO _session_tid`), build verified order record directly!
-  // Only for a real Swiggy order id created by our own place-order call (never a pasted/short number).
-  if (!matchedOrder && ['success', 'completed', 'paid'].includes(gatewayTxnState) && normalizeSwiggyOrderId(targetOrderId) && pendingPaasId) {
-    matchedOrder = {
-      order_id: targetOrderId,
-      customer_id: auth.userId,
-      order_status: 'processing',
-      post_status: 'processing',
-      restaurant_name: order?.restaurantName || 'Swiggy',
-      order_total: order?.finalPayable || 0,
-      payment_info_v2: { payment_transactions: [{ state: 'STATE_SUCCESS' }] }
-    };
+    const detOrder = det?.status === 200 && (det?.json?.statusCode === 0 || det?.json?.statusCode === '0')
+      ? (det.json?.data?.orders?.[0] || det.json?.data?.order || null) : null;
+    if (detOrder && String(detOrder.order_id || '') === targetOrderId) matchedOrder = detOrder;
   }
 
   if (!matchedOrder) {
+    const gatewayPaid = ['success', 'completed', 'paid'].includes(gatewayTxnState);
     return {
       paid: false,
+      paymentVerified: Boolean(gatewayPaid && targetOrderId && pendingPaasId),
       txnState: gatewayTxnState || 'pending',
+      reason: gatewayPaid ? 'EXACT_ORDER_NOT_YET_VERIFIED' : 'PAYMENT_NOT_VERIFIED',
       gatewayFetchError,
       targetOrderId,
       pendingPaasId,
@@ -10650,50 +10542,33 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
   const statusStr = String(matchedOrder?.order_status || matchedOrder?.post_status || '').toLowerCase();
   const postStatusLower = String(matchedOrder?.post_status || '').toLowerCase();
   const gatewaySuccess = ['success', 'completed', 'paid'].includes(gatewayTxnState);
-  // If gateway explicitly says success/completed/paid, treat as paid even if Swiggy internal state is still pending/STATE_PENDING (propagation delay)
-  const isGatewayConfirmed = gatewaySuccess && targetOrderId && pendingPaasId;
-  const isPaidAndValid =
-    (payTxnState === 'STATE_SUCCESS' || isGatewayConfirmed || (!payTxnState && !/fail|cancel|pending_payment/i.test(statusStr))) &&
-    !/cancel|fail|aborted/i.test(statusStr === 'pending' ? (isGatewayConfirmed ? '' : 'pending') : (/cancel|fail|aborted/i.test(statusStr) ? statusStr : ''));
-
-  // Wait: if `post_status === 'pending'` AND payment is NOT `STATE_SUCCESS` nor gateway-confirmed, customer hasn't paid yet!
-  if (!isGatewayConfirmed) {
-    if (
-      payTxnState === 'STATE_PENDING' ||
-      payTxnState === 'STATE_FAILED' ||
-      (postStatusLower === 'pending' && payTxnState !== 'STATE_SUCCESS')
-    ) {
-      return {
-        paid: false,
-        txnState: gatewayTxnState || payTxnState.toLowerCase() || 'pending',
-        gatewayFetchError,
-        payTxnState,
-        postStatusLower,
-        statusStr
-      };
-    }
-    if (!isPaidAndValid) {
-      return {
-        paid: false,
-        txnState: gatewayTxnState || statusStr || 'pending',
-        gatewayFetchError,
-        payTxnState,
-        statusStr
-      };
-    }
-  } else {
-    // Gateway confirmed — don't block on transient Swiggy pending state, but still block on explicit cancel/fail
-    if (/cancel|fail|aborted/i.test(statusStr)) {
-      return {
-        paid: false,
-        txnState: gatewayTxnState || statusStr || 'pending',
-        gatewayFetchError,
-        payTxnState,
-        statusStr
-      };
-    }
+  const isGatewayConfirmed = Boolean(gatewaySuccess && targetOrderId && pendingPaasId);
+  const exactOrderPaymentSuccess = ['STATE_SUCCESS', 'SUCCESS', 'COMPLETED', 'PAID'].includes(payTxnState);
+  if ((!isGatewayConfirmed && !exactOrderPaymentSuccess) || /cancel|fail|abort|reject/i.test(`${statusStr} ${postStatusLower}`)) {
+    return {
+      paid: false,
+      paymentVerified: Boolean(isGatewayConfirmed || exactOrderPaymentSuccess),
+      txnState: gatewayTxnState || payTxnState.toLowerCase() || 'pending',
+      gatewayFetchError,
+      payTxnState,
+      postStatusLower,
+      statusStr
+    };
   }
 
+  // A paid transaction and an existing order are not necessarily an accepted
+  // restaurant order. Keep polling if Swiggy still reports pending/unknown.
+  if (!/\b(?:confirmed|accepted|placed|processing|preparing|prepared|cooking|dispatched|picked|delivered|completed)\b|\bon[ -]the[ -]way\b/i.test(statusStr) ||
+      /pending|await|not[ -]+confirm|unconfirm|unpaid|reject|cancel|fail|abort/i.test(`${statusStr} ${postStatusLower}`)) {
+    return {
+      paid: false,
+      paymentVerified: Boolean(isGatewayConfirmed || exactOrderPaymentSuccess),
+      txnState: gatewayTxnState || payTxnState.toLowerCase() || 'pending',
+      reason: 'ORDER_NOT_CONFIRMED',
+      targetOrderId,
+      statusStr
+    };
+  }
   const confirmedOrderId = String(matchedOrder.order_id);
   const customerId = String(matchedOrder.customer_id || auth.userId || '');
 
@@ -10706,9 +10581,16 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
     dapiFetch(account, `order/details?order_id=${encodeURIComponent(confirmedOrderId)}&type=full&version=V2`).catch(() => null)
   ]);
 
-  const trkData = trkRes?.json?.data || {};
-  const deData = deRes?.json?.data || {};
-  const rawDetOrder = detRes?.json?.data?.orders?.[0] || detRes?.json?.data?.order || null;
+  const exactResponseData = response => {
+    if (response?.status !== 200 || (response?.json?.statusCode !== 0 && response?.json?.statusCode !== '0')) return {};
+    const data = response.json?.data || {};
+    const returnedId = String(data.order_id || data.orderId || data.order?.order_id || '');
+    return returnedId && returnedId !== confirmedOrderId ? {} : data;
+  };
+  const trkData = exactResponseData(trkRes);
+  const deData = exactResponseData(deRes);
+  const detData = exactResponseData(detRes);
+  const rawDetOrder = detData?.orders?.[0] || detData?.order || null;
   const detOrder = (rawDetOrder && (!rawDetOrder.order_id || String(rawDetOrder.order_id) === confirmedOrderId)) ? rawDetOrder : null;
 
   // Use only a tracking/share URL explicitly returned by Swiggy; never synthesize one from the order ID.
@@ -10727,7 +10609,7 @@ export async function checkRealSwiggyPaymentAndExtractTracking(accountOrOpts, ma
     trkData?.order_status_details?.status_message,
     detOrder?.order_status || matchedOrder?.order_status,
     matchedOrder?.order_delivery_status || matchedOrder?.post_status || detOrder?.post_status
-  ) || 'Order Confirmed';
+  ) || 'Swiggy status unavailable';
   rememberSwiggyOrderTracking(confirmedOrderId, { trackingUrl: nativeShareUrl || '', deliveryOtp, status: cleanOrderStatus });
 
   return {

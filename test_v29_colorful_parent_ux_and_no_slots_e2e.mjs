@@ -51,6 +51,7 @@ const {
 } = await import('./index.js');
 const { sendBillSummaryToCustomerOnce } = await import('./forwarded-order-flow.js');
 const { getDb, saveDb, getDraft, clearDraft, mutateDb } = await import('./store.js');
+const { creditWallet } = await import('./user-wallet.js');
 
 const VALID_TELEGRAM_STYLES = new Set(['primary', 'success', 'danger']);
 const apiLog = [];
@@ -366,6 +367,10 @@ console.log('\n--- Scenario 4: zero slot blocking even when slotsLeft === 0 ---'
   check('customer bill summary Approve button is green (success) & issue button is danger',
     billBtns.find((b) => b.callback_data === 'user_approve_bill_V29_ORD_2')?.style === 'success' &&
     billBtns.find((b) => b.callback_data === 'user_bill_issue_V29_ORD_2')?.style === 'danger');
+
+  // Wallet fund karo — fee charge succeed ho sake (slots se nahi, wallet se blocked hota tha)
+  creditWallet(db2, AMMI_ID, 10000);
+  saveDb(db2);
 
   const approvalRes = await approveUserOrderBillAction(String(AMMI_ID), 'V29_ORD_2');
   const afterApprove = getDb().orders.V29_ORD_2;
