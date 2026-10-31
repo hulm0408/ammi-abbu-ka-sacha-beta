@@ -8,6 +8,7 @@ import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUr
 import { getDb, isBoss, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
 import { requestSwiggyOtpViaBridge, verifySwiggyOtpViaBridge } from './swiggy-bridge.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
+import { describeAccountForPicker } from './mini-app.js';
 import { proProvider } from './swiggy-pro-provider.js';
 import { readProWorkspace, writeProWorkspace, withProWorkspaceLock } from './swiggy-pro-store.js';
 
@@ -80,15 +81,42 @@ async function bodyJson(req) {
 function accountMap(user, workspace) {
   return isBoss(user.id) ? (getDb().config?.accounts || {}) : workspace.accounts;
 }
+/**
+ * Boss (30-10-2026): "har ID ke saamne likha ho ki isse order place hua hai ki
+ * nahi, suspend ya koi dikkat ho… free cash icon… offer active hai ya nahi…
+ * aur used ID ko kaat de."
+ *
+ * Har row ab ASLI sach ke saath aati hai (`mini-app.js` ka picker helper):
+ *   READY (0 order) / USED (kaat di jati hai) / SUSPENDED / SESSION_EXPIRED /
+ *   BUSY (kisi chalte order ki ID) / UNVERIFIED (live check nahi hua).
+ * Jo verify nahi hua usko kabhi "used" nahi likhte.
+ */
 function listAccounts(user, workspace) {
   const map = accountMap(user, workspace);
-  return Object.entries(map).filter(([, a]) => a && a.isLoggedIn && !a.isLoggedOut).map(([key, a]) => ({
-    key, name: String(a.swiggyName || a.name || 'Swiggy account').slice(0, 80),
-    phone: normalizeIndianMobileNumber(a.phone || a.mobile || '') || '',
-    active: key === workspace.activeAccountKey,
-    ordersCount: Number.isInteger(a.totalOrdersCount) ? a.totalOrdersCount : null,
-    sessionExpired: Boolean(a.sessionExpired)
-  }));
+  const boss = isBoss(user.id);
+  const bossDb = boss ? getDb() : null;
+  return Object.entries(map)
+    .filter(([, a]) => a && a.isLoggedIn && !a.isLoggedOut)
+    .map(([key, a]) => {
+      const truth = describeAccountForPicker(key, a, boss ? { db: bossDb } : { accounts: map, orders: {} });
+      return {
+        key,
+        name: String(a.swiggyName || a.name || 'Swiggy account').slice(0, 80),
+        phone: normalizeIndianMobileNumber(a.phone || a.mobile || '') || '',
+        active: key === workspace.activeAccountKey,
+        ordersCount: Number.isInteger(a.totalOrdersCount) ? a.totalOrdersCount : null,
+        sessionExpired: Boolean(a.sessionExpired),
+        // ── sach (UI inhi par icons/reason dikhata hai) ──
+        status: truth.status,
+        selectable: truth.selectable,
+        reason: truth.reason,
+        icons: truth.icons,
+        freeCash: truth.freeCash,
+        offers: truth.offers,
+        busyOrderId: truth.busyOrderId,
+        ordersVerifiedLive: truth.ordersVerifiedLive
+      };
+    });
 }
 function currentAccount(user, workspace) {
   const map = accountMap(user, workspace);
@@ -150,7 +178,24 @@ function publicCheckout(checkout) {
   }
   return output;
 }
+/**
+ * Boss: "direct cart wale page par le jaye — ek auto ID select karke."
+ * Sirf tab jab user ne khud koi ID na chuni ho, aur sirf selectable ID.
+ */
+function autoSelectAccount(user, ws) {
+  try {
+    if (ws.activeAccountKey) return;
+    const rows = listAccounts(user, ws);
+    const pick = rows.find(r => r.selectable);
+    if (!pick) return;
+    ws.activeAccountKey = pick.key;
+    invalidateAccountDependentState(ws);
+    writeProWorkspace(user.id, ws);
+  } catch { /* auto-select fail ho to user khud chun sakta hai */ }
+}
+
 function publicState(user, ws) {
+  autoSelectAccount(user, ws);
   return {
     user: { name: user.firstName || 'Friend', isBoss: isBoss(user.id) },
     accounts: listAccounts(user, ws), activeAccount: activeAccountForClient(user, ws),
@@ -336,6 +381,11 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const key = String(body.key || '');
         const map = accountMap(user, ws);
         if (!Object.prototype.hasOwnProperty.call(map, key) || !map[key]?.isLoggedIn || map[key]?.isLoggedOut) throw error(404, 'Account not found.');
+        // Used / suspended / expired / busy ID select nahi hoti — kaat di jati hai.
+        {
+          const row = listAccounts(user, ws).find(r => r.key === key);
+          if (row && row.selectable === false) throw error(409, row.reason || `Ye ID abhi select nahi ho sakti (${row.status}).`);
+        }
         if (ws.activeAccountKey !== key) {
           if (ws.checkout && ws.checkout.status !== 'PAID') throw error(409, 'Resolve the existing Swiggy checkout before switching accounts.');
           ws.activeAccountKey = key;
