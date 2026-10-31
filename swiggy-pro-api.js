@@ -282,7 +282,8 @@ function billBreakdown(bill) {
   const total = num(bill.total);
   const add = (...values) => values.reduce((sum, v) => sum + (v === null ? 0 : v), 0);
   let otherCharges = 0;
-  let mismatch = false;
+  let unlistedDiscount = 0;
+  const mismatch = false;
   let couponApplied = discount > 0;
   if (total !== null) {
     const gross = add(itemTotal, deliveryFee, packingCharges, taxes);
@@ -292,8 +293,12 @@ function billBreakdown(bill) {
       couponApplied = false;
     } else if (Math.abs(total - withCoupon) >= 0.5) {
       const gap = round2(total - withCoupon);
+      // Boss (31-10-2026): jab Swiggy ka total lines se KAM ho to wo chhupa
+      // hua offer/discount hota hai — usko "mismatch" ka darr dikhane ke
+      // bajaye saving line me dikhao. Farak sirf tab jab lines total se kam
+      // padein (tab extra charge) — dono surat me jod barabar ho jata hai.
       if (gap > 0) otherCharges = gap;
-      else mismatch = true;
+      else unlistedDiscount = Math.abs(gap);
     }
   }
   return {
@@ -303,6 +308,8 @@ function billBreakdown(bill) {
     coupon: couponApplied ? String(bill.coupon || '') : '',
     discountAlreadyApplied: discount > 0 && !couponApplied,
     otherCharges,
+    // Swiggy ne jo discount alag se nahi bheja par total me laga diya.
+    unlistedDiscount,
     taxesAndCharges: round2(add(packingCharges, taxes, otherCharges)),
     total,
     mismatch
@@ -339,6 +346,17 @@ function offerClaimSummary(result) {
   });
 }
 
+function checkoutEnabled() {
+  if (process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE === '1') return false;
+  return process.env.PRO_ENABLE_CHECKOUT !== '0';
+}
+/** Payment band hone ki asli wajah — bina wajah koi dead end nahi. */
+function checkoutBlockReason() {
+  if (process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE === '1') return 'Live order placement is blocked in this environment (SWIGGY_BLOCK_LIVE_ORDER_PLACE=1).';
+  if (process.env.PRO_ENABLE_CHECKOUT === '0') return 'In-app checkout is turned off by PRO_ENABLE_CHECKOUT=0.';
+  return '';
+}
+
 function publicState(user, ws) {
   autoSelectAccount(user, ws);
   return {
@@ -346,7 +364,12 @@ function publicState(user, ws) {
     accounts: listAccounts(user, ws), activeAccount: activeAccountForClient(user, ws),
     selectedAddress: ws.selectedAddress, cart: ws.cart,
     checkout: publicCheckout(ws.checkout, { restricted: Boolean(ws.checkout) && isSharedAccountFor(user, ws, ws.checkout.accountKey) }),
-    checkoutEnabled: process.env.PRO_ENABLE_CHECKOUT === '1'
+    // Boss (31-10-2026, round 3): "ACTUAL PAYMENT FLOW APPLY KAR." Ab in-app
+    // checkout default ON hai; band karna ho to PRO_ENABLE_CHECKOUT=0.
+    // Asli order placement ka hard block (SWIGGY_BLOCK_LIVE_ORDER_PLACE=1) phir
+    // bhi sabse upar hai.
+    checkoutEnabled: checkoutEnabled(),
+    checkoutBlockReason: checkoutBlockReason()
   };
 }
 function checkoutAccount(user, ws) {
@@ -781,6 +804,14 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (!/^\d{1,20}$/.test(id)) throw error(400, 'Invalid restaurant.');
         const menu = await provider.menu(currentAccount(user, ws), ws.selectedAddress, id);
         ws.menu = menu;
+        if (ws.cart && String(ws.cart.restaurantId) === String(menu?.restaurant?.id)) {
+          Object.assign(ws.cart, {
+            restaurantArea: String(menu.restaurant.area || ''),
+            restaurantTime: String(menu.restaurant.time || ''),
+            restaurantImage: String(menu.restaurant.image || ''),
+            restaurantRating: String(menu.restaurant.rating || '')
+          });
+        }
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, ...menu });
         return;
@@ -799,9 +830,16 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (!ws.cart || ws.cart.restaurantId !== menu.restaurant.id) {
           ws.cart = { restaurantId: menu.restaurant.id, restaurantName: menu.restaurant.name, items: [], forSomeoneElse: true, quote: null };
         }
+        // Cart header ke liye outlet ka sach (boss 31-10-2026 round 3).
+        Object.assign(ws.cart, {
+          restaurantArea: String(menu.restaurant.area || ''),
+          restaurantTime: String(menu.restaurant.time || ''),
+          restaurantImage: String(menu.restaurant.image || ''),
+          restaurantRating: String(menu.restaurant.rating || '')
+        });
         const existing = ws.cart.items.find(i => i.menu_item_id === Number(item.id) && !(i.variants?.length || i.addons?.length));
         if (existing) existing.qty = Math.min(20, existing.qty + 1);
-        else ws.cart.items.push({ lineKey: crypto.randomUUID(), id: item.id, menu_item_id: Number(item.id), name: item.name, price: item.price, qty: 1, variants: [], addons: [], offer_ids: item.offer_ids, item_offer_cart_meta: item.item_offer_cart_meta });
+        else ws.cart.items.push({ lineKey: crypto.randomUUID(), id: item.id, menu_item_id: Number(item.id), name: item.name, price: item.price, qty: 1, isVeg: item.isVeg === true ? true : item.isVeg === false ? false : null, variants: [], addons: [], offer_ids: item.offer_ids, item_offer_cart_meta: item.item_offer_cart_meta });
         ws.cart.quote = null;
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, cart: ws.cart });
@@ -834,6 +872,37 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         json(res, 200, { ok: true, cart: ws.cart });
         return;
       }
+      if (route === '/pro/api/cart/clear' && req.method === 'POST') {
+        requireEditableCart(ws);
+        const body = await bodyJson(req);
+        if (body.confirmClear !== true) throw error(400, 'Cart clear karne ke liye confirm karein.');
+        ws.cart = null;
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, cart: null });
+        return;
+      }
+      if (route === '/pro/api/restaurants/outlets' && req.method === 'GET') {
+        // Boss (31-10-2026): ek restaurant ke kai franchise — location ka naam
+        // aur dropdown, taaki aas-paas ka outlet chuna ja sake.
+        const name = String(url.searchParams.get('q') || '').trim().slice(0, 80);
+        if (name.length < 2) throw error(400, 'Restaurant ka naam chahiye.');
+        const account = currentAccount(user, ws);
+        if (!ws.selectedAddress) throw error(400, 'Pehle delivery address chunein.');
+        const list = await provider.search(account, ws.selectedAddress, name);
+        const norm = value => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const target = norm(name);
+        const outlets = (Array.isArray(list) ? list : [])
+          .filter(r => norm(r.name) === target || norm(r.name).includes(target) || target.includes(norm(r.name)))
+          .slice(0, 20)
+          .map(r => ({
+            id: String(r.id || ''), name: String(r.name || ''), area: String(r.area || ''),
+            distance: String(r.distance || ''), time: String(r.time || ''),
+            isOpen: r.isOpen === true ? true : r.isOpen === false ? false : null
+          }))
+          .filter(r => r.id);
+        json(res, 200, { ok: true, outlets, note: outlets.length ? '' : 'Is naam ka koi outlet nahi mila. Search me poora naam try karein.' });
+        return;
+      }
       if (route === '/pro/api/cart/sync' && req.method === 'POST') {
         const body = await bodyJson(req);
         requireEditableCart(ws);
@@ -848,6 +917,15 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon);
         ws.selectedAddress = cleanAddress(quote.address);
         ws.cart.quote = { ...billBreakdown(quote.bill), ofoConfirmed: quote.ofoConfirmed === true, fetchedAt: new Date().toISOString() };
+        // Bill ke saath outlet ka sach bhi — header/outlet row ke liye.
+        if (ws.menu?.restaurant && String(ws.menu.restaurant.id) === String(ws.cart.restaurantId)) {
+          Object.assign(ws.cart, {
+            restaurantArea: String(ws.menu.restaurant.area || ''),
+            restaurantTime: String(ws.menu.restaurant.time || ''),
+            restaurantImage: String(ws.menu.restaurant.image || ''),
+            restaurantRating: String(ws.menu.restaurant.rating || '')
+          });
+        }
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, cart: ws.cart, selectedAddress: ws.selectedAddress });
         return;
@@ -886,7 +964,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
       }
       if (route === '/pro/api/checkout' && req.method === 'POST') {
         const body = await bodyJson(req);
-        if (process.env.PRO_ENABLE_CHECKOUT !== '1') throw error(503, 'Experimental in-app checkout is disabled. Review and pay in Swiggy instead.');
+        if (!checkoutEnabled()) throw error(503, checkoutBlockReason());
         if (ws.checkout) throw error(409, 'A checkout is already pending or unresolved. Check its status; do not place another order.');
         const account = currentAccount(user, ws);
         const customerId = String(account.customerId || '').trim();

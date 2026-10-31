@@ -197,7 +197,7 @@ test('shared ID ke order user ko chhote card me, boss ko poore detail me; tracki
   assert.equal(full.body.orders[0].address, 'Secret address of operator');
 });
 
-test('bill breakdown Swiggy screenshot jaisa: lines ka jod To Pay ke barabar, farak ho to sach', async () => {
+test('bill breakdown Swiggy screenshot jaisa: lines ka jod To Pay ke barabar, bada farak saving me', async () => {
   seedCart(9101, 'mine');
   let out = await req(user, 'cart/sync', { confirmReplaceSwiggyCart: true, forSomeoneElse: false });
   assert.equal(out.status, 200);
@@ -217,10 +217,15 @@ test('bill breakdown Swiggy screenshot jaisa: lines ka jod To Pay ke barabar, fa
   assert.equal(quote.otherCharges, 14.92);
   assert.equal(Number((quote.taxesAndCharges + quote.itemTotal + quote.deliveryFee).toFixed(2)), quote.total);
 
+  // Boss (31-10-2026): Swiggy ka total lines se kam ho to darawni warning
+  // nahi — wahi asli saving hai, isliye unlistedDiscount me dikhti hai.
   billStates.mode = 'below';
   out = await req(user, 'cart/sync', { confirmReplaceSwiggyCart: true, forSomeoneElse: false });
   quote = out.body.cart.quote;
-  assert.equal(quote.mismatch, true);
+  assert.equal(quote.mismatch, false);
+  assert.equal(quote.otherCharges, 0);
+  assert.equal(quote.unlistedDiscount, 135.08);
+  assert.equal(quote.total, 200);
   billStates.mode = 'exact';
 });
 

@@ -9,7 +9,8 @@
     selectedAddress: null, addresses: [], addressNote: '', pendingAddress: null, contactEdit: false, addressesLoading: false,
     cart: null, checkout: null, checkoutEnabled: false, mode: 'phone', otpSent: false, searchQuery: '', results: null, menu: null,
     menuLoading: false, orders: null, ordersScope: 'active', order: null, orderTracking: null, ordersLoading: false, ordersDetailAllowed: true,
-    cachedAccounts: [], busy: false, loading: 0, resultsLoading: false, deleteFlow: null, claimBusyKey: '', claimResult: null, couponOpen: false
+    cachedAccounts: [], busy: false, loading: 0, resultsLoading: false, deleteFlow: null, claimBusyKey: '', claimResult: null, couponOpen: false, groupCartOpen: false,
+    outlets: null, outletsOpen: false, outletsLoading: false
   };
   // Boss (31-10-2026): "ME KOI CHEEZ UPDATE KARU TO SAARA USER KA DATA RESET NA
   // HOJAYE, BAAKI RAHE UNKE PHONES ME." UI ka safe hissa (tab, theme, pehle
@@ -44,7 +45,8 @@
     moon:'<path d="M20.7 14a8 8 0 0 1-10.7-10.7A8.5 8.5 0 1 0 20.7 14Z"/>',
     sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.4 1.4m11.2 11.2L19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/>',
     receipt:'<path d="M5 3h14v18l-2-1-2 1-3-1-3 1-2-1-2 1zM8 8h8M8 12h8M8 16h5"/>',
-    userplus:'<path d="M16 21a7 7 0 0 0-14 0"/><circle cx="9" cy="8" r="4"/><path d="M19 8v6M16 11h6"/>'
+    userplus:'<path d="M16 21a7 7 0 0 0-14 0"/><circle cx="9" cy="8" r="4"/><path d="M19 8v6M16 11h6"/>',
+    coins:'<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>'
   };
   const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name] || ''}</svg>`;
   const tile = (name, green = false) => `<span class="icon-tile${green ? ' green' : ''}">${icon(name)}</span>`;
@@ -146,7 +148,7 @@
     return result;
   }
   function merge(data) {
-    for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled','ordersDetailAllowed']) if (Object.hasOwn(data, key)) state[key] = data[key];
+    for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled','checkoutBlockReason','ordersDetailAllowed','adminContact']) if (Object.hasOwn(data, key)) state[key] = data[key];
     if (Array.isArray(data.accounts)) {
       state.cachedAccounts = data.accounts.map(a => ({ key: a.key, name: a.name, phoneMasked: a.phoneMasked || '', owner: a.owner || 'self' }));
       writeCache({ accounts: state.cachedAccounts });
@@ -342,31 +344,42 @@
     if (!q) return `<div class="warning">Ye sirf draft cart hai. Total, offer aur delivery fee abhi Swiggy ne confirm nahi ki — neeche <b>Check bill</b> dabaiye.</div>`;
     const deliveryFree = q.deliveryFee === 0 || q.deliveryFee === null;
     const itemBefore = q.itemTotal !== null && q.discount ? Number(q.itemTotal) + Number(q.discount) : null;
-    return `<div class="card bill-card"><div class="card-title">${icon('receipt')} Bill Details</div><div class="divider"></div><div class="bill-row"><span>Item Total</span><strong>${itemBefore !== null ? `<s>${money(itemBefore)}</s> ${money(q.itemTotal)}` : money(q.itemTotal)}</strong></div><div class="bill-row"><span>Delivery Fee</span><strong class="${deliveryFree ? 'free' : ''}">${deliveryFree ? 'FREE' : money(q.deliveryFee)}</strong></div><div class="bill-row"><span>GST &amp; Other Charges</span><strong>${money(q.taxesAndCharges ?? ((Number(q.packingCharges) || 0) + (Number(q.taxes) || 0)))}</strong></div>${q.discount ? `<div class="bill-row saving"><span>Coupon ${esc(q.coupon || '')}</span><strong>−${money(q.discount)}</strong></div>` : ''}${q.discountAlreadyApplied ? '<p class="hint">Coupon ka fayda Item Total me pehle se hai.</p>' : ''}<div class="bill-row total"><span>To Pay</span><span>${money(q.total)}</span></div>${q.mismatch ? '<div class="warning">Swiggy ke lines aur total me farak hai. <b>To Pay</b> hi final hai — pay se pehle ek baar aur check karein.</div>' : ''}<p class="hint">Swiggy se aaya bill. Bill badal sakta hai; pay se pehle dobara check karein.${cart.forSomeoneElse ? ' OFO acceptance is bill se confirm nahi hota.' : ''}</p></div>`;
+    const distance = q.deliveryDistance ? ` <small>${esc(q.deliveryDistance)}</small>` : '';
+    return `<div class="card bill-card"><div class="card-title">${icon('receipt')} Bill Details <button class="icon-button right" type="button" data-action="bill-refresh" aria-label="Refresh bill">${icon('refresh')}</button></div><div class="divider"></div><div class="bill-row"><span>Item Total</span><strong>${itemBefore !== null ? `<s>${money(itemBefore)}</s> ${money(q.itemTotal)}` : money(q.itemTotal)}</strong></div><div class="bill-row"><span>Delivery Fee${distance}</span><strong class="${deliveryFree ? 'free' : ''}">${deliveryFree ? 'FREE' : money(q.deliveryFee)}</strong></div><div class="bill-row"><span>GST &amp; Other Charges</span><strong>${money(q.taxesAndCharges ?? ((Number(q.packingCharges) || 0) + (Number(q.taxes) || 0)))}</strong></div>${q.discount ? `<div class="bill-row saving"><span>Coupon ${esc(q.coupon || '')}</span><strong>−${money(q.discount)}</strong></div>` : ''}${q.unlistedDiscount ? `<div class="bill-row saving"><span>Offer saving</span><strong>−${money(q.unlistedDiscount)}</strong></div>` : ''}${q.discountAlreadyApplied ? '<p class="hint">Coupon ka fayda Item Total me pehle se hai.</p>' : ''}<div class="bill-row total"><span>To Pay</span><span>${money(q.total)}</span></div><p class="hint">Swiggy se aaya bill. Bill badal sakta hai; pay se pehle dobara check karein.${cart.forSomeoneElse ? ' OFO acceptance is bill se confirm nahi hota.' : ''}</p></div>`;
   }
   function renderPayment(cart) {
     const ready = Boolean(state.cart?.quote) && !cartLocked();
-    return `<div class="card"><div class="card-title">${icon('receipt')} Payment Method</div><div class="divider"></div><div class="pay-option selected"><span class="icon-tile">${icon('check')}</span><span class="pay-copy"><strong>UPI / QR</strong><small>Swiggy jo UPI QR deta hai, wahi dikhta hai</small></span><span class="pay-check">${icon('check')}</span></div><div class="pay-option disabled"><span class="icon-tile">${icon('receipt')}</span><span class="pay-copy"><strong>Credit / Debit Card</strong><small>App se abhi nahi hota</small></span></div><div class="pay-option disabled"><span class="icon-tile">${icon('store')}</span><span class="pay-copy"><strong>Cash on Delivery</strong><small>Yahan available nahi</small></span></div><p class="hint">${ready ? 'Neeche Pay Now dabane par Swiggy ek asli order request banata hai. Payment alag se UPI se hoti hai.' : 'Pehle bill check karein — bill confirm hone ke baad hi payment step khulta hai.'}</p></div>`;
+    return `<div class="card"><div class="card-title">${icon('receipt')} Payment Method</div><div class="divider"></div><div class="pay-option selected"><span class="icon-tile">${icon('check')}</span><span class="pay-copy"><strong>UPI / QR</strong><small>PhonePe, Paytm, CRED &amp; koi bhi UPI app</small></span><span class="pay-check">${icon('check')}</span></div><div class="pay-option disabled"><span class="icon-tile">${icon('receipt')}</span><span class="pay-copy"><strong>Credit / Debit Card</strong><small>Visa, Mastercard, RuPay · OTP bank se — app se abhi nahi hota</small></span></div><div class="pay-option disabled"><span class="icon-tile">${icon('coins')}</span><span class="pay-copy"><strong>Cash on Delivery</strong><small>Not available · Cash on delivery is not available</small></span></div><p class="hint">${ready ? 'Neeche Pay Now dabane par Swiggy ek asli order request banata hai. Payment alag se UPI se hoti hai.' : 'Pehle bill check karein — bill confirm hone ke baad hi payment step khulta hai.'}</p></div>`;
   }
   function renderCart() {
     const cart = state.cart;
     const locked = cartLocked();
     const lockAttr = locked ? 'disabled' : '';
     const lockedNotice = locked ? '<div class="warning">Checkout pending ya unknown hai. Cart/receiver changes band hain; pehle original account check karein.</div>' : '';
-    const groupCard = `<div class="card"><div class="card-title">${tile('link')}<span class="title-copy">Add Items from Group Cart<small>Swiggy group cart ka link paste karein.</small></span></div><form data-form="group-cart"><span class="input-wrap"><input name="url" type="url" placeholder="https://www.swiggy.com/…" required ${lockAttr}></span><button class="button primary" type="submit" aria-label="Import group cart" ${lockAttr}>${icon('arrow')}</button></form></div>`;
+    // Swiggy me ye ek patli line hoti hai — dabane par link box khulta hai.
+    const groupCard = `<div class="card group-cart-card"><button class="group-cart-toggle" type="button" data-action="toggle-group-cart" aria-expanded="${state.groupCartOpen ? 'true' : 'false'}"><span class="icon-tile">${icon('link')}</span><span class="title-copy">Add Items from Group Cart<small>${state.groupCartOpen ? 'Swiggy group cart ka link paste karein.' : 'Group cart ka link hai? Yahan se add karein.'}</small></span><span class="outlet-caret">${state.groupCartOpen ? '▴' : '▾'}</span></button>${state.groupCartOpen ? `<form data-form="group-cart"><span class="input-wrap"><input name="url" type="url" placeholder="https://www.swiggy.com/…" required ${lockAttr}></span><button class="button primary" type="submit" aria-label="Import group cart" ${lockAttr}>${icon('arrow')}</button></form>` : ''}</div>`;
     const delivery = `<button class="action-tile" type="button" data-action="nav" data-tab="address">${tile('address')}<span class="tile-copy"><small>DELIVERING TO</small><strong>${esc(state.selectedAddress ? addressLabel(state.selectedAddress) : 'Address chunein')}</strong><small>${esc(state.selectedAddress ? (state.selectedAddress.address || '') : 'Order ke liye address zaroori hai')}</small></span>${icon('arrow')}</button>`;
     if (!cart) {
       return `${head('YOUR ORDER', 'Cart', 'Group cart se items add karein ya restaurant search karein.')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${groupCard}${state.selectedAddress ? delivery : ''}${empty('cart', 'Cart khaali hai', 'Restaurant search karein ya group cart link paste karein.')}`;
     }
     const quantity = cart.items.reduce((n, i) => n + Number(i.qty || 0), 0);
-    const items = cart.items.map(i => `<div class="cart-item"><div class="row-content"><strong>${esc(i.name)}</strong><p>${i.price === null ? 'Price unavailable' : money(i.price) + ' each'}${(i.variants?.length || i.addons?.length) ? ' · Customised' : ''}</p></div><div class="stepper"><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)-1}" aria-label="Remove one" ${lockAttr}>−</button><span>${Number(i.qty)}</span><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)+1}" aria-label="Add one" ${lockAttr}>+</button></div></div>`).join('');
+    // Boss (31-10-2026): Swiggy cart jaisa item row — veg mark + naam left,
+    // green stepper + item ka total right.
+    const items = cart.items.map(i => {
+      const veg = i.isVeg === true ? '<span class="veg-mark" aria-label="Vegetarian"></span>' : i.isVeg === false ? '<span class="veg-mark nonveg" aria-label="Non-vegetarian"></span>' : '';
+      const lineTotal = i.price === null ? '—' : money(Number(i.price) * Number(i.qty || 1));
+      return `<div class="cart-item"><div class="row-content">${veg}<strong>${esc(i.name)}</strong><p>${i.price === null ? 'Price unavailable' : money(i.price) + ' each'}${(i.variants?.length || i.addons?.length) ? ' · Customised' : ''}</p></div><div class="cart-item-right"><div class="stepper"><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)-1}" aria-label="Remove one" ${lockAttr}>−</button><span>${Number(i.qty)}</span><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)+1}" aria-label="Add one" ${lockAttr}>+</button></div><strong class="line-total">${lineTotal}</strong></div></div>`;
+    }).join('');
     const q = cart.quote;
-    const restaurantCard = `<div class="card restaurant-cart"><div class="card-title">${icon('store')} ${esc(cart.restaurantName)}</div>${items}<button class="text-button add-more" type="button" data-action="nav" data-tab="search">${icon('plus')} Add more items</button></div>`;
+    const meta = [cart.restaurantArea, cart.restaurantTime].filter(Boolean).join(' · ');
+    // Ek restaurant ke kai franchise — location ka naam + dropdown.
+    const outletRow = `<button class="outlet-row" type="button" data-action="outlets-toggle" aria-expanded="${state.outletsOpen ? 'true' : 'false'}"><span class="outlet-pin">${icon('address')}</span><span class="outlet-copy"><strong>${esc(cart.restaurantArea || cart.restaurantName)}</strong><small>${esc(meta || 'Aas-paas ka outlet chunein')}</small></span><span class="outlet-caret">${state.outletsOpen ? '▴' : '▾'}</span></button>${state.outletsOpen ? (state.outletsLoading ? skeletonRows(2, 1) : `<div class="outlet-list">${(state.outlets || []).length ? state.outlets.map(o => `<button class="outlet-option ${String(o.id) === String(cart.restaurantId) ? 'current' : ''}" type="button" data-action="outlet-pick" data-id="${esc(o.id)}" data-name="${esc(o.name)}" ${String(o.id) === String(cart.restaurantId) || o.isOpen === false ? 'disabled' : ''}><span class="row-content"><strong>${esc(o.area || o.name)}</strong><small>${esc([o.distance, o.time, o.isOpen === false ? 'Closed' : ''].filter(Boolean).join(' · '))}</small></span>${String(o.id) === String(cart.restaurantId) ? '<span class="pill green">Yahi</span>' : o.isOpen === false ? '<span class="pill grey">Closed</span>' : '<span class="pill blue">Chunein</span>'}</button>`).join('') : '<p class="hint">Aas-paas koi doosra outlet nahi mila.</p>'}</div>`)+ '' : ''}`;
+    const restaurantCard = `<div class="card restaurant-cart"><div class="cart-restaurant-head"><span class="cart-restaurant-thumb">${cart.restaurantImage ? `<img src="${esc(cart.restaurantImage)}" alt="" loading="lazy" decoding="async">` : icon('store')}</span><span class="row-content"><strong>${esc(cart.restaurantName)}</strong><p>${esc(meta || 'Restaurant')}</p></span><button class="icon-button danger" type="button" data-action="cart-clear" aria-label="Cart clear karein" ${lockAttr}>${icon('trash')}</button></div>${outletRow}${items}<button class="text-button add-more" type="button" data-action="nav" data-tab="search">${icon('plus')} Add more items</button></div>`;
     const couponCard = `<div class="card coupon-card"><button class="action-tile bare" type="button" data-action="toggle-coupon">${tile('receipt')}<span class="tile-copy"><strong>Apply coupon</strong><small>${q?.coupon ? `Laga hua: ${esc(q.coupon)}` : 'Is restaurant ke offers dekhein'}</small></span>${icon('arrow')}</button>${state.couponOpen ? `<form data-form="sync">${field('Coupon code', 'coupon', 'Enter coupon code', q?.coupon || '', lockAttr)}<label class="checkbox-row"><input type="checkbox" name="forSomeoneElse" ${cart.forSomeoneElse ? 'checked' : ''} ${lockAttr}><span>Kisi aur ke liye order (selected receiver)</span></label><button class="button primary block" ${lockAttr}>Apply &amp; check bill ${icon('refresh')}</button></form>` : ''}</div>`;
     const billCard = renderBill(q, cart);
     const payBar = q ? `<div class="pay-bar"><div><small>PAY USING UPI</small><strong>${money(q.total)}</strong></div>${state.checkoutEnabled
       ? `<button class="button green" type="button" data-action="checkout-start" ${locked ? 'disabled' : ''}>Pay Now ${icon('arrow')}</button>`
-      : `<button class="button soft" type="button" disabled>In-app payment band</button>`}</div>` : '';
+      : `<button class="button soft" type="button" disabled title="${esc(state.checkoutBlockReason || '')}">Payment band</button>`}</div>` : '';
     return `${head('YOUR ORDER', 'Cart', 'Swiggy jaisa simple cart — sab kuch ek jagah.')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${groupCard}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${couponCard}${billCard}${renderPayment(cart)}${payBar}`;
   }
   function renderOrders() {
@@ -545,6 +558,19 @@
     if (action === 'account-mode') { state.mode = button.dataset.mode; state.otpSent = false; render(); return; }
     if (action === 'otp-reset') { state.otpSent = false; render(); return; }
     if (action === 'toggle-coupon') { state.couponOpen = !state.couponOpen; render(); return; }
+    if (action === 'toggle-group-cart') { state.groupCartOpen = !state.groupCartOpen; render(); return; }
+    if (action === 'outlets-toggle') {
+      state.outletsOpen = !state.outletsOpen;
+      render();
+      if (!state.outletsOpen || state.outlets || !state.cart) return;
+      // Aas-paas ke outlets — Swiggy search se, selected address ke hisaab se.
+      state.outletsLoading = true; render();
+      api('restaurants/outlets?q=' + encodeURIComponent(state.cart.restaurantName))
+        .then(out => { state.outlets = out.outlets || []; })
+        .catch(err => toast(err.message || 'Outlets nahi mile.'))
+        .finally(() => { state.outletsLoading = false; render(); });
+      return;
+    }
     if (action === 'delete-cancel') { state.deleteFlow = null; render(); return; }
     if (action === 'contact-edit') { state.contactEdit = !state.contactEdit; render(); return; }
     if (action === 'menu-back') { state.menu = null; render(); return; }
@@ -594,6 +620,22 @@
           merge(out); state.claimResult = out.claim || null; toast('Claim ka result aa gaya.');
         } finally { state.claimBusyKey = ''; render(); }
       } else if (action === 'addresses-refresh') await loadAddresses();
+      else if (action === 'cart-clear') {
+        if (!await confirmInApp({ title: 'Cart clear karein?', message: 'Draft cart ke saare items hat jayenge. Swiggy cart tab tak waisa hi rahega jab tak naya sync na ho.', confirmText: 'Clear cart', danger: true })) return;
+        await api('cart/clear', 'POST', { confirmClear: true });
+        state.cart = null; state.outlets = null; state.outletsOpen = false; state.couponOpen = false;
+        render(); toast('Cart clear ho gaya.');
+      }
+      else if (action === 'bill-refresh') {
+        if (!await confirmInApp({ title: 'Fresh bill check?', message: 'Swiggy par cart dobara sync hoga aur naya bill aayega.', confirmText: 'Check bill' })) return;
+        const out = await api('cart/sync', 'POST', { confirmReplaceSwiggyCart: true, forSomeoneElse: state.cart?.forSomeoneElse === true, coupon: '' });
+        merge(out); render(); toast('Bill update ho gaya.');
+      }
+      else if (action === 'outlet-pick') {
+        if (state.cart && !await confirmInApp({ title: 'Doosra outlet?', message: 'Naye outlet ka item add karne par cart replace karna padega (Swiggy ek cart me do restaurant nahi leta).', confirmText: 'Outlet kholein' })) return;
+        const out = await api('menu?id=' + encodeURIComponent(button.dataset.id));
+        state.menu = out; state.outletsOpen = false; state.outlets = null; state.tab = 'search'; writeCache({ tab: 'search' }); render(); window.scrollTo(0, 0);
+      }
       else if (action === 'address-select') { const out = await api('addresses/select', 'POST', { ref: button.dataset.ref }); merge(out); state.contactEdit = !out.selectedAddress?.mobile || !out.selectedAddress?.name; render(); toast('Address selected.'); }
       else if (action === 'popular') await search(button.dataset.query);
       else if (action === 'restaurant') {
