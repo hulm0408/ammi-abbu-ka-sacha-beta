@@ -5,7 +5,12 @@ import { validateUpiIntentForQr } from './payment-qr-guard.js';
 import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { exactPaise } from './swiggy-cart-integrity.js';
 import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder } from './swiggy-cart.js';
-import { deleteAccount, getDb, isBoss, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
+import { deleteAccount, getDb, isBoss, saveDb, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
+import {
+  buildTopupUpiIntent, chargeServiceFee, creditWallet, ensureWallet, getWallet, minTopupPaise,
+  refundServiceFee, rupees, serviceFeePaiseFor, setWalletUpiId, submitTopupRequest,
+  TOPUP_PRESETS_PAISE, walletBalancePaise, walletHistory, walletUpiId
+} from './user-wallet.js';
 import { requestSwiggyDeleteOtpViaBridge, requestSwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, verifySwiggyOtpViaBridge } from './swiggy-bridge.js';
 import { activateAllEventOffers } from './event-offers.js';
 import { OFFER_TRACKS } from './account-views.js';
@@ -406,6 +411,99 @@ function checkoutBlockReason() {
   return '';
 }
 
+/**
+ * Boss (31-10-2026, round 11): "WHEN WE PAY OUR WALLET MUST REACH A BALANCE OF
+ * 15 OTHERWISE IT WILL SAY YOUR BALANCE IS LOW ADD AMOUNT TO YOUR WALLET."
+ *
+ * Mini App ka wallet — wahi vault jo Telegram bot use karta hai (ek hi ledger).
+ * Balance paise me rehta hai; app ko rupees (string) aur paise dono milte hain.
+ */
+function walletView(user, { history = false } = {}) {
+  const db = getDb();
+  const wallet = getWallet(db, user.id);
+  const balancePaise = walletBalancePaise(db, user.id);
+  const feePaise = serviceFeePaiseFor(db);
+  const exempt = Boolean(wallet?.feeExempt);
+  const shortfallPaise = exempt || feePaise <= 0 ? 0 : Math.max(0, feePaise - balancePaise);
+  return {
+    balancePaise, balance: rupees(balancePaise),
+    feePaise, fee: rupees(feePaise),
+    exempt, ready: shortfallPaise === 0,
+    shortfallPaise, shortfall: rupees(shortfallPaise),
+    upiId: walletUpiId(db),
+    minTopupPaise: minTopupPaise(),
+    presets: TOPUP_PRESETS_PAISE.map(paise => ({ paise, rupees: rupees(paise) })),
+    ...(history ? { history: walletHistory(db, user.id, { limit: 6 }) } : {})
+  };
+}
+
+/** ₹ me value — app rupees bhejta hai, server paise me kaam karta hai. */
+function amountPaiseFromBody(body) {
+  const direct = Number(body?.amountPaise);
+  if (Number.isFinite(direct) && direct > 0) return Math.round(direct);
+  const value = Number(body?.amount ?? body?.amountRupees ?? body?.paid);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.round(value * 100);
+}
+
+const TOPUP_MAX_PAISE = 50000; // ₹500
+
+/**
+ * "I have paid" — boss ka rule: "IF USER PAY LESS AND SAY I HAVE PAID YOU HAVE
+ * TO ADD HOW MUCH THEY PAID." Isliye jo unho ne bataya wahi jama hota hai, aur
+ * ledger me CLAIMED likha rehta hai (jhootha "verified" nahi). UTR/provider
+ * mila to wahi paisa asli mana jaata hai.
+ */
+async function claimWalletTopup(user, body) {
+  const db = getDb();
+  const claimedPaise = amountPaiseFromBody(body);
+  if (claimedPaise < 100) throw error(400, 'Kitna paisa bheja — ₹1 se zyada likhein.');
+  if (claimedPaise > TOPUP_MAX_PAISE) throw error(400, `Ek baar me ₹${rupees(TOPUP_MAX_PAISE)} tak hi add kar sakte hain.`);
+  const utr = String(body?.utr || '').trim();
+  ensureWallet(db, user.id, { name: user.firstName || '' });
+  let verified = false;
+  let creditPaise = claimedPaise;
+  let request = null;
+  if (utr) {
+    const submitted = await submitTopupRequest(db, {
+      userId: user.id, utr, amountPaise: claimedPaise, name: user.firstName || '',
+      note: 'Mini App claim', autoVerify: true
+    });
+    if (!submitted.ok) {
+      const e = error(submitted.code === 'DUPLICATE_UTR' ? 409 : 400, submitted.reason || 'UTR accept nahi hua.');
+      e.code = submitted.code === 'DUPLICATE_UTR' ? 'DUPLICATE_UTR' : '';
+      throw e;
+    }
+    request = submitted.request;
+    verified = submitted.code === 'AUTO_VERIFIED';
+    // Provider ne khud confirm kiya (submitTopupRequest ne balance jama kar
+    // diya) — tab bhi jo jama hua wahi credited amount hai.
+  } else {
+    const credit = creditWallet(db, user.id, claimedPaise, {
+      reason: 'Mini App: user ne bataya paisa bheja (CLAIMED)', actor: 'user', type: 'CREDIT_CLAIMED',
+      meta: { note: String(body?.note || '').slice(0, 80) }
+    });
+    if (!credit.ok) throw error(503, 'Wallet credit save nahi hua. Dobara try karein.');
+    request = {
+      id: `claim_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      userId: String(user.id), claimedPaise, approvedPaise: creditPaise,
+      status: 'CLAIMED', at: new Date().toISOString(), source: 'miniapp'
+    };
+  }
+  if (!db.config.topupClaims || typeof db.config.topupClaims !== 'object') db.config.topupClaims = {};
+  if (request) db.config.topupClaims[request.id] = { ...request, creditedPaise: creditPaise, utr };
+  saveDb(db);
+  const wallet = walletView(user, { history: true });
+  return {
+    wallet,
+    verified,
+    creditedPaise: creditPaise,
+    message: wallet.ready
+      ? `Balance ₹${wallet.balance} ho gaya — ab order place kar sakte hain.`
+      : `₹${rupees(creditPaise)} jama hua. Abhi balance ₹${wallet.balance} hai — ₹${wallet.shortfall} aur add karein.`
+  };
+}
+
 function publicState(user, ws) {
   autoSelectAccount(user, ws);
   return {
@@ -543,7 +641,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           ws.cart.quote = null;
           writeProWorkspace(user.id, ws);
         }
-        json(res, 200, { ok: true, ...publicState(user, ws), backup: userBackupView(user) });
+        json(res, 200, { ok: true, ...publicState(user, ws), wallet: walletView(user), backup: userBackupView(user) });
         return;
       }
       if (route === '/pro/api/backup' && req.method === 'POST') {
@@ -1009,6 +1107,9 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const coupon = String(body.coupon || '').trim().toUpperCase();
         if (coupon && !/^[A-Z0-9_-]{3,28}$/.test(coupon)) throw error(400, 'Invalid coupon code.');
         ws.cart.forSomeoneElse = body.forSomeoneElse === true;
+        // Boss (31-10-2026, round 11): "AUTO SAARE COUPON LAG". Default haan —
+        // user ne koi code diya ho to wahi, warna best coupon khud lagta hai.
+        ws.cart.autoCoupon = body.autoCoupon !== false;
         ws.cart.quote = null;
         writeProWorkspace(user.id, ws);
         const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon);
@@ -1018,6 +1119,8 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           // Asli coupon code (billBreakdown discount na hone par isse clear kar
           // deta hai) — checkout isi se Swiggy ka live coupon match karta hai.
           couponCode: String(quote.bill?.coupon || '').toUpperCase(),
+          autoCoupon: quote.bill?.autoCoupon === true,
+          couponTried: Array.isArray(quote.bill?.couponTried) ? quote.bill.couponTried.slice(0, 5) : [],
           ofoConfirmed: quote.ofoConfirmed === true, fetchedAt: new Date().toISOString()
         };
         // Bill ke saath outlet ka sach bhi — header/outlet row ke liye.
@@ -1065,6 +1168,51 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         } });
         return;
       }
+      if (route === '/pro/api/wallet' && req.method === 'GET') {
+        json(res, 200, { ok: true, wallet: walletView(user, { history: true }) });
+        return;
+      }
+      if (route === '/pro/api/wallet/topup' && req.method === 'POST') {
+        // Boss (31-10-2026, round 11): "DEFAULT UPI mius@ybl ... PAYMENT WILL
+        // BE AUTO VERIFIED." Yahan asli UPI intent + QR banta hai — user apne
+        // UPI app se paisa bhej sakta hai.
+        const body = await bodyJson(req);
+        const wallet = walletView(user);
+        const amountPaise = amountPaiseFromBody(body) || Math.max(wallet.shortfallPaise, wallet.minTopupPaise);
+        if (amountPaise < 100) throw error(400, 'Top-up ₹1 se zyada hona chahiye.');
+        if (amountPaise > TOPUP_MAX_PAISE) throw error(400, `Ek baar me ₹${rupees(TOPUP_MAX_PAISE)} tak hi add kar sakte hain.`);
+        const upiUri = buildTopupUpiIntent({ upiId: wallet.upiId, amountPaise, note: 'Wallet topup' });
+        if (!upiUri) throw error(503, 'Boss ka UPI set nahi hai — top-up abhi nahi ho sakta.');
+        const qrDataUrl = await QRCode.toDataURL(upiUri, { errorCorrectionLevel: 'M', margin: 2, width: 320 });
+        json(res, 200, {
+          ok: true,
+          topup: {
+            amountPaise, amount: rupees(amountPaise), upiId: wallet.upiId, upiUri, qrDataUrl,
+            note: `UPI app me ₹${rupees(amountPaise)} bhejein (UPI id ${wallet.upiId}). Paisa bhejne ke baad neeche "Paisa bhej diya" dabaiye — kitna bheja wahi likhein.`
+          }
+        });
+        return;
+      }
+      if (route === '/pro/api/wallet/claim' && req.method === 'POST') {
+        const out = await claimWalletTopup(user, await bodyJson(req));
+        json(res, 200, { ok: true, ...out });
+        return;
+      }
+      if (route === '/pro/api/wallet/upi' && req.method === 'POST') {
+        // "AND I CAN CHANGE IT ALSO" — sirf boss.
+        if (!isBoss(user.id)) throw error(403, 'UPI sirf boss badal sakta hai.');
+        const body = await bodyJson(req);
+        const db = getDb();
+        const res2 = setWalletUpiId(db, body.upiId, { actor: `miniapp:${user.id}` });
+        if (!res2.ok) {
+          const e = error(400, res2.reason || 'UPI id galat hai.');
+          e.code = 'INVALID_UPI';
+          throw e;
+        }
+        saveDb(db);
+        json(res, 200, { ok: true, upiId: res2.upiId, wallet: walletView(user) });
+        return;
+      }
       if (route === '/pro/api/checkout' && req.method === 'POST') {
         const body = await bodyJson(req);
         if (!checkoutEnabled()) throw error(503, checkoutBlockReason());
@@ -1081,6 +1229,21 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
             exactPaise(body.expectedTotal) === null || exactPaise(body.expectedTotal) !== exactPaise(total)) {
           throw error(400, 'Review a fresh Swiggy bill and explicitly confirm its exact amount before placing an order.');
         }
+        // Boss (31-10-2026, round 11): "WALLET MUST REACH A BALANCE OF 15
+        // OTHERWISE IT WILL SAY YOUR BALANCE IS LOW." Bill dekhne par kuch nahi
+        // rukta — sirf order place karne se pehle fee ka balance chahiye.
+        const walletDb = getDb();
+        const feePaise = serviceFeePaiseFor(walletDb);
+        const walletRecord = getWallet(walletDb, user.id);
+        const feeExempt = Boolean(walletRecord?.feeExempt);
+        const balancePaise = walletBalancePaise(walletDb, user.id);
+        if (!feeExempt && feePaise > 0 && balancePaise < feePaise) {
+          const wallet = walletView(user);
+          const e = error(409, `Wallet balance ₹${rupees(balancePaise)} hai — order place karne ke liye ₹${rupees(feePaise)} chahiye. ₹${rupees(wallet.shortfallPaise)} add karein (UPI: ${wallet.upiId}).`);
+          e.code = 'WALLET_LOW_BALANCE';
+          e.wallet = wallet;
+          throw e;
+        }
         // One durable barrier per user and checkout generation, regardless of
         // account, quote refresh or concurrent stale workspace reads. Advance the
         // generation ONLY after this order is verified paid and explicitly closed.
@@ -1094,6 +1257,19 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           accountCustomerId: customerId,
           createdAt: new Date().toISOString(), amount: total, restaurantName: String(ws.cart.restaurantName || '')
         };
+        // Fee bhi isi waqt kati jaati hai (QR/order stage) — order place na ho
+        // to neeche refund ho jaati hai. Idempotent: ek order par ek hi fee.
+        const feeCharge = chargeServiceFee(walletDb, ws.checkout, user.id);
+        saveDb(walletDb);
+        if (!feeCharge.ok && feeCharge.code === 'INSUFFICIENT_BALANCE') {
+          ws.checkout = null;
+          writeProWorkspace(user.id, ws);
+          const wallet = walletView(user);
+          const e = error(409, `Wallet balance ₹${wallet.balance} hai — ₹${rupees(feeCharge.feePaise || feePaise)} chahiye. ₹${wallet.shortfall} add karein (UPI: ${wallet.upiId}).`);
+          e.code = 'WALLET_LOW_BALANCE';
+          e.wallet = wallet;
+          throw e;
+        }
         // Persist the logical ID before the provider can send a placement POST.
         writeProWorkspace(user.id, ws);
         let providerReturned = false;
@@ -1126,6 +1302,12 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
             writeProWorkspace(user.id, ws);
             json(res, 200, { ok: true, checkout: publicCheckout(ws.checkout, { restricted: isSharedAccountFor(user, ws, ws.checkout.accountKey) }) });
             return;
+          }
+          // Order place nahi hua — fee wapas (boss ka rule: QR stage par
+          // cancel/nakami = refund; place ho jaye to nahi).
+          if (ws.checkout) {
+            refundServiceFee(walletDb, ws.checkout, user.id, { reason: 'order place nahi hua' });
+            saveDb(walletDb);
           }
           ws.checkout = null;
           // Bill/coupon badal gaya par items+address wahi hain: Swiggy ka naya
@@ -1208,13 +1390,14 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         'SHARED_ACCOUNT_RESTRICTED', 'BILL_CHANGED', 'CART_ITEMS', 'CART_FETCH', 'CART_PARSE', 'CART_ID',
         'ADDRESS', 'OFO', 'COUPON', 'AMOUNT', 'AMOUNT_MISSING', 'RESTAURANT', 'GROUP_CART_EXPIRED',
         'GROUP_CART_PLACED', 'GROUP_CART_BUSY', 'GROUP_CART_FETCH_FAILED', 'SWIGGY_ACCOUNT_NOT_REGISTERED',
-        'OTP_IDENTITY_MISSING'
+        'OTP_IDENTITY_MISSING', 'WALLET_LOW_BALANCE', 'INVALID_UPI', 'DUPLICATE_UTR'
       ]);
       const code = KNOWN_CODES.has(String(err?.code || '')) ? err.code : undefined;
       json(res, status, {
         ok: false,
         error: status >= 500 && status !== 501 && status !== 502 && status !== 503 ? 'Unable to complete this request. Please retry.' : String(err?.message || 'Request failed.'),
-        ...(code ? { code } : {})
+        ...(code ? { code } : {}),
+        ...(err?.wallet ? { wallet: err.wallet } : {})
       });
     }
   });

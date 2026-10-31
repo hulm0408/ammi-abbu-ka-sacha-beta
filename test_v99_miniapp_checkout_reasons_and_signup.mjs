@@ -209,6 +209,11 @@ test('pay: items badal gaye to hard stop — saaf wajah, koi order nahi', async 
 
 test('API: BILL_CHANGED par naya bill save hota hai aur 409 ke saath asli wajah aati hai', async () => {
   const { writeProWorkspace } = await import('./swiggy-pro-store.js');
+  // Round 11: order place karne se pehle wallet me ₹15 fee ka balance chahiye.
+  const { creditWallet } = await import('./user-wallet.js');
+  const walletDb = getDb();
+  creditWallet(walletDb, '9931', 1500, { reason: 'test top-up', actor: 'test' });
+  saveDb(walletDb);
   writeProWorkspace('9931', {
     version: 1,
     accounts: { mine: { phone: '9123456789', name: 'Mine', token: 't', isLoggedIn: true, customerId: 'customer-9123456789' } },

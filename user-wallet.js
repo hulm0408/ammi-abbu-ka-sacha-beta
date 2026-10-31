@@ -68,6 +68,45 @@ export function minTopupPaise() {
 
 export const TOPUP_PRESETS_PAISE = [1500, 5000, 10000, 20000];
 
+/**
+ * Boss (31-10-2026, round 11): "DEFAULT UPI WILL BE mius@ybl ... AND I CAN
+ * CHANGE IT ALSO." Payment lene wala UPI ek hi jagah se aata hai — boss panel
+ * se badal sakta hai, env se bhi (WALLET_UPI_ID), warna default `mius@ybl`.
+ */
+export function walletUpiId(db) {
+  const fromDb = String(db?.config?.walletUpiId || '').trim();
+  if (isUpiHandle(fromDb)) return fromDb;
+  const fromEnv = String(process.env.WALLET_UPI_ID || '').trim();
+  if (isUpiHandle(fromEnv)) return fromEnv;
+  return 'mius@ybl';
+}
+
+export function isUpiHandle(value) {
+  return /^[a-zA-Z0-9._-]{2,64}@[a-zA-Z]{2,32}$/.test(String(value || '').trim());
+}
+
+/** Boss UPI badle. Sirf valid handle; galat par code + wajah. */
+export function setWalletUpiId(db, upiId, { actor = 'boss', at = Date.now() } = {}) {
+  const value = String(upiId || '').trim();
+  if (!isUpiHandle(value)) return { ok: false, code: 'INVALID_UPI', reason: 'UPI id aise likhein: naam@bank (jaise mius@ybl)' };
+  const c = cfg(db);
+  c.walletUpiId = value;
+  c.walletUpiUpdatedAt = nowIso(at);
+  c.walletUpiUpdatedBy = String(actor || 'boss');
+  return { ok: true, code: 'SET', upiId: value };
+}
+
+/** UPI intent jo kisi bhi UPI app se kholta hai (top-up ke liye). */
+export function buildTopupUpiIntent({ upiId, amountPaise, note = 'Wallet topup' } = {}) {
+  const paise = Math.round(Number(amountPaise) || 0);
+  if (!isUpiHandle(upiId) || !(paise > 0)) return '';
+  const amount = (paise / 100).toFixed(2);
+  const params = new URLSearchParams({
+    pa: String(upiId), pn: 'Sacha Beta', am: amount, cu: 'INR', tn: String(note).slice(0, 40)
+  });
+  return `upi://pay?${params.toString()}`;
+}
+
 export const TOPUP_STATUS = {
   PENDING: 'PENDING',
   AUTO_VERIFIED: 'AUTO_VERIFIED',
