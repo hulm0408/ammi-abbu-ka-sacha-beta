@@ -201,6 +201,16 @@ test('API: coupons bina cart par 400, cart ke saath provider ka sach', async () 
   assert.ok(couponCalls >= 1);
 });
 
+test('API: customer_id khaali ho to bill sync use Swiggy se le kar save karta hai', async () => {
+  seed();
+  const ws = readProWorkspace('9601');
+  ws.accounts.mine.customerId = '';
+  writeProWorkspace('9601', ws);
+  const out = await req('cart/sync', { confirmReplaceSwiggyCart: true });
+  assert.equal(out.status, 200);
+  assert.ok(readProWorkspace('9601').accounts.mine.customerId, 'customerId save ho gaya — checkout dead end nahi');
+});
+
 test('API: outlets me rating bhi aata hai (Swiggy sheet jaisa)', async () => {
   seed();
   const out = await req('restaurants/outlets?q=Pizza%20Junction');
@@ -315,18 +325,16 @@ test('DOM: coupon page — applied ribbon, APPLY se asli sync, REMOVE se coupon 
     await waitFor(() => app.document.querySelectorAll('.coupon-tile').length >= 2, 'coupon tiles');
     assert.match(app.document.querySelector('.coupon-tile.applied').textContent, /SNACKIT/);
     assert.match(app.document.querySelector('.coupon-tile.applied').textContent, /Save ₹100/);
-    assert.ok(app.document.querySelector('.coupon-tile.muted'), 'jo lagta nahi wo locked dikhta hai');
+    // Boss (round 8): koi code type karne ka box nahi — har coupon par APPLY.
+    assert.equal(app.document.querySelector('input[name="coupon"]'), null, 'code box nahi');
+    assert.equal(/coupon available nahi|list nahi di/i.test(app.document.body.textContent), false);
     app.document.querySelector('[data-action="coupon-pick"]').click();
-    await waitFor(() => app.document.querySelector('.confirm-dialog'), 'confirm');
-    app.document.querySelector('.confirm-dialog .button.primary').click();
     await waitFor(() => app.calls.some(c => c.url.endsWith('/cart/sync')), 'sync call');
     const call = app.calls.find(c => c.url.endsWith('/cart/sync'));
     assert.equal(call.body.coupon, 'TRYNEW');
     assert.equal(call.body.confirmReplaceSwiggyCart, true);
     await waitFor(() => app.document.querySelector('[data-action="coupon-remove"]'), 'remove button');
     app.document.querySelector('[data-action="coupon-remove"]').click();
-    await waitFor(() => app.document.querySelector('.confirm-dialog'), 'confirm remove');
-    app.document.querySelector('.confirm-dialog .button.primary').click();
     await waitFor(() => app.calls.filter(c => c.url.endsWith('/cart/sync')).length >= 2, 'remove call');
     assert.equal(app.calls.filter(c => c.url.endsWith('/cart/sync')).at(-1).body.coupon, '');
     await new Promise(r => setTimeout(r, 30));

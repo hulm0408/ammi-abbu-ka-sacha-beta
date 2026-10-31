@@ -387,3 +387,14 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 
 /* Pay bar ke neeche payment band hone ki asli wajah */
 .pay-blocked { margin: 8px 0 0; font-size: 12px; }
+
+/* Round 8: detailed bill hisaab + coupon APPLY results */
+.bill-toggle { margin-top: 10px; font-size: 13px; font-weight: 700; color: #0f8a4a; }
+.bill-detail-math { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.bill-row.breakdown { font-size: 12.5px; color: var(--muted); }
+.bill-row.breakdown strong { font-weight: 600; }
+.bill-split { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0 6px; font-size: 12px; color: var(--muted); }
+.bill-equation { background: #f4f8fb; border-radius: 10px; padding: 10px 12px; font-size: 12px; line-height: 1.5; color: #22384a; }
+.coupon-result { margin: 8px 0 0; font-size: 12px; font-weight: 700; }
+.coupon-result.ok { color: #0f8a4a; }
+.coupon-result.no { color: #c0392b; }

@@ -131,3 +131,11 @@ A real trial requires a suitable deployed HTTPS service with persistent storage,
 * **Pay → track:** Pay Now (bill na ho to pehle khud bill leke) → payment screen (QR + "Payment check karein") → `checkout/status` PAID → **tracking screen** (timeline, ETA, rider, delivery OTP) jo 20s me khud refresh hota hai. `orders/tracking` hi source hai — koi guess nahi.
 * **Typing safe:** re-render par coupon code / group cart link ka typed text nahi udta.
 * **Imaandaar:** payment band ho to pay bar ke neeche asli reason (`PRO_ENABLE_CHECKOUT=0` jaisa) dikhta hai, sirf tooltip nahi.
+
+## Round 8 (31-10-2026): poora bill hisaab + coupon sirf APPLY
+
+* **Coupon page: koi code type nahi — sirf APPLY.** Har coupon card par ek hi button. List kabhi khaali nahi: pehle Swiggy ke apne `fetch_food_coupons` ke coupons, phir wahi promo codes jo bot ka engine har order par test karta hai (`SNACKIT`, `TRYNEW`, `STEALDEAL`, `SWIGGYIT`, `WELCOME50`). "Coupon available nahi hai" jaisa message kabhi nahi aata.
+* **APPLY = asli bill.** Dabate hi `cart/sync` chalta hai, aur card par wahin result likha aata hai: `Laga — ₹140 ki saving` ya `Swiggy ne is code par discount nahi diya — bill me 0 dikha`. Jhootha saving kabhi nahi.
+* **Bill Details detailed:** Item Total (strike ke saath jab discount laga), Delivery Fee (+ distance), GST & Other Charges, Coupon, Offer saving, **To Pay** — phir `Poora hisaab dekhein` par har item (`× qty = ₹`) aur poora jod: `Items + Delivery + Packing + GST + Other − Coupon − Offer = To Pay`. Swiggy ka total hi final.
+* **Checkout dead end gaya:** Pay Now / bill / coupon sabse pehle receiver check karte hain. Naam ya 10-digit mobile adhoora ho to app seedha **address page ke receiver form** par le jaata hai (pehle API error aata tha aur user ko lagta tha checkout kharab hai). `customer_id` kisi purane session me na ho to bill sync ke waqt app ek baar Swiggy se identity le kar save kar leta hai (order placement ka double-tap barrier waisa hi rehta hai).
+* **Test:** `test_v97` (6 checks) + v90/v93/v96 updated. Sweep: `test:pro` 40/40, `test:guards` 65/65, `npm test` 132/132, bossbot 49/49.

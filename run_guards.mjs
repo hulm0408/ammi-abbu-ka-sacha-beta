@@ -76,7 +76,8 @@ const TESTS = [
   "test_v93_miniapp_shared_accounts_and_polish.mjs",
   "test_v94_miniapp_cart_parity.mjs",
   "test_v95_miniapp_cart_import_and_backup.mjs",
-  "test_v96_miniapp_cart_look_coupons_tracking.mjs"
+  "test_v96_miniapp_cart_look_coupons_tracking.mjs",
+  "test_v97_miniapp_bill_breakdown_coupons.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];
