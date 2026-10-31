@@ -58,8 +58,8 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 after(async () => { await new Promise(resolve => server.close(resolve)); fs.rmSync(tmp, { recursive: true, force: true }); });
 
-function sign(userId, timestamp = Math.floor(Date.now() / 1000)) {
-  const params = new URLSearchParams({ auth_date: String(timestamp), user: JSON.stringify({ id: userId, first_name: `User ${userId}` }), query_id: 'query' });
+function sign(userId, timestamp = Math.floor(Date.now() / 1000), launchFields = { query_id: 'query' }) {
+  const params = new URLSearchParams({ auth_date: String(timestamp), user: JSON.stringify({ id: userId, first_name: `User ${userId}` }), ...launchFields });
   const check = [...params.entries()].map(([k, v]) => `${k}=${v}`).sort().join('\n');
   const key = crypto.createHmac('sha256', 'WebAppData').update(process.env.BOT_TOKEN).digest();
   params.set('hash', crypto.createHmac('sha256', key).update(check).digest('hex'));
@@ -80,6 +80,41 @@ test('only fresh authentic Telegram init data grants access; anonymous boss/clie
   assert.equal((await request('/pro/api/bootstrap', alice.replace('User+7001', 'User+7000'))).status, 401);
   assert.equal((await request('/pro/api/bootstrap', sign(7009))).status, 403);
   assert.equal(verifyTelegramWebAppInitData(alice)?.id, '7001');
+});
+
+test('a Main Mini App launch authenticates without query_id and rejects altered launch data', async () => {
+  const mainLaunch = sign(7001, Math.floor(Date.now() / 1000), {
+    chat_instance: '123456789', chat_type: 'private', start_param: 'demo', signature: 'offline-mock-signature'
+  });
+  assert.equal(new URLSearchParams(mainLaunch).has('query_id'), false);
+  assert.equal(verifyTelegramWebAppInitData(mainLaunch)?.id, '7001');
+  const bootstrap = await request('/pro/api/bootstrap', mainLaunch);
+  assert.equal(bootstrap.status, 200);
+  assert.equal(bootstrap.body.user.name, 'User 7001');
+  assert.equal(bootstrap.body.user.isBoss, false);
+  assert.equal((await request('/pro/api/bootstrap', mainLaunch.replace('start_param=demo', 'start_param=other'))).status, 401);
+});
+
+test('missing vault key fails closed before OTP; an existing fallback key still works', async () => {
+  const savedPro = process.env.PRO_VAULT_KEY;
+  const savedFallback = process.env.VAULT_ENCRYPTION_KEY;
+  const otpCount = seen.otp.length;
+  delete process.env.PRO_VAULT_KEY;
+  delete process.env.VAULT_ENCRYPTION_KEY;
+  try {
+    const bootstrap = await request('/pro/api/bootstrap', alice);
+    assert.equal(bootstrap.status, 503);
+    assert.equal(bootstrap.body.code, 'PRO_VAULT_NOT_CONFIGURED');
+    const send = await request('/pro/api/accounts/send-otp', alice, { phone: '9234567890' });
+    assert.equal(send.status, 503);
+    assert.equal(send.body.code, 'PRO_VAULT_NOT_CONFIGURED');
+    assert.equal(seen.otp.length, otpCount);
+    process.env.VAULT_ENCRYPTION_KEY = 'offline-fallback-key-only';
+    assert.equal((await request('/pro/api/bootstrap', alice)).status, 200);
+  } finally {
+    if (savedPro === undefined) delete process.env.PRO_VAULT_KEY; else process.env.PRO_VAULT_KEY = savedPro;
+    if (savedFallback === undefined) delete process.env.VAULT_ENCRYPTION_KEY; else process.env.VAULT_ENCRYPTION_KEY = savedFallback;
+  }
 });
 
 test('static app is served without exposing API data; private and boss views stay separate', async () => {
@@ -112,7 +147,9 @@ test('unverified JSON is rejected; verified private sessions stay encrypted and 
   assert.equal(encrypted.includes('alice-secret-sentinel'), false);
   assert.equal(encrypted.includes('9123456789'), false);
   process.env.PRO_VAULT_KEY = 'offline-test-wrong-key-value';
-  assert.equal((await request('/pro/api/bootstrap', alice)).status, 503);
+  const wrongKey = await request('/pro/api/bootstrap', alice);
+  assert.equal(wrongKey.status, 503);
+  assert.equal(wrongKey.body.code, 'PRO_VAULT_DECRYPT_FAILED');
   assert.equal(fs.readFileSync(workspaceFile, 'utf8'), encrypted);
   process.env.PRO_VAULT_KEY = 'offline-random-test-key-only';
   assert.equal((await request('/pro/api/bootstrap', alice)).status, 200);
@@ -216,6 +253,7 @@ test('Telegram /pro entry uses only the configured HTTPS URL and leaves chat ava
   await new Promise(resolve => setTimeout(resolve, 100));
   const sent = calls.find(c => c.method === 'sendMessage');
   assert.equal(sent?.payload?.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url, 'https://example.test/pro');
+  assert.equal(sent?.payload?.reply_markup?.inline_keyboard?.[0]?.[0]?.text, '🍽 Open App');
   assert.match(sent.payload.text, /payment abhi available nahi/);
   calls.length = 0;
   process.env.PRO_MINIAPP_URL = 'http://localhost:4173/pro';
@@ -225,6 +263,47 @@ test('Telegram /pro entry uses only the configured HTTPS URL and leaves chat ava
   assert.match(noUrl?.payload?.text || '', /configure nahi/);
   assert.equal(noUrl?.payload?.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app, undefined);
   delete process.env.PRO_MINIAPP_URL;
+});
+
+test('chat menu uses the configured HTTPS app and preserves a manually configured menu when absent or invalid', async () => {
+  process.env.TEST_MODE = '1';
+  const { bot, configureTelegramBotMenu } = await import('./index.js');
+  const calls = [];
+  const telegram = {
+    async setMyCommands(commands) { calls.push({ method: 'commands', commands }); },
+    async setChatMenuButton(payload) { calls.push({ method: 'menu', payload }); }
+  };
+
+  assert.equal(await configureTelegramBotMenu(telegram, 'https://example.test/pro'), true);
+  assert.deepEqual(calls.find(c => c.method === 'menu')?.payload, {
+    menuButton: { type: 'web_app', text: 'Open', web_app: { url: 'https://example.test/pro' } }
+  });
+  assert(calls.find(c => c.method === 'commands').commands.some(c => c.command === 'pro'));
+
+  for (const url of ['', 'http://example.test/pro', 'https://127.0.0.1/pro', 'https://user:password@example.test/pro', 'https://example.test/pro?x=1']) {
+    calls.length = 0;
+    assert.equal(await configureTelegramBotMenu(telegram, url), true);
+    assert.equal(calls.some(c => c.method === 'menu'), false);
+    assert.equal(calls.find(c => c.method === 'commands').commands.some(c => c.command === 'pro'), false);
+  }
+
+  // Verify Telegraf's actual API serialization, with no network call.
+  const apiCalls = [];
+  const originalCallApi = bot.telegram.callApi;
+  bot.telegram.callApi = async (method, payload) => { apiCalls.push({ method, payload }); return true; };
+  try {
+    await configureTelegramBotMenu(bot.telegram, 'https://example.test/pro');
+    assert.deepEqual(apiCalls.find(c => c.method === 'setChatMenuButton')?.payload.menu_button, {
+      type: 'web_app', text: 'Open', web_app: { url: 'https://example.test/pro' }
+    });
+  } finally { bot.telegram.callApi = originalCallApi; }
+
+  // In long-polling mode bot.launch() stays pending while the bot runs.
+  const source = fs.readFileSync(new URL('./index.js', import.meta.url), 'utf8');
+  const start = source.indexOf('async function startBotWithRetry()');
+  const setup = source.indexOf('setupBotMenu().catch(', start);
+  const polling = source.indexOf('await bot.launch(', start);
+  assert(start >= 0 && setup > start && polling > setup, 'menu setup must start before the long-lived polling promise');
 });
 
 test('address verification rejects another receiver, missing phone and shifted pin', () => {

@@ -7,3 +7,15 @@ body.dark{color-scheme:dark;--bg:#101b29;--surface:#182638;--surface-2:#223347;-
 
 /* The QR encodes only the exact UPI intent returned by Swiggy. */
 .payment-qr{display:block;width:min(100%,320px);height:auto;margin:16px auto;background:#fff;border:8px solid #fff;border-radius:12px}.card .button.block + .button.block{margin-top:10px}a.button{text-decoration:none;text-align:center;justify-content:center}
+
+/* A single, accessible action style and in-app confirmations. */
+.button.primary,.button.green{background:linear-gradient(110deg,#076b82,#087a91);box-shadow:0 6px 16px rgba(7,107,130,.18)}
+.button:disabled,.bottom-nav button:disabled,.account-chip:disabled,.icon-button:disabled{opacity:.5;cursor:not-allowed}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #1695ad;outline-offset:3px}
+.connection-card p{color:var(--muted);font-size:14px;line-height:1.55;margin:9px 0 0}
+.confirm-overlay{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(9,20,32,.68)}
+.confirm-dialog{width:min(100%,480px);max-height:calc(100vh - 40px);max-height:calc(100dvh - 40px);overflow:auto;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:22px;padding:22px;box-shadow:0 16px 48px rgba(0,0,0,.28)}
+.confirm-dialog h2{font-size:19px;line-height:1.25;margin:0 0 12px;letter-spacing:-.02em}
+.confirm-message{max-height:50vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text);font-size:14px;line-height:1.55;margin:0 0 20px}
+.confirm-actions{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
+.confirm-actions .button{flex:1;min-width:120px}

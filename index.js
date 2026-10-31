@@ -2521,9 +2521,9 @@ bot.start(async (ctx) => {
 
 // Optional Mini App: the chat flow remains unchanged. Set an explicit HTTPS
 // origin rather than trusting request Host headers or a guessed deployment URL.
-function configuredMiniAppUrl() {
+function configuredMiniAppUrl(raw = process.env.PRO_MINIAPP_URL) {
   try {
-    const url = new URL(String(process.env.PRO_MINIAPP_URL || '').trim());
+    const url = new URL(String(raw || '').trim());
     const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
     if (url.protocol !== 'https:' || url.username || url.password || !host.includes('.') || host === 'localhost' || host.endsWith('.localhost') || net.isIP(host)) return '';
     if (!/^\/pro\/?$/.test(url.pathname) || url.search || url.hash) return '';
@@ -2548,7 +2548,7 @@ bot.command('pro', async (ctx) => {
     ? 'UPI checkout experimental hai; order aur payment ko Swiggy me verify karein.'
     : 'In-app payment abhi available nahi hai.';
   return ctx.reply(`Mini App kholo. Chat bot pehle ki tarah available hai. ${checkoutNote}`,
-    Markup.inlineKeyboard([[Markup.button.webApp('🍽 Open Mini App', url)]]));
+    Markup.inlineKeyboard([[Markup.button.webApp('🍽 Open App', url)]]));
 });
 
 bot.command('waf', async (ctx) => {
@@ -16210,32 +16210,46 @@ function startAutoEventOffersPrebookLoop() {
   if (typeof autoEventPrebookTimer.unref === 'function') autoEventPrebookTimer.unref();
 }
 
-// Registers the command list + a plain "commands" menu button.
-// Kept dependency-free and fully guarded: a Telegram-side hiccup must never
-// stop the bot from serving /start or orders.
-let botMenuReady = false;
-async function setupBotMenu() {
-  if (botMenuReady) return true;
+// The private-chat menu is separate from the native Main Mini App buttons in
+// the profile/chat list, which the bot owner must enable in @BotFather.
+// Never overwrite a manually configured Telegram menu when no valid URL is set.
+export async function configureTelegramBotMenu(telegram, rawUrl = process.env.PRO_MINIAPP_URL) {
+  const miniAppUrl = configuredMiniAppUrl(rawUrl);
+  let ok = true;
   try {
-    await bot.telegram.setMyCommands([
+    await telegram.setMyCommands([
       { command: 'start', description: 'Start a new Swiggy order' },
-      ...(configuredMiniAppUrl() ? [{ command: 'pro', description: 'Open the Mini App' }] : []),
+      ...(miniAppUrl ? [{ command: 'pro', description: 'Open the Mini App' }] : []),
       { command: 'help', description: 'How to place an order' },
       { command: 'cancel', description: 'Cancel the current draft order' }
     ]);
   } catch (e) {
+    ok = false;
     console.warn('[Menu] setMyCommands skipped:', e?.message || e);
   }
-  try {
-    const miniAppUrl = configuredMiniAppUrl();
-    await bot.telegram.setChatMenuButton({ menuButton: miniAppUrl
-      ? { type: 'web_app', text: 'Mini App', web_app: { url: miniAppUrl } }
-      : { type: 'commands' } });
-  } catch (e) {
-    console.warn('[Menu] setChatMenuButton skipped:', e?.message || e);
+  if (miniAppUrl) {
+    try {
+      await telegram.setChatMenuButton({
+        menuButton: { type: 'web_app', text: 'Open', web_app: { url: miniAppUrl } }
+      });
+    } catch (e) {
+      ok = false;
+      console.warn('[Menu] setChatMenuButton skipped:', e?.message || e);
+    }
   }
-  botMenuReady = true;
-  return true;
+  return ok;
+}
+
+let botMenuReady = false;
+let botMenuSetupPromise = null;
+function setupBotMenu() {
+  if (botMenuReady) return Promise.resolve(true);
+  if (!botMenuSetupPromise) {
+    botMenuSetupPromise = configureTelegramBotMenu(bot.telegram)
+      .then(ok => { botMenuReady = ok; return ok; })
+      .finally(() => { botMenuSetupPromise = null; });
+  }
+  return botMenuSetupPromise;
 }
 
 // Launch bot with retry resilience for cloud container handover
@@ -16321,11 +16335,13 @@ async function startBotWithRetry() {
           console.log('! Priming pre-warmed Chrome for instant OTP in background...');
           prewarmBrowser().catch(e => console.log('Prewarm init note:', e.message));
         }
+        // Telegraf's polling launch does not resolve until polling stops. Start
+        // menu setup without blocking polling rather than waiting until shutdown.
+        setupBotMenu().catch(e => console.error('Menu setup error:', e.message));
         await bot.launch({ dropPendingUpdates: true });
         launched = true;
         botRuntimeState.launched = true;
         botRuntimeState.launchedAt = new Date().toISOString();
-        try { await setupBotMenu(); } catch (e) { console.error('Menu setup error:', e.message); }
         resumeAutoTrackingForRecentOrders();
         break;
       } catch (err) {
