@@ -6,7 +6,7 @@ import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { checkRateLimit, rateLimitMessage, rateLimitState } from './pro-rate-limit.js';
 import { reconcileBill, describeBillState } from './bill-reconcile.js';
 import { backupMoneyNow, backupIdentityNow, durabilityStatus, identityStatus } from './db-durability.js';
-import { importStatementText, recordStatementPayment, statementStatus } from './upi-statement.js';
+import { importStatementText, recordStatementPayment, statementStatus, retryPendingUtrs } from './upi-statement.js';
 import { describeSmsTruth, describeTrackingTruth, scanRecipientSmsEvidence } from './tracking-truth.js';
 import { summarizeIdentity } from './identity-snapshot.js';
 import { planQrGeneration, isRenderableQrImage, describeQrPlan } from './qr-generation-plan.js';
@@ -607,16 +607,37 @@ async function claimWalletTopup(user, body) {
     e.code = 'DUPLICATE_UTR';
     throw e;
   }
-  const intent = resolveTopupIntent(db, user.id, body?.topupId);
+  // Boss (31-10-2026, round 23): "BAS USER KO BOL SEND HOW MUCH MONEY YOU WANT
+  // THAT WILL BE FETCHED AND ADDED UPON SUBMITTING UTR". Isliye user pehle
+  // top-up QR khole ya na khole — wo jitna paisa bhejna chahta hai utna likh kar
+  // UTR daal sakta hai. Server usi waqt itne ka intent bana leta hai (10 min,
+  // ek user = ek zinda intent), phir UTR se asli payment detail fetch hoti hai.
+  const toldPaise = amountPaiseFromBody(body);
+  let intent = resolveTopupIntent(db, user.id, body?.topupId);
+  // Purana top-up (id diya par use ho chuka / expire) — usi id par naya credit
+  // nahi. Naya paisa bhejna hai to naya UTR + naya top-up.
+  if (!intent && body?.topupId) {
+    const e = error(409, 'Ye top-up pehle use ho chuka hai ya expire ho gaya — naya paisa bhejne ke liye naya amount likh kar naya UTR daalein.');
+    e.code = 'NO_TOPUP_INTENT';
+    throw e;
+  }
+  if (!intent && toldPaise > 0) {
+    if (toldPaise < 100) throw error(400, '₹1 se kam ka top-up nahi hota.');
+    if (toldPaise > TOPUP_MAX_PAISE) throw error(400, `Ek baar me ₹${rupees(TOPUP_MAX_PAISE)} tak hi add kar sakte hain.`);
+    intent = createTopupIntent(db, user.id, toldPaise);
+    intent.implicit = true;
+    saveDb(db);
+  }
   if (!intent) {
-    const e = error(409, 'Pehle top-up QR se paisa bhejein — phir wahi top-up khol kar "Paisa bhej diya" dabaiye. Bina top-up ke claim credit nahi hota.');
+    const e = error(409, 'Jitna paisa bhejna hai utna likhein (₹) aur UTR daalein — ya pehle top-up QR kholein. Bina amount/UTR ke credit nahi hota.');
     e.code = 'NO_TOPUP_INTENT';
     throw e;
   }
   const claimedPaise = intent.amountPaise;
-  const toldPaise = amountPaiseFromBody(body);
   if (toldPaise > 0 && Math.abs(toldPaise - claimedPaise) >= 1) {
-    const e = error(409, `Top-up ₹${rupees(claimedPaise)} ka tha; aap ₹${rupees(toldPaise)} bata rahe hain. Credit sirf ₹${rupees(claimedPaise)} ka hoga — galat amount nahi judega.`);
+    // Implicit intent me amount wahi hota hai; QR wale intent me user ka likha
+    // amount alag ho to saaf batao ki credit asli (fetched) amount par hoga.
+    const e = error(409, `Top-up ₹${rupees(claimedPaise)} ka tha; aap ₹${rupees(toldPaise)} bata rahe hain. Credit wahi hoga jo UTR se fetch hoga — galat amount nahi judega.`);
     e.code = 'TOPUP_AMOUNT_MISMATCH';
     e.amountPaise = claimedPaise;
     e.toldPaise = toldPaise;
@@ -654,8 +675,9 @@ async function claimWalletTopup(user, body) {
     }
     request = submitted.request;
     verified = submitted.code === 'AUTO_VERIFIED';
-    // Provider ne khud confirm kiya (submitTopupRequest ne balance jama kar
-    // diya) — tab bhi jo jama hua wahi credited amount hai.
+    // Round 23: credit wahi hai jo UTR se fetch hua (asli aaya amount) — user ka
+    // likha amount nahi. Response me bhi wahi sach jaata hai.
+    if (verified && Number(submitted.creditedPaise) > 0) creditPaise = Number(submitted.creditedPaise);
     if (request) markTopupIntentUsed(db, intent.id, request.id);
   }
   if (!db.config.topupClaims || typeof db.config.topupClaims !== 'object') db.config.topupClaims = {};
@@ -670,11 +692,12 @@ async function claimWalletTopup(user, body) {
     creditedPaise: creditPaise,
     pending,
     verifyNote: String(request?.verifyPendingReason || request?.reason || ''),
+    lookupLine: String(request?.lookup?.line || ''),
     message: pending
-      ? `₹${rupees(claimedPaise)} ka claim verify ke liye chala gaya — bank/UPI me paisa dikhte hi sirf aaya hua amount judega (abhi balance ₹${wallet.balance} hai). ${String(request?.verifyPendingReason || '').slice(0, 140)}`.trim()
+      ? `${request?.lookup?.line ? `${request.lookup.line} ` : ''}Abhi balance ₹${wallet.balance} hai — jitna paisa sach me aayega utna hi judega. ${String(request?.verifyPendingReason || '').slice(0, 140)}`.trim()
       : (wallet.ready
-        ? `₹${rupees(creditPaise)} juda (bank ka asli amount) — balance ₹${wallet.balance} hai, ab order place kar sakte hain.`
-        : `₹${rupees(creditPaise)} juda (bank ka asli amount). Abhi balance ₹${wallet.balance} hai — ₹${wallet.shortfall} aur add karein.`)
+        ? `₹${rupees(creditPaise)} juda (UTR se fetch hua asli amount) — balance ₹${wallet.balance} hai, ab order place kar sakte hain.`
+        : `₹${rupees(creditPaise)} juda (UTR se fetch hua asli amount). Abhi balance ₹${wallet.balance} hai — ₹${wallet.shortfall} aur add karein.`)
   };
 }
 
@@ -1704,6 +1727,13 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         enforceRateLimit(user, 'walletClaim');
         const out = await claimWalletTopup(user, await bodyJson(req));
         backupMoneyNow().catch(() => {});
+        // Claim pending raha to baaki pending claims bhi ek baar fetch karke
+        // dekho — provider me paisa aa gaya ho to khud jud jayega.
+        if (out?.pending) {
+          retryPendingUtrs(getDb(), { limit: 5 })
+            .then((retry) => { if (retry?.settled?.some((s) => s.action === 'CREDIT')) saveDb(getDb()); })
+            .catch(() => {});
+        }
         json(res, 200, { ok: true, ...out });
         return;
       }

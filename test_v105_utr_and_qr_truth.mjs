@@ -114,13 +114,25 @@ test('wallet: galat format ka UTR reject', async () => {
   assert.equal(walletBalancePaise(getDb(), '7102'), 0);
 });
 
-// ── 2. Credit sirf top-up ke amount par ───────────────────────────────────
-test('wallet: top-up intent ke bina claim nahi hota', async () => {
+// ── 2. Credit sirf asli (fetched) payment par ─────────────────────────────
+test('wallet: bina amount aur bina top-up ke claim nahi hota', async () => {
   seed(7103);
-  const out = await req(7103, 'wallet/claim', { amountRupees: 15, utr: '111122223333' });
+  const out = await req(7103, 'wallet/claim', { utr: '111122223333' });
   assert.equal(out.status, 409);
   assert.equal(out.body.code, 'NO_TOPUP_INTENT');
   assert.equal(walletBalancePaise(getDb(), '7103'), 0);
+});
+
+// Round 23 (boss): user khud batata hai kitna paisa bhejna hai — bina QR ke
+// bhi claim chalta hai, par paisa sirf tab judta hai jab UTR se payment mile.
+test('wallet: "kitna paisa bhejna hai" + UTR — bina payment proof credit nahi', async () => {
+  seed(7111);
+  const out = await req(7111, 'wallet/claim', { amountRupees: 20, utr: '111122229999' });
+  assert.equal(out.status, 200, JSON.stringify(out.body));
+  assert.equal(out.body.pending, true);
+  assert.equal(out.body.creditedPaise, 0);
+  assert.equal(walletBalancePaise(getDb(), '7111'), 0);
+  assert.match(out.body.message, /jitna paisa sach me aayega/i);
 });
 
 test('wallet: top-up ₹15 ka tha, user ₹15 likhe → ₹15 hi judta hai', async () => {
@@ -218,7 +230,10 @@ test('qr: dono amount bill se alag → block, par asli wajah', () => {
 });
 
 // ── 5. App: claim form me amount box nahi, UTR zaroori ────────────────────
-test('DOM: wallet claim form me amount input nahi, UTR required, top-up ke bina button band', async () => {
+// Round 23 (boss): "SEND HOW MUCH MONEY YOU WANT ... FETCHED AND ADDED UPON
+// SUBMITTING UTR" — form me ab amount box hai (purana "amount input nahi" rule
+// boss ne khud badal diya), aur button bina top-up QR ke bhi chalta hai.
+test('DOM: wallet claim form me amount + UTR dono, button pehle se chalu', async () => {
   const html = fs.readFileSync(new URL('./swiggy-pro.html', import.meta.url), 'utf8').replace(/<script[^>]*src="[^"]*"[^>]*><\/script>/g, '');
   const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'http://localhost/pro' });
   const { window } = dom;
@@ -242,11 +257,13 @@ test('DOM: wallet claim form me amount input nahi, UTR required, top-up ke bina 
     await waitFor(() => window.document.querySelector('[data-tab="cart"]:not([disabled])'), 'nav');
     window.document.querySelector('[data-tab="cart"]').click();
     // Khaali wallet par sheet apne aap khulti hai — warna button se kholo.
-    const btn = await waitFor(() => window.document.querySelector('[data-action="wallet-topup"]'), 'topup button');
-    btn.click();
     const form = await waitFor(() => window.document.querySelector('form[data-form="wallet-claim"]'), 'claim form');
-    assert.equal(form.querySelector('input[name="amount"]'), null, 'amount input nahi hai');
+    const amount = form.querySelector('input[name="amount"]');
+    assert.ok(amount, 'amount input hai (kitna paisa bhejna hai)');
     assert.ok(form.querySelector('input[name="utr"]'), 'UTR input hai');
     assert.match(form.textContent, /12-digit UTR/i);
+    assert.match(form.textContent, /jitna paisa sach me aaya utna hi/i);
+    assert.equal(form.textContent.includes('Pehle upar se top-up khol'), false, 'ab top-up QR zaroori nahi');
+    assert.equal(form.querySelector('button[type="submit"]').disabled, false, 'button chalu hai');
   } finally { window.close(); }
 });

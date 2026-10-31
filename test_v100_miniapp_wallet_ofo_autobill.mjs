@@ -366,9 +366,10 @@ test('DOM: wallet kam balance par saaf bolta hai + paisa bhej diya ka form + UPI
     assert.match(card.textContent, /Low balance/);
     assert.match(card.textContent, /₹15 add karein/);
     assert.ok(card.querySelector('form[data-form="wallet-claim"]'), 'paisa bhej diya form');
-    // Round 16: amount user nahi likhta (top-up se aata hai); UTR zaroori hai.
-    assert.equal(card.querySelector('input[name="amount"]'), null, 'amount input nahi');
+    // Round 23 (boss): "SEND HOW MUCH MONEY YOU WANT" — amount box + UTR dono.
+    assert.ok(card.querySelector('input[name="amount"]'), 'amount input');
     assert.ok(card.querySelector('input[name="utr"]'), 'UTR input');
+    assert.match(card.textContent, /Kitna paisa bhejna hai/i);
     assert.match(card.textContent, /mius@ybl/);
   } finally { app.close(); }
 });

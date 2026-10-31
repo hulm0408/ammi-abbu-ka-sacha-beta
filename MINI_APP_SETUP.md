@@ -613,3 +613,40 @@ banti hai aur deploy par data ja sakta hai (panel me saaf likha aata hai).
 `test_v111_login_id_durability.mjs` **17 checks** (snapshot/merge 8, key health 1,
 deploy+restore 3, API 4, DOM 1). Sweep: guards **79/79 (147s)**, `test:pro` **41/41**,
 `npm test` **132/132**, v109 13/13, v110 10/10, bossbot **49/49**.
+
+## Round 23 (31-10-2026): UTR se payment details khud fetch, credit = jitna aaya
+
+Boss: *"bas user ko bol send how much money you want — that will be fetched and added upon
+submitting UTR."*
+
+**Pehle:** QR banao → intent → paisa bhejo → UTR → verify.
+**Ab:** user sirf **"Kitna paisa bhejna hai?"** likhta hai + **UTR** daalta hai → server us UTR ki
+asli payment khud fetch karta hai → **jitna aaya utna hi** wallet me judta hai. Top-up QR
+majboori nahi (khula ho to wahi intent use hota hai, warna server khud ₹1–₹500 ka implicit
+intent bana leta hai).
+
+* Naya module **`utr-lookup.js`**: `fetchUtrPaymentDetails(utr)` (POST JSON → GET fallback,
+  8s timeout, `UPI_UTR_VERIFY_TOKEN` bearer), tolerant `parseUtrLookup` (nested
+  `data/result/payment/txn`, rupees ya paise, status string ya boolean), `describeLookup`.
+* **`user-wallet.js`**: `claimWalletTopup` ab provider fetch se chalta hai; `lookup`
+  `{configured, found, tried, reason, line}` request par save hota hai.
+  `submitTopupRequest` ab **fetched amount** credit karta hai — user ka likha amount sirf
+  batane ke liye hai.
+* **`upi-statement.js`**: `retryPendingUtrs(db, {limit})` — PENDING claims phir se fetch,
+  settle hone par `db` disk par save.
+* **`swiggy-pro-api.js`**: claim endpoint implicit intent banata hai, `lookupLine` wapas deta
+  hai, pending claim ke baad background retry chalta hai. Stale `topupId` → 409.
+* **`swiggy-pro-app.js`**: wallet card me "Kitna paisa bhejna hai?" input (shortfall pre-filled),
+  UTR input, button hamesha chalu, line "jitna paisa sach me aaya utna hi judega", jawab me
+  `lookupLine` dikhta hai.
+* Round 20 ka bharosa bacha hua: payee Misbahul Islam na ho, UTR mismatch, pending/failed,
+  duplicate UTR — kisi me bhi credit nahi. Farq sirf itna ki **amount wahi judta hai jo aaya**.
+
+### Boss ko karna
+Render env me `UPI_UTR_LOOKUP_URL` (ya `UPI_UTR_VERIFY_URL`) + agar provider token maange to
+`UPI_UTR_VERIFY_TOKEN` — uske bina claim PENDING rehta hai aur panel saaf batata hai.
+
+### Tests
+`test_v112_utr_fetch_and_credit.mjs` **12 checks**. Sweep: guards **80/80**,
+`npm test` **132/132**, `test:pro` **41/41**, v105 14/14, v106 12/12, v100 14/14,
+v101 10/10, v109 13/13, v111 17/17.

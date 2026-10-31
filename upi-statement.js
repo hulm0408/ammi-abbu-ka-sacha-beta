@@ -9,6 +9,8 @@
  * leta hai. User khud jo UTR likhta hai wo sirf **claim** hai — proof nahi.
  */
 import { parseStatementText, evaluateUtrCredit, CREDIT_ACTIONS, isBossPayee } from './upi-credit-policy.js';
+import { fetchUtrPaymentDetails } from './utr-lookup.js';
+import { saveDb } from './store.js';
 import {
   creditWallet, ensureWallet, findUsedUtr, markUtrUsed, listTopupRequests, normalizeUtr, walletBalancePaise
 } from './user-wallet.js';
@@ -150,6 +152,30 @@ export function settledPendingClaims(db, { actor = 'system', at = Date.now() } =
     result.push({ topupId: req.id, userId: req.userId, action: 'CREDIT', creditedPaise: decision.creditedPaise, balancePaise: credit.balancePaise });
   }
   return result;
+}
+
+
+/**
+ * Boss (31-10-2026, round 23): UTR daalne par payment details **fetch** hoti
+ * hain. Jis claim ka paisa use waqt provider ke paas nahi mila tha, use baad me
+ * (provider me aa jane par) yahan se settle kar dete hain — user ko dobara kuch
+ * likhna nahi padta.
+ */
+export async function retryPendingUtrs(db, { fetchImpl = globalThis.fetch, limit = 5 } = {}) {
+  const pending = listTopupRequests(db, { status: 'PENDING', limit: Math.max(1, Math.min(Number(limit) || 5, 20)) });
+  const checked = [];
+  for (const req of pending) {
+    if (findStatementPayment(db, req.utr)) continue; // statement wala rasta pehle hi cover karta hai
+    const lookup = await fetchUtrPaymentDetails(req.utr, { fetchImpl }).catch(() => ({ found: false, reason: 'lookup fail' }));
+    checked.push({ utr: req.utr, found: lookup.found === true, reason: String(lookup.reason || '').slice(0, 140) });
+    if (!lookup.found) continue;
+    recordStatementPayment(db, { ...lookup.payment, utr: req.utr, source: 'provider' }, { actor: 'lookup' });
+  }
+  const settled = settledPendingClaims(db, { actor: 'lookup' });
+  // Credit isi db object me hua — disk par bhi likho, warna agla getDb() purana
+  // paisa dikhayega.
+  if (settled.some((row) => row.action === 'CREDIT' || row.action === 'REJECT')) saveDb(db);
+  return { checked, settled };
 }
 
 /** Boss ke liye summary + kitne claim verify ke intezaar me hain. */

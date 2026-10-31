@@ -478,10 +478,13 @@
     const topup = state.walletTopup
       ? `<div class="wallet-topup"><p class="hint">${esc(state.walletTopup.note || '')}</p>${state.walletTopup.qrDataUrl ? `<img class="payment-qr" src="${esc(state.walletTopup.qrDataUrl)}" alt="Wallet top-up UPI QR">` : ''}<a class="button green block" href="${esc(state.walletTopup.upiUri || '#')}">UPI app me ₹${esc(state.walletTopup.amount)} bhejein</a><p class="hint">UPI id: <b>${esc(state.walletTopup.upiId || '')}</b></p></div>`
       : '';
-    // Boss (31-10-2026, round 16): UTR ke bina credit nahi, aur amount user
-    // nahi chunta — jo top-up QR bana tha wahi judta hai.
+    // Boss (31-10-2026, round 23): "BAS USER KO BOL SEND HOW MUCH MONEY YOU WANT
+    // THAT WILL BE FETCHED AND ADDED UPON SUBMITTING UTR" — user sirf itna
+    // likhta hai ki kitna paisa bhejna hai, phir UTR daalta hai. Server us UTR
+    // ki asli payment detail fetch karta hai aur jitna aaya utna hi judta hai.
     const topupAmount = state.walletTopup?.amount || '';
-    const claim = `<form data-form="wallet-claim" class="wallet-claim" novalidate><p class="section-title">Paisa bhej diya?</p><p class="hint">${topupAmount ? `Ye top-up <b>₹${esc(topupAmount)}</b> ka hai — utna hi judega.` : 'Pehle upar se top-up khol kar paisa bhejein.'} UPI app se 12-digit <b>UTR</b> copy karke daaliye — ek UTR sirf ek hi baar chalta hai.</p><div class="field-row">${field('UTR (12 digit)', 'utr', 'jaise 123456789012', '')}</div><button class="button primary block" type="submit" ${state.walletClaimBusy || !topupAmount ? 'disabled' : ''}>${state.walletClaimBusy ? 'Jama ho raha hai…' : `₹${esc(topupAmount || '—')} jama karein`}</button></form>`;
+    const suggested = topupAmount || String(w.shortfall || w.fee || '15');
+    const claim = `<form data-form="wallet-claim" class="wallet-claim" novalidate><p class="section-title">Kitna paisa bhejna hai?</p><p class="hint">Jitna paisa bhejna hai utna likhein (UPI: <b>${esc(w.upiId || '')}</b>). Phir UPI app se 12-digit <b>UTR</b> daaliye — us UTR ki payment details khud fetch hongi aur <b>jitna paisa sach me aaya utna hi</b> judega.${topupAmount ? ` (Ye top-up ₹${esc(topupAmount)} ka khula hai.)` : ''}</p><div class="field-row">${field('Amount (₹)', 'amount', 'jaise 15', suggested)}${field('UTR (12 digit)', 'utr', 'jaise 123456789012', '')}</div><button class="button primary block" type="submit" ${state.walletClaimBusy ? 'disabled' : ''}>${state.walletClaimBusy ? 'UTR se payment fetch ho rahi hai…' : 'UTR se payment fetch karke add karein'}</button>${state.walletClaimNote ? `<p class="hint">${esc(state.walletClaimNote)}</p>` : ''}</form>`;
     const upiEditor = state.user?.isBoss
       ? (state.walletUpiEdit
         ? `<form data-form="wallet-upi" class="wallet-usi" novalidate>${field('Boss ka UPI id', 'upiId', 'name@bank', w.upiId || '')}<button class="button outline block" type="submit">UPI save karein</button></form>`
@@ -1171,18 +1174,20 @@
         state.tab = 'cart'; writeCache({ tab: 'cart' }); render();
         toast(`Cart parse ho gaya — ${count} item${count === 1 ? '' : 's'}. Ab bill check karein.`);
       } else if (type === 'wallet-claim') {
-        const utr = String(data.get('utr') || '').trim();
-        if (!/^\d{12}$/.test(utr.replace(/\s+/g, ''))) { toast('UPI app se poora 12-digit UTR daaliye.'); return; }
-        if (!state.walletTopup?.topupId) { toast('Pehle upar se top-up khol kar paisa bhejein.'); return; }
-        state.walletClaimBusy = true; render();
+        const utr = String(data.get('utr') || '').trim().replace(/\s+/g, '');
+        const amountRupees = Number(String(data.get('amount') || '').replace(/[^0-9.]/g, ''));
+        if (!/^\d{12}$/.test(utr)) { toast('UPI app se poora 12-digit UTR daaliye.'); return; }
+        // QR khula hai to usi top-up par claim; warna jo amount user ne likha.
+        const payload = state.walletTopup?.topupId
+          ? { topupId: state.walletTopup.topupId, amountPaise: state.walletTopup.amountPaise, utr }
+          : { amountPaise: Math.round(amountRupees * 100), utr };
+        if (!state.walletTopup?.topupId && !(amountRupees >= 1)) { toast('Jitna paisa bhejna hai utna likhein (₹1 se zyada).'); return; }
+        state.walletClaimBusy = true; state.walletClaimNote = ''; render();
         try {
-          const out = await api('wallet/claim', 'POST', {
-            topupId: state.walletTopup.topupId,
-            amountPaise: state.walletTopup.amountPaise,
-            utr: utr.replace(/\s+/g, '')
-          });
+          const out = await api('wallet/claim', 'POST', payload);
           merge(out); state.walletTopup = null; state.walletSheet = false;
-          toast(out.message || `₹${state.walletTopup?.amount || ''} wallet me jud gaya.`);
+          state.walletClaimNote = out.lookupLine || '';
+          toast(out.message || 'UTR ki payment fetch hui — jitna aaya utna juda.');
         } finally { state.walletClaimBusy = false; render(); }
       } else if (type === 'statement') {
         const text = String(data.get('text') || '').trim();
