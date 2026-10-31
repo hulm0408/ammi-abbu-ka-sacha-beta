@@ -195,7 +195,10 @@ test('tracking: operator ke ID par LINK milta hai, OTP/address nahi', async () =
   assert.match(out.body.tracking.trackingUrl, /^https:\/\/www\.swiggy\.com\/ofo\/track\//);
   assert.equal(out.body.tracking.deliveryOtp, '', 'OTP chhupa');
   assert.equal(out.body.tracking.deliveryPartner.name, '', 'rider chhupa');
-  assert.match(out.body.tracking.note, /Tracking link/i);
+  // Round 21: note ab "kis route se mila / kya try hua" batata hai — link ka
+  // sach wahi rehta hai (Swiggy ka https link, OTP/rider chhupe).
+  assert.match(out.body.tracking.note, /Tracking link mil gaya/i);
+  assert.match(out.body.tracking.note, /operator ke paas/i);
   assert.ok(trackingCalls >= 1, 'provider se tracking maanga gaya');
 });
 

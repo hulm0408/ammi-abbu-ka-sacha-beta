@@ -5,8 +5,10 @@ import {
   swiggyCartGet, swiggyCartUpdate, verifySwiggySessionLive, withSwiggyAccountLock,
   checkRealSwiggyPaymentAndExtractTracking, detectOfoFromPlaceResponse, normalizeSwiggyOrderId,
   extractSwiggyProvidedTrackingUrl, extractSwiggyDeliveryOtp, isZeroSmsTestSandboxActive,
-  extractDeepLinkFromReferrerOrUrl, fetchLiveGroupCart, resolveSwiggyLink, callSwiggyFoodMcpTool
+  extractDeepLinkFromReferrerOrUrl, fetchLiveGroupCart, resolveSwiggyLink, callSwiggyFoodMcpTool,
+  fetchSwiggyTrackingLinkFast
 } from './swiggy-cart.js';
+import { scanRecipientSmsEvidence } from './tracking-truth.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { activateAllEventOffers } from './event-offers.js';
 import { getDb } from './store.js';
@@ -1099,6 +1101,14 @@ export const proProvider = {
   async tracking(account, rawId) {
     const id = normalizeSwiggyOrderId(rawId);
     if (!id) throw badRequest('Invalid Swiggy order ID.');
+    // Boss (31-10-2026, round 21): "NO TRACKING IS AVAILABLE". Pehle sirf do
+    // one-shot DAPI call thi — Swiggy ka link aksar `order/details`, mobile-web
+    // UA ya order page ke `__NEXT_DATA__` me hota hai. Ab wahi poora rasta:
+    // trackV4 (dono headers) → order/details → order page scrape, 3 rounds.
+    let deep = { url: '', via: '', tried: [], attempts: 0, payload: null };
+    try {
+      deep = await fetchSwiggyTrackingLinkFast(account, id, { budgetMs: 9000, attempts: 3 });
+    } catch { deep = { url: '', via: '', tried: [], attempts: 0, payload: null }; }
     const [track, delivery] = await Promise.all([
       dapiFetch(account, `order/trackV4?order_id=${encodeURIComponent(id)}&type=full&version=V2`, { timeoutMs: 8000 }).catch(() => null),
       dapiFetch(account, `order/trackV2/de?order_id=${encodeURIComponent(id)}`, { timeoutMs: 8000 }).catch(() => null)
@@ -1110,12 +1120,27 @@ export const proProvider = {
       return returnedId && returnedId !== id ? null : value;
     };
     const t = validData(track), d = validData(delivery);
-    if (!t && !d) throw unavailable('Swiggy did not return tracking details for this order.');
+    // SMS ka proof — Swiggy ke saare payloads me (deep search bhi shamil).
+    const sms = scanRecipientSmsEvidence(t, d, deep.payload, track?.json, delivery?.json);
+    const directUrl = extractSwiggyProvidedTrackingUrl(t, d) || '';
+    const trackingUrl = deep.url || directUrl;
+    const via = deep.url ? (deep.via || 'FYI_CTA') : (directUrl ? 'FYI_CTA' : '');
+    if (!t && !d && !deep.url) {
+      // Tracking ka kuch bhi na mile to bhi jhooth nahi: asli reason + kya try hua.
+      const err = unavailable('Swiggy ne is order ka tracking nahi diya (trackV4, order/details aur order page — teeno khaali).');
+      err.code = 'TRACKING_NOT_PUBLISHED';
+      err.tried = (deep.tried || []).slice(0, 4);
+      throw err;
+    }
     return {
       orderId: id,
-      status: String(t?.order_status_details?.status_message || t?.order_status || ''),
-      eta: String(t?.sla_time || t?.order_status_details?.eta || ''),
-      trackingUrl: extractSwiggyProvidedTrackingUrl(t, d) || '',
+      status: String(t?.order_status_details?.status_message || t?.order_status || deep?.payload?.order_status || ''),
+      eta: String(t?.sla_time || t?.order_status_details?.eta || deep?.payload?.sla_time || ''),
+      trackingUrl,
+      via,
+      tried: (deep.tried || []).slice(0, 4),
+      attempts: Number(deep.attempts || 0),
+      sms,
       deliveryOtp: extractSwiggyDeliveryOtp(t, { delivery: d }) || '',
       deliveryPartner: { name: String(d?.name || ''), phone: String(d?.mobile || '') }
     };

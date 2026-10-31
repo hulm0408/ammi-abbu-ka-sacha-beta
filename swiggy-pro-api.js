@@ -7,9 +7,10 @@ import { checkRateLimit, rateLimitMessage, rateLimitState } from './pro-rate-lim
 import { reconcileBill, describeBillState } from './bill-reconcile.js';
 import { backupMoneyNow, durabilityStatus } from './db-durability.js';
 import { importStatementText, recordStatementPayment, statementStatus } from './upi-statement.js';
+import { describeSmsTruth, describeTrackingTruth, scanRecipientSmsEvidence } from './tracking-truth.js';
 import { planQrGeneration, isRenderableQrImage, describeQrPlan } from './qr-generation-plan.js';
 import { exactPaise } from './swiggy-cart-integrity.js';
-import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder } from './swiggy-cart.js';
+import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder, isZeroSmsTestSandboxActive } from './swiggy-cart.js';
 import { deleteAccount, getDb, isBoss, saveDb, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
 import {
   buildTopupUpiIntent, chargeServiceFee, creditWallet, ensureWallet, findUsedUtr, getWallet, minTopupPaise,
@@ -326,9 +327,17 @@ function publicRestrictedTracking(tracking) {
     deliveryOtp: '',
     deliveryPartner: { name: '', phone: '' },
     restricted: true,
-    note: link
-      ? 'Tracking link Swiggy ka hai — status aur rider wahan dikhega. OTP/address sirf operator ke paas rehta hai.'
-      : 'Swiggy ne is order ka tracking link nahi diya — status yahan refresh se aata rahega.'
+    via: String(tracking.via || ''),
+    tried: Array.isArray(tracking.tried) ? tracking.tried.slice(0, 4) : [],
+    sms: tracking.sms || null,
+    note: (() => {
+      const truth = describeTrackingTruth({
+        trackingUrl: link, via: tracking.via, tried: tracking.tried, orderStatus: tracking.status, restricted: true, attempts: tracking.attempts
+      });
+      return truth.ok
+        ? `${truth.line} OTP/address sirf operator ke paas rehta hai.`
+        : truth.reason;
+    })()
   };
 }
 function publicCheckout(checkout, { restricted = false } = {}) {
@@ -342,6 +351,9 @@ function publicCheckout(checkout, { restricted = false } = {}) {
     paymentVerified: checkout.paymentVerified === true,
     message: String(checkout.message || ''),
     tracking: restricted ? publicRestrictedTracking(checkout.tracking) : (checkout.tracking || null),
+    // Round 21: SMS ka poora sach (line + state) aur tracking ka reason.
+    receiverMasked: maskAccountPhone(checkout.receiverPhone || ''),
+    sms: smsTruthFor(checkout),
     restricted: restricted === true,
     // Round 12: order bana par QR nahi mila — asli wajah + (agar Swiggy ne
     // diya ho to) uske payment page ka link. Koi apna banaya hua link nahi.
@@ -763,6 +775,58 @@ function checkoutAccount(user, ws) {
 function orderDetailAllowed(user, workspace, key) {
   return !isSharedAccountFor(user, workspace, key);
 }
+/**
+ * Round 21: SMS ka sach ek jagah — receiver/Swiggy ke diye number aur Swiggy ke
+ * payload me SMS flag ke hisaab se. Jhootha "SMS gaya" kabhi nahi.
+ */
+function smsTruthFor(checkout, { tracking = null } = {}) {
+  const t = tracking || checkout?.tracking || null;
+  return describeSmsTruth({
+    sms: t?.sms || null,
+    receiverPhone: checkout?.receiverPhone || '',
+    accountPhone: checkout?.accountPhone || '',
+    ofoRequested: checkout?.forSomeoneElse === true,
+    ofoConfirmed: checkout?.ofoConfirmed === true,
+    orderStatus: String(t?.status || checkout?.status || '')
+  });
+}
+
+/**
+ * Tracking/SMS ke liye order ka context: checkout wale order par checkout ka
+ * sach, warna active account + abhi chuna hua address. Jahan number pata nahi,
+ * wahan khaali — SMS ke baare me jhooth nahi bolte.
+ */
+function orderScopeContext(ws, scope) {
+  if (scope === 'checkout') return ws.checkout || {};
+  const account = (ws.accounts || {})[ws.activeAccountKey] || {};
+  return {
+    accountPhone: String(account.phone || ''),
+    receiverPhone: String(normalizeIndianMobileNumber(ws.selectedAddress?.mobile) || ''),
+    forSomeoneElse: ws.cart?.forSomeoneElse === true,
+    ofoConfirmed: false
+  };
+}
+
+/**
+ * Boss (31-10-2026, round 21): "NO SMS RECEIVED". SMS sirf tab aata hai jab
+ * order ASLI Swiggy par jaata hai. Agar ye environment block/sandbox me hai to
+ * koi SMS aana hi nahi tha — ye sach UI me dikhta hai, chhupta nahi.
+ */
+function liveOrderStatus() {
+  let sandbox = false;
+  try { sandbox = isZeroSmsTestSandboxActive(); } catch { sandbox = false; }
+  const blocked = process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE === '1' || sandbox;
+  return {
+    blocked,
+    sandbox,
+    smsAllowed: process.env.ALLOW_LIVE_SWIGGY_SMS_ORDER === '1',
+    nodeEnv: String(process.env.NODE_ENV || ''),
+    line: blocked
+      ? `Is environment me live order place band hai (${process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE === '1' ? 'SWIGGY_BLOCK_LIVE_ORDER_PLACE=1' : 'sandbox/test mode'}) — isliye Swiggy ka SMS aana possible nahi tha.`
+      : 'Live order path chalu hai — SMS/OTP Swiggy bhejta hai, bot nahi.'
+  };
+}
+
 function compactOrder(order) {
   return {
     id: order.id, restaurant: order.restaurant, status: order.status,
@@ -887,7 +951,11 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
               : { cloud: d.cloud, restoredAt: d.restoredAt, line: d.line };
           })(),
           // Round 20: asli paisa ka sabooot (sirf boss ko) — statement summary.
-          ...(user?.isBoss || isBoss(user.id) ? { statement: statementStatus(getDb()) } : {})
+          ...(user?.isBoss || isBoss(user.id) ? { statement: statementStatus(getDb()) } : {}),
+          // Round 21 ("NO SMS RECEIVED"): SMS/order ka asli rasta ya block?
+          // Sandbox/blocked environment me order hi place nahi hota, isliye SMS
+          // ka intezaar bekaar hai — boss ko yahi saaf dikhna chahiye.
+          liveOrder: liveOrderStatus()
         });
         return;
       }
@@ -1486,9 +1554,11 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (!orderDetailAllowed(user, ws, scopeKey)) {
           const account = orderHistoryAccount(user, ws, scope);
           let tracking = null;
-          try { tracking = await provider.tracking(account, id); } catch { tracking = null; }
+          let tried = [];
+          try { tracking = await provider.tracking(account, id); } catch (err) { tracking = null; tried = Array.isArray(err?.tried) ? err.tried : []; }
           const link = String(tracking?.trackingUrl || tracking?.nativeShareUrl || '');
-          json(res, 200, { ok: true, restricted: true, tracking: {
+          const smsTruth = smsTruthFor({ ...orderScopeContext(ws, scope), tracking });
+          json(res, 200, { ok: true, restricted: true, sms: smsTruth, tracking: {
             orderId: id,
             status: String(tracking?.status || '').slice(0, 200),
             eta: String(tracking?.eta || tracking?.etaMinutes || '').slice(0, 100),
@@ -1496,9 +1566,16 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
             deliveryOtp: '',
             deliveryPartner: { name: '', phone: '' },
             restricted: true,
-            note: tracking?.trackingUrl || tracking?.nativeShareUrl
-              ? 'Tracking link Swiggy ka hai — status aur rider wahan dikhega. OTP/address sirf operator ke paas rehta hai.'
-              : 'Swiggy ne is order ka tracking link nahi diya — status yahan refresh se aata rahega.'
+            via: String(tracking?.via || ''),
+            tried: (Array.isArray(tracking?.tried) ? tracking.tried : tried).slice(0, 4),
+            sms: tracking?.sms || null,
+            note: (() => {
+              const truth = describeTrackingTruth({
+                trackingUrl: safeTrackingUrl(link, id), via: tracking?.via, tried: tracking?.tried,
+                orderStatus: tracking?.status, restricted: true, attempts: tracking?.attempts
+              });
+              return truth.ok ? `${truth.line} OTP/address sirf operator ke paas rehta hai.` : truth.reason;
+            })()
           } });
           return;
         }
@@ -1507,9 +1584,14 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (!orders.some(o => String(o.id) === id)) throw error(404, 'Order was not returned for this Swiggy account.');
         const tracking = await provider.tracking(account, id);
         const link = String(tracking?.trackingUrl || '');
-        json(res, 200, { ok: true, tracking: {
+        const safeLink = safeTrackingUrl(link, id);
+        json(res, 200, { ok: true, sms: smsTruthFor({ ...orderScopeContext(ws, scope), tracking }), tracking: {
           orderId: id, status: String(tracking?.status || '').slice(0, 200), eta: String(tracking?.eta || '').slice(0, 100),
-          trackingUrl: safeTrackingUrl(link, id),
+          trackingUrl: safeLink,
+          via: String(tracking?.via || ''),
+          tried: Array.isArray(tracking?.tried) ? tracking.tried.slice(0, 4) : [],
+          sms: tracking?.sms || null,
+          note: describeTrackingTruth({ trackingUrl: safeLink, via: tracking?.via, tried: tracking?.tried, orderStatus: tracking?.status, attempts: tracking?.attempts }).reason,
           deliveryOtp: /^\d{4,8}$/.test(String(tracking?.deliveryOtp || '')) ? String(tracking.deliveryOtp) : '',
           deliveryPartner: { name: String(tracking?.deliveryPartner?.name || '').slice(0, 100), phone: String(tracking?.deliveryPartner?.phone || '').slice(0, 30) }
         } });
@@ -1612,7 +1694,13 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         ws.checkout = {
           id: checkoutId, accountKey: ws.activeAccountKey, accountPhone: String(account.phone || ''), status: 'SUBMITTING',
           accountCustomerId: customerId,
-          createdAt: new Date().toISOString(), amount: total, restaurantName: String(ws.cart.restaurantName || '')
+          createdAt: new Date().toISOString(), amount: total, restaurantName: String(ws.cart.restaurantName || ''),
+          // Round 21 ("NO SMS RECEIVED"): SMS ka sach receiver ke number par
+          // tika hai — isliye order ke waqt hi yaad rakho ki Swiggy ko kaunsa
+          // number diya gaya aur "someone else" chaha gaya tha ya nahi.
+          receiverPhone: String(normalizeIndianMobileNumber(ws.selectedAddress?.mobile) || ''),
+          receiverName: String(ws.selectedAddress?.name || '').slice(0, 60),
+          forSomeoneElse: ws.cart?.forSomeoneElse === true
         };
         // Fee bhi isi waqt kati jaati hai (QR/order stage) — order place na ho
         // to neeche refund ho jaati hai. Idempotent: ek order par ek hi fee.
@@ -1747,13 +1835,39 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           const link = String(payment.trackingUrl || payment.nativeShareUrl || payment.swiggyWebTrackUrl || '');
           checkout.status = 'PAID';
           checkout.message = 'Swiggy returned a paid order for this exact order ID.';
+          // Round 21: payment ke waqt jo link mila usse shuru, phir deep probe
+          // (trackV4 → order/details → order page) — kyunki aksar payment
+          // response me link nahi hota aur boss ko khaali screen dikhti thi.
           checkout.tracking = {
             orderId: checkout.orderId, status: String(payment.orderStatus || '').slice(0, 200),
             eta: String(payment.etaMinutes || '').slice(0, 100),
             trackingUrl: safeTrackingUrl(link, checkout.orderId),
+            via: link ? 'CHECKOUT' : '',
+            tried: [],
+            sms: scanRecipientSmsEvidence(payment),
             deliveryOtp: /^\d{4,8}$/.test(String(payment.deliveryOtp || '')) ? String(payment.deliveryOtp) : '',
             deliveryPartner: { name: String(payment.deliveryBoy?.name || '').slice(0, 100), phone: String(payment.deliveryBoy?.mobile || '').slice(0, 30) }
           };
+          // Link/ SMS ka gehra sach — fail ho to jo hai wahi rehta hai (jhooth nahi).
+          try {
+            const deep = await provider.tracking(checkoutAccount(user, ws), checkout.orderId);
+            if (deep) {
+              checkout.tracking = {
+                ...checkout.tracking,
+                status: String(deep.status || checkout.tracking.status || '').slice(0, 200),
+                eta: String(deep.eta || checkout.tracking.eta || '').slice(0, 100),
+                trackingUrl: safeTrackingUrl(deep.trackingUrl, checkout.orderId) || checkout.tracking.trackingUrl,
+                via: deep.trackingUrl ? String(deep.via || 'FYI_CTA') : checkout.tracking.via,
+                tried: Array.isArray(deep.tried) ? deep.tried.slice(0, 4) : [],
+                attempts: Number(deep.attempts || 0),
+                sms: deep.sms?.state && deep.sms.state !== 'UNKNOWN' ? deep.sms : checkout.tracking.sms,
+                deliveryOtp: checkout.tracking.deliveryOtp || (deep.deliveryOtp || ''),
+                deliveryPartner: checkout.tracking.deliveryPartner?.name ? checkout.tracking.deliveryPartner : (deep.deliveryPartner || checkout.tracking.deliveryPartner)
+              };
+            }
+          } catch (err) {
+            checkout.tracking.deepError = String(err?.message || err).slice(0, 200);
+          }
           delete checkout.upiIntentUrl;
           delete checkout.qrDataUrl;
         } else if (checkout.paymentVerified) {

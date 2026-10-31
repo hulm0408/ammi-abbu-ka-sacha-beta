@@ -380,14 +380,23 @@
     }
     return `${head('DISCOVER', 'Find a restaurant', 'Good food, a little closer to home.')}${addr}<form class="search-form" data-form="search"><span class="input-wrap">${icon('search')}<input name="q" value="${esc(state.searchQuery)}" placeholder="Search for restaurants…" required></span><button class="button primary" aria-label="Search">${icon('arrow')}</button></form>${results}`;
   }
+  /**
+   * Boss (31-10-2026, round 21): "NO SMS RECEIVED" — SMS ka sach alag se.
+   * Jhootha "bhej diya" nahi: jo Swiggy ke data me hai wahi.
+   */
+  function smsTruthBlock(sms) {
+    if (!sms?.line) return '';
+    const label = sms.state === 'SENT' ? 'Swiggy ne bheja' : sms.state === 'NOT_SENT' ? 'Nahi gaya' : 'Proof nahi';
+    return `<div class="card"><div class="card-title">${icon('orders')} SMS ka sach</div><div class="bill-row"><span>Recipient SMS</span><strong class="${sms.state === 'SENT' ? 'free' : ''}">${esc(label)}</strong></div><p class="hint">${esc(sms.line)}</p>${sms.advice ? `<p class="hint">${esc(sms.advice)}</p>` : ''}</div>`;
+  }
   function trackingDetails(t) {
-    if (!t) return '<p class="hint">Swiggy has not returned tracking details yet.</p>';
+    if (!t) return '<p class="hint">Swiggy ne abhi tracking detail nahi di — Refresh dabayein.</p>';
     // Boss (31-10-2026, round 19): operator ke ID par bhi tracking link mile.
     // Link Swiggy ka hai; OTP/address sirf operator ke paas.
     const swiggyLink = /^https:\/\//i.test(String(t.trackingUrl || '')) ? String(t.trackingUrl) : '';
     // Boss (31-10-2026): "AMMI ABBU KO APP SE BAHAR NAHI JAANA HAI." Tracking
     // bhi yahin dikhti hai — koi browser link nahi.
-    return `<div class="bill-row"><span>Status</span><strong>${esc(t.status || 'Not returned')}</strong></div>${t.eta ? `<div class="bill-row"><span>ETA</span><strong>${esc(t.eta)}</strong></div>` : ''}${t.deliveryPartner?.name ? `<div class="bill-row"><span>Delivery partner</span><strong>${esc(t.deliveryPartner.name)}</strong></div>` : ''}${t.deliveryPartner?.phone ? `<div class="bill-row"><span>Partner phone</span><strong>${esc(t.deliveryPartner.phone)}</strong></div>` : ''}${t.deliveryOtp ? `<div class="bill-row"><span>Delivery OTP</span><strong>${esc(t.deliveryOtp)}</strong></div>` : ''}${swiggyLink ? `<a class="button soft block" href="${esc(swiggyLink)}" target="_blank" rel="noopener">Swiggy par tracking kholein</a>` : ''}<p class="hint">${esc(t.note || 'Tracking sab yahin — Swiggy ke bahar kuch kholne ki zaroorat nahi.')}</p>`;
+    return `<div class="bill-row"><span>Status</span><strong>${esc(t.status || 'Not returned')}</strong></div>${t.eta ? `<div class="bill-row"><span>ETA</span><strong>${esc(t.eta)}</strong></div>` : ''}${t.deliveryPartner?.name ? `<div class="bill-row"><span>Delivery partner</span><strong>${esc(t.deliveryPartner.name)}</strong></div>` : ''}${t.deliveryPartner?.phone ? `<div class="bill-row"><span>Partner phone</span><strong>${esc(t.deliveryPartner.phone)}</strong></div>` : ''}${t.deliveryOtp ? `<div class="bill-row"><span>Delivery OTP</span><strong>${esc(t.deliveryOtp)}</strong></div>` : ''}${swiggyLink ? `<a class="button soft block" href="${esc(swiggyLink)}" target="_blank" rel="noopener">Swiggy par tracking kholein</a>` : ''}${t.sms?.line ? `<div class="bill-row"><span>SMS</span><strong class="${t.sms.state === 'SENT' ? 'free' : ''}">${esc(t.sms.state === 'SENT' ? 'Swiggy ne bheja' : t.sms.state === 'NOT_SENT' ? 'Nahi gaya' : 'Proof nahi')}</strong></div><p class="hint">${esc(t.sms.line)}</p>${t.sms.advice ? `<p class="hint">${esc(t.sms.advice)}</p>` : ''}` : ''}${t.via ? `<div class="bill-row"><span>Link kahan se</span><strong>${esc(t.via === 'WEB_PAGE_SHARE' ? 'Swiggy order page' : t.via === 'ORDER_DETAILS' ? 'order/details' : t.via === 'CHECKOUT' ? 'payment confirm' : 'trackV4 cta_link')}</strong></div>` : ''}${t.note ? `<p class="hint">${esc(t.note)}</p>` : ''}${!swiggyLink && Array.isArray(t.tried) && t.tried.length ? `<p class="hint">Try hua: ${esc(t.tried.join(', '))}</p>` : ''}`;
   }
   function renderCheckout() {
     const c = state.checkout;
@@ -398,7 +407,7 @@
     }
     const id = `${c.accountPhone ? `<div class="bill-row"><span>Original account</span><strong>${esc(c.accountPhone)}</strong></div>` : ''}${c.orderId ? `<div class="bill-row"><span>Swiggy order ID</span><strong>#${esc(c.orderId)}</strong></div>` : ''}`;
     const warning = `<p class="hint">${esc(c.message || '')}</p>`;
-    if (c.status === 'PAID') return `<div class="card"><div class="card-title">${icon('check')} Payment verified</div>${id}${warning}${trackingDetails(c.tracking)}<button class="button outline block" data-action="checkout-finish">Start a new draft</button></div>`;
+    if (c.status === 'PAID') return `<div class="card"><div class="card-title">${icon('check')} Payment verified</div>${id}${warning}${trackingDetails(c.tracking ? { ...c.tracking, sms: c.sms || c.tracking.sms } : null)}${smsTruthBlock(c.sms)}<button class="button outline block" data-action="checkout-finish">Start a new draft</button></div>`;
     if (c.status === 'PAYMENT_PENDING') {
       const qr = c.qrDataUrl && /^data:image\/png;base64,/.test(c.qrDataUrl) && c.upiIntentUrl && /^upi:\/\/pay\?/i.test(c.upiIntentUrl)
         ? `<img class="payment-qr" src="${esc(c.qrDataUrl)}" alt="Swiggy UPI payment QR"><a class="button green block" href="${esc(c.upiIntentUrl)}">Open UPI app</a><p class="hint">Pay ${money(c.amount)} only once. If your UPI app cannot open here, scan this QR with another device.</p>` : '';
@@ -619,7 +628,7 @@
     else if (/prepar|cook|kitchen|accepted|confirm/i.test(lowered)) reached = 3;
     else if (/placed|received|pending/i.test(lowered)) reached = 1;
     const timeline = status ? `<ol class="track-steps">${steps.map((label, i) => `<li class="${i < reached ? 'done' : ''}${i === reached - 1 ? ' current' : ''}"><span class="track-dot"></span><span>${esc(label)}</span></li>`).join('')}</ol>` : '';
-    return `<button class="back-button" data-action="track-close">${icon('back')} Cart</button>${head('LIVE ORDER', 'Order track karein', data?.orderId || state.track?.id ? `Swiggy order #${esc(data?.orderId || state.track?.id)}` : 'Swiggy order')}<div class="card track-card"><div class="card-title">${icon('orders')} <span class="title-copy"><strong>${esc(status || (state.trackError ? 'Status nahi mila' : 'Status aa raha hai…'))}</strong><small>${esc(data?.eta ? 'ETA ' + data.eta : 'Swiggy ka taaza status')}</small></span>${state.trackBusy ? '<span class="spinner right" aria-label="Loading"></span>' : ''}</div>${timeline}${state.trackError ? `<div class="warning">${esc(state.trackError)}</div>` : ''}${trackingDetails(data)}<div class="track-actions"><button class="button primary block" type="button" data-action="track-refresh">${icon('refresh')} Status refresh</button><button class="button soft block" type="button" data-action="nav" data-tab="orders">Saare orders</button></div><p class="hint">Status khud refresh hota rehta hai. Delivery OTP rider ko dikhayein — kisi aur ko na dein.</p></div>`;
+    return `<button class="back-button" data-action="track-close">${icon('back')} Cart</button>${head('LIVE ORDER', 'Order track karein', data?.orderId || state.track?.id ? `Swiggy order #${esc(data?.orderId || state.track?.id)}` : 'Swiggy order')}<div class="card track-card"><div class="card-title">${icon('orders')} <span class="title-copy"><strong>${esc(status || (state.trackError ? 'Status nahi mila' : 'Status aa raha hai…'))}</strong><small>${esc(data?.eta ? 'ETA ' + data.eta : 'Swiggy ka taaza status')}</small></span>${state.trackBusy ? '<span class="spinner right" aria-label="Loading"></span>' : ''}</div>${timeline}${state.trackError ? `<div class="warning">${esc(state.trackError)}</div>` : ''}${trackingDetails(data)}${smsTruthBlock(state.trackSms || data?.sms)}<div class="track-actions"><button class="button primary block" type="button" data-action="track-refresh">${icon('refresh')} Status refresh</button><button class="button soft block" type="button" data-action="nav" data-tab="orders">Saare orders</button></div><p class="hint">Status khud refresh hota rehta hai. Delivery OTP rider ko dikhayein — kisi aur ko na dein.</p></div>`;
   }
   /** Payment pending: QR screen Swiggy jaisa, phir track. */
   function renderPaymentScreen(c) {
@@ -699,9 +708,9 @@
     if (state.order) {
       const o = state.order;
       if (!detailed) {
-        return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER SUMMARY', o.restaurant || 'Swiggy order', 'Operator ke ID par summary + tracking link milta hai.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div></div><div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>${restrictedNote}`;
+        return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER SUMMARY', o.restaurant || 'Swiggy order', 'Operator ke ID par summary + tracking link milta hai.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div></div><div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>${smsTruthBlock(state.orderSms || state.orderTracking?.sms)}${restrictedNote}`;
       }
-      return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER DETAILS', o.restaurant || 'Swiggy order', 'Only information returned by Swiggy is shown.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div>${o.address ? `<div class="bill-row"><span>Address</span><strong>${esc(o.address)}</strong></div>` : ''}</div><div class="card"><div class="card-title">${icon('cart')} Ordered items</div>${o.items.length ? o.items.map(i => `<div class="bill-row"><span>${esc(i.name)}</span><strong>× ${Number(i.qty)}</strong></div>`).join('') : '<p class="hint">Swiggy did not return item details.</p>'}</div><div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>`;
+      return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER DETAILS', o.restaurant || 'Swiggy order', 'Only information returned by Swiggy is shown.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div>${o.address ? `<div class="bill-row"><span>Address</span><strong>${esc(o.address)}</strong></div>` : ''}</div><div class="card"><div class="card-title">${icon('cart')} Ordered items</div>${o.items.length ? o.items.map(i => `<div class="bill-row"><span>${esc(i.name)}</span><strong>× ${Number(i.qty)}</strong></div>`).join('') : '<p class="hint">Swiggy did not return item details.</p>'}</div><div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>${smsTruthBlock(state.orderSms || state.orderTracking?.sms)}`;
     }
     let rows;
     if (state.ordersLoading) rows = skeletonRows(3, 2);
@@ -773,6 +782,18 @@
    * statement. Boss apni statement (ya SMS) paste karta hai, jis UTR ka paisa
    * sach me aaya hai sirf wahi amount credit hota hai.
    */
+  /**
+   * Boss (31-10-2026, round 21): "NO SMS RECEIVED" — SMS ka asli rasta ya
+   * pehle se band? Ye card wahi sach dikhata hai (boss only).
+   */
+  function renderLiveOrderCard() {
+    const live = state.liveOrder;
+    if (!state.user?.isBoss || !live) return '';
+    return `<div class="card"><div class="card-title">${tile('store')}<span class="title-copy">Live order + SMS<small>Swiggy ka SMS sirf asli order par aata hai.</small></span></div>
+      <div class="bill-row"><span>Live order place</span><strong class="${live.blocked ? '' : 'free'}">${live.blocked ? 'BAND' : 'ON'}</strong></div>
+      <div class="bill-row"><span>SMS ka rasta</span><strong>${live.smsAllowed ? 'Swiggy (live)' : 'Swiggy (normal)'}</strong></div>
+      ${live.blocked ? `<div class="warning">${esc(live.line)}</div>` : `<p class="hint">${esc(live.line)}</p>`}</div>`;
+  }
   function renderStatementCard() {
     if (!state.user?.isBoss) return '';
     const st = state.statement || null;
@@ -808,7 +829,7 @@
       return `<div class="card"><div class="card-title">${tile('tools')}<span class="title-copy">${esc(a.name)}<small>${a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned'} · ${a.owner === 'operator' ? 'Operator' : 'Aapka'}</small></span></div>${tracks}${claimButton}</div>`;
     }).join('');
     const result = state.claimResult ? `<div class="card"><div class="card-title">${icon('check')} Claim ka sach</div>${(state.claimResult.tracks || []).map(t => `<div class="offer-row"><span class="offer-emoji">${t.emoji || '🎁'}</span><span class="row-content"><strong>${esc(t.label)}</strong><p>${esc(t.message || '')}</p></span><span class="pill ${t.verified ? 'green' : 'amber'}">${esc(String(t.status || '').replace(/_/g, ' '))}</span></div>`).join('')}<p class="hint">Do baar claim nahi hota — pehle se laga ho to ALREADY ACTIVE dikhta hai.</p></div>` : '';
-    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${renderWalletCard()}${accounts}${renderStatementCard()}${renderBackupCard()}`;
+    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${renderWalletCard()}${accounts}${renderStatementCard()}${renderLiveOrderCard()}${renderBackupCard()}`;
   }
   function renderConnection() {
     if (!initData) return `${head('TELEGRAM MINI APP', 'Open in Telegram', 'Your private account space needs a Telegram session.')}<div class="card connection-card"><strong>Browser preview only</strong><p>Open this app from your bot using Open App or /pro. No account data is shown here.</p></div>`;
@@ -1002,6 +1023,7 @@
     try {
       const out = await api('orders/tracking?id=' + encodeURIComponent(state.track.id) + scope);
       state.trackData = out.tracking || null;
+      state.trackSms = out.sms || null;
       state.trackError = '';
     } catch (e) {
       state.trackError = e.message || 'Tracking nahi mili.';
@@ -1238,7 +1260,19 @@
     if (action === 'contact-edit') { state.contactEdit = !state.contactEdit; render(); return; }
     if (action === 'menu-back') { state.menu = null; render(); return; }
     if (action === 'orders-back') { state.order = null; state.orderTracking = null; render(); return; }
-    if (action === 'order-detail') { state.order = state.orders?.find(o => o.id === button.dataset.id) || null; state.orderTracking = null; render(); window.scrollTo(0,0); return; }
+    if (action === 'order-detail') {
+      state.order = state.orders?.find(o => o.id === button.dataset.id) || null;
+      state.orderTracking = null; render(); window.scrollTo(0,0);
+      // Boss (31-10-2026, round 21): "NO TRACKING IS AVAILABLE" — ab order
+      // kholte hi tracking khud aati hai, Refresh dabana zaroori nahi.
+      if (state.order?.id) {
+        const scope = state.ordersScope === 'checkout' ? '&scope=checkout' : '';
+        api('orders/tracking?id=' + encodeURIComponent(state.order.id) + scope)
+          .then(out => { if (state.order?.id === button.dataset.id) { state.orderTracking = out.tracking || null; state.orderSms = out.sms || null; render(); } })
+          .catch(e => { state.orderTracking = null; state.orderSms = e; render(); });
+      }
+      return;
+    }
     run(async () => {
       if (action === 'account-select') {
         let out;
@@ -1424,7 +1458,8 @@
       }
       else if (action === 'order-tracking') {
         const scope = state.ordersScope === 'checkout' ? '&scope=checkout' : '';
-        const out = await api('orders/tracking?id=' + encodeURIComponent(state.order.id) + scope); state.orderTracking = out.tracking; render();
+        const out = await api('orders/tracking?id=' + encodeURIComponent(state.order.id) + scope);
+        state.orderTracking = out.tracking; state.orderSms = out.sms || null; render();
       }
       else if (action === 'orders-refresh') await loadOrders();
     }, button);

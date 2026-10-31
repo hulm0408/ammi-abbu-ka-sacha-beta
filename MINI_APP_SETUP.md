@@ -538,3 +538,40 @@ ka sabooot tha. Isliye koi bhi 8-30 character ka random UTR + chhota amount wall
 Updated (intentional reversal): `test_v72` 101/101, `test_v100` 14/14, `test_v101` 10/10,
 `test_v105` 13/13, `test_v106` 12/12. Sweep: guards **77/77 (134s)**, `test:pro` **41/41**,
 `npm test` **132/132**, bossbot **49/49**.
+
+## Round 21 (31-10-2026): tracking ka har rasta + SMS ka sach
+
+Boss: *"NO SMS RECEIVED AND NO TRACKING IS AVAILABLE"*
+
+### 1. Tracking ab sirf ek DAPI call par nahi
+Pehle `provider.tracking()` sirf `trackV4` + `trackV2/de` ek-ek baar maangta tha. Aksar link
+`order/details`, mobile-web UA ya Swiggy ke order page ke `__NEXT_DATA__` me hota hai.
+Ab wahi poora rasta (bot ka proven resolver): **3 rounds → trackV4 (dono headers) →
+order/details → Swiggy order page scrape**, 9s budget. Response me `via`, `tried[]`,
+`attempts`, aur na mile to `TRACKING_NOT_PUBLISHED` + asli wajah.
+
+Payment confirm hote hi (`checkout/status`) ab deep probe bhi chalta hai — jo bhi pehle mila
+(checkout response ya provider) wo rakha jata hai, jhooth nahi.
+
+### 2. SMS ka sach (naya `tracking-truth.js`, pure)
+`scanRecipientSmsEvidence()` Swiggy ke saare payloads me sirf *naam wali* keys/status dekhta
+hai (`sms_sent`, `notification_status`, `SMS_SENT`, `SMS_FAILED` …). `describeSmsTruth()` phir
+SENT / NOT_SENT / UNKNOWN + **asli wajah** deta hai:
+receiver ka number = account ka number, order OFO nahi gaya, OFO confirm nahi hua, ya number
+hi wapas nahi aaya. Jhootha "SMS bhej diya" kahin nahi.
+
+Checkout ke waqt hi `receiverPhone`, `receiverName`, `forSomeoneElse` save hote hain — isliye
+baad me SMS ka sach asli number par banta hai (UI me masked: `79••••9775`).
+
+### 3. App
+- Order kholte hi **tracking khud** load hoti hai (Refresh zaroori nahi).
+- Tracking card: status/ETA, Swiggy link, **"Link kahan se"** (trackV4 / order/details / order page),
+  na mile to "Try hua: …" + Refresh ka reason.
+- Naya **"SMS ka sach"** card: SENT / Nahi gaya / Proof nahi + asli wajah + advice.
+- Boss tools me naya **"Live order + SMS"** card: environment me order place band hai ya nahi —
+  band ho to "isliye Swiggy ka SMS aana possible nahi tha".
+
+### Tests
+`test_v110_tracking_and_sms_truth.mjs` **10 checks** (SMS scanner/sach 4, tracking sach 2,
+API 3, DOM 1). Sweep: guards **78/78 (145s)**, `test:pro` **41/41**, `npm test` **132/132**,
+`test_v109` 13/13, bossbot **49/49**.
