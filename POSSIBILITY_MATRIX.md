@@ -449,3 +449,33 @@ backup guard ko remote khaali lagta → data overwrite. Ab bade file ke liye `gi
 content aata hai (`via: 'blob'`).
 
 **Test:** `test_v115_durability_doctor.mjs` — **13/13**.
+
+---
+
+## P. Look & feel — premium par jhooth nahi (Round 27)
+
+**Boss:** "SEE ALL THESE ANIMATION AND FONT AND STRATEGY ITS LOOKS AMAZING."
+
+Jo cheez **precision** hai (font, motion, feedback) wo add ki — jo cheez **jhooth** hoti
+(incognito, fake delete ka waada) wo nahi ki.
+
+| # | Cheez | Kya hua |
+|---|---|---|
+| P1 | Font | **Manrope** (Google Fonts, `display=swap`, preconnect) + Inter/system fallback — pehle render block nahi |
+| P2 | Numbers | bill/money par `tabular-nums` — digits hilte nahi, bill padhna aasan |
+| P3 | Motion tokens | `--ease-soft`, `--ease-spring`, `--dur-1/2/3` — sab animation ek hi bhasha me |
+| P4 | Card entrance | `card-in` + chhota stagger (0–118ms) — list "aa rahi hai" lagti hai |
+| P5 | Buttons | press par `scale(.965)`, hover lift, focus ring — har button same feel |
+| P6 | Bottom nav | active tab ka pill + icon bump |
+| P7 | Toast | upar se drop, icon ke saath: **hara ✓ = kaam hua**, **laal ! = nahi hua**, **i = neutral** (type guess nahi hota) |
+| P8 | Skeleton | shimmer lines + pill; bill/coupon aate waqt "Finding the best coupon" card (khaali jagah nahi) |
+| P9 | Sheet | spring rise + backdrop blur + grip pulse |
+| P10 | Coupon page | "AVAILABLE COUPONS n" header (screenshot jaisa) |
+| P11 | Reduced motion | `prefers-reduced-motion: reduce` par saari animation band |
+| P12 | Preview | `npm run preview:miniapp` — asli app, demo data (bina Telegram) |
+
+**Nahi kiya (jaan-boojh kar):** competitor ka "Incognito — order history deletes in 3 hours"
+jaisa toggle. Wo Swiggy ke andar ka feature hai; hum use sach me nahi kar sakte, isliye
+dikhawa nahi banaya. Jab asli rasta mile tab jayega.
+
+**Test:** `test_v116_premium_look.mjs` — **9/9**.
