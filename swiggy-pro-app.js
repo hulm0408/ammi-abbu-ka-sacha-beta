@@ -534,6 +534,18 @@
     if (num(q.oneMembershipFee) > 0) {
       rows.push(`<div class="saving-row"><span class="saving-icon one">one</span><span class="row-content"><strong>Swiggy One Lite ${money(num(q.oneMembershipFee))}</strong><small>Membership fee bill me juda hai</small></span><span class="saving-badge">Charged</span></div>`);
     }
+    // Boss (31-10-2026, round 14): engine ne kya kiya — saaf dikhta hai.
+    const eng = q.engine || null;
+    if (eng) {
+      const bits = [];
+      if (eng.oneLite === 'applied') bits.push('+₹1 One Lite se delivery FREE');
+      if (eng.freeCash > 0) bits.push(`₹${eng.freeCash} free cash`);
+      if (Array.isArray(eng.couponTrials) && eng.couponTrials.length) bits.push(`${eng.couponTrials.length} coupon ka asli bill check hua`);
+      if (eng.offersClaimed > 0) bits.push(`${eng.offersClaimed} offer claim hua`);
+      if (bits.length) {
+        rows.push(`<p class="hint engine-line">Engine: ${esc(bits.join(' · '))}${eng.couponTrials?.some(t => t.ok) ? ` — sabse kam bill wala coupon laga (${esc(q.coupon || '')})` : ''}</p>`);
+      }
+    }
     const totalSaved = num(q.totalSavings);
     return `<div class="card savings-corner"><div class="card-title">SAVINGS CORNER${totalSaved > 0 ? `<span class="pill green right">${money(totalSaved)} saved</span>` : ''}<button class="text-button coupon-open-link" type="button" data-action="coupon-open">Saare coupons</button></div>${rows.length ? rows.join('') : '<p class="hint">Is bill par abhi koi discount nahi laga. Coupons se try karein.</p>'}</div>`;
   }

@@ -1192,7 +1192,11 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         ws.cart.autoCoupon = body.autoCoupon !== false;
         ws.cart.quote = null;
         writeProWorkspace(user.id, ws);
+        // One Lite (+₹1) subscription jo bill me laga, wo cart par bhi yaad
+        // rakho — warna agla sync/place usse gira kar delivery fee wapas le aata.
+        ws.cart.activeSubscriptionItems = Array.isArray(ws.cart.activeSubscriptionItems) ? ws.cart.activeSubscriptionItems : [];
         const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon);
+        if (Array.isArray(quote?.bill?.subscriptionItems)) ws.cart.activeSubscriptionItems = quote.bill.subscriptionItems;
         ws.selectedAddress = cleanAddress(quote.address);
         ws.cart.quote = {
           ...billBreakdown(quote.bill),
