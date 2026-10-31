@@ -15,8 +15,8 @@
 //   4) `detectOfoFromPlaceResponse` place response se hi OFO ka saboot nikalta
 //      hai (jhooth nahi: flag na ho to false).
 //   5) Place ke baad order par `ofoCart` + `ofoPlaced` likha jata hai.
-//   6) OFO na bane → default me order place hota hai par boss ko alert jata hai;
-//      `OFO_STRICT=1` par order place hi nahi hota (`OFO_CART_MODE_FAILED`).
+//   6) Different recipient ke liye OFO confirm na bane to place band hai;
+//      `OFO_STRICT=1` self-orders ke liye bhi confirmation maangta hai.
 //   7) Tracking extractor OFO na bane par `OFO_ORDER_NAHI_BANA` bolta hai.
 //   8) Customer card OFO na bane par admin button deta hai (koi jhootha
 //      "Track on Swiggy" nahi).
@@ -153,7 +153,7 @@ globalThis.fetch = async (url, opts = {}) => {
   check('place response se OFO saboot padha jata hai', idxPlace > idxNative);
   check('order.ofoCart likha jata hai', /order\.ofoCart = \{/.test(src));
   check('order.ofoPlaced likha jata hai', /order\.ofoPlaced = Boolean\(ofoProof\.ofo\)/.test(src));
-  check('OFO na bane → default me place chalta hai + boss warning', /order\.ofoWarning = `OFO cart nahi bana/.test(src));
+  check('different receiver + missing OFO marker → place blocked', /needsOfo && !hasExplicitOfoCartFlag\(finalMeta\)/.test(src) && /code: 'OFO_CART_MODE_FAILED'/.test(src));
   check('OFO_STRICT=1 → order place hi nahi (OFO_CART_MODE_FAILED)', /OFO_STRICT/.test(src) && /code: 'OFO_CART_MODE_FAILED'/.test(src));
 }
 

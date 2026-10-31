@@ -7,8 +7,8 @@
   const state = {
     tab: 'accounts', auth: false, authError: '', user: null, accounts: [], activeAccount: null,
     selectedAddress: null, addresses: [], addressNote: '', pendingAddress: null, contactEdit: false,
-    cart: null, mode: 'phone', otpSent: false, searchQuery: '', results: null, menu: null,
-    orders: null, order: null, busy: false
+    cart: null, checkout: null, checkoutEnabled: false, mode: 'phone', otpSent: false, searchQuery: '', results: null, menu: null,
+    orders: null, order: null, orderTracking: null, busy: false
   };
   const $ = selector => document.querySelector(selector);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
@@ -54,7 +54,7 @@
     return result;
   }
   function merge(data) {
-    for (const key of ['user','accounts','activeAccount','selectedAddress','cart']) if (Object.hasOwn(data, key)) state[key] = data[key];
+    for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled']) if (Object.hasOwn(data, key)) state[key] = data[key];
   }
   async function run(task, button) {
     if (state.busy) return;
@@ -114,20 +114,42 @@
     else results = `<div class="line-heading">${state.results.length} restaurant${state.results.length === 1 ? '' : 's'}</div>${state.results.map(r => `<button class="restaurant-row" data-action="restaurant" data-id="${esc(r.id)}">${r.image ? `<img class="food-thumb" src="${esc(r.image)}" alt="" loading="lazy">` : `<span class="food-placeholder">${icon('store')}</span>`}<span class="row-content"><strong>${esc(r.name)}</strong><p>${esc([r.rating ? '★ ' + r.rating : '',r.ratings].filter(Boolean).join(' · '))}</p><p>${esc(r.cuisines)}</p><p>${esc([r.area,r.distance,r.time].filter(Boolean).join(' · '))}</p><p class="${r.isOpen === true ? 'status-open' : r.isOpen === false ? 'status-closed' : 'status-unknown'}">${r.isOpen === true ? 'Open' : r.isOpen === false ? esc(r.opens || 'Closed') : 'Availability not returned'}</p></span>${icon('arrow')}</button>`).join('')}`;
     return `${head('DISCOVER', 'Find a restaurant', 'Good food, a little closer to home.')}${addr}<form class="search-form" data-form="search"><span class="input-wrap">${icon('search')}<input name="q" value="${esc(state.searchQuery)}" placeholder="Search for restaurants…" required></span><button class="button primary" aria-label="Search">${icon('arrow')}</button></form>${results}`;
   }
+  function trackingDetails(t) {
+    if (!t) return '<p class="hint">Swiggy has not returned tracking details yet.</p>';
+    const link = t.trackingUrl ? `<a class="button soft block" href="${esc(t.trackingUrl)}" target="_blank" rel="noopener noreferrer">Open Swiggy tracking ↗</a>` : '';
+    return `<div class="bill-row"><span>Status</span><strong>${esc(t.status || 'Not returned')}</strong></div>${t.eta ? `<div class="bill-row"><span>ETA</span><strong>${esc(t.eta)}</strong></div>` : ''}${t.deliveryPartner?.name ? `<div class="bill-row"><span>Delivery partner</span><strong>${esc(t.deliveryPartner.name)}</strong></div>` : ''}${t.deliveryPartner?.phone ? `<div class="bill-row"><span>Partner phone</span><strong>${esc(t.deliveryPartner.phone)}</strong></div>` : ''}${t.deliveryOtp ? `<div class="bill-row"><span>Delivery OTP</span><strong>${esc(t.deliveryOtp)}</strong></div>` : ''}${link}`;
+  }
+  function renderCheckout() {
+    const c = state.checkout;
+    if (!c) {
+      if (!state.checkoutEnabled) return `<div class="card"><div class="card-title">${icon('cart')} Payment</div><div class="warning">Experimental in-app checkout is disabled. Review and pay in Swiggy.</div><button class="button green block" type="button" data-action="open-swiggy">Review in Swiggy ${icon('arrow')}</button></div>`;
+      return `<div class="card"><div class="card-title">${icon('cart')} UPI checkout</div><p class="hint">Experimental: one real placement request is sent after your confirmation. Swiggy may notify the recipient. Check all details before continuing.</p><button class="button green block" type="button" data-action="checkout-start" ${state.cart?.quote ? '' : 'disabled'}>Place order & get UPI QR ${icon('arrow')}</button><p class="hint">A bill is not an order. Card and cash payments are not supported here.</p></div>`;
+    }
+    const id = `${c.accountPhone ? `<div class="bill-row"><span>Original account</span><strong>${esc(c.accountPhone)}</strong></div>` : ''}${c.orderId ? `<div class="bill-row"><span>Swiggy order ID</span><strong>#${esc(c.orderId)}</strong></div>` : ''}`;
+    const warning = `<p class="hint">${esc(c.message || '')}</p>`;
+    if (c.status === 'PAID') return `<div class="card"><div class="card-title">${icon('check')} Payment verified</div>${id}${warning}${trackingDetails(c.tracking)}<button class="button outline block" data-action="checkout-finish">Start a new draft</button></div>`;
+    if (c.status === 'PAYMENT_PENDING') {
+      const qr = c.qrDataUrl && /^data:image\/png;base64,/.test(c.qrDataUrl) && c.upiIntentUrl && /^upi:\/\/pay\?/i.test(c.upiIntentUrl)
+        ? `<img class="payment-qr" src="${esc(c.qrDataUrl)}" alt="Swiggy UPI payment QR"><a class="button green block" href="${esc(c.upiIntentUrl)}">Open UPI app</a><p class="hint">Pay ${money(c.amount)} only once. If your UPI app cannot open here, scan this QR with another device.</p>` : '';
+      const paidNote = c.paymentVerified ? '<div class="warning">Payment was reported, but order confirmation is still pending. Do not pay again.</div>' : '';
+      return `<div class="card"><div class="card-title">${icon('receipt')} Payment pending</div>${id}${warning}${paidNote}${qr}<p class="hint">${c.ofoConfirmed ? 'Swiggy returned an OFO flag; recipient SMS is not verified.' : 'Swiggy has not confirmed OFO acceptance or recipient SMS.'}</p><button class="button primary block" data-action="checkout-status">Check payment & order ${icon('refresh')}</button><button class="button outline block" data-action="open-orders">Open Swiggy My Orders</button></div>`;
+    }
+    return `<div class="card"><div class="card-title">${icon('receipt')} Checkout needs checking</div>${id}<div class="warning">${esc(c.message || 'The result is unknown. An order may exist; do not place another.')}</div>${c.orderId ? `<button class="button primary block" data-action="checkout-status">Check this order ${icon('refresh')}</button>` : ''}<button class="button outline block" data-action="open-orders">Open Swiggy My Orders ↗</button></div>`;
+  }
   function renderCart() {
     const cart = state.cart;
     const importCard = `<div class="card"><div class="card-title">${tile('link')}<span class="title-copy">Add from group cart<small>Use a Swiggy group-cart link.</small></span></div><form data-form="group-cart">${field('Group cart link', 'url', 'https://swig.gy/gc/…', '', 'type="url" required')}<button class="button soft block">Import items ${icon('arrow')}</button></form></div>`;
-    if (!cart) return `${head('YOUR ORDER', 'Cart', 'Everything for your next meal.')}${importCard}${empty('cart', 'Your cart is empty', 'Search for a restaurant or import a group cart.')}`;
+    if (!cart) return `${head('YOUR ORDER', 'Cart', 'Everything for your next meal.')}${state.checkout ? renderCheckout() : ''}${importCard}${empty('cart', 'Your cart is empty', 'Search for a restaurant or import a group cart.')}`;
     const items = cart.items.map(i => `<div class="cart-item"><div class="row-content"><strong>${esc(i.name)}</strong><p>${i.price === null ? 'Price unavailable' : money(i.price) + ' each'}${(i.variants?.length || i.addons?.length) ? ' · Customised' : ''}</p></div><div class="stepper"><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)-1}" aria-label="Remove one">−</button><span>${Number(i.qty)}</span><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)+1}" aria-label="Add one">+</button></div></div>`).join('');
     const q = cart.quote;
     const bill = q ? `<div class="card"><div class="card-title">${icon('receipt')} Swiggy bill</div><div class="bill-row"><span>Item total</span><strong>${money(q.itemTotal)}</strong></div><div class="bill-row"><span>Delivery fee</span><strong>${money(q.deliveryFee)}</strong></div><div class="bill-row"><span>Packing</span><strong>${money(q.packingCharges)}</strong></div><div class="bill-row"><span>Taxes & charges</span><strong>${money(q.taxes)}</strong></div>${q.discount ? `<div class="bill-row"><span>Coupon ${esc(q.coupon)}</span><strong>−${money(q.discount)}</strong></div>` : ''}<div class="bill-row total"><span>To pay</span><span>${money(q.total)}</span></div><p class="hint">Fetched from Swiggy. Bill can change; re-check it before paying.${cart.forSomeoneElse ? ' OFO acceptance is not confirmed by this bill.' : ''}</p></div>` : `<div class="warning">Cart items are a draft. The total, offers and delivery fee have not been confirmed by Swiggy yet.</div>`;
     const contact = state.selectedAddress ? `<strong>${esc(state.selectedAddress.name || 'Name needed')}${state.selectedAddress.mobile ? ' · ' + esc(state.selectedAddress.mobile) : ' · Mobile needed'}</strong><p class="hint">${esc(state.selectedAddress.address)}</p>` : `<p class="hint">Choose a delivery address first.</p>`;
-    return `${head('YOUR ORDER', 'Cart', 'Review before doing anything on Swiggy.')}${importCard}<div class="card"><div class="card-title">${icon('store')} ${esc(cart.restaurantName)}</div>${items}</div><div class="card"><div class="card-title">${icon('address')} Delivery to</div>${contact}<button class="button mini outline" data-action="nav" data-tab="address">Change / check receiver</button></div>${bill}<div class="card"><div class="card-title">${icon('receipt')} Get live bill</div><p class="hint">Sync replaces the current cart on the selected Swiggy account and may save the delivery address there.</p><form data-form="sync">${field('Coupon (optional)', 'coupon', 'Enter coupon code', q?.coupon || '')}<label class="checkbox-row"><input type="checkbox" name="forSomeoneElse" ${cart.forSomeoneElse ? 'checked' : ''}><span>Order for someone else (use the selected receiver)</span></label><button class="button primary block">Sync & check bill ${icon('refresh')}</button></form></div><div class="card"><div class="card-title">${icon('cart')} Payment</div><div class="warning">In-app UPI QR and order placement are not available yet. A bill or filled cart is not an order.</div><button class="button green block" type="button" data-action="open-swiggy">Review in Swiggy ${icon('arrow')}</button><p class="hint">Sign in to the same Swiggy account there, and verify the items, address and recipient before paying.</p></div>`;
+    return `${head('YOUR ORDER', 'Cart', 'Review before doing anything on Swiggy.')}${importCard}<div class="card"><div class="card-title">${icon('store')} ${esc(cart.restaurantName)}</div>${items}</div><div class="card"><div class="card-title">${icon('address')} Delivery to</div>${contact}<button class="button mini outline" data-action="nav" data-tab="address">Change / check receiver</button></div>${bill}<div class="card"><div class="card-title">${icon('receipt')} Get live bill</div><p class="hint">Sync replaces the current cart on the selected Swiggy account and may save the delivery address there.</p><form data-form="sync">${field('Coupon (optional)', 'coupon', 'Enter coupon code', q?.coupon || '')}<label class="checkbox-row"><input type="checkbox" name="forSomeoneElse" ${cart.forSomeoneElse ? 'checked' : ''}><span>Order for someone else (use the selected receiver)</span></label><button class="button primary block">Sync & check bill ${icon('refresh')}</button></form></div>${renderCheckout()}`;
   }
   function renderOrders() {
     if (state.order) {
       const o = state.order;
-      return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER DETAILS', o.restaurant || 'Swiggy order', 'Only information returned by Swiggy is shown.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div>${o.address ? `<div class="bill-row"><span>Address</span><strong>${esc(o.address)}</strong></div>` : ''}</div><div class="card"><div class="card-title">${icon('cart')} Ordered items</div>${o.items.length ? o.items.map(i => `<div class="bill-row"><span>${esc(i.name)}</span><strong>× ${Number(i.qty)}</strong></div>`).join('') : '<p class="hint">Swiggy did not return item details.</p>'}</div><p class="hint">Live tracking and delivery-partner details are not available in this Mini App yet.</p>`;
+      return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER DETAILS', o.restaurant || 'Swiggy order', 'Only information returned by Swiggy is shown.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div>${o.address ? `<div class="bill-row"><span>Address</span><strong>${esc(o.address)}</strong></div>` : ''}</div><div class="card"><div class="card-title">${icon('cart')} Ordered items</div>${o.items.length ? o.items.map(i => `<div class="bill-row"><span>${esc(i.name)}</span><strong>× ${Number(i.qty)}</strong></div>`).join('') : '<p class="hint">Swiggy did not return item details.</p>'}</div><div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>`;
     }
     const rows = state.orders === null ? empty('orders', 'Your orders', 'Refresh to load order history from the selected account.') : state.orders.length ? state.orders.map(o => `<button class="restaurant-row" data-action="order-detail" data-id="${esc(o.id)}">${tile('orders', true)}<span class="row-content"><strong>${esc(o.restaurant || 'Swiggy order')}</strong><p>${esc(o.placedAt || 'Time not returned')}</p><p>${esc(o.items.map(i => i.name).join(', '))}</p><span class="order-id">#${esc(o.id)}</span></span><span class="pill ${/delivered/i.test(o.status) && !/cancel/i.test(o.status) ? 'green' : ''}">${esc(o.status)}</span></button>`).join('') : empty('orders', 'No orders returned', 'Swiggy did not return any orders for this account.');
     return `${head('ORDER HISTORY', 'Your orders', 'Past and current orders on this account.', `<button class="button mini soft" data-action="orders-refresh">${icon('refresh')} Refresh</button>`)}${rows}`;
@@ -204,9 +226,10 @@
     if (action === 'otp-reset') { state.otpSent = false; render(); return; }
     if (action === 'contact-edit') { state.contactEdit = !state.contactEdit; render(); return; }
     if (action === 'menu-back') { state.menu = null; render(); return; }
-    if (action === 'orders-back') { state.order = null; render(); return; }
-    if (action === 'order-detail') { state.order = state.orders?.find(o => o.id === button.dataset.id) || null; render(); window.scrollTo(0,0); return; }
+    if (action === 'orders-back') { state.order = null; state.orderTracking = null; render(); return; }
+    if (action === 'order-detail') { state.order = state.orders?.find(o => o.id === button.dataset.id) || null; state.orderTracking = null; render(); window.scrollTo(0,0); return; }
     if (action === 'open-swiggy') { openExternal('https://www.swiggy.com/cart'); return; }
+    if (action === 'open-orders') { openExternal('https://www.swiggy.com/my-account/orders'); return; }
     if (action === 'offer') { openExternal(button.dataset.url); return; }
     run(async () => {
       if (action === 'account-select') { const out = await api('accounts/select', 'POST', { key: button.dataset.key }); merge(out); state.addresses = []; state.orders = null; render(); }
@@ -223,6 +246,29 @@
         catch (e) { if (e.status !== 409 || !window.confirm('Replace your existing draft cart with this restaurant?')) throw e; out = await api('cart/add', 'POST', { itemId: button.dataset.id, replace: true }); }
         merge(out); render(); toast('Added to draft cart.');
       } else if (action === 'qty') { const out = await api('cart/quantity', 'POST', { lineKey: button.dataset.key, qty: Number(button.dataset.qty) }); merge(out); render(); }
+      else if (action === 'checkout-start') {
+        const quote = state.cart?.quote;
+        if (!quote || !state.selectedAddress || !state.activeAccount) throw new Error('Select an account and recipient, then sync a fresh bill.');
+        if (!window.confirm(`Send ONE real Swiggy order request for ${money(quote.total)}?\n\nAccount: ${state.activeAccount.phone || state.activeAccount.name}\nReceiver: ${state.selectedAddress.name} · ${state.selectedAddress.mobile}\nAddress: ${state.selectedAddress.address}\n\nSwiggy may notify the receiver; SMS is not verified. Payment is separate. If the request times out, do not place another order until you check Swiggy My Orders.`)) return;
+        try {
+          const out = await api('checkout', 'POST', { confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt });
+          merge(out); render();
+          toast(out.checkout?.status === 'PAYMENT_PENDING' ? 'Payment details returned. Verify before paying.' : 'Check Swiggy My Orders; do not retry.');
+        } catch (e) {
+          // A lost browser response is not proof that the server never sent the
+          // request. Hide retry until an authenticated bootstrap resolves it.
+          state.checkout = { status: 'OUTCOME_UNKNOWN', message: 'The response was lost. Check Swiggy My Orders; do not place another order.' };
+          try { merge(await api('bootstrap')); } catch {}
+          render();
+          throw e;
+        }
+      }
+      else if (action === 'checkout-status') { const out = await api('checkout/status', 'POST', {}); merge(out); render(); toast(out.checkout?.status === 'PAID' ? 'Swiggy returned the paid order.' : 'Status checked. If you already paid, do not pay again.'); }
+      else if (action === 'checkout-finish') {
+        if (!window.confirm('Start a new draft? The paid order remains in Swiggy order history.')) return;
+        const out = await api('checkout/finish', 'POST', { confirmNewDraft: true }); merge(out); state.orders = null; render();
+      }
+      else if (action === 'order-tracking') { const out = await api('orders/tracking?id=' + encodeURIComponent(state.order.id)); state.orderTracking = out.tracking; render(); }
       else if (action === 'orders-refresh') await loadOrders();
     }, button);
   });

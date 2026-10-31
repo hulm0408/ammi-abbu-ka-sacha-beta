@@ -63,10 +63,21 @@ export function writeProWorkspace(userId, workspace) {
   const encrypted = Buffer.concat([cipher.update(JSON.stringify(workspace), 'utf8'), cipher.final()]);
   const envelope = JSON.stringify({ version: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: encrypted.toString('base64') });
   const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  let fd;
   try {
-    fs.writeFileSync(tmp, envelope, { mode: 0o600, flag: 'wx' });
+    // Checkout state must survive a restart before a placement POST begins.
+    fd = fs.openSync(tmp, 'wx', 0o600);
+    fs.writeFileSync(fd, envelope);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
     fs.renameSync(tmp, file);
+    const dirFd = fs.openSync(dir, 'r');
+    try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+    const parentFd = fs.openSync(path.dirname(dir), 'r');
+    try { fs.fsyncSync(parentFd); } finally { fs.closeSync(parentFd); }
   } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
     try { fs.unlinkSync(tmp); } catch {}
   }
 }

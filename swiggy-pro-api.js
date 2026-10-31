@@ -1,5 +1,10 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import QRCode from 'qrcode';
+import { validateUpiIntentForQr } from './payment-qr-guard.js';
+import { readSwiggyPlacement } from './swiggy-placement-journal.js';
+import { exactPaise } from './swiggy-cart-integrity.js';
+import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder } from './swiggy-cart.js';
 import { getDb, isBoss, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
 import { requestSwiggyOtpViaBridge, verifySwiggyOtpViaBridge } from './swiggy-bridge.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
@@ -114,12 +119,47 @@ function cleanAddress(a) {
 function activeAccountForClient(user, ws) {
   return listAccounts(user, ws).find(a => a.active) || null;
 }
+function safeTrackingUrl(value, orderId) {
+  const link = String(value || '').trim();
+  if (!/^https:\/\//i.test(link) || !isOfficialSwiggyTrackingUrl(link, { allowProviderShortLink: true }) ||
+      !validateTrackingUrlForOrder(link, { swiggyOrderId: orderId }, 'SWIGGY_API')) return '';
+  try {
+    const pathId = new URL(link).pathname.match(/\/(?:orders?|track|tracking)\/(\d{10,20})(?:\/|$)/i)?.[1];
+    return pathId && pathId !== String(orderId) ? '' : link;
+  } catch { return ''; }
+}
+function publicCheckout(checkout) {
+  if (!checkout) return null;
+  const output = {
+    status: String(checkout.status || 'UNKNOWN'), createdAt: String(checkout.createdAt || ''),
+    accountPhone: String(checkout.accountPhone || ''),
+    orderId: String(checkout.orderId || ''), amount: Number(checkout.amount) || 0,
+    restaurantName: String(checkout.restaurantName || ''),
+    ofoConfirmed: checkout.ofoConfirmed === true,
+    paymentVerified: checkout.paymentVerified === true,
+    message: String(checkout.message || ''), tracking: checkout.tracking || null
+  };
+  if (checkout.status === 'PAYMENT_PENDING' && checkout.paymentVerified !== true && checkout.upiIntentUrl && checkout.qrDataUrl) {
+    output.upiIntentUrl = checkout.upiIntentUrl;
+    output.qrDataUrl = checkout.qrDataUrl;
+  }
+  return output;
+}
 function publicState(user, ws) {
   return {
     user: { name: user.firstName || 'Friend', isBoss: isBoss(user.id) },
     accounts: listAccounts(user, ws), activeAccount: activeAccountForClient(user, ws),
-    selectedAddress: ws.selectedAddress, cart: ws.cart
+    selectedAddress: ws.selectedAddress, cart: ws.cart,
+    checkout: publicCheckout(ws.checkout),
+    checkoutEnabled: process.env.PRO_ENABLE_CHECKOUT === '1'
   };
+}
+function checkoutAccount(user, ws) {
+  const key = String(ws.checkout?.accountKey || '');
+  const map = accountMap(user, ws);
+  const account = Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+  if (!account?.isLoggedIn || account.isLoggedOut) throw error(409, 'The original Swiggy account is unavailable. Reconnect that account before checking this order.');
+  return { ...account, __proPrivate: true };
 }
 function storeAccount(user, ws, incoming) {
   const phone = normalizeIndianMobileNumber(incoming.phone || incoming.mobile || '') || '';
@@ -274,6 +314,9 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const key = String(body.key || '');
         const map = accountMap(user, ws);
         if (!Object.prototype.hasOwnProperty.call(map, key)) throw error(404, 'Account not found.');
+        if (ws.checkout && ws.checkout.accountKey === key && ws.checkout.status !== 'PAID') {
+          throw error(409, 'This account has an unresolved checkout. Check it in Swiggy My Orders before removing the account.');
+        }
         if (isBoss(user.id)) permanentLogoutAccount(key);
         else delete ws.accounts[key];
         if (ws.activeAccountKey === key) { ws.activeAccountKey = ''; invalidateAccountDependentState(ws); }
@@ -402,6 +445,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
       }
       if (route === '/pro/api/cart/sync' && req.method === 'POST') {
         const body = await bodyJson(req);
+        if (ws.checkout && ws.checkout.status !== 'PAID') throw error(409, 'Resolve the existing Swiggy checkout before changing its account cart.');
         const account = currentAccount(user, ws);
         if (body.confirmReplaceSwiggyCart !== true) throw error(400, 'Confirm that the existing Swiggy cart may be replaced.');
         if (!ws.cart?.items?.length || !ws.selectedAddress) throw error(400, 'Add items and select an address first.');
@@ -422,8 +466,131 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         json(res, 200, { ok: true, orders });
         return;
       }
+      if (route === '/pro/api/orders/tracking' && req.method === 'GET') {
+        const id = normalizeSwiggyOrderId(url.searchParams.get('id'));
+        if (!id) throw error(400, 'Invalid Swiggy order ID.');
+        const account = currentAccount(user, ws);
+        const orders = await provider.orders(account);
+        if (!orders.some(o => String(o.id) === id)) throw error(404, 'Order was not returned for this Swiggy account.');
+        const tracking = await provider.tracking(account, id);
+        const link = String(tracking?.trackingUrl || '');
+        json(res, 200, { ok: true, tracking: {
+          orderId: id, status: String(tracking?.status || '').slice(0, 200), eta: String(tracking?.eta || '').slice(0, 100),
+          trackingUrl: safeTrackingUrl(link, id),
+          deliveryOtp: /^\d{4,8}$/.test(String(tracking?.deliveryOtp || '')) ? String(tracking.deliveryOtp) : '',
+          deliveryPartner: { name: String(tracking?.deliveryPartner?.name || '').slice(0, 100), phone: String(tracking?.deliveryPartner?.phone || '').slice(0, 30) }
+        } });
+        return;
+      }
       if (route === '/pro/api/checkout' && req.method === 'POST') {
-        throw error(501, 'In-app payment and placement are not enabled yet. Use Swiggy to review the cart and complete the order.');
+        const body = await bodyJson(req);
+        if (process.env.PRO_ENABLE_CHECKOUT !== '1') throw error(503, 'Experimental in-app checkout is disabled. Review and pay in Swiggy instead.');
+        if (ws.checkout) throw error(409, 'A checkout is already pending or unresolved. Check its status; do not place another order.');
+        const account = currentAccount(user, ws);
+        const quote = ws.cart?.quote;
+        const quotedAt = Date.parse(quote?.fetchedAt || '');
+        const total = Number(quote?.total);
+        if (body.confirmCheckout !== true || !quote || !ws.cart?.items?.length || !ws.selectedAddress ||
+            !Number.isFinite(quotedAt) || quotedAt > Date.now() + 30_000 || Date.now() - quotedAt > 5 * 60_000 ||
+            String(body.quoteFetchedAt || '') !== String(quote.fetchedAt) || exactPaise(total) === null || total <= 0 ||
+            exactPaise(body.expectedTotal) === null || exactPaise(body.expectedTotal) !== exactPaise(total)) {
+          throw error(400, 'Review a fresh Swiggy bill and explicitly confirm its exact amount before placing an order.');
+        }
+        // One durable barrier per user and checkout generation, regardless of
+        // account, quote refresh or concurrent stale workspace reads. Advance the
+        // generation ONLY after this order is verified paid and explicitly closed.
+        // Workspace/cart mutation still requires one app instance (see setup).
+        const generation = ws.checkoutGeneration ?? 0;
+        if (!Number.isSafeInteger(generation) || generation < 0) throw error(503, 'Checkout state is invalid; contact the operator.');
+        const checkoutId = String(generation);
+        const placementKey = `pro:${user.id}:${checkoutId}`;
+        ws.checkout = {
+          id: checkoutId, accountKey: ws.activeAccountKey, accountPhone: String(account.phone || ''), status: 'SUBMITTING',
+          createdAt: new Date().toISOString(), amount: total, restaurantName: String(ws.cart.restaurantName || '')
+        };
+        // Persist the logical ID before the provider can send a placement POST.
+        writeProWorkspace(user.id, ws);
+        let providerReturned = false;
+        let result;
+        try {
+          result = await provider.checkout(account, ws.selectedAddress, ws.cart, placementKey);
+          providerReturned = true;
+          const orderId = normalizeSwiggyOrderId(result?.orderId);
+          const uri = String(result?.upiIntentUrl || '');
+          const intent = validateUpiIntentForQr(uri, { amount: total, requireAmount: true });
+          if (!orderId || uri.length > 6000 || !intent.valid || exactPaise(intent.info?.amount) === null ||
+              exactPaise(intent.info.amount) !== exactPaise(total)) {
+            throw new Error('Provider response did not contain matching payment details.');
+          }
+          const qrDataUrl = await QRCode.toDataURL(uri, { errorCorrectionLevel: 'M', margin: 2, width: 320 });
+          Object.assign(ws.checkout, {
+            status: 'PAYMENT_PENDING', orderId, paymentTxnId: String(result.paymentTxnId || '').slice(0, 200),
+            upiIntentUrl: uri, qrDataUrl, ofoConfirmed: result.ofoConfirmed === true,
+            message: 'Swiggy returned payment details. Payment and restaurant acceptance are not yet verified.'
+          });
+          writeProWorkspace(user.id, ws);
+        } catch (err) {
+          const record = readSwiggyPlacement(placementKey);
+          if (record || err?.diag?.placementAttempted === true || providerReturned) {
+            ws.checkout.status = 'OUTCOME_UNKNOWN';
+            ws.checkout.orderId = normalizeSwiggyOrderId(result?.orderId || err?.diag?.placedOrderId || record?.orderId || '');
+            ws.checkout.message = 'An order may exist on Swiggy. Open My Orders on the original account; do not retry or switch accounts.';
+            delete ws.checkout.upiIntentUrl;
+            delete ws.checkout.qrDataUrl;
+            writeProWorkspace(user.id, ws);
+            json(res, 200, { ok: true, checkout: publicCheckout(ws.checkout) });
+            return;
+          }
+          ws.checkout = null;
+          if (ws.cart) ws.cart.quote = null;
+          writeProWorkspace(user.id, ws);
+          throw error(Number(err?.statusCode) || 502, String(err?.message || 'Checkout could not be prepared. No order was placed.'));
+        }
+        json(res, 200, { ok: true, checkout: publicCheckout(ws.checkout) });
+        return;
+      }
+      if (route === '/pro/api/checkout/status' && req.method === 'POST') {
+        await bodyJson(req);
+        const checkout = ws.checkout;
+        if (!checkout) throw error(404, 'No Mini App checkout exists.');
+        if (checkout.status === 'PAID' || !normalizeSwiggyOrderId(checkout.orderId)) {
+          json(res, 200, { ok: true, checkout: publicCheckout(checkout) });
+          return;
+        }
+        const payment = await provider.checkPayment(checkoutAccount(user, ws), checkout);
+        const exactPaidOrder = payment?.paid === true && String(payment.swiggyOrderId || '') === String(checkout.orderId);
+        checkout.paymentVerified = checkout.paymentVerified === true || payment?.paymentVerified === true || exactPaidOrder;
+        if (exactPaidOrder) {
+          const link = String(payment.trackingUrl || payment.nativeShareUrl || payment.swiggyWebTrackUrl || '');
+          checkout.status = 'PAID';
+          checkout.message = 'Swiggy returned a paid order for this exact order ID.';
+          checkout.tracking = {
+            orderId: checkout.orderId, status: String(payment.orderStatus || '').slice(0, 200),
+            eta: String(payment.etaMinutes || '').slice(0, 100),
+            trackingUrl: safeTrackingUrl(link, checkout.orderId),
+            deliveryOtp: /^\d{4,8}$/.test(String(payment.deliveryOtp || '')) ? String(payment.deliveryOtp) : '',
+            deliveryPartner: { name: String(payment.deliveryBoy?.name || '').slice(0, 100), phone: String(payment.deliveryBoy?.mobile || '').slice(0, 30) }
+          };
+          delete checkout.upiIntentUrl;
+          delete checkout.qrDataUrl;
+        } else if (checkout.paymentVerified) {
+          checkout.message = 'Payment was reported by Swiggy, but this exact order is not yet confirmed. Check My Orders; do not pay again.';
+        }
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, checkout: publicCheckout(checkout) });
+        return;
+      }
+      if (route === '/pro/api/checkout/finish' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        if (body.confirmNewDraft !== true || ws.checkout?.status !== 'PAID') throw error(409, 'Only a verified paid order can be closed here.');
+        const generation = ws.checkoutGeneration ?? 0;
+        if (!Number.isSafeInteger(generation) || generation < 0 || generation >= Number.MAX_SAFE_INTEGER) throw error(503, 'Checkout state is invalid; contact the operator.');
+        ws.checkoutGeneration = generation + 1;
+        ws.checkout = null;
+        ws.cart = null;
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
       }
       throw error(404, 'Not found.');
     } catch (err) {

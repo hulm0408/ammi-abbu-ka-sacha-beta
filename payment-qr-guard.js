@@ -16,6 +16,7 @@
  * safe fallback intent (sirf valid + non-placeholder VPA se), aur reuse decision.
  */
 import { escapeLight } from './account-views.js';
+import { exactPaise } from './swiggy-cart-integrity.js';
 
 /** VPA jo Swiggy ke merchant ke hain ya placeholder hain — inse QR nahi banega. */
 export const PLACEHOLDER_UPI_IDS = new Set([
@@ -127,13 +128,14 @@ export function validateUpiIntentForQr(uri, { amount = 0, requireAmount = true, 
 
   const amRaw = parsed.map.am !== undefined ? parsed.map.am : parsed.map.amount;
   const am = Number(amRaw);
+  if (parsed.map.am !== undefined && parsed.map.amount !== undefined) problems.push('multiple amount params');
   if (amRaw !== undefined && amRaw !== '') {
-    if (!Number.isFinite(am) || am <= 0) problems.push(`amount "${amRaw}" valid nahi hai`);
+    if (!/^\d+(?:\.\d{1,2})?$/.test(String(amRaw)) || exactPaise(amRaw) === null || am <= 0) problems.push(`amount "${amRaw}" valid nahi hai`);
   } else if (requireAmount) {
     problems.push('am (amount) missing hai');
   }
   const expected = Number(amount) || 0;
-  if (expected > 0 && Number.isFinite(am) && am > 0 && Math.abs(am - expected) > 1) {
+  if (expected > 0 && (exactPaise(expected) === null || exactPaise(amRaw) !== exactPaise(expected))) {
     problems.push(`QR ka amount ₹${am} hai par bill ₹${expected} — scan par galat amount aayega`);
   }
 
@@ -203,7 +205,7 @@ export function shouldReusePendingQr(order, {
   const amount = Number(order.pendingQrAmount || order.finalPayable || order.amount || 0);
   // Bill badal gaya ho to purana QR (purane amount ka) dobara nahi bhejna.
   if (Number(order.pendingQrAmount || 0) > 0 && Number(order.finalPayable || 0) > 0 &&
-      Math.abs(Number(order.pendingQrAmount) - Number(order.finalPayable)) > 1) {
+      (exactPaise(order.pendingQrAmount) === null || exactPaise(order.pendingQrAmount) !== exactPaise(order.finalPayable))) {
     return { reuse: false, reason: `purana QR ₹${order.pendingQrAmount} ka hai, bill ab ₹${order.finalPayable}` };
   }
   const check = validateUpiIntentForQr(uri, { amount });

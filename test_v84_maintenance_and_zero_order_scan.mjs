@@ -6,8 +6,8 @@
 //
 // A) HANG
 //   1. Har Swiggy ID lock ka `since` timestamp track hota hai.
-//   2. `releaseStaleAccountLocks()` sirf 45s+ purane locks chhodta hai — jo
-//      abhi sach me kaam kar raha hai usko nahi.
+//   2. `releaseStaleAccountLocks()` sirf age dekhkar active lock release nahi
+//      karta; isse placement ke dauran doosra cart mutation race nahi karta.
 //   3. `releaseStaleReservations()` 90s+ purani reservations free karta hai.
 //   4. `resetStuckScans()` phansi tracking scans hata deta hai.
 //   5. Maintenance loop khud chalta hai + boss ko batata hai.
@@ -78,11 +78,10 @@ const tracking = await import('./order-tracking.js');
   check('naya lock chhoda nahi jata (kaam kar raha hai)', fresh.released.length === 0 && fresh.kept >= 1, JSON.stringify(fresh));
   await new Promise((r) => setTimeout(r, 1200));
   const stale = await cart.releaseStaleAccountLocks({ olderThanMs: 1000 });
-  check('stale lock chhod diya jata hai', stale.released.some((l) => l.id === 'acc_lock_test'), JSON.stringify(stale));
-  await cart.releaseStaleAccountLocks({ olderThanMs: 10_000 }); // beech ka waiter free
+  check('purana lekin active lock zabardasti nahi chhoda jata', stale.released.length === 0 && stale.kept >= 1, JSON.stringify(stale));
   release?.();
   await held.catch(() => {});
-  check('lock chhode bina aage badh gaya (hang clear)', true);
+  check('job ke khatam hone par lock khud release ho gaya', !cart.getAccountLockStats().locks.some(l => l.id === 'acc_lock_test'));
 }
 
 // ── A) Stale reservations ─────────────────────────────────────────────────
