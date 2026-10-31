@@ -110,6 +110,10 @@ test('cart sync requires in-app confirmation and Escape safely cancels it', asyn
   try {
     await waitFor(() => app.document.querySelector('[data-tab="cart"]:not([disabled])'), 'connected navigation');
     app.document.querySelector('[data-tab="cart"]').click();
+    // 31-10-2026: cart Swiggy jaisa saaf hai — coupon/bill form "Apply coupon"
+    // kholne par aata hai.
+    await waitFor(() => app.document.querySelector('[data-action="toggle-coupon"]'), 'coupon row');
+    app.document.querySelector('[data-action="toggle-coupon"]').click();
     await waitFor(() => app.document.querySelector('form[data-form="sync"]'), 'sync form');
     const submit = () => app.document.querySelector('form[data-form="sync"]').dispatchEvent(new app.window.Event('submit', { bubbles: true, cancelable: true }));
     submit();
@@ -167,7 +171,7 @@ test('checkout uses an in-app consent dialog, preserves full details, and only s
     assert.equal(checkoutCalls.length, 1);
     assert.equal(checkoutCalls[0].body.confirmCheckout, true);
     assert.equal(checkoutCalls[0].body.expectedTotal, 150.25);
-    await waitFor(() => app.document.body.textContent.includes('Draft cart changes are locked'), 'locked draft');
+    await waitFor(() => app.document.body.textContent.includes('Cart/receiver changes band hain'), 'locked draft');
     assert(app.document.querySelector('[data-action="qty"]').disabled);
     app.document.querySelector('[data-tab="address"]').click();
     await waitFor(() => app.document.body.textContent.includes('No saved addresses (offline).'), 'address response');
