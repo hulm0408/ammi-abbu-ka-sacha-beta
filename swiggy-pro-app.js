@@ -601,10 +601,13 @@
   }
   /** Payment pending: QR screen Swiggy jaisa, phir track. */
   function renderPaymentScreen(c) {
-    const qr = c.qrDataUrl && /^data:image\/png;base64,/.test(c.qrDataUrl) && c.upiIntentUrl && /^upi:\/\/pay\?/i.test(c.upiIntentUrl)
+    const hasQr = Boolean(c.qrDataUrl && /^data:image\/png;base64,/.test(c.qrDataUrl) && c.upiIntentUrl && /^upi:\/\/pay\?/i.test(c.upiIntentUrl));
+    // Boss (31-10-2026, round 12): "QR NAHI AYA". Ab jab Swiggy order bana de
+    // par QR na de, app chhupata nahi — order ID, asli wajah, aur agla kadam.
+    const qr = hasQr
       ? `<img class="payment-qr" src="${esc(c.qrDataUrl)}" alt="Swiggy UPI payment QR"><a class="button green block" href="${esc(c.upiIntentUrl)}">Open UPI app</a>`
-      : `<div class="warning">Swiggy ne is order ke liye UPI QR nahi diya. Orders tab me original account check karein.</div>`;
-    return `${head('PAYMENT', `Pay ${money(c.amount)}`, c.orderId ? `Swiggy order #${esc(c.orderId)}` : 'Swiggy order bana hai')}<div class="card pay-screen"><div class="card-title">${icon('receipt')} UPI se pay karein<small>${esc(c.message || '')}</small></div>${qr}<p class="hint">Paisa sirf isi QR par dein — ek hi baar. ${c.paymentVerified ? 'Payment report hui hai, order confirm hone ka intezaar hai — dobara na dein.' : ''}</p><button class="button primary block" type="button" data-action="checkout-status">${icon('refresh')} Payment check karein</button>${c.orderId ? `<button class="button soft block" type="button" data-action="track-open" data-id="${esc(c.orderId)}">Order track karein</button>` : ''}<button class="button soft block" type="button" data-action="checkout-orders">Original account ke orders</button></div>`;
+      : `<div class="warning"><b>Swiggy ne order le liya par payment QR nahi diya.</b>${c.qrMissingReason ? `<br>${esc(c.qrMissingReason)}` : ''}<br>Order #${esc(c.orderId || '—')} Swiggy par bana hua hai — <b>dobara order mat karein</b>. Payment status neeche se check karte rahein; Swiggy unpaid order apne aap cancel bhi kar sakta hai.</div>${/^https:\/\//.test(String(c.paymentPageUrl || '')) ? `<a class="button soft block" href="${esc(c.paymentPageUrl)}">Swiggy ka payment page kholein</a>` : ''}`;
+    return `${head('PAYMENT', `Pay ${money(c.amount)}`, c.orderId ? `Swiggy order #${esc(c.orderId)}` : 'Swiggy order bana hai')}<div class="card pay-screen"><div class="card-title">${icon('receipt')} UPI se pay karein<small>${esc(c.message || '')}</small></div>${qr}<p class="hint">${hasQr ? 'Paisa sirf isi QR par dein — ek hi baar.' : ''} ${c.paymentVerified ? 'Payment report hui hai, order confirm hone ka intezaar hai — dobara na dein.' : ''}</p><button class="button primary block" type="button" data-action="checkout-status">${icon('refresh')} Payment check karein</button>${c.orderId ? `<button class="button soft block" type="button" data-action="track-open" data-id="${esc(c.orderId)}">Order track karein</button>` : ''}<button class="button soft block" type="button" data-action="checkout-orders">Original account ke orders</button></div>`;
   }
   function renderCart() {
     if (state.track) return renderTrack();

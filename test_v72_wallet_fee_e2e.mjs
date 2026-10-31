@@ -142,15 +142,26 @@ check('sirf letters reject', w.validateUtr('ABCDEFGHIJ').ok === false);
 check('12-digit UTR ok', w.validateUtr('123456789012').ok === true);
 check('normalize lowercase+space', w.normalizeUtr(' ab 12-34 ') === 'AB1234');
 
+// Round 12 (boss): "UTR AUTO VERIFY NAHI HO RAHA" — provider set nahi ho to
+// bhi UTR unique hone par credit turant hota hai, aur record me saaf likha
+// rehta hai ki verify user ke claim se hua (jhootha provider verify nahi).
 db = makeDb();
 const sub = await w.submitTopupRequest(db, { userId: USER, utr: '123456789012', amountPaise: 1500, name: 'Ammi' });
-check('provider na ho to PENDING', sub.ok && sub.code === 'PENDING', sub.code);
-check('PENDING par balance 0 (jhootha credit nahi)', w.walletBalancePaise(db, USER) === 0);
-check('pending count 1', w.pendingTopupCount(db) === 1);
+check('provider na ho to bhi UTR auto credit', sub.ok && sub.code === 'AUTO_VERIFIED', sub.code);
+check('auto credit se balance 1500', w.walletBalancePaise(db, USER) === 1500, String(w.walletBalancePaise(db, USER)));
+check('verifiedBy user-claim (jhooth nahi)', sub.request?.verifiedBy === 'user-claim', String(sub.request?.verifiedBy));
+check('auto credit ke baad pending 0', w.pendingTopupCount(db) === 0, String(w.pendingTopupCount(db)));
+
+// Strict mode (UPI_REQUIRE_PROVIDER_VERIFY=1) — purana behaviour wapas.
+process.env.UPI_REQUIRE_PROVIDER_VERIFY = '1';
+const strict = await w.submitTopupRequest(db, { userId: USER, utr: '666677778888', amountPaise: 1500 });
+check('strict mode me provider na ho to PENDING', strict.ok && strict.code === 'PENDING', strict.code);
+check('strict mode me balance nahi bada', w.walletBalancePaise(db, USER) === 1500);
+delete process.env.UPI_REQUIRE_PROVIDER_VERIFY;
 
 const dup = await w.submitTopupRequest(db, { userId: USER2, utr: '123456789012', amountPaise: 1500 });
 check('wahi UTR dobara → DUPLICATE_UTR', dup.ok === false && dup.code === 'DUPLICATE_UTR', dup.code);
-check('duplicate se naya request nahi bana', Object.keys(db.config.topupRequests).length === 1);
+check('duplicate se naya request nahi bana', Object.keys(db.config.topupRequests).length === 2);
 
 const lowAmt = await w.submitTopupRequest(db, { userId: USER, utr: '555566667777', amountPaise: 100 });
 check('min se kam amount reject', lowAmt.ok === false && lowAmt.code === 'AMOUNT_TOO_LOW', lowAmt.code);
@@ -163,7 +174,7 @@ process.env.UPI_UTR_VERIFY_URL = 'https://provider.test/utr';
 const fakeFetch = async () => ({ ok: true, json: async () => ({ verified: true, ref: 'PR1' }) });
 const auto = await w.submitTopupRequest(db, { userId: USER, utr: '987654321012', amountPaise: 1500, fetchImpl: fakeFetch });
 check('provider verified → AUTO_VERIFIED', auto.ok && auto.code === 'AUTO_VERIFIED', auto.code);
-check('auto verified par balance 1500', w.walletBalancePaise(db, USER) === 1500, String(w.walletBalancePaise(db, USER)));
+check('auto verified par balance 3000 (1500 pehle + 1500 provider)', w.walletBalancePaise(db, USER) === 3000, String(w.walletBalancePaise(db, USER)));
 
 // Provider available par 'verified' false → PENDING hi
 const fakeNo = async () => ({ ok: true, json: async () => ({ verified: false, reason: 'not found' }) });
@@ -173,6 +184,9 @@ delete process.env.UPI_UTR_VERIFY_URL;
 
 console.log('\n6) Boss approve → balance → auto-resume');
 db = makeDb();
+// Manual approve ka rasta ab bhi chalta hai — strict mode me (ye wahi haalat hai
+// jab provider verify set ho par UTR match na kare / boss khud check karna chahe).
+process.env.UPI_REQUIRE_PROVIDER_VERIFY = '1';
 const pending = await w.submitTopupRequest(db, { userId: USER2, utr: '444555666777', amountPaise: 1500, name: 'Abbu' });
 check('pending request bana', pending.ok && pending.request?.status === 'PENDING');
 const waiting = mkOrder('o_wait', { userId: USER2, cardStage: 'AWAITING_FEE' });
@@ -196,6 +210,7 @@ const reject = w.rejectTopupRequest(db, pending2.request.id, { reason: 'UPI stat
 check('reject kaam kiya', reject.ok === true, reject.code);
 check('reject par balance nahi bada', w.walletBalancePaise(db, USER2) === 1500);
 check('rejected request approve nahi hoti', w.approveTopupRequest(db, pending2.request.id).code === 'REJECTED_EARLIER');
+delete process.env.UPI_REQUIRE_PROVIDER_VERIFY;
 
 console.log('\n7) Boss vault — search + adjust + summary');
 db = makeDb();

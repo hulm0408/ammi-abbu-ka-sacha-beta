@@ -567,6 +567,29 @@ export async function submitTopupRequest(db, {
   if (autoVerify) {
     const res = await verifyUtrWithProvider({ utr: checked.utr, amountPaise: amount, userId }, { fetchImpl });
     req.providerConfigured = res.configured;
+    // Boss (31-10-2026, round 12): "UTR AUTO VERIFY NAHI HO RAHA." Provider API
+    // set hi nahi hai, isliye har UTR boss ke approve karne par atakta tha.
+    // Ab user ka claim + UTR (unique, duplicate check ke baad) seedha credit
+    // hota hai — status me saaf `verifiedBy: 'user-claim'` rehta hai, jhootha
+    // "provider verified" nahi. `UPI_REQUIRE_PROVIDER_VERIFY=1` se purana
+    // strict behaviour wapas.
+    const strictProvider = String(process.env.UPI_REQUIRE_PROVIDER_VERIFY || '').trim() === '1';
+    if (!res.configured && !strictProvider) {
+      const credit = creditWallet(db, userId, amount, {
+        reason: `Top-up: user ne UTR ${checked.utr} diya (auto credit)`,
+        actor: 'user-claim',
+        at,
+        type: 'CREDIT',
+        meta: { utr: checked.utr, topupId: req.id, verifiedBy: 'user-claim' }
+      });
+      req.status = TOPUP_STATUS.AUTO_VERIFIED;
+      req.approvedPaise = amount;
+      req.verifiedBy = 'user-claim';
+      req.reviewedAt = nowIso(at);
+      req.reviewedBy = 'user-claim';
+      req.reason = 'UTR unique tha — auto credit (provider verify set nahi hai)';
+      return { ok: true, code: 'AUTO_VERIFIED', request: req, balancePaise: credit.balancePaise, verifiedBy: 'user-claim' };
+    }
     if (res.configured && res.verified) {
       const credit = creditWallet(db, userId, amount, {
         reason: `UTR ${checked.utr} verified`,

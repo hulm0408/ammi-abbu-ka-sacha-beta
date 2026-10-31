@@ -273,7 +273,12 @@ function publicCheckout(checkout, { restricted = false } = {}) {
     paymentVerified: checkout.paymentVerified === true,
     message: String(checkout.message || ''),
     tracking: restricted ? null : (checkout.tracking || null),
-    restricted: restricted === true
+    restricted: restricted === true,
+    // Round 12: order bana par QR nahi mila — asli wajah + (agar Swiggy ne
+    // diya ho to) uske payment page ka link. Koi apna banaya hua link nahi.
+    qrMissing: checkout.qrMissing === true,
+    qrMissingReason: String(checkout.qrMissingReason || ''),
+    paymentPageUrl: /^https:\/\//i.test(String(checkout.paymentPageUrl || '')) ? String(checkout.paymentPageUrl) : ''
   };
   if (checkout.status === 'PAYMENT_PENDING' && checkout.paymentVerified !== true && checkout.upiIntentUrl && checkout.qrDataUrl) {
     output.upiIntentUrl = checkout.upiIntentUrl;
@@ -1292,6 +1297,24 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           });
           writeProWorkspace(user.id, ws);
         } catch (err) {
+          // Boss (31-10-2026, round 12): "QR NAHI AYA AISA HO GAYA". Order ban
+          // gaya par Swiggy ne QR nahi diya — ise "outcome unknown" ki tarah
+          // chhupana galat tha. Ab order ID + asli wajah dikhati hai, aur
+          // payment status check chalta rehta hai (koi naya order nahi banta).
+          if (err?.diag?.qrMissing === true && err?.diag?.placedOrderId) {
+            ws.checkout.status = 'PAYMENT_PENDING';
+            ws.checkout.orderId = normalizeSwiggyOrderId(err.diag.placedOrderId);
+            ws.checkout.qrMissing = true;
+            ws.checkout.qrMissingReason = String(err.diag.intentProblem || err.message || '').slice(0, 300);
+            ws.checkout.paymentTxnId = String(err.diag.paymentTxnId || '').slice(0, 200);
+            ws.checkout.paymentPageUrl = /^https:\/\//i.test(String(err.diag.paymentPageUrl || '')) ? String(err.diag.paymentPageUrl).slice(0, 1500) : '';
+            ws.checkout.message = 'Swiggy ne order accept kar liya par payment QR nahi diya. Order Swiggy par bana hua hai — dobara order na karein; yahan se payment status check karte rahein.';
+            delete ws.checkout.upiIntentUrl;
+            delete ws.checkout.qrDataUrl;
+            writeProWorkspace(user.id, ws);
+            json(res, 200, { ok: true, checkout: publicCheckout(ws.checkout, { restricted: isSharedAccountFor(user, ws, ws.checkout.accountKey) }) });
+            return;
+          }
           const record = readSwiggyPlacement(placementKey);
           if (record || err?.diag?.placementAttempted === true || providerReturned) {
             ws.checkout.status = 'OUTCOME_UNKNOWN';
