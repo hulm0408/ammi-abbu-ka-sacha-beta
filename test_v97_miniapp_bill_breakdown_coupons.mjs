@@ -155,12 +155,13 @@ test('DOM: bill ka poora hisaab — har line + jod ka equation', async () => {
     app.document.querySelector('[data-action="nav"][data-tab="cart"]').click();
     await waitFor(() => app.document.querySelector('.bill-card'), 'bill card');
     const bill = app.document.querySelector('.bill-card').textContent;
-    assert.match(bill, /Item Total/);
+    assert.match(bill, /Items Total/);
     assert.match(bill, /₹274/);
     assert.match(bill, /Delivery Fee/);
     assert.match(bill, /FREE/);
     assert.match(bill, /GST & Other Charges/);
-    assert.match(bill, /₹61\.08/);
+    assert.match(bill, /₹43\.08/, 'GST line alag');
+    assert.match(bill, /Packing Charges\s*₹18/, 'packing alag line — Swiggy jaisa');
     assert.match(bill, /To Pay/);
     assert.match(bill, /₹335/);
     assert.equal(/farak hai/i.test(bill), false, 'darawne mismatch box nahi');
@@ -174,6 +175,8 @@ test('DOM: bill ka poora hisaab — har line + jod ka equation', async () => {
     assert.match(math, /GST ₹43\.08/);
     assert.match(math, /= ₹335/);
     assert.match(app.document.querySelector('.bill-card').textContent, /Margherita × 2/);
+    // Swiggy ki bill summary lines: One Lite fee, free delivery saving, total savings.
+    assert.match(app.document.querySelector('.bill-card').textContent, /Delivery Fee/);
     await new Promise(r => setTimeout(r, 20));
   } finally { app.close(); }
 });

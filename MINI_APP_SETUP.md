@@ -139,3 +139,13 @@ A real trial requires a suitable deployed HTTPS service with persistent storage,
 * **Bill Details detailed:** Item Total (strike ke saath jab discount laga), Delivery Fee (+ distance), GST & Other Charges, Coupon, Offer saving, **To Pay** — phir `Poora hisaab dekhein` par har item (`× qty = ₹`) aur poora jod: `Items + Delivery + Packing + GST + Other − Coupon − Offer = To Pay`. Swiggy ka total hi final.
 * **Checkout dead end gaya:** Pay Now / bill / coupon sabse pehle receiver check karte hain. Naam ya 10-digit mobile adhoora ho to app seedha **address page ke receiver form** par le jaata hai (pehle API error aata tha aur user ko lagta tha checkout kharab hai). `customer_id` kisi purane session me na ho to bill sync ke waqt app ek baar Swiggy se identity le kar save kar leta hai (order placement ka double-tap barrier waisa hi rehta hai).
 * **Test:** `test_v97` (6 checks) + v90/v93/v96 updated. Sweep: `test:pro` 40/40, `test:guards` 65/65, `npm test` 132/132, bossbot 49/49.
+
+## Round 9 (31-10-2026): bill summary bilkul Swiggy jaisa
+
+Boss ka example: `Items Total ₹230 · Coupon FLASHSALE −₹160 · Extra Discount (Free Cash) −₹70 · Swiggy One Lite Membership +₹1 · Free Delivery ₹49 saved · Packing ₹5 · GST & Other ₹27.85 · Total Savings ₹279 · To Pay ₹29`.
+
+* **Provider (`quoteCart`)** ab Swiggy ke parsed cart se yehi fields bill me bhejta hai: `itemTotal, deliveryFee, deliverySaved, deliveryFree, packingCharges, taxes, discount + coupon, freeCash, tradeDiscount, oneMembershipFee, oneApplied, totalSavings` — aur `total` wahi `meta.order_total` (jo Swiggy charge karta hai; checkout isi se match karta hai).
+* **`billBreakdown`** ab `free cash` / `tradeDiscount` / `One fee` ko jod me leta hai; jo bacha wo `otherCharges`, jo kam pada wo `unlistedDiscount` (bill me "Extra saving (bill me)" line). Isliye lines ka jod **hamesha To Pay ke barabar** hota hai — koi darawne warning nahi.
+* **Bill Details card** me lines: Items Total · Coupon X · Extra Discount (Free Cash) · Extra Discount (Restaurant) · Swiggy One Lite Membership (+) · Free Delivery (+ kitna saved) · Delivery Fee FREE (₹49 saved) · Packing Charges · GST & Other Charges · Extra saving · **Total Savings** · **To Pay**. `Poora hisaab dekhein` par item-wise lines + pura equation.
+* **Savings Corner** me wahi rows (Coupon/Free Cash/Restaurant/Free delivery/One Lite fee) + `₹279 saved` pill, aur **banner** me Swiggy ka khud ka `totalSavings` (apna bada number nahi banate).
+* **Test:** `test_v98` (2 checks, boss ka exact ₹230 → ₹29 case) — lines ka jod To Pay se match, jhootha saving nahi. Sweep: `test:pro` 40/40, `test:guards` 66/66, `npm test` 132/132, bossbot 49/49.

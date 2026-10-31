@@ -410,24 +410,25 @@
     if (!q) return `<div class="warning" id="bill-details">Bill abhi Swiggy se nahi aaya. Neeche <b>Pay Now</b> dabaiye — pehle asli bill aayega, phir payment.</div>`;
     const num = v => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? 0 : Number(v));
     const itemTotal = num(q.itemTotal);
-    const deliveryFee = q.deliveryFee === null || q.deliveryFee === undefined ? 0 : num(q.deliveryFee);
+    const deliveryFee = num(q.deliveryFee);
+    const deliveryFree = q.deliveryFee === 0 || q.deliveryFee === null || q.deliveryFee === undefined;
+    const deliverySaved = num(q.deliverySaved);
     const packing = num(q.packingCharges);
     const taxes = num(q.taxes);
     const other = num(q.otherCharges);
     const discount = num(q.discount);
+    const freeCash = num(q.freeCash);
+    const tradeDiscount = num(q.tradeDiscount);
+    const oneFee = num(q.oneMembershipFee);
     const offer = num(q.unlistedDiscount);
     const total = num(q.total);
-    const deliveryFree = q.deliveryFee === 0 || q.deliveryFee === null;
-    const grossItems = (cart?.items || []).reduce((sum, i) => sum + (i.price === null || i.price === undefined ? 0 : num(i.price) * num(i.qty || 1)), 0) + discount;
-    const showStrike = discount > 0 && grossItems > itemTotal + 0.5;
+    const savings = num(q.totalSavings) || (discount + freeCash + tradeDiscount + deliverySaved);
     const distance = q.deliveryDistance ? ` <small>${esc(q.deliveryDistance)}</small>` : '';
     const row = (label, value, cls = '') => `<div class="bill-row${cls ? ' ' + cls : ''}"><span>${label}</span><strong>${value}</strong></div>`;
-    const charges = packing + taxes + other;
-    const itemsDetail = (cart?.items || []).map(i => `<div class="bill-row breakdown"><span>${esc(i.name)} × ${num(i.qty || 1)}</span><strong>${money(num(i.price) * num(i.qty || 1))}</strong></div>`).join('');
-    const mathLine = `Items ${money(itemTotal)} + Delivery ${deliveryFree ? 'FREE' : money(deliveryFee)} + Packing ${money(packing)} + GST ${money(taxes)}${other ? ` + Other ${money(other)}` : ''}${discount ? ` − Coupon ${money(discount)}` : ''}${offer ? ` − Offer ${money(offer)}` : ''} = ${money(total)}`;
-    const split = `<div class="bill-split">${packing > 0 ? `<span>Packing ${money(packing)}</span>` : ''}${taxes > 0 ? `<span>Taxes ${money(taxes)}</span>` : ''}${other > 0 ? `<span>Platform/Other ${money(other)}</span>` : ''}${!charges ? '<span>Koi extra charge nahi</span>' : ''}</div>`;
-    const detailed = `<div class="bill-detail-math"><p class="section-title">Poora hisaab</p>${itemsDetail}${itemsDetail ? '<div class="divider"></div>' : ''}${split}${mathLine ? `<p class="hint bill-equation">${esc(mathLine)}</p>` : ''}<p class="hint">Ye hisaab Swiggy ke apne bill se bana hai. Farak ho to <b>Swiggy ka total hi final</b> hai — hum usi ko charge karte hain.</p></div>`;
-    return `<div class="card bill-card" id="bill-details"><div class="card-title">${icon('receipt')} Bill Details <button class="icon-button right" type="button" data-action="bill-refresh" aria-label="Refresh bill">${icon('refresh')}</button></div><div class="divider"></div>${row('Item Total', showStrike ? `<s>${money(grossItems)}</s> ${money(itemTotal)}` : money(itemTotal))}${row(`Delivery Fee${distance}`, deliveryFree ? 'FREE' : money(deliveryFee), deliveryFree ? 'total-free' : '')}${row('GST &amp; Other Charges', money(charges))}${discount > 0 ? row(`Coupon ${esc(q.coupon || '')}`, `−${money(discount)}`, 'saving') : ''}${offer > 0 ? row('Offer saving', `−${money(offer)}`, 'saving') : ''}<div class="bill-row total"><span>To Pay</span><span>${money(total)}</span></div><button class="text-button bill-toggle" type="button" data-action="bill-open">${state.billOpen ? 'Hisaab band karein' : 'Poora hisaab dekhein'}</button>${state.billOpen ? detailed : ''}<p class="hint">Swiggy se aaya bill. Bill badal sakta hai; pay se pehle dobara check karein.${cart?.forSomeoneElse ? ' OFO acceptance is bill se confirm nahi hota.' : ''}</p></div>`;
+    const itemsDetail = (cart?.items || []).filter(i => num(i.qty) > 0).map(i => `<div class="bill-row breakdown"><span>${esc(i.name)} × ${num(i.qty)}</span><strong>${money(num(i.price) * num(i.qty))}</strong></div>`).join('');
+    const eq = `Items ${money(itemTotal)} + Delivery ${deliveryFree ? 'FREE' : money(deliveryFee)} + Packing ${money(packing)} + GST ${money(taxes)} + One ${money(oneFee)}${other ? ` + Other ${money(other)}` : ''}${discount ? ` − Coupon ${money(discount)}` : ''}${freeCash ? ` − Free Cash ${money(freeCash)}` : ''}${tradeDiscount ? ` − Restaurant discount ${money(tradeDiscount)}` : ''}${offer ? ` − Offer ${money(offer)}` : ''} = ${money(total)}`;
+    const detailed = `<div class="bill-detail-math"><p class="section-title">Poora hisaab</p>${itemsDetail}${itemsDetail ? '<div class="divider"></div>' : ''}<p class="hint bill-equation">${esc(eq)}</p><p class="hint">Ye hisaab Swiggy ke apne bill se bana hai. Farak ho to <b>Swiggy ka total hi final</b> hai — hum usi ko charge karte hain.</p></div>`;
+    return `<div class="card bill-card" id="bill-details"><div class="card-title">${icon('receipt')} Bill Details <small class="title-sub">Swiggy ka bill summary</small> <button class="icon-button right" type="button" data-action="bill-refresh" aria-label="Refresh bill">${icon('refresh')}</button></div><div class="divider"></div>${row('Items Total', money(itemTotal))}${discount > 0 ? row(`Coupon ${esc(q.coupon || '')}`, `−${money(discount)}`, 'saving') : ''}${freeCash > 0 ? row('Extra Discount (Free Cash)', `−${money(freeCash)}`, 'saving') : ''}${tradeDiscount > 0 ? row('Extra Discount (Restaurant)', `−${money(tradeDiscount)}`, 'saving') : ''}${oneFee > 0 ? row('Swiggy One Lite Membership', `+${money(oneFee)}`) : ''}${deliveryFree ? `<div class="bill-row free-delivery"><span>Free Delivery</span><strong>${deliverySaved > 0 ? `${money(deliverySaved)} saved` : 'Applied'}</strong></div>` : ''}${row(`Delivery Fee${distance}`, deliveryFree ? `FREE${deliverySaved > 0 ? ` (${money(deliverySaved)} saved)` : ''}` : money(deliveryFee), deliveryFree ? 'saving' : '')}${packing > 0 ? row('Packing Charges', money(packing)) : ''}${(taxes + other) > 0 ? row('GST &amp; Other Charges', money(taxes + other)) : ''}${offer > 0 ? row('Extra saving (bill me)', `−${money(offer)}`, 'saving') : ''}${savings > 0 ? `<div class="bill-row total-savings"><span>Total Savings</span><strong>${money(savings)}</strong></div>` : ''}<div class="bill-row total"><span>To Pay</span><span>${money(total)}</span></div><button class="text-button bill-toggle" type="button" data-action="bill-open">${state.billOpen ? 'Hisaab band karein' : 'Poora hisaab dekhein'}</button>${state.billOpen ? detailed : ''}<p class="hint">Swiggy se aaya bill. Coupon/free cash tabhi dikhta hai jab Swiggy deta hai.${cart?.forSomeoneElse ? ' OFO acceptance is bill se confirm nahi hota.' : ''}</p></div>`;
   }
   function renderPayment(cart) {
     const ready = Boolean(state.cart?.quote) && !cartLocked();
@@ -436,7 +437,12 @@
   /** Kitna bacha — sirf jo Swiggy ke bill me asli me dikha. */
   function savedAmount(q) {
     if (!q) return 0;
-    return Math.round(((Number(q.discount) || 0) + (Number(q.unlistedDiscount) || 0)) * 100) / 100;
+    // Swiggy ne khud "Total Savings" diya ho to wahi sach hai (usme free
+    // delivery/wallet bhi jud jaata hai) — hum apna bada number nahi banate.
+    const stated = Number(q.totalSavings);
+    if (Number.isFinite(stated) && stated > 0) return Math.round(stated * 100) / 100;
+    const sum = (Number(q.discount) || 0) + (Number(q.unlistedDiscount) || 0) + (Number(q.freeCash) || 0) + (Number(q.tradeDiscount) || 0) + (Number(q.deliverySaved) || 0);
+    return Math.round(sum * 100) / 100;
   }
   /**
    * Boss (31-10-2026): "IMAGE JAISA CHAHIYE, NORMAL NAHI." Swiggy ke cart jaisa
@@ -444,17 +450,25 @@
    */
   function renderSavingsCorner(q) {
     if (!q) return '';
+    const num = v => (v === null || v === undefined || !Number.isFinite(Number(v)) ? 0 : Number(v));
     const rows = [];
-    if (q.coupon && Number(q.discount) > 0) {
-      rows.push(`<div class="saving-row"><span class="saving-icon">%</span><span class="row-content"><strong>${money(q.discount)} saved with ${esc(q.coupon)}</strong><small>Coupon Swiggy ne khud lagaya</small></span><span class="saving-badge on">✓ Applied</span><button class="text-button" type="button" data-action="coupon-remove">Remove</button></div>`);
+    if (q.coupon && num(q.discount) > 0) {
+      rows.push(`<div class="saving-row"><span class="saving-icon">%</span><span class="row-content"><strong>${money(num(q.discount))} saved with ${esc(q.coupon)}</strong><small>Coupon Swiggy ne khud lagaya</small></span><span class="saving-badge on">✓ Applied</span><button class="text-button" type="button" data-action="coupon-remove">Remove</button></div>`);
     }
-    if (Number(q.unlistedDiscount) > 0) {
-      rows.push(`<div class="saving-row"><span class="saving-icon">%</span><span class="row-content"><strong>${money(q.unlistedDiscount)} extra off bill se</strong><small>Swiggy ne total me pehle se joda</small></span><span class="saving-badge on">✓ Applied</span></div>`);
+    if (num(q.freeCash) > 0) {
+      rows.push(`<div class="saving-row"><span class="saving-icon one">cash</span><span class="row-content"><strong>${money(num(q.freeCash))} Free Cash</strong><small>Extra discount bill me pehle se laga hai</small></span><span class="saving-badge on">✓ Applied</span></div>`);
     }
-    if (q.deliveryFee === 0) {
-      rows.push(`<div class="saving-row"><span class="saving-icon one">one</span><span class="row-content"><strong>Delivery FREE</strong><small>Swiggy ne delivery fee maafi di</small></span><span class="saving-badge on">✓ Applied</span></div>`);
+    if (num(q.tradeDiscount) > 0) {
+      rows.push(`<div class="saving-row"><span class="saving-icon">%</span><span class="row-content"><strong>${money(num(q.tradeDiscount))} restaurant discount</strong><small>Restaurant ne bill me diya</small></span><span class="saving-badge on">✓ Applied</span></div>`);
     }
-    return `<div class="card savings-corner"><div class="card-title">SAVINGS CORNER<button class="text-button right" type="button" data-action="coupon-open">Saare coupons</button></div>${rows.length ? rows.join('') : '<p class="hint">Is bill par koi coupon nahi laga. Neeche se coupon chunein — discount tabhi lagega jab Swiggy de.</p>'}<p class="hint">Sirf wahi saving dikhti hai jo Swiggy ke bill me hai. Jhootha “saved” nahi.</p></div>`;
+    if (q.deliveryFee === 0 && num(q.deliverySaved) > 0) {
+      rows.push(`<div class="saving-row"><span class="saving-icon one">one</span><span class="row-content"><strong>${money(num(q.deliverySaved))} saved on delivery</strong><small>Free delivery ${q.deliveryDistance ? '· ' + esc(q.deliveryDistance) : ''}</small></span><span class="saving-badge on">✓ Applied</span></div>`);
+    }
+    if (num(q.oneMembershipFee) > 0) {
+      rows.push(`<div class="saving-row"><span class="saving-icon one">one</span><span class="row-content"><strong>Swiggy One Lite ${money(num(q.oneMembershipFee))}</strong><small>Membership fee bill me juda hai</small></span><span class="saving-badge">Charged</span></div>`);
+    }
+    const totalSaved = num(q.totalSavings);
+    return `<div class="card savings-corner"><div class="card-title">SAVINGS CORNER${totalSaved > 0 ? `<span class="pill green right">${money(totalSaved)} saved</span>` : ''}<button class="text-button coupon-open-link" type="button" data-action="coupon-open">Saare coupons</button></div>${rows.length ? rows.join('') : '<p class="hint">Is bill par abhi koi discount nahi laga. Coupons se try karein.</p>'}</div>`;
   }
   /** "Complete Your Meal" rail — isi restaurant ke asli menu se. */
   function renderMealRail(cart) {

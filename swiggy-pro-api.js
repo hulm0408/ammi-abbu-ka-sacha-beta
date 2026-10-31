@@ -293,46 +293,51 @@ function round2(value) { return Math.round(Number(value) * 100) / 100; }
 function billBreakdown(bill) {
   if (!bill || typeof bill !== 'object') return bill;
   const num = value => (value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : round2(value));
+  const pos = value => Math.max(0, num(value) ?? 0);
+  const add = (...values) => values.reduce((sum, v) => sum + (v === null || v === undefined ? 0 : v), 0);
   const itemTotal = num(bill.itemTotal);
   const deliveryFee = num(bill.deliveryFee);
   const packingCharges = num(bill.packingCharges);
   const taxes = num(bill.taxes);
-  const discountRaw = num(bill.discount);
-  const discount = discountRaw && discountRaw > 0 ? discountRaw : 0;
+  const discount = pos(bill.discount);
+  const freeCash = pos(bill.freeCash);
+  const tradeDiscount = pos(bill.tradeDiscount);
+  const oneMembershipFee = pos(bill.oneMembershipFee);
   const total = num(bill.total);
-  const add = (...values) => values.reduce((sum, v) => sum + (v === null ? 0 : v), 0);
   let otherCharges = 0;
   let unlistedDiscount = 0;
-  const mismatch = false;
   let couponApplied = discount > 0;
   if (total !== null) {
-    const gross = add(itemTotal, deliveryFee, packingCharges, taxes);
-    const withCoupon = add(gross, -discount);
-    if (Math.abs(total - gross) < 0.5) {
-      // Swiggy ne total me coupon pehle hi jod diya (item total already net).
+    // Boss (31-10-2026, round 9): bill summary me wahi lines jo Swiggy dikhata
+    // hai. Net = items + delivery + packing + gst + One fee − coupon − free
+    // cash − restaurant discount. Bacha hua = platform/other charge, kam pada
+    // = chhupa hua discount — dono sach ke saath, koi darawne warning nahi.
+    const gross = add(itemTotal, deliveryFee, packingCharges, taxes, oneMembershipFee);
+    const known = total - add(gross, -discount, -freeCash, -tradeDiscount);
+    if (Math.abs(known) >= 0.5) {
+      if (known > 0) otherCharges = round2(known);
+      else unlistedDiscount = round2(Math.abs(known));
+    }
+    if (discount > 0 && Math.abs(total - add(gross, -freeCash, -tradeDiscount, otherCharges)) < 0.5) {
       couponApplied = false;
-    } else if (Math.abs(total - withCoupon) >= 0.5) {
-      const gap = round2(total - withCoupon);
-      // Boss (31-10-2026): jab Swiggy ka total lines se KAM ho to wo chhupa
-      // hua offer/discount hota hai — usko "mismatch" ka darr dikhane ke
-      // bajaye saving line me dikhao. Farak sirf tab jab lines total se kam
-      // padein (tab extra charge) — dono surat me jod barabar ho jata hai.
-      if (gap > 0) otherCharges = gap;
-      else unlistedDiscount = Math.abs(gap);
     }
   }
+  const totalSavings = num(bill.totalSavings) ?? round2(discount + freeCash + tradeDiscount + pos(bill.deliverySaved));
   return {
     ...bill,
     itemTotal, deliveryFee, packingCharges, taxes,
     discount: couponApplied ? discount : null,
     coupon: couponApplied ? String(bill.coupon || '') : '',
     discountAlreadyApplied: discount > 0 && !couponApplied,
+    freeCash, tradeDiscount, oneMembershipFee,
+    oneApplied: bill.oneApplied === true || oneMembershipFee > 0,
+    deliverySaved: pos(bill.deliverySaved),
     otherCharges,
-    // Swiggy ne jo discount alag se nahi bheja par total me laga diya.
     unlistedDiscount,
     taxesAndCharges: round2(add(packingCharges, taxes, otherCharges)),
+    totalSavings: Math.max(round2(totalSavings), round2(discount + freeCash + tradeDiscount)),
     total,
-    mismatch
+    mismatch: false
   };
 }
 
