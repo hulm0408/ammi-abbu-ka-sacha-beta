@@ -428,3 +428,34 @@ bhi pakadta hai.
 ### Tests
 `test_v106` **11/11** · sweep: `test:guards` **74/74 (129s)**, `test:pro` **41/41**,
 `npm test` **132/132**, bossbot **49/49**.
+
+## Round 18 (31-10-2026): bill ka har case + QR ka har case — do pure modules
+
+Boss: *"AB BILL CALCULATE KA HAR POSSIBILITY KO DHAYAN RAKH KAR AND QR GENERATION KE HAR POSSIBLITES KO DHYAN ME RAKH KAR CODE LIKHO."*
+
+### 1. `bill-reconcile.js` (naya, pure)
+Ek hi jagah bill ka poora sach: string/`₹`/comma money, `NaN`, negative, 3+ decimal, missing
+`total`, missing `itemTotal` (items se jod), total lines se **zyada** (limit ke andar other charge,
+bahar `BILL_DOES_NOT_ADD_UP`) ya **kam** (chhupi saving = `unlistedDiscount`), approved total badalna,
+free cash payable se zyada (clamp), coupon flag par discount 0, coupon already item total me,
+packing GST ke andar (double nahi), One Lite fee bina fayde, subscription bina fee, To Pay ₹0.
+
+Output: `{ bill, checks, problems, notes, ok }` — jo jod nahi milta wo `problems` me, jo line ka
+naam badla wo `notes` me. **Koi number invent nahi hota.**
+
+`swiggy-pro-api.js` ka `billBreakdown()` ab isi ka thin wrapper hai — quote me `billState`,
+`checks`, `problems`, `notes` bhi jaate hain (app purane fields waise hi padhta hai).
+
+### 2. `qr-generation-plan.js` (naya, pure)
+`planQrGeneration(candidates, { amount })` — provider intent + payment-page intent dono try,
+pehla valid jeetta hai. Har candidate par: scheme check, lambai (1200), normalise (escaped/
+`amount` alias/duplicate/space), VPA placeholder, amount exact (bill se), `cu=INR`, duplicate intent.
+Fail par **har** wajah (`reasons[]`). `isRenderableQrImage()` se PNG sach me QR hai ya nahi.
+
+Provider `checkout()` ab isi plan se QR deta hai — `intentRepairs`, `intentAttempts`,
+`intentSource` return karta hai; error `diag` me har source ka reject reason + `intentRaw`.
+API checkout QR render se pehle plan + PNG check karta hai; checkout me `qrSource`/`qrPlan` save hote hain.
+
+### Tests
+`test_v107_bill_and_qr_possibilities.mjs` **29 checks** (bill 16, QR 13). Sweep:
+`test:guards` **75/75 (137s)**, `test:pro` **41/41**, `npm test` **132/132**, bossbot **49/49**.
