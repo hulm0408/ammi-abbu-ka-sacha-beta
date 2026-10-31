@@ -6,10 +6,22 @@
   const initData = tg?.initData || '';
   const state = {
     tab: 'accounts', auth: false, authError: '', authErrorCode: '', connecting: false, user: null, accounts: [], activeAccount: null,
-    selectedAddress: null, addresses: [], addressNote: '', pendingAddress: null, contactEdit: false,
-    cart: null, checkout: null, checkoutEnabled: false, mode: 'phone', otpSent: false, searchQuery: '', results: null, menu: null,
-    orders: null, ordersScope: 'active', order: null, orderTracking: null, busy: false
+    selectedAddress: null, addresses: [], addressNote: '', pendingAddress: null, contactEdit: false, addressesLoading: false,
+    cart: null, checkout: null, checkoutEnabled: false, adminContact: '', mode: 'phone', otpSent: false, searchQuery: '', results: null, menu: null,
+    menuLoading: false, orders: null, ordersScope: 'active', order: null, orderTracking: null, ordersLoading: false, ordersDetailAllowed: true,
+    cachedAccounts: [], busy: false
   };
+  // Boss (31-10-2026): "ME KOI CHEEZ UPDATE KARU TO SAARA USER KA DATA RESET NA
+  // HOJAYE, BAAKI RAHE UNKE PHONES ME." UI ka safe hissa (tab, theme, pehle
+  // dikhe ID ke naam, search text) phone par rehta hai. Server hi asli source
+  // hai; cache sirf itna batata hai ki pehle kya tha — koi secret nahi.
+  const CACHE_KEY = 'pro-state-v2';
+  function readCache() {
+    try { const raw = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); return raw && raw.version === 2 ? raw : {}; } catch { return {}; }
+  }
+  function writeCache(patch) {
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ...readCache(), ...patch, version: 2, savedAt: new Date().toISOString() })); } catch {}
+  }
   const $ = selector => document.querySelector(selector);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
   const money = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) ? `₹${Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—';
@@ -116,7 +128,11 @@
     return result;
   }
   function merge(data) {
-    for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled']) if (Object.hasOwn(data, key)) state[key] = data[key];
+    for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled','adminContact','ordersDetailAllowed']) if (Object.hasOwn(data, key)) state[key] = data[key];
+    if (Array.isArray(data.accounts)) {
+      state.cachedAccounts = data.accounts.map(a => ({ key: a.key, name: a.name, phoneMasked: a.phoneMasked || '', owner: a.owner || 'self' }));
+      writeCache({ accounts: state.cachedAccounts });
+    }
   }
   async function run(task, button) {
     if (state.busy) return;
@@ -128,9 +144,18 @@
       } else toast(e.message || 'Something went wrong.');
     } finally { state.busy = false; if (button?.isConnected) button.disabled = false; }
   }
-  function openExternal(url) {
-    if (tg?.openLink) tg.openLink(url);
-    else window.open(url, '_blank', 'noopener,noreferrer');
+  // Boss (31-10-2026): "AMMI ABBU SE MINI APP BAHAR NAHI JANA CHAHIYE."
+  // Isliye browser me kuch nahi khulta. Sirf Telegram ke andar admin se baat.
+  function contactAdmin() {
+    const handle = String(state.adminContact || '').replace(/^@/, '');
+    if (!handle) { toast('Admin ka Telegram username set nahi hai. Bot me message bhejein.'); return; }
+    const url = 'https://t.me/' + encodeURIComponent(handle);
+    if (tg?.openTelegramLink) tg.openTelegramLink(url);
+    else if (tg?.openLink) tg.openLink(url);
+    else toast('Telegram me @' + handle + ' ko message karein.');
+  }
+  function skeletonRows(count = 3, lines = 2) {
+    return `<div class="skeleton-list" aria-hidden="true">${Array.from({ length: count }).map(() => `<div class="skeleton-row"><span class="skeleton-tile"></span><span class="skeleton-copy">${Array.from({ length: lines }).map((_, i) => `<span class="skeleton-line${i ? ' short' : ''}"></span>`).join('')}</span></div>`).join('')}</div>`;
   }
   function field(label, name, placeholder, value = '', extra = '') {
     return `<label class="field"><span class="field-label">${esc(label)}</span><span class="input-wrap"><input name="${esc(name)}" placeholder="${esc(placeholder)}" value="${esc(value)}" ${extra}></span></label>`;
@@ -140,7 +165,8 @@
     const tabs = [['accounts','Accounts'],['address','Address'],['search','Search'],['cart','Cart'],['orders','Orders'],['tools','Tools']];
     $('#bottom-nav').innerHTML = tabs.map(([id, label]) => `<button type="button" data-action="nav" data-tab="${id}" class="${state.tab === id ? 'selected' : ''}" ${state.tab === id ? 'aria-current="page"' : ''} ${state.auth ? '' : 'disabled'}>${icon(id)}<span>${label}</span></button>`).join('');
     const chip = $('#account-chip');
-    chip.textContent = state.auth ? (state.activeAccount?.phone ? `+91 ${state.activeAccount.phone}` : 'Select account') : 'Not connected';
+    const chipPhone = state.activeAccount?.phone || state.activeAccount?.phoneMasked || '';
+    chip.textContent = state.auth ? (chipPhone ? `+91 ${chipPhone}` : 'Select account') : 'Not connected';
     chip.disabled = !state.auth;
     const cart = state.auth ? state.cart : null;
     const quantity = cart?.items?.reduce((n, i) => n + Number(i.qty || 0), 0) || 0;
@@ -148,24 +174,42 @@
   }
   function renderAccounts() {
     const intro = head('YOUR SPACE', 'Accounts', 'Add a Swiggy account to start ordering.');
-    const lockedNotice = cartLocked() ? '<div class="warning">Checkout is pending or unknown. Account switching is locked; only the original account can be reconnected.</div>' : '';
+    const lockedNotice = cartLocked() ? '<div class="warning">Checkout pending or unknown hai. Account switching locked hai; sirf wahi original account dobara connect ho sakta hai.</div>' : '';
     const controls = state.mode === 'phone'
       ? `<form data-form="${state.otpSent ? 'verify-otp' : 'send-otp'}">${state.otpSent
-          ? `${field('OTP from Swiggy', 'otp', 'Enter 6-digit OTP', '', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6" required')}<p class="hint">The OTP is sent by Swiggy. Don’t share it with anyone else.</p><button class="button primary block" type="submit">Verify & add account ${icon('arrow')}</button><button class="text-button" type="button" data-action="otp-reset">Change mobile number</button>`
+          ? `${field('OTP from Swiggy', 'otp', 'Enter 6-digit OTP', '', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6" required')}<p class="hint">OTP Swiggy bhejta hai. Kisi ko na batayein.</p><button class="button primary block" type="submit">Verify & add account ${icon('arrow')}</button><button class="text-button" type="button" data-action="otp-reset">Change mobile number</button>`
           : `<label class="field"><span class="field-label">Mobile number</span><span class="input-wrap"><span class="phone-prefix">+91</span><input name="phone" placeholder="Enter mobile number" inputmode="tel" autocomplete="tel-national" required></span></label><button class="button primary block" type="submit">Send OTP ${icon('arrow')}</button>`}</form>`
-      : `<form data-form="import"><label class="field"><span class="field-label">Session JSON</span><span class="input-wrap"><textarea name="session" placeholder='{"mobile":"…", "token":"…", "tid":"…"}' required></textarea></span></label><p class="hint">Only use a session you own. Never send tokens or OTPs in chat.</p><button class="button primary block" type="submit">Login via JSON ${icon('arrow')}</button></form>`;
-    // Boss (30-10-2026): har ID ke saamne sach — 0-order / used (kaat diya) /
-    // suspend / re-login / busy, plus 💵 free cash aur 🎁 offers.
+      : `<form data-form="import"><label class="field"><span class="field-label">Session JSON</span><span class="input-wrap"><textarea name="session" placeholder='{"mobile":"…", "token":"…", "tid":"…"}' required></textarea></span></label><p class="hint">Sirf apni session use karein. Token/OTP chat me kabhi na bhejein.</p><button class="button primary block" type="submit">Login via JSON ${icon('arrow')}</button></form>`;
     const statusPill = (a) => {
       const cls = a.status === 'READY' ? 'green' : (a.status === 'USED' ? 'grey' : (a.status === 'UNVERIFIED' || a.status === 'BUSY' ? 'amber' : 'red'));
       return `<span class="pill ${cls}">${esc(a.status || '—')}</span>`;
     };
-    const accounts = state.accounts.length ? state.accounts.map(a => {
+    const rows = state.accounts.length ? state.accounts.map(a => {
       const blocked = a.selectable === false;
+      // Used ID: pehle warning, phir select (boss 31-10-2026). Suspended /
+      // expired / busy ID band hi rehti hai.
+      const needsConfirm = a.needsConfirm === true;
       const extras = [a.freeCash > 0 ? `💵 ₹${esc(a.freeCash)}` : '', (a.offers && a.offers.length) ? '🎁 ' + esc(a.offers.map(o => o.label).join(', ')) : ''].filter(Boolean).join(' · ');
-      return `<div class="account-row ${a.active ? 'active' : ''} ${blocked ? 'is-blocked' : ''}"${blocked ? ' style="opacity:.55"' : ''}>${tile('accounts', true)}<div class="row-content"><strong>${esc(a.name)} ${a.icons ? esc(a.icons) : ''}${a.active ? '' : ' ' + statusPill(a)}</strong><p>${a.phone ? '+91 ' + esc(a.phone) : 'Number not returned'}${a.reason ? ' · ' + esc(a.reason) : ''}</p>${extras ? `<p>${extras}</p>` : ''}</div><div class="row-actions">${a.active ? '<span class="pill green">Active</span>' : blocked ? '<span class="pill grey">Not available</span>' : `<button class="button mini outline" data-action="account-select" data-key="${esc(a.key)}" ${cartLocked() ? 'disabled' : ''}>Use</button>`}<button class="icon-button" data-action="account-remove" data-key="${esc(a.key)}" aria-label="Remove account" ${cartLocked() ? 'disabled' : ''}>${icon('trash')}</button></div></div>`;
-    }).join('') : empty('accounts', 'No accounts yet', 'Add your own account with OTP or a verified session.');
-    return `${intro}${lockedNotice}<div class="card"><div class="card-title">${tile('userplus')}<span class="title-copy">Add account<small>${state.user?.isBoss ? 'Uses the shared boss vault' : 'Private to your Telegram user'}</small></span></div><div class="divider"></div><div class="segmented"><button type="button" data-action="account-mode" data-mode="phone" class="${state.mode === 'phone' ? 'selected' : ''}">Phone number</button><button type="button" data-action="account-mode" data-mode="json" class="${state.mode === 'json' ? 'selected' : ''}">Session JSON</button></div>${controls}<p class="hint">This adds a server-side session; it does not log the Swiggy app in on your phone.</p></div><div class="line-heading">${icon('accounts')} Saved accounts <span class="pill right">${state.accounts.length}</span></div>${accounts}`;
+      const phoneLine = a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned';
+      const ownerPill = `<span class="pill ${a.owner === 'operator' ? 'blue' : ''}">${a.owner === 'operator' ? 'Operator' : 'Aapka'}</span>`;
+      const claimNote = a.canClaim === false ? '<span class="pill grey">Claim: sirf operator</span>' : '';
+      const action = a.active
+        ? '<span class="pill green">Active</span>'
+        : (needsConfirm
+            ? `<button class="button mini warn" data-action="account-select" data-key="${esc(a.key)}" data-confirm-used="1" ${cartLocked() ? 'disabled' : ''}>Use</button>`
+            : (blocked
+                ? '<span class="pill grey">Not available</span>'
+                : `<button class="button mini outline" data-action="account-select" data-key="${esc(a.key)}" ${cartLocked() ? 'disabled' : ''}>Use</button>`));
+      const remove = a.canRemove === false ? '' : `<button class="icon-button" data-action="account-remove" data-key="${esc(a.key)}" aria-label="Remove account" ${cartLocked() ? 'disabled' : ''}>${icon('trash')}</button>`;
+      return `<div class="account-row ${a.active ? 'active' : ''} ${blocked && !needsConfirm ? 'is-blocked' : ''}"${blocked && !needsConfirm ? ' style="opacity:.55"' : ''}>${tile('accounts', true)}<div class="row-content"><strong>${esc(a.name)} ${a.icons ? esc(a.icons) : ''}${a.active ? '' : ' ' + statusPill(a)}</strong><p>${phoneLine}${a.reason ? ' · ' + esc(a.reason) : ''}</p><p class="pill-line">${ownerPill}${claimNote}</p>${extras ? `<p>${extras}</p>` : ''}</div><div class="row-actions">${action}${remove}</div></div>`;
+    }).join('') : empty('accounts', 'No accounts yet', 'Apna account OTP se ya verified session JSON se add karein.');
+    // Server par account na mile par phone par pehle dikha tha — chup-chaap
+    // khaali screen nahi, seedha batao ki kya hua.
+    const remembered = state.accounts.length ? '' : (state.cachedAccounts || []).map(a =>
+      `<div class="account-row is-blocked">${tile('accounts', true)}<div class="row-content"><strong>${esc(a.name || 'Saved ID')} <span class="pill grey">RE-LOGIN</span></strong><p>${a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Saved on this phone'} · Server par session nahi mila — ye ID dobara add karni hogi (data delete nahi hua).</p></div></div>`
+    ).join('');
+    const rememberedNote = remembered ? `<div class="warning">Aapke phone par pehle se saved ID mili. Session server par nahi hai — neeche wahi number daal kar OTP se dobara add karein.</div>${remembered}` : '';
+    return `${intro}${lockedNotice}<div class="card"><div class="card-title">${tile('userplus')}<span class="title-copy">Add account<small>${state.user?.isBoss ? 'Shared operator vault me jata hai' : 'Sirf aapko dikhta hai — kisi doosre user ko nahi'}</small></span></div><div class="divider"></div><div class="segmented"><button type="button" data-action="account-mode" data-mode="phone" class="${state.mode === 'phone' ? 'selected' : ''}">Phone number</button><button type="button" data-action="account-mode" data-mode="json" class="${state.mode === 'json' ? 'selected' : ''}">Session JSON</button></div>${controls}<p class="hint">Ye server-side session add karta hai; aapke phone ka Swiggy app login nahi hota.</p></div><div class="line-heading">${icon('accounts')} Saved accounts <span class="pill right">${state.accounts.length}</span></div>${rememberedNote}${rows}`;
   }
   function addressCard(a, selected = false) {
     const lockAttr = cartLocked() ? 'disabled' : '';
@@ -178,14 +222,19 @@
     const selected = state.selectedAddress ? addressCard(state.selectedAddress, true) : '';
     const contact = !locked && state.contactEdit && state.selectedAddress ? `<div class="card"><h2 class="card-title">Receiver details</h2><form data-form="contact">${field('Receiver name', 'name', 'Full name', state.selectedAddress.name, 'required')}${field('Receiver mobile', 'mobile', '10-digit mobile number', state.selectedAddress.mobile, 'inputmode="tel" required')}<p class="hint">Use the person who should receive this order; no account-number substitution.</p><button class="button primary block">Confirm receiver</button></form></div>` : '';
     const pending = !locked && state.pendingAddress ? `<div class="card"><h2 class="card-title">Confirm link details</h2><p class="hint">${esc(state.pendingAddress.address)}</p><form data-form="confirm-address">${field('Receiver name', 'name', 'Receiver name', state.pendingAddress.name, 'required')}${field('Receiver mobile', 'mobile', '10-digit mobile number', state.pendingAddress.mobile, 'inputmode="tel" required')}<p class="hint">Name and mobile are filled from the link when Swiggy provides them. Check them before continuing.</p><button class="button primary block">Use this address ${icon('arrow')}</button></form></div>` : '';
-    const list = state.addresses.length ? state.addresses.map(a => addressCard(a)).join('') : `<div class="empty">${esc(state.addressNote || 'Refresh to fetch saved addresses from Swiggy.')}</div>`;
-    return `${head('WHERE TO?', 'Delivery addresses', 'Choose the right person and place.')}${lockedNotice}${selected}${contact}<div class="card"><div class="card-title">${tile('link')}<span class="title-copy">Add by address link<small>Paste the Swiggy share-address link.</small></span></div><form data-form="address-link">${field('Swiggy address link', 'url', 'https://swiggy.onelink.me/…', '', 'type="url" required ' + lockAttr)}<button class="button primary block" ${lockAttr}>Read address ${icon('arrow')}</button></form></div>${pending}<div class="action-tile">${tile('address', true)}<span class="tile-copy"><strong>Pin on map</strong><small>Manual map entry is not available yet.</small></span><span class="pill">Soon</span></div><div class="line-heading">${icon('address')} Saved addresses <button class="text-button right" data-action="addresses-refresh">${icon('refresh')} Refresh</button></div>${list}`;
+    const list = state.addressesLoading ? skeletonRows(3, 2) : state.addresses.length ? state.addresses.map(a => addressCard(a)).join('') : `<div class="empty">${esc(state.addressNote || 'Refresh dabaiye — saved address Swiggy se aate hain.')}</div>`;
+    return `${head('WHERE TO?', 'Delivery addresses', 'Choose the right person and place.')}${lockedNotice}${selected}${contact}<div class="card"><div class="card-title">${tile('link')}<span class="title-copy">Add by address link<small>Paste the Swiggy share-address link.</small></span></div><form data-form="address-link">${field('Swiggy address link', 'url', 'https://swiggy.onelink.me/…', '', 'type="url" required ' + lockAttr)}<button class="button primary block" ${lockAttr}>Read address ${icon('arrow')}</button></form></div>${pending}<div class="line-heading">${icon('address')} Saved addresses <button class="text-button right" data-action="addresses-refresh">${icon('refresh')} Refresh</button></div>${list}`;
   }
   function renderSearch() {
+    if (state.menuLoading) {
+      // Weak network par khaali screen nahi — skeleton dikhta hai (boss
+      // 31-10-2026: "LAZY LOAD JAB NETWORK WEAK HO").
+      return `${head('RESTAURANT', 'Menu load ho raha hai', 'Swiggy se menu aa raha hai — ruk jaayein.')}<div class="skeleton-hero" aria-hidden="true"></div>${skeletonRows(4, 2)}`;
+    }
     if (state.menu) {
       const r = state.menu.restaurant;
       const avail = r.isOpen === false ? `<div class="warning">${esc(r.opens || 'This restaurant is closed right now.')}</div>` : '';
-      const sections = state.menu.categories.map(c => `<div class="menu-category">${esc(c.title)} <span class="pill">${c.items.length}</span></div>${c.items.map(i => `<article class="dish-row"><div class="row-content">${i.isVeg === null ? '' : `<span class="veg-mark ${i.isVeg ? '' : 'nonveg'}" aria-label="${i.isVeg ? 'Vegetarian' : 'Non-vegetarian'}"></span>`}<strong>${esc(i.name)}</strong><div class="dish-price">${i.price === null ? 'Price unavailable' : money(i.price)}</div><p class="dish-description">${esc(i.description)}</p></div><div class="dish-right">${i.image ? `<img class="food-thumb" src="${esc(i.image)}" alt="" loading="lazy">` : `<span class="food-placeholder">${icon('store')}</span>`}<button class="button mini outline" data-action="dish-add" data-id="${esc(i.id)}" ${cartLocked() || r.isOpen === false || i.inStock === false || i.customizable || i.price === null ? 'disabled' : ''}>${cartLocked() ? 'Checkout pending' : i.inStock === false ? 'Sold out' : i.customizable ? 'Choices needed' : 'ADD +'}</button></div></article>`).join('')}`).join('');
+      const sections = state.menu.categories.map(c => `<div class="menu-category">${esc(c.title)} <span class="pill">${c.items.length}</span></div>${c.items.map(i => `<article class="dish-row"><div class="row-content">${i.isVeg === null ? '' : `<span class="veg-mark ${i.isVeg ? '' : 'nonveg'}" aria-label="${i.isVeg ? 'Vegetarian' : 'Non-vegetarian'}"></span>`}<strong>${esc(i.name)}</strong><div class="dish-price">${i.price === null ? 'Price unavailable' : money(i.price)}</div><p class="dish-description">${esc(i.description)}</p></div><div class="dish-right">${i.image ? `<img class="food-thumb" src="${esc(i.image)}" alt="" loading="lazy" decoding="async">` : `<span class="food-placeholder">${icon('store')}</span>`}<button class="button mini outline" data-action="dish-add" data-id="${esc(i.id)}" ${cartLocked() || r.isOpen === false || i.inStock === false || i.customizable || i.price === null ? 'disabled' : ''}>${cartLocked() ? 'Checkout pending' : i.inStock === false ? 'Sold out' : i.customizable ? 'Choices needed' : 'ADD +'}</button></div></article>`).join('')}`).join('');
       return `<button class="back-button" data-action="menu-back">${icon('back')} Back to search</button><div class="menu-hero"><p>RESTAURANT · ${esc(r.area)}</p><h1>${esc(r.name)}</h1><p>${esc([r.rating ? '★ ' + r.rating : '', r.ratings, r.time].filter(Boolean).join(' · '))}</p></div>${avail}<p class="hint">Items that require custom choices can be ordered in Swiggy; support here is coming later.</p>${sections}`;
     }
     const addr = state.selectedAddress ? `<button class="action-tile" data-action="nav" data-tab="address">${tile('address')}<span class="tile-copy"><small>DELIVER TO</small><strong>${esc(addressLabel(state.selectedAddress))}</strong><small>${esc(state.selectedAddress.address)}</small></span>${icon('arrow')}</button>` : `<button class="action-tile" data-action="nav" data-tab="address">${tile('address')}<span class="tile-copy"><strong>Select a delivery address</strong><small>Restaurant availability depends on your location.</small></span>${icon('arrow')}</button>`;
@@ -193,7 +242,7 @@
     if (state.results === null) {
       results = `${empty('store', 'Find something delicious', 'Search for a restaurant to see its menu and build a cart.')}<p class="eyebrow">Popular searches</p><div class="chips">${["Domino's",'KFC',"McDonald’s",'Pizza Hut','Burger King','Subway'].map(q => `<button class="chip" data-action="popular" data-query="${esc(q)}">${esc(q)}</button>`).join('')}</div>`;
     } else if (!state.results.length) results = empty('search', 'No restaurants returned', 'Try another search or check the selected address.');
-    else results = `<div class="line-heading">${state.results.length} restaurant${state.results.length === 1 ? '' : 's'}</div>${state.results.map(r => `<button class="restaurant-row" data-action="restaurant" data-id="${esc(r.id)}">${r.image ? `<img class="food-thumb" src="${esc(r.image)}" alt="" loading="lazy">` : `<span class="food-placeholder">${icon('store')}</span>`}<span class="row-content"><strong>${esc(r.name)}</strong><p>${esc([r.rating ? '★ ' + r.rating : '',r.ratings].filter(Boolean).join(' · '))}</p><p>${esc(r.cuisines)}</p><p>${esc([r.area,r.distance,r.time].filter(Boolean).join(' · '))}</p><p class="${r.isOpen === true ? 'status-open' : r.isOpen === false ? 'status-closed' : 'status-unknown'}">${r.isOpen === true ? 'Open' : r.isOpen === false ? esc(r.opens || 'Closed') : 'Availability not returned'}</p></span>${icon('arrow')}</button>`).join('')}`;
+    else results = `<div class="line-heading">${state.results.length} restaurant${state.results.length === 1 ? '' : 's'}</div>${state.results.map(r => `<button class="restaurant-row" data-action="restaurant" data-id="${esc(r.id)}">${r.image ? `<img class="food-thumb" src="${esc(r.image)}" alt="" loading="lazy" decoding="async">` : `<span class="food-placeholder">${icon('store')}</span>`}<span class="row-content"><strong>${esc(r.name)}</strong><p>${esc([r.rating ? '★ ' + r.rating : '',r.ratings].filter(Boolean).join(' · '))}</p><p>${esc(r.cuisines)}</p><p>${esc([r.area,r.distance,r.time].filter(Boolean).join(' · '))}</p><p class="${r.isOpen === true ? 'status-open' : r.isOpen === false ? 'status-closed' : 'status-unknown'}">${r.isOpen === true ? 'Open' : r.isOpen === false ? esc(r.opens || 'Closed') : 'Availability not returned'}</p></span>${icon('arrow')}</button>`).join('')}`;
     return `${head('DISCOVER', 'Find a restaurant', 'Good food, a little closer to home.')}${addr}<form class="search-form" data-form="search"><span class="input-wrap">${icon('search')}<input name="q" value="${esc(state.searchQuery)}" placeholder="Search for restaurants…" required></span><button class="button primary" aria-label="Search">${icon('arrow')}</button></form>${results}`;
   }
   function trackingDetails(t) {
@@ -204,7 +253,8 @@
   function renderCheckout() {
     const c = state.checkout;
     if (!c) {
-      if (!state.checkoutEnabled) return `<div class="card"><div class="card-title">${icon('cart')} Payment</div><div class="warning">In-app checkout is not enabled yet; this draft is not an order. The optional button below opens Swiggy outside this Mini App.</div><button class="button soft block" type="button" data-action="open-swiggy">Open Swiggy (external) ${icon('arrow')}</button></div>`;
+      // App ke andar hi rehna hai (boss 31-10-2026) — Swiggy bahar nahi kholte.
+      if (!state.checkoutEnabled) return `<div class="card"><div class="card-title">${icon('cart')} Payment</div><div class="warning">In-app checkout abhi band hai, isliye ye draft order nahi hai. Bill upar se check karein aur admin se poochhein — app chhodne ki zaroorat nahi.</div><button class="button soft block" type="button" data-action="contact-admin">${icon('accounts')} Admin se baat karein</button></div>`;
       return `<div class="card"><div class="card-title">${icon('cart')} UPI checkout</div><p class="hint">Experimental: one real placement request is sent after your confirmation. Swiggy may notify the recipient. Check all details before continuing.</p><button class="button green block" type="button" data-action="checkout-start" ${state.cart?.quote ? '' : 'disabled'}>Place order & get UPI QR ${icon('arrow')}</button><p class="hint">A bill is not an order. Card and cash payments are not supported here.</p></div>`;
     }
     const id = `${c.accountPhone ? `<div class="bill-row"><span>Original account</span><strong>${esc(c.accountPhone)}</strong></div>` : ''}${c.orderId ? `<div class="bill-row"><span>Swiggy order ID</span><strong>#${esc(c.orderId)}</strong></div>` : ''}`;
@@ -214,9 +264,9 @@
       const qr = c.qrDataUrl && /^data:image\/png;base64,/.test(c.qrDataUrl) && c.upiIntentUrl && /^upi:\/\/pay\?/i.test(c.upiIntentUrl)
         ? `<img class="payment-qr" src="${esc(c.qrDataUrl)}" alt="Swiggy UPI payment QR"><a class="button green block" href="${esc(c.upiIntentUrl)}">Open UPI app</a><p class="hint">Pay ${money(c.amount)} only once. If your UPI app cannot open here, scan this QR with another device.</p>` : '';
       const paidNote = c.paymentVerified ? '<div class="warning">Payment was reported, but order confirmation is still pending. Do not pay again.</div>' : '';
-      return `<div class="card"><div class="card-title">${icon('receipt')} Payment pending</div>${id}${warning}${paidNote}${qr}<p class="hint">${c.ofoConfirmed ? 'Swiggy returned an OFO flag; recipient SMS is not verified.' : 'Swiggy has not confirmed OFO acceptance or recipient SMS.'}</p><button class="button primary block" data-action="checkout-status">Check payment & order ${icon('refresh')}</button><button class="button soft block" data-action="checkout-orders">Check original account's orders here</button><button class="button outline block" data-action="open-orders">Open Swiggy My Orders (external)</button></div>`;
+      return `<div class="card"><div class="card-title">${icon('receipt')} Payment pending</div>${id}${warning}${paidNote}${qr}<p class="hint">${c.ofoConfirmed ? 'Swiggy returned an OFO flag; recipient SMS is not verified.' : 'Swiggy has not confirmed OFO acceptance or recipient SMS.'}</p><button class="button primary block" data-action="checkout-status">Check payment & order ${icon('refresh')}</button><button class="button soft block" data-action="checkout-orders">Check original account's orders here</button><button class="button outline block" data-action="contact-admin">Kuch dikkat? Admin se baat karein</button></div>`;
     }
-    return `<div class="card"><div class="card-title">${icon('receipt')} Checkout needs checking</div>${id}<div class="warning">${esc(c.message || 'The result is unknown. An order may exist; do not place another.')}</div>${c.orderId ? `<button class="button primary block" data-action="checkout-status">Check this order ${icon('refresh')}</button>` : ''}<button class="button soft block" data-action="checkout-orders">Check original account's orders here</button><button class="button outline block" data-action="open-orders">Open Swiggy My Orders (external) ↗</button></div>`;
+    return `<div class="card"><div class="card-title">${icon('receipt')} Checkout needs checking</div>${id}<div class="warning">${esc(c.message || 'The result is unknown. An order may exist; do not place another.')}</div>${c.orderId ? `<button class="button primary block" data-action="checkout-status">Check this order ${icon('refresh')}</button>` : ''}<button class="button soft block" data-action="checkout-orders">Check original account's orders here</button><button class="button outline block" data-action="contact-admin">Kuch dikkat? Admin se baat karein</button></div>`;
   }
   function renderCart() {
     const cart = state.cart;
@@ -227,31 +277,53 @@
     if (!cart) return `${head('YOUR ORDER', 'Cart', 'Everything for your next meal.')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${importCard}${empty('cart', 'Your cart is empty', 'Search for a restaurant or import a group cart.')}`;
     const items = cart.items.map(i => `<div class="cart-item"><div class="row-content"><strong>${esc(i.name)}</strong><p>${i.price === null ? 'Price unavailable' : money(i.price) + ' each'}${(i.variants?.length || i.addons?.length) ? ' · Customised' : ''}</p></div><div class="stepper"><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)-1}" aria-label="Remove one" ${lockAttr}>−</button><span>${Number(i.qty)}</span><button type="button" data-action="qty" data-key="${esc(i.lineKey)}" data-qty="${Number(i.qty)+1}" aria-label="Add one" ${lockAttr}>+</button></div></div>`).join('');
     const q = cart.quote;
-    const bill = q ? `<div class="card"><div class="card-title">${icon('receipt')} Swiggy bill</div><div class="bill-row"><span>Item total</span><strong>${money(q.itemTotal)}</strong></div><div class="bill-row"><span>Delivery fee</span><strong>${money(q.deliveryFee)}</strong></div><div class="bill-row"><span>Packing</span><strong>${money(q.packingCharges)}</strong></div><div class="bill-row"><span>Taxes & charges</span><strong>${money(q.taxes)}</strong></div>${q.discount ? `<div class="bill-row"><span>Coupon ${esc(q.coupon)}</span><strong>−${money(q.discount)}</strong></div>` : ''}<div class="bill-row total"><span>To pay</span><span>${money(q.total)}</span></div><p class="hint">Fetched from Swiggy. Bill can change; re-check it before paying.${cart.forSomeoneElse ? ' OFO acceptance is not confirmed by this bill.' : ''}</p></div>` : `<div class="warning">Cart items are a draft. The total, offers and delivery fee have not been confirmed by Swiggy yet.</div>`;
+    // Boss (31-10-2026): "BILL CALCULATION SAHI SE — IMAGE JAISA." Screenshot
+    // jaisa breakdown: Item total (list strike), Delivery FREE, GST & other
+    // charges, To Pay. Lines ka jod To Pay ke barabar; farak ho to sach bolo.
+    const deliveryFree = q && (q.deliveryFee === 0 || q.deliveryFee === null);
+    const itemBefore = q && q.itemTotal !== null && q.discount ? Number(q.itemTotal) + Number(q.discount) : null;
+    const bill = q ? `<div class="card bill-card"><div class="card-title">${icon('receipt')} Bill details</div><div class="divider"></div><div class="bill-row"><span>Item total</span><strong>${itemBefore !== null ? `<s>${money(itemBefore)}</s> ${money(q.itemTotal)}` : money(q.itemTotal)}</strong></div><div class="bill-row"><span>Delivery fee${q.deliveryDistance ? ` · ${esc(q.deliveryDistance)}` : ''}</span><strong class="${deliveryFree ? 'free' : ''}">${deliveryFree ? 'FREE' : money(q.deliveryFee)}</strong></div><div class="bill-row"><span>GST &amp; other charges</span><strong>${money(q.taxesAndCharges ?? ((Number(q.packingCharges) || 0) + (Number(q.taxes) || 0)))}</strong></div>${q.discount ? `<div class="bill-row saving"><span>Coupon ${esc(q.coupon || '')}</span><strong>−${money(q.discount)}</strong></div>` : ''}${q.discountAlreadyApplied ? '<p class="hint">Coupon ka fayda item total me pehle se hai.</p>' : ''}<div class="bill-row total"><span>To Pay</span><span>${money(q.total)}</span></div>${q.mismatch ? '<div class="warning">Swiggy ke lines aur total me farak hai. <b>To Pay</b> hi final hai — pay karne se pehle ek baar aur check karein.</div>' : ''}<p class="hint">Swiggy se aaya bill. Bill badal sakta hai; pay se pehle dobara check karein.${cart.forSomeoneElse ? ' OFO acceptance is bill se confirm nahi hota.' : ''}</p></div>` : `<div class="warning">Ye sirf draft cart hai. Total, offer aur delivery fee abhi Swiggy ne confirm nahi ki.</div>`;
     const contact = state.selectedAddress ? `<strong>${esc(state.selectedAddress.name || 'Name needed')}${state.selectedAddress.mobile ? ' · ' + esc(state.selectedAddress.mobile) : ' · Mobile needed'}</strong><p class="hint">${esc(state.selectedAddress.address)}</p>` : `<p class="hint">Choose a delivery address first.</p>`;
     return `${head('YOUR ORDER', 'Cart', 'Review before doing anything on Swiggy.')}${lockedNotice}${importCard}<div class="card"><div class="card-title">${icon('store')} ${esc(cart.restaurantName)}</div>${items}</div><div class="card"><div class="card-title">${icon('address')} Delivery to</div>${contact}<button class="button mini outline" data-action="nav" data-tab="address">${locked ? 'Check receiver' : 'Change / check receiver'}</button></div>${bill}<div class="card"><div class="card-title">${icon('receipt')} Get live bill</div><p class="hint">Sync replaces the current cart on the selected Swiggy account and may save the delivery address there.</p><form data-form="sync">${field('Coupon (optional)', 'coupon', 'Enter coupon code', q?.coupon || '', lockAttr)}<label class="checkbox-row"><input type="checkbox" name="forSomeoneElse" ${cart.forSomeoneElse ? 'checked' : ''} ${lockAttr}><span>Order for someone else (use the selected receiver)</span></label><button class="button primary block" ${lockAttr}>Sync & check bill ${icon('refresh')}</button></form></div>${renderCheckout()}`;
   }
   function renderOrders() {
+    const detailed = state.ordersDetailAllowed !== false;
+    const restrictedNote = detailed ? '' : '<div class="warning">Ye operator ka ID hai. Aapko sirf chhota summary card dikhta hai — address, item list aur tracking sirf operator dekh sakta hai.</div>';
     if (state.order) {
       const o = state.order;
+      if (!detailed) {
+        return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER SUMMARY', o.restaurant || 'Swiggy order', 'Operator ke ID par sirf summary milti hai.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div></div>${restrictedNote}<button class="button primary block" data-action="contact-admin">${icon('accounts')} Admin se poochhein</button>`;
+      }
       return `<button class="back-button" data-action="orders-back">${icon('back')} Back to orders</button>${head('ORDER DETAILS', o.restaurant || 'Swiggy order', 'Only information returned by Swiggy is shown.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div>${o.address ? `<div class="bill-row"><span>Address</span><strong>${esc(o.address)}</strong></div>` : ''}</div><div class="card"><div class="card-title">${icon('cart')} Ordered items</div>${o.items.length ? o.items.map(i => `<div class="bill-row"><span>${esc(i.name)}</span><strong>× ${Number(i.qty)}</strong></div>`).join('') : '<p class="hint">Swiggy did not return item details.</p>'}</div><div class="card"><div class="card-title">${icon('orders')} Tracking <button class="button mini soft right" data-action="order-tracking">${icon('refresh')} Refresh</button></div>${trackingDetails(state.orderTracking)}</div>`;
     }
-    const rows = state.orders === null ? empty('orders', 'Your orders', 'Refresh to load order history from the selected account.') : state.orders.length ? state.orders.map(o => `<button class="restaurant-row" data-action="order-detail" data-id="${esc(o.id)}">${tile('orders', true)}<span class="row-content"><strong>${esc(o.restaurant || 'Swiggy order')}</strong><p>${esc(o.placedAt || 'Time not returned')}</p><p>${esc(o.items.map(i => i.name).join(', '))}</p><span class="order-id">#${esc(o.id)}</span></span><span class="pill ${/delivered/i.test(o.status) && !/cancel/i.test(o.status) ? 'green' : ''}">${esc(o.status)}</span></button>`).join('') : empty('orders', 'No orders returned', 'Swiggy did not return any orders for this account.');
+    let rows;
+    if (state.ordersLoading) rows = skeletonRows(3, 2);
+    else if (state.orders === null) rows = empty('orders', 'Your orders', 'Refresh dabaiye — order history selected account se aati hai.');
+    else if (!state.orders.length) rows = empty('orders', 'No orders returned', 'Swiggy ne is account ke liye koi order nahi diya.');
+    else rows = state.orders.map(o => detailed
+      ? `<button class="restaurant-row" data-action="order-detail" data-id="${esc(o.id)}">${tile('orders', true)}<span class="row-content"><strong>${esc(o.restaurant || 'Swiggy order')}</strong><p>${esc(o.placedAt || 'Time not returned')}</p><p>${esc((o.items || []).map(i => i.name).join(', ') || 'Item detail not returned')}</p><span class="order-id">#${esc(o.id)}</span></span><span class="pill ${/delivered/i.test(o.status) && !/cancel/i.test(o.status) ? 'green' : ''}">${esc(o.status)}</span></button>`
+      // Boss (31-10-2026): user ko bas chhota card, poora detail sirf operator ko.
+      : `<button class="restaurant-row compact" data-action="order-detail" data-id="${esc(o.id)}">${tile('orders', true)}<span class="row-content"><strong>${esc(o.restaurant || 'Swiggy order')}</strong><p>${esc(o.placedAt || 'Time not returned')} · #${esc(o.id)}</p></span><span class="order-bill">${money(o.amount)}</span><span class="pill ${/delivered/i.test(o.status) && !/cancel/i.test(o.status) ? 'green' : ''}">${esc(o.status)}</span></button>`).join('');
     const original = state.ordersScope === 'checkout';
-    const note = original ? '<div class="warning">Showing the original checkout account. An empty or delayed list does not prove the order failed; do not place or pay for another order while the outcome is unknown.</div>' : '';
-    return `${head('ORDER HISTORY', original ? 'Original account orders' : 'Your orders', original ? 'Recent orders returned for the account used at checkout.' : 'Past and current orders on this account.', `<button class="button mini soft" data-action="orders-refresh">${icon('refresh')} Refresh</button>`)}${note}${rows}`;
+    const note = original ? '<div class="warning">Original checkout account dikh raha hai. Khaali ya der se aayi list ka matlab order fail nahi — jab tak outcome pata na chale doosra order na karein.</div>' : restrictedNote;
+    return `${head('ORDER HISTORY', original ? 'Original account orders' : 'Your orders', original ? 'Checkout wale account ke recent orders.' : 'Is account ke purane aur chalte orders.', `<button class="button mini soft" data-action="orders-refresh">${icon('refresh')} Refresh</button>`)}${note}${rows}`;
   }
   function renderTools() {
-    const offers = [
-      ['moon','Night offer','Check eligibility and timing on Swiggy.','https://events.swiggy.com/pick-your-late-night-offer'],
-      ['sun','Breakfast offer','Check eligibility and timing on Swiggy.','https://events.swiggy.com/book-your-offer'],
-      ['tools','Extra offer','Check availability on Swiggy.','https://events.swiggy.com/pick-your-offer']
-    ];
-    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Explore offers without guessing eligibility.')}<div class="warning">Offer status is not checked here yet. These links open Swiggy outside this Mini App and do not mean an offer is claimed.</div>${offers.map(([sym,title,sub,url]) => `<button class="action-tile offer-card" data-action="offer" data-url="${esc(url)}">${tile(sym)}<span class="tile-copy"><strong>${esc(title)}</strong><small>${esc(sub)}</small></span><span class="offer-tag">External ↗</span></button>`).join('')}`;
+    // Boss (31-10-2026): "MINI APP SE AMMI ABBU BAHAR NAHI JANA CHAHIYE." Tools
+    // me ab koi browser link nahi — sab kuch app ke andar ka sach.
+    const rows = state.accounts.length ? state.accounts.map(a => {
+      const labels = Array.isArray(a.offers) && a.offers.length ? a.offers.map(o => o.label).join(', ') : 'Koi offer active nahi';
+      const canClaim = a.canClaim !== false;
+      return `<div class="account-row"><div class="row-content"><strong>${esc(a.name)}</strong><p>${a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned'} · 💵 ₹${esc(a.freeCash || 0)}</p><p>${esc(labels)}</p></div><span class="pill ${canClaim ? 'green' : 'grey'}">${canClaim ? 'Claim allowed' : 'Sirf operator'}</span></div>`;
+    }).join('') : empty('tools', 'No account yet', 'Pehle Accounts tab me apna ID add karein.');
+    const claimNote = state.accounts.some(a => a.canClaim !== false)
+      ? '<p class="hint">Offer claim abhi bot me hota hai: bot ko <b>/claim</b> bhejein. Operator ke ID par claim band rahega — wo unka free cash hai.</p>'
+      : '<p class="hint">Aapke paas apna ID nahi hai. Operator ke ID par claim nahi hota.</p>';
+    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Har ID ka sach — bina bahar jaaye.')}<div class="card"><div class="card-title">${tile('tools')}<span class="title-copy">Offer status<small>Live, jaisa server ko mila</small></span></div>${claimNote}${rows}</div><button class="button soft block" data-action="contact-admin">${icon('accounts')} Admin se baat karein</button><p class="hint">Koi dikkat ho to seedha admin ko message karein — app ke andar se hi.</p>`;
   }
   function renderConnection() {
     if (!initData) return `${head('TELEGRAM MINI APP', 'Open in Telegram', 'Your private account space needs a Telegram session.')}<div class="card connection-card"><strong>Browser preview only</strong><p>Open this app from your bot using Open App or /pro. No account data is shown here.</p></div>`;
-    if (state.connecting) return `${head('CONNECTING', 'Preparing your space', 'Checking your Telegram session and secure storage…')}<div class="card connection-card" role="status">Connecting securely…</div>`;
+    if (state.connecting) return `${head('CONNECTING', 'Preparing your space', 'Telegram session aur storage check ho raha hai…')}<div role="status">${skeletonRows(3, 2)}</div>`;
     let title = 'Unable to connect';
     let message = state.authError || 'Please retry, or reopen the app from your Telegram bot.';
     if (state.authErrorCode === 'PRO_VAULT_NOT_CONFIGURED') {
@@ -295,6 +367,7 @@
       state.orders = null;
     }
     state.tab = tab;
+    writeCache({ tab });
     state.order = null;
     if (tab !== 'search') state.menu = null;
     render(); window.scrollTo({ top: 0, behavior: 'auto' });
@@ -302,11 +375,19 @@
     if (state.auth && state.activeAccount && tab === 'orders' && state.orders === null) await loadOrders();
   }
   async function loadAddresses() {
-    const data = await api('addresses'); state.addresses = data.addresses; state.addressNote = data.note; render();
+    state.addressesLoading = true; render();
+    try {
+      const data = await api('addresses');
+      state.addresses = data.addresses; state.addressNote = data.note || '';
+    } finally { state.addressesLoading = false; render(); }
   }
   async function loadOrders() {
-    const data = await api('orders' + (state.ordersScope === 'checkout' ? '?scope=checkout' : ''));
-    state.orders = data.orders; render();
+    state.ordersLoading = true; render();
+    try {
+      const data = await api('orders' + (state.ordersScope === 'checkout' ? '?scope=checkout' : ''));
+      state.orders = data.orders;
+      if (typeof data.detailAllowed === 'boolean') state.ordersDetailAllowed = data.detailAllowed;
+    } finally { state.ordersLoading = false; render(); }
   }
   async function search(q) { state.searchQuery = q; const data = await api('search?q=' + encodeURIComponent(q)); state.results = data.restaurants; state.menu = null; render(); }
   function forms(event) {
@@ -348,18 +429,30 @@
     const action = button.dataset.action;
     if (action === 'retry-auth') { reconnect(); return; }
     if (action === 'nav') { run(() => navigate(button.dataset.tab)); return; }
-    if (action === 'theme') { document.body.classList.toggle('dark'); try { localStorage.setItem('pro-theme', document.body.classList.contains('dark') ? 'dark' : 'light'); } catch {} return; }
+    if (action === 'theme') { document.body.classList.toggle('dark'); try { localStorage.setItem('pro-theme', document.body.classList.contains('dark') ? 'dark' : 'light'); } catch {} writeCache({ theme: document.body.classList.contains('dark') ? 'dark' : 'light' }); return; }
     if (action === 'account-mode') { state.mode = button.dataset.mode; state.otpSent = false; render(); return; }
     if (action === 'otp-reset') { state.otpSent = false; render(); return; }
     if (action === 'contact-edit') { state.contactEdit = !state.contactEdit; render(); return; }
     if (action === 'menu-back') { state.menu = null; render(); return; }
     if (action === 'orders-back') { state.order = null; state.orderTracking = null; render(); return; }
     if (action === 'order-detail') { state.order = state.orders?.find(o => o.id === button.dataset.id) || null; state.orderTracking = null; render(); window.scrollTo(0,0); return; }
-    if (action === 'open-swiggy') { openExternal('https://www.swiggy.com/cart'); return; }
-    if (action === 'open-orders') { openExternal('https://www.swiggy.com/my-account/orders'); return; }
-    if (action === 'offer') { openExternal(button.dataset.url); return; }
+    if (action === 'contact-admin') { contactAdmin(); return; }
     run(async () => {
-      if (action === 'account-select') { const out = await api('accounts/select', 'POST', { key: button.dataset.key }); merge(out); state.addresses = []; state.orders = null; render(); }
+      if (action === 'account-select') {
+        let out;
+        try { out = await api('accounts/select', 'POST', { key: button.dataset.key }); }
+        catch (e) {
+          if (e.code !== 'ACCOUNT_NEEDS_CONFIRM') throw e;
+          // Boss (31-10-2026): used ID par warning, phir user chaahe to select.
+          if (!await confirmInApp({
+            title: 'Ye ID pehle use ho chuki hai',
+            message: `${e.message}\n\nPhir bhi isi ID se order karna hai? Naya order isi ID par jayega.`,
+            confirmText: 'Haan, select karein'
+          })) return;
+          out = await api('accounts/select', 'POST', { key: button.dataset.key, confirmUsed: true });
+        }
+        merge(out); state.addresses = []; state.orders = null; render();
+      }
       else if (action === 'account-remove') {
         if (!await confirmInApp({
           title: 'Remove account?',
@@ -370,7 +463,12 @@
       } else if (action === 'addresses-refresh') await loadAddresses();
       else if (action === 'address-select') { const out = await api('addresses/select', 'POST', { ref: button.dataset.ref }); merge(out); state.contactEdit = !out.selectedAddress?.mobile || !out.selectedAddress?.name; render(); toast('Address selected.'); }
       else if (action === 'popular') await search(button.dataset.query);
-      else if (action === 'restaurant') { const out = await api('menu?id=' + encodeURIComponent(button.dataset.id)); state.menu = out; render(); window.scrollTo(0,0); }
+      else if (action === 'restaurant') {
+        state.menuLoading = true; render();
+        try { state.menu = await api('menu?id=' + encodeURIComponent(button.dataset.id)); }
+        finally { state.menuLoading = false; }
+        render(); window.scrollTo(0,0);
+      }
       else if (action === 'dish-add') {
         let out;
         try { out = await api('cart/add', 'POST', { itemId: button.dataset.id }); }
@@ -418,7 +516,12 @@
       else if (action === 'orders-refresh') await loadOrders();
     }, button);
   });
-  try { if (localStorage.getItem('pro-theme') === 'dark') document.body.classList.add('dark'); } catch {}
+  // Update ke baad bhi phone par jo tha wahi dikhe — theme, aakhri tab aur
+  // pehle dikhi ID ki yaad (boss: "data reset na ho").
+  const cached = readCache();
+  try { if (localStorage.getItem('pro-theme') === 'dark' || cached.theme === 'dark') document.body.classList.add('dark'); } catch {}
+  if (Array.isArray(cached.accounts)) state.cachedAccounts = cached.accounts;
+  if (typeof cached.tab === 'string' && ['accounts','address','search','cart','orders','tools'].includes(cached.tab)) state.tab = cached.tab;
   if (initData) reconnect();
   else render();
 })();
