@@ -7,8 +7,8 @@ import { exactPaise } from './swiggy-cart-integrity.js';
 import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder } from './swiggy-cart.js';
 import { deleteAccount, getDb, isBoss, saveDb, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
 import {
-  buildTopupUpiIntent, chargeServiceFee, creditWallet, ensureWallet, getWallet, minTopupPaise,
-  refundServiceFee, rupees, serviceFeePaiseFor, setWalletUpiId, submitTopupRequest,
+  buildTopupUpiIntent, chargeServiceFee, creditWallet, ensureWallet, findUsedUtr, getWallet, minTopupPaise,
+  refundServiceFee, rupees, serviceFeePaiseFor, setWalletUpiId, submitTopupRequest, validateUtr,
   TOPUP_PRESETS_PAISE, walletBalancePaise, walletHistory, walletUpiId
 } from './user-wallet.js';
 import { requestSwiggyDeleteOtpViaBridge, requestSwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, verifySwiggyOtpViaBridge } from './swiggy-bridge.js';
@@ -455,6 +455,57 @@ function amountPaiseFromBody(body) {
 }
 
 const TOPUP_MAX_PAISE = 50000; // ₹500
+// Boss (31-10-2026, round 16): "JITNA BOL RAHA" — credit wahi hoga jitne ka
+// top-up QR bana tha. Isliye har top-up ek intent ke roop me server par rehta
+// hai (10 minute), aur claim usi intent ke amount par hota hai.
+const TOPUP_INTENT_TTL_MS = 10 * 60 * 1000;
+
+function topupIntents(db) {
+  const c = db.config || (db.config = {});
+  if (!c.topupIntents || typeof c.topupIntents !== 'object') c.topupIntents = {};
+  return c.topupIntents;
+}
+
+function createTopupIntent(db, userId, amountPaise) {
+  const all = topupIntents(db);
+  const now = Date.now();
+  const id = `ti_${now}_${crypto.randomBytes(3).toString('hex')}`;
+  all[id] = {
+    id, userId: String(userId), amountPaise: Math.round(Number(amountPaise) || 0),
+    createdAt: new Date(now).toISOString(), expiresAt: now + TOPUP_INTENT_TTL_MS,
+    usedAt: '', requestId: ''
+  };
+  // Purane expired intents hatao (max 500 rakho) — UTR ledger alag hai, ye
+  // sirf pending QR ka record hai.
+  const ids = Object.keys(all);
+  for (const key of ids) {
+    if (ids.length <= 500) break;
+    const rec = all[key];
+    if (rec.usedAt || Number(rec.expiresAt || 0) < now) { delete all[key]; ids.splice(ids.indexOf(key), 1); }
+  }
+  return all[id];
+}
+
+function resolveTopupIntent(db, userId, topupId) {
+  const all = topupIntents(db);
+  const now = Date.now();
+  const usable = (rec) => rec && !rec.usedAt && Number(rec.expiresAt || 0) > now && String(rec.userId) === String(userId);
+  const wanted = topupId ? all[String(topupId)] : null;
+  if (wanted) return usable(wanted) ? wanted : null;
+  // topupId na diya ho to us user ka sabse taaza zinda intent.
+  const mine = Object.values(all)
+    .filter(usable)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  return mine[0] || null;
+}
+
+function markTopupIntentUsed(db, intentId, requestId = '') {
+  const rec = topupIntents(db)[String(intentId || '')];
+  if (!rec) return;
+  rec.usedAt = new Date().toISOString();
+  rec.requestId = String(requestId || '');
+}
+
 
 /**
  * "I have paid" — boss ka rule: "IF USER PAY LESS AND SAY I HAVE PAID YOU HAVE
@@ -464,18 +515,60 @@ const TOPUP_MAX_PAISE = 50000; // ₹500
  */
 async function claimWalletTopup(user, body) {
   const db = getDb();
-  const claimedPaise = amountPaiseFromBody(body);
-  if (claimedPaise < 100) throw error(400, 'Kitna paisa bheja — ₹1 se zyada likhein.');
-  if (claimedPaise > TOPUP_MAX_PAISE) throw error(400, `Ek baar me ₹${rupees(TOPUP_MAX_PAISE)} tak hi add kar sakte hain.`);
-  const utr = String(body?.utr || '').trim();
   ensureWallet(db, user.id, { name: user.firstName || '' });
+  // Boss (31-10-2026, round 16):
+  //   "DUSRE KA UTR BHI AGAR KOI DAAL RAHA TO USSE PAYMENT LE LE RHA"
+  //   "JITNA BOL RAHA" aur "SAME UTR BAAR BAAR USE KAR PAA RAHA"
+  // Isliye: (1) UTR ke bina credit nahi, (2) UTR globally ek hi baar,
+  // (3) credit SIRF utne paise jitne ka top-up QR bana tha — user jo likhe wo
+  // nahi. Jo bhi in teeno se hat kar aaye, uska asli reason dikhta hai.
+  const utrRaw = String(body?.utr || '').trim();
+  const utrCheck = validateUtr(utrRaw);
+  if (!utrRaw) {
+    const e = error(400, 'UTR daalna zaroori hai — UPI app ke payment detail me 12 digit ka UTR milta hai.');
+    e.code = 'UTR_REQUIRED';
+    e.field = 'utr';
+    throw e;
+  }
+  if (!utrCheck.ok) {
+    const e = error(400, `UTR galat hai (${utrCheck.reason}). UPI app me payment kholein aur poora UTR copy karein.`);
+    e.code = 'UTR_INVALID';
+    e.field = 'utr';
+    throw e;
+  }
+  const utr = utrCheck.utr;
+  const used = findUsedUtr(db, utr);
+  if (used) {
+    const e = error(409, used.userId && String(used.userId) !== String(user.id)
+      ? 'Ye UTR pehle kisi aur ke top-up me use ho chuka hai — ek UTR sirf ek hi baar chalta hai.'
+      : 'Ye UTR pehle use ho chuka hai — ek UTR sirf ek hi baar chalta hai.');
+    e.code = 'DUPLICATE_UTR';
+    throw e;
+  }
+  const intent = resolveTopupIntent(db, user.id, body?.topupId);
+  if (!intent) {
+    const e = error(409, 'Pehle top-up QR se paisa bhejein — phir wahi top-up khol kar "Paisa bhej diya" dabaiye. Bina top-up ke claim credit nahi hota.');
+    e.code = 'NO_TOPUP_INTENT';
+    throw e;
+  }
+  const claimedPaise = intent.amountPaise;
+  const toldPaise = amountPaiseFromBody(body);
+  if (toldPaise > 0 && Math.abs(toldPaise - claimedPaise) >= 1) {
+    const e = error(409, `Top-up ₹${rupees(claimedPaise)} ka tha; aap ₹${rupees(toldPaise)} bata rahe hain. Credit sirf ₹${rupees(claimedPaise)} ka hoga — galat amount nahi judega.`);
+    e.code = 'TOPUP_AMOUNT_MISMATCH';
+    e.amountPaise = claimedPaise;
+    e.toldPaise = toldPaise;
+    throw e;
+  }
+  if (claimedPaise < 100) throw error(400, 'Top-up ₹1 se zyada hona chahiye.');
+  if (claimedPaise > TOPUP_MAX_PAISE) throw error(400, `Ek baar me ₹${rupees(TOPUP_MAX_PAISE)} tak hi add kar sakte hain.`);
   let verified = false;
   let creditPaise = claimedPaise;
   let request = null;
-  if (utr) {
+  {
     const submitted = await submitTopupRequest(db, {
       userId: user.id, utr, amountPaise: claimedPaise, name: user.firstName || '',
-      note: 'Mini App claim', autoVerify: true
+      note: 'Mini App claim', autoVerify: true, minPaise: 100
     });
     if (!submitted.ok) {
       const e = error(submitted.code === 'DUPLICATE_UTR' ? 409 : 400, submitted.reason || 'UTR accept nahi hua.');
@@ -486,17 +579,7 @@ async function claimWalletTopup(user, body) {
     verified = submitted.code === 'AUTO_VERIFIED';
     // Provider ne khud confirm kiya (submitTopupRequest ne balance jama kar
     // diya) — tab bhi jo jama hua wahi credited amount hai.
-  } else {
-    const credit = creditWallet(db, user.id, claimedPaise, {
-      reason: 'Mini App: user ne bataya paisa bheja (CLAIMED)', actor: 'user', type: 'CREDIT_CLAIMED',
-      meta: { note: String(body?.note || '').slice(0, 80) }
-    });
-    if (!credit.ok) throw error(503, 'Wallet credit save nahi hua. Dobara try karein.');
-    request = {
-      id: `claim_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      userId: String(user.id), claimedPaise, approvedPaise: creditPaise,
-      status: 'CLAIMED', at: new Date().toISOString(), source: 'miniapp'
-    };
+    if (request) markTopupIntentUsed(db, intent.id, request.id);
   }
   if (!db.config.topupClaims || typeof db.config.topupClaims !== 'object') db.config.topupClaims = {};
   if (request) db.config.topupClaims[request.id] = { ...request, creditedPaise: creditPaise, utr };
@@ -1270,11 +1353,16 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const upiUri = buildTopupUpiIntent({ upiId: wallet.upiId, amountPaise, note: 'Wallet topup' });
         if (!upiUri) throw error(503, 'Boss ka UPI set nahi hai — top-up abhi nahi ho sakta.');
         const qrDataUrl = await QRCode.toDataURL(upiUri, { errorCorrectionLevel: 'M', margin: 2, width: 320 });
+        // Intent server par — claim isi amount par hoga (user jo likhe us par nahi).
+        const intentDb = getDb();
+        const intent = createTopupIntent(intentDb, user.id, amountPaise);
+        saveDb(intentDb);
         json(res, 200, {
           ok: true,
           topup: {
-            amountPaise, amount: rupees(amountPaise), upiId: wallet.upiId, upiUri, qrDataUrl,
-            note: `UPI app me ₹${rupees(amountPaise)} bhejein (UPI id ${wallet.upiId}). Paisa bhejne ke baad neeche "Paisa bhej diya" dabaiye — kitna bheja wahi likhein.`
+            topupId: intent.id, amountPaise, amount: rupees(amountPaise), upiId: wallet.upiId, upiUri, qrDataUrl,
+            expiresInMin: Math.round(TOPUP_INTENT_TTL_MS / 60000),
+            note: `UPI app me ₹${rupees(amountPaise)} bhejein (UPI id ${wallet.upiId}). Paisa bhejne ke baad neeche UPI ka 12-digit UTR daal kar "Paisa bhej diya" dabaiye.`
           }
         });
         return;
@@ -1502,7 +1590,8 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         'SHARED_ACCOUNT_RESTRICTED', 'BILL_CHANGED', 'CART_ITEMS', 'CART_FETCH', 'CART_PARSE', 'CART_ID',
         'ADDRESS', 'OFO', 'COUPON', 'AMOUNT', 'AMOUNT_MISSING', 'RESTAURANT', 'GROUP_CART_EXPIRED',
         'GROUP_CART_PLACED', 'GROUP_CART_BUSY', 'GROUP_CART_FETCH_FAILED', 'SWIGGY_ACCOUNT_NOT_REGISTERED',
-        'OTP_IDENTITY_MISSING', 'WALLET_LOW_BALANCE', 'INVALID_UPI', 'DUPLICATE_UTR'
+        'OTP_IDENTITY_MISSING', 'WALLET_LOW_BALANCE', 'INVALID_UPI', 'DUPLICATE_UTR',
+        'UTR_REQUIRED', 'UTR_INVALID', 'NO_TOPUP_INTENT', 'TOPUP_AMOUNT_MISMATCH'
       ]);
       const code = KNOWN_CODES.has(String(err?.code || '')) ? err.code : undefined;
       json(res, status, {

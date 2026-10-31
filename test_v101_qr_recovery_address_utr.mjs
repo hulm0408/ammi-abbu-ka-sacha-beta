@@ -218,9 +218,12 @@ test('address: usi receiver ka saved address 40m ke andar ho to wahi use hota ha
 });
 
 // ── 4. UTR auto verify (mini app claim) ───────────────────────────────────
-test('utr: provider set nahi ho to bhi UTR auto verify ho kar credit hota hai', async () => {
+test('utr: top-up QR + UTR se auto credit (provider set nahi ho to bhi)', async () => {
   seed(9952);
-  const out = await req(9952, 'wallet/claim', { amountRupees: 15, utr: '123456789012' });
+  const topup = await req(9952, 'wallet/topup', { amountPaise: 1500 });
+  assert.equal(topup.status, 200);
+  assert.ok(topup.body.topup.topupId, 'top-up intent bana');
+  const out = await req(9952, 'wallet/claim', { topupId: topup.body.topup.topupId, amountPaise: 1500, utr: '123456789012' });
   assert.equal(out.status, 200);
   assert.equal(out.body.verified, true);
   assert.equal(walletBalancePaise(getDb(), '9952'), 1500);
@@ -229,9 +232,12 @@ test('utr: provider set nahi ho to bhi UTR auto verify ho kar credit hota hai', 
   assert.equal(claim?.status, 'AUTO_VERIFIED');
   assert.equal(claim?.verifiedBy, 'user-claim');
 });
-test('utr: wahi UTR dobara nahi chalta (duplicate)', async () => {
-  const out = await req(9953, 'wallet/claim', { amountRupees: 15, utr: '123456789012' });
+test('utr: wahi UTR dobara nahi chalta (dusre user ke liye bhi)', async () => {
+  seed(9953);
+  const topup = await req(9953, 'wallet/topup', { amountPaise: 1500 });
+  const out = await req(9953, 'wallet/claim', { topupId: topup.body.topup.topupId, amountPaise: 1500, utr: '123456789012' });
   assert.equal(out.status, 409);
+  assert.equal(out.body.error.code || out.body.code, 'DUPLICATE_UTR');
   assert.equal(walletBalancePaise(getDb(), '9953'), 0);
 });
 

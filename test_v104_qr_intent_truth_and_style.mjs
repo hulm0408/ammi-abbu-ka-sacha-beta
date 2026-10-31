@@ -92,6 +92,14 @@ test('guard: amount sach me galat ho to block + asli wajah (₹68 vs ₹68 wala 
   assert.equal(check.info.amount, 58);
 });
 
+test('guard: Swiggy ke asli shape par (`am` + alag `amount`) QR block nahi hota', () => {
+  // Live card me yahi aaya tha: "multiple amount params (value alag)".
+  const check = validateUpiIntentForQr('upi://pay?pa=upiswiggy@icici&am=48.00&amount=68.00&cu=INR&tr=2525267', { amount: 48 });
+  assert.equal(check.valid, true, check.problems.join(' | '));
+  assert.ok(!/amount=/.test(check.info.uri), 'QR me stray `amount` nahi jaata');
+  assert.match(check.warnings.join(' '), /amount/);
+});
+
 // ── 2. Provider: ye intent ab QR bana kar deta hai ────────────────────────
 test('provider: escaped/duplicate intent ho to bhi checkout QR deta hai (order + saaf URI)', async () => {
   reset();

@@ -140,7 +140,38 @@ function cfg(db) {
   if (!db.config) db.config = {};
   if (!db.config.wallets || typeof db.config.wallets !== 'object') db.config.wallets = {};
   if (!db.config.topupRequests || typeof db.config.topupRequests !== 'object') db.config.topupRequests = {};
+  // Boss (31-10-2026, round 16): "SAME UTR BAAR BAAR USE KAR PAA RAHA".
+  // `topupRequests` purane records prune karta hai, jisse UTR ki yaad bhi mit
+  // jaati thi. Ye ledger kabhi prune nahi hota — ek UTR = ek hi baar, hamesha.
+  if (!db.config.usedUtrs || typeof db.config.usedUtrs !== 'object') db.config.usedUtrs = {};
   return db.config;
+}
+
+/** UTR ledger ka record (koi bhi user, koi bhi status). */
+export function findUsedUtr(db, raw) {
+  const utr = normalizeUtr(raw);
+  if (!utr) return null;
+  const ledger = cfg(db).usedUtrs;
+  if (ledger[utr]) return ledger[utr];
+  return null;
+}
+
+/** UTR ko hamesha ke liye "used" mark karo. */
+export function markUtrUsed(db, raw, { userId = '', amountPaise = 0, status = '', source = '', at = Date.now() } = {}) {
+  const utr = normalizeUtr(raw);
+  if (!utr) return null;
+  const c = cfg(db);
+  if (!c.usedUtrs[utr]) {
+    c.usedUtrs[utr] = {
+      utr,
+      userId: String(userId || ''),
+      amountPaise: Math.round(Number(amountPaise) || 0),
+      status: String(status || ''),
+      source: String(source || ''),
+      at: nowIso(at)
+    };
+  }
+  return c.usedUtrs[utr];
 }
 
 /** Wallet record banao (agar pehle se hai to wahi). */
@@ -520,16 +551,22 @@ export function settleDeferredFee(db, order, userId, { at = Date.now(), actor = 
  */
 export async function submitTopupRequest(db, {
   userId, utr, amountPaise, name = '', username = '', note = '', at = Date.now(),
-  fetchImpl = globalThis.fetch, autoVerify = true
+  fetchImpl = globalThis.fetch, autoVerify = true, minPaise = null
 } = {}) {
   const checked = validateUtr(utr);
   if (!checked.ok) return { ok: false, code: 'INVALID_UTR', reason: checked.reason };
   const amount = Math.round(Number(amountPaise) || 0);
-  if (!(amount >= minTopupPaise())) {
-    return { ok: false, code: 'AMOUNT_TOO_LOW', reason: `minimum ₹${rupees(minTopupPaise())}`, minPaise: minTopupPaise() };
+  // Mini App ka claim partial ho sakta hai (boss: "IF USER PAY LESS ... ADD HOW
+  // MUCH THEY PAID"), isliye floor override hota hai — par ₹1 se kam kabhi nahi.
+  const floor = Math.max(100, Math.round(Number(minPaise) || minTopupPaise()));
+  if (!(amount >= floor)) {
+    return { ok: false, code: 'AMOUNT_TOO_LOW', reason: `minimum ₹${rupees(floor)}`, minPaise: floor };
   }
   const c = cfg(db);
-  const dup = utrIndex(db).get(checked.utr);
+  // Pehle permanent ledger, phir live requests — dono me se koi bhi mila to
+  // wahi UTR dobara nahi chalega (bhale purana record prune ho chuka ho).
+  const used = findUsedUtr(db, checked.utr);
+  const dup = used || utrIndex(db).get(checked.utr);
   if (dup) {
     return {
       ok: false,
@@ -538,6 +575,7 @@ export async function submitTopupRequest(db, {
       existingStatus: dup.status
     };
   }
+  markUtrUsed(db, checked.utr, { userId, amountPaise: amount, status: 'CLAIMED', source: 'submitTopupRequest', at });
   ensureWallet(db, userId, { name, username, at });
   const req = {
     id: `tu_${at}_${Math.random().toString(36).slice(2, 7)}`,
