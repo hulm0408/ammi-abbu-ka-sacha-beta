@@ -216,14 +216,17 @@ test('wallet: default UPI mius@ybl, fee ₹15 aur balance kam par Low balance', 
   assert.equal(out.body.wallet.ready, false);
   assert.equal(out.body.wallet.shortfall, '15');
 });
-test('wallet: ₹10 bheja to ₹10 credit, ₹5 aur maango; phir ₹5 → ready', async () => {
+test('wallet: ₹10 top-up + UTR → ₹10 credit, ₹5 aur maango; phir ₹5 → ready', async () => {
   seed(9943);
-  const first = await req(9943, 'wallet/claim', { amountRupees: 10 });
+  // Round 16: credit sirf top-up QR ke amount par, UTR zaroori.
+  const t1 = await req(9943, 'wallet/topup', { amountPaise: 1000 });
+  const first = await req(9943, 'wallet/claim', { topupId: t1.body.topup.topupId, amountRupees: 10, utr: '909090909090' });
   assert.equal(first.status, 200);
   assert.equal(first.body.wallet.balancePaise, 1000);
   assert.equal(first.body.wallet.ready, false);
   assert.match(first.body.message, /₹5/);
-  const second = await req(9943, 'wallet/claim', { amountRupees: 5 });
+  const t2 = await req(9943, 'wallet/topup', { amountPaise: 500 });
+  const second = await req(9943, 'wallet/claim', { topupId: t2.body.topup.topupId, amountRupees: 5, utr: '909090909091' });
   assert.equal(second.body.wallet.balancePaise, 1500);
   assert.equal(second.body.wallet.ready, true);
   assert.match(second.body.message, /kar sakte hain/i);
@@ -263,7 +266,8 @@ test('wallet: balance kam par order nahi jaata — asli wajah + kitna add karna 
 });
 test('wallet: balance poora par fee katti hai; order place na ho to refund', async () => {
   seed(9947);
-  await req(9947, 'wallet/claim', { amountRupees: 15 });
+  const topup = await req(9947, 'wallet/topup', { amountPaise: 1500 });
+  await req(9947, 'wallet/claim', { topupId: topup.body.topup.topupId, amountRupees: 15, utr: '919191919191' });
   checkoutImpl = async () => { throw new Error('Swiggy cart nahi diya'); };
   const ws = readProWorkspace('9947');
   const out = await req(9947, 'checkout', { confirmCheckout: true, expectedTotal: ws.cart.quote.total, quoteFetchedAt: ws.cart.quote.fetchedAt });
@@ -351,7 +355,9 @@ test('DOM: wallet kam balance par saaf bolta hai + paisa bhej diya ka form + UPI
     assert.match(card.textContent, /Low balance/);
     assert.match(card.textContent, /₹15 add karein/);
     assert.ok(card.querySelector('form[data-form="wallet-claim"]'), 'paisa bhej diya form');
-    assert.ok(card.querySelector('input[name="amount"]'), 'kitna bheja — amount input');
+    // Round 16: amount user nahi likhta (top-up se aata hai); UTR zaroori hai.
+    assert.equal(card.querySelector('input[name="amount"]'), null, 'amount input nahi');
+    assert.ok(card.querySelector('input[name="utr"]'), 'UTR input');
     assert.match(card.textContent, /mius@ybl/);
   } finally { app.close(); }
 });

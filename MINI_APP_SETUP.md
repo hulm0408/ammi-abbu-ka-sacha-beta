@@ -361,3 +361,45 @@ auto-fix; naya Swiggy bank handle allowed, purana fake blocked; galat amount blo
 provider escaped intent se QR deta hai; payment page se intent recovery; galat QR par asli wajah;
 DOM: hold card (heading/reasons/order chip/steps) aur QR card dono; CSS selectors maujood.
 Sweep: `test:guards` **72/72 (125s)**, `test:pro` **41/41**, `npm test` **132/132**, bossbot **49/49**.
+
+## Round 16 (31-10-2026): QR phir bhi nahi aa raha tha + UTR ka paisa
+
+Boss: *"AISA AAGAYA AND DUSRE KA UTR BHI AGAR KOI DAAL RAHA TO USSE PAYMENT LE LE RHA JITNA BOL RAHA AND SAME UTR BAAR BAAR USE KAR PAA RAHA AND ORDER KA QR TO AAAHI NAHI RAHA."*
+
+### 1. QR — asli wajah mil gayi: `am` vs `amount`
+Live card me likha tha: **"multiple amount params (value alag)"**. Swiggy apne place-response me
+dono bhejta hai — `am=48.00` aur `amount=68.00` (display/leftover value). Round 15 ka guard in
+dono ko "do amount" maan kar QR block kar deta tha, jabki **UPI app `am` hi padhta hai**.
+
+Ab (`payment-qr-guard.js` → `normalizeUpiIntentForQr(uri, { expectedAmount })`):
+* `am` aur `amount` dono hon → **`amount` hata diya jaata hai** (QR me sirf ek `am` jaata hai).
+* Value alag ho aur `am` **bill se match na kare** par `amount` match kare → **bill wala amount**
+  `am` bana diya jaata hai (repair note ke saath). Dono alag hon → block, par wajah asli.
+* Block hone par `diag.intentRaw` (400 chars) bhi save hota hai taaki agli baar guess na karna pade.
+
+### 2. UTR ka paisa — teen holes band
+Boss ke teen aarop, teen fix (`swiggy-pro-api.js` + `user-wallet.js`):
+
+| Pehle | Ab |
+|---|---|
+| UTR khaali chhod do → jitna likha utna credit | **UTR zaroori** (`UTR_REQUIRED`), 12-digit (`UTR_INVALID`) |
+| UTR ka koi permanent record nahi — `topupRequests` prune hone par wahi UTR dobara chal jaata tha | **`db.config.usedUtrs` permanent ledger** — ek UTR hamesha ek hi baar, prune ke baad bhi |
+| Dusre ka UTR daal kar apne wallet me credit | Wahi ledger **globally** check hota hai — "ye UTR pehle kisi aur ke top-up me use ho chuka hai" |
+| "Jitna bol raha" — amount user likhta tha | **Top-up intent** (`db.config.topupIntents`, 10 min): credit sirf utne ka jitne ka QR bana tha; alag amount batao to `TOPUP_AMOUNT_MISMATCH` dono numbers ke saath |
+| Bina top-up ke claim | `NO_TOPUP_INTENT` — pehle top-up QR se paisa bhejo |
+| Ek top-up QR se kai claims | Intent ek baar use hote hi band (`usedAt`) |
+
+Partial top-up chalta rehta hai (boss: *"IF USER PAY LESS … ADD HOW MUCH THEY PAID"*): claim ka
+floor ₹1 hai, sirf fee ka nahi.
+
+### 3. App
+* Claim form me **amount ka box hi nahi** — "Ye top-up ₹15 ka hai — utna hi judega."
+* **UTR (12 digit)** field zaroori; top-up khula na ho to button band.
+* Top-up sheet ka note ab UTR maangta hai, aur `topupId` claim ke saath jaata hai.
+
+### Tests
+`test_v105_utr_and_qr_truth.mjs` **13 checks** (UTR ke bina credit nahi, galat format, top-up intent
+ke bina claim nahi, ₹15 par ₹500 ka dawa reject, prune ke baad same UTR block, dusre user ka UTR
+block, ek intent ek baar, `am`+`amount` QR, dono galat ho to asli wajah, DOM form).
+`test_v104` 11, `test_v100` 14, `test_v101` 10, `test_v72` 99, `test_v75` 29 —
+sweep: `test:guards` **73/73 (130s)**, `test:pro` **41/41**, `npm test` **132/132**, bossbot **49/49**.

@@ -121,7 +121,7 @@ export function parseUpiIntent(uri) {
  *
  * @returns {{ uri: string, repairs: string[], ok: boolean }}
  */
-export function normalizeUpiIntentForQr(uri) {
+export function normalizeUpiIntentForQr(uri, { expectedAmount = 0 } = {}) {
   const repairs = [];
   let raw = String(uri === undefined || uri === null ? '' : uri).trim();
   if (!raw) return { uri: '', repairs, ok: false };
@@ -149,19 +149,42 @@ export function normalizeUpiIntentForQr(uri) {
     return { key: i === -1 ? seg : seg.slice(0, i), value: i === -1 ? '' : seg.slice(i + 1) };
   });
 
-  // `amount` aur `am` ek hi cheez hai. Jab `am` hai aur `amount` ki value wahi
-  // hai to `amount` hata do; jab `am` hi nahi hai to `amount` ko `am` banao.
+  // `amount` aur `am` ek hi cheez hai. UPI apps `am` padhte hain; jab `am` maujood
+  // hai to `amount` sirf kachra hai — bhale value alag ho. Boss (31-10-2026,
+  // round 16): "ORDER KA QR TO AAAHI NAHI RAHA" — isi `amount` vs `am` ke
+  // jhagde me QR block ho raha tha (card me likha: "multiple amount params
+  // (value alag)"). Jo QR hum banate hain usme sirf `am` jaata hai (jo bill se
+  // strictly match hota hai), isliye `amount` hata dena hi sahi hai.
   const amPair = pairs.find((p) => p.key === 'am');
   const amountPairs = pairs.filter((p) => p.key === 'amount');
   if (amountPairs.length) {
     if (!amPair) {
       pairs = pairs.map((p) => (p.key === 'amount' ? { ...p, key: 'am' } : p));
       repairs.push('`amount` ko `am` me badla');
-    } else if (amountPairs.every((p) => String(p.value) === String(amPair.value))) {
-      pairs = pairs.filter((p) => p.key !== 'amount');
-      repairs.push('duplicate `amount` (value same thi) hata diya');
+    } else {
+      const paise = (value) => {
+        const n = Number(value);
+        return Number.isFinite(n) ? Math.round(n * 100) : null;
+      };
+      const same = amountPairs.every((p) => paise(p.value) === paise(amPair.value));
+      const billPaise = Number(expectedAmount) > 0 ? paise(expectedAmount) : null;
+      if (!same && billPaise !== null && amountPairs.some((p) => paise(p.value) === billPaise) && paise(amPair.value) !== billPaise) {
+        // Swiggy ne dono bheje aur `am` bill se match nahi karta — jo bill se
+        // match karta hai wahi sach hai (warna QR galat amount ka banta).
+        const winner = amountPairs.find((p) => paise(p.value) === billPaise);
+        pairs = pairs.map((p) => {
+          if (p.key === 'amount') return { ...p, key: '__drop_amount' };
+          if (p.key === 'am') return { ...p, value: winner.value };
+          return p;
+        }).filter((p) => p.key !== '__drop_amount');
+        repairs.push(`\`am\` bill se match nahi karta tha — bill wala amount \`am=${winner.value}\` liya`);
+      } else {
+        pairs = pairs.filter((p) => p.key !== 'amount');
+        repairs.push(same
+          ? 'duplicate `amount` (value same thi) hata diya'
+          : `extra \`amount\` param hata diya — QR me sirf \`am=${amPair.value}\` (bill se match kiya) jaata hai`);
+      }
     }
-    // Value alag hai → chhedenge nahi, neeche ka check hi block karega.
   }
 
   const kept = [];
@@ -200,7 +223,7 @@ export function normalizeUpiIntentForQr(uri) {
  * @returns {{ valid: boolean, problems: string[], warnings: string[], info: object }}
  */
 export function validateUpiIntentForQr(uri, { amount = 0, requireAmount = true, allowPlaceholder = false } = {}) {
-  const normalized = normalizeUpiIntentForQr(uri);
+  const normalized = normalizeUpiIntentForQr(uri, { expectedAmount: amount });
   const parsed = parseUpiIntent(normalized.uri);
   const problems = [...parsed.problems];
   const warnings = normalized.repairs.map((repair) => `auto-fix: ${repair}`);

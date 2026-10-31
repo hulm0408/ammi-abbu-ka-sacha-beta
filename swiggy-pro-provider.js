@@ -1056,6 +1056,8 @@ export const proProvider = {
           intentProblems: reasons,
           intentWarnings: (check.warnings || []).slice(0, 5),
           intentAmount: check.info?.amount ?? null, billAmount: expected,
+          // Agli baar bina guess kiye pata chale ki Swiggy ne kya bheja tha.
+          intentRaw: String(details.upiIntentUrl || '').slice(0, 400),
           paymentFallbacks: details.paymentFallbacks || null,
           paymentPageUrl: details.paymentPageUrl || '', paymentTxnId: details.paymentTxnId || ''
         };
