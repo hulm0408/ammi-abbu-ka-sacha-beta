@@ -189,6 +189,26 @@ function currentAccount(user, workspace) {
   // this Mini App session's phone, even when it is a boss's own account.
   return { ...map[key], __proPrivate: true };
 }
+/**
+ * Purane session JSON me `customer_id` nahi hota. Checkout usi par rukta tha
+ * ("reconnect karein") — user ke liye dead end. Bill/sync ke waqt ek hi baar
+ * Swiggy se identity le kar workspace me save kar dete hain; order placement
+ * ka raasta (aur uska double-tap barrier) chhua nahi jaata.
+ */
+async function ensureAccountCustomerId(provider, user, ws, account) {
+  const existing = String(account?.customerId || '').trim();
+  if (existing) return existing;
+  const live = await provider.verifySession(account).catch(() => null);
+  const resolved = String(live?.customerId || '').trim();
+  if (!resolved) return '';
+  account.customerId = resolved;
+  const key = String(ws.activeAccountKey || '');
+  if (key && ws.accounts?.[key]) {
+    ws.accounts[key] = { ...ws.accounts[key], customerId: resolved };
+    writeProWorkspace(user.id, ws);
+  }
+  return resolved;
+}
 function requireEditableCart(ws) {
   if (ws.checkout && ws.checkout.status !== 'PAID') {
     throw error(409, 'Resolve the existing Swiggy checkout before changing the draft cart or receiver.');
@@ -940,6 +960,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const body = await bodyJson(req);
         requireEditableCart(ws);
         const account = currentAccount(user, ws);
+        await ensureAccountCustomerId(provider, user, ws, account);
         if (body.confirmReplaceSwiggyCart !== true) throw error(400, 'Confirm that the existing Swiggy cart may be replaced.');
         if (!ws.cart?.items?.length || !ws.selectedAddress) throw error(400, 'Add items and select an address first.');
         const coupon = String(body.coupon || '').trim().toUpperCase();

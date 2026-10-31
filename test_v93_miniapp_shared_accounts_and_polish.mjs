@@ -402,10 +402,10 @@ test('DOM: checkout page Swiggy jaisa — group cart, delivering to, coupon, bil
     assert.match(text, /UPI \/ QR/);
     assert.match(text, /Cash on Delivery/);
     assert.match(text, /PAY USING UPI/);
-    // Coupon form sirf kholne par.
-    assert.equal(app.document.querySelector('form[data-form="sync"]'), null);
+    // Coupon page khulta hai — koi code type karne ka box nahi, sirf APPLY.
+    assert.equal(app.document.querySelector('input[name="coupon"]'), null);
     app.document.querySelector('[data-action="toggle-coupon"]').click();
-    await waitFor(() => app.document.querySelector('form[data-form="sync"]'), 'coupon form');
+    await waitFor(() => app.document.querySelector('.coupon-tile, .coupon-input-card, .skeleton-list'), 'coupon page');
   } finally { app.close(); }
 });
 

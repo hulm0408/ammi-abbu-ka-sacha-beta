@@ -101,34 +101,26 @@ test('OTP request and verification stay inside the app and only reflect provider
   } finally { app.close(); }
 });
 
-test('cart sync requires in-app confirmation and Escape safely cancels it', async () => {
+test('coupon APPLY seedha asli cart sync karta hai — koi code type nahi, koi confirm nahi', async () => {
   const app = harness({ responder: call => {
     if (call.url.endsWith('/bootstrap')) return response(normalState());
+    if (call.url.includes('/coupons')) return response({ ok: true, coupons: [
+      { code: 'TRYNEW', title: '70% off', description: 'above ₹199', applicable: true, source: 'promo' }
+    ], note: 'APPLY dabaiye.' });
     if (call.url.endsWith('/cart/sync')) return response({ ok: true, cart: structuredClone(cart), selectedAddress: address });
     return response({ ok: false, error: 'unexpected' }, 500);
   } });
   try {
     await waitFor(() => app.document.querySelector('[data-tab="cart"]:not([disabled])'), 'connected navigation');
     app.document.querySelector('[data-tab="cart"]').click();
-    // 31-10-2026 (round 7): "Apply coupon" ab apna page kholta hai; wahan ka
-    // APPLY hi asli cart sync karta hai.
+    // 31-10-2026 (round 8): boss — "code enter karne ka option nahi, sirf apply".
     await waitFor(() => app.document.querySelector('[data-action="toggle-coupon"]'), 'coupon row');
     app.document.querySelector('[data-action="toggle-coupon"]').click();
-    await waitFor(() => app.document.querySelector('form[data-form="sync"]'), 'sync form');
-    const form = app.document.querySelector('form[data-form="sync"]');
-    form.querySelector('input[name="coupon"]').value = 'TRYNEW';
-    const submit = () => app.document.querySelector('form[data-form="sync"]').dispatchEvent(new app.window.Event('submit', { bubbles: true, cancelable: true }));
-    submit();
-    await waitFor(() => app.document.querySelector('[role="dialog"]'), 'sync dialog');
-    assert.match(app.document.querySelector('[role="dialog"]').textContent, /replaces the current cart/i);
-    app.document.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await waitFor(() => !app.document.querySelector('[role="dialog"]'), 'cancelled dialog');
-    assert.equal(app.calls.filter(c => c.url.endsWith('/cart/sync')).length, 0);
-    await new Promise(resolve => setTimeout(resolve, 0));
-    submit();
-    await waitFor(() => app.document.querySelector('[role="dialog"]'), 'second sync dialog');
-    app.document.querySelectorAll('.confirm-actions button')[1].click();
-    await waitFor(() => /TRYNEW/.test(app.document.querySelector('#toast').textContent), 'sync result');
+    await waitFor(() => app.document.querySelector('[data-action="coupon-pick"]'), 'coupon APPLY button');
+    assert.equal(app.document.querySelector('input[name="coupon"]'), null, 'code type karne ka box nahi');
+    app.document.querySelector('[data-action="coupon-pick"]').click();
+    await waitFor(() => app.calls.some(c => c.url.endsWith('/cart/sync')), 'sync call');
+    assert.equal(app.document.querySelector('[role="dialog"]'), null, 'extra confirm nahi');
     const syncCalls = app.calls.filter(c => c.url.endsWith('/cart/sync'));
     assert.equal(syncCalls.length, 1);
     assert.equal(syncCalls[0].body.confirmReplaceSwiggyCart, true);

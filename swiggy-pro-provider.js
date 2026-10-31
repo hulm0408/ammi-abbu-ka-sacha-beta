@@ -491,6 +491,15 @@ export const proProvider = {
    * page ke liye asli list — Swiggy ke apne coupon tool se. Jo code Swiggy ne
    * nahi diya wo hum banate nahi; list khaali aaye to saaf bata dete hain.
    */
+  /**
+   * Boss (31-10-2026, round 8): "COUPON AVAILABLE NAHI HAI MAT BOLO — WO HAMESHA
+   * HOTA HAI. OPTION DO, CODE TYPE KARNE KA NAHI — SIRF APPLY."
+   *
+   * Pehle Swiggy ke apne coupon tool se asli list. Uske baad wahi promo codes jo
+   * bot ka apna engine hamesha test karta hai (SNACKIT/TRYNEW/STEALDEAL/
+   * SWIGGYIT/WELCOME50). Ye "guaranteed discount" ka dawa nahi hai — APPLY par
+   * asli bill aata hai aur tabhi discount dikhta hai jab Swiggy deta hai.
+   */
   async coupons(account, address, restaurantId) {
     const rid = String(restaurantId || '').trim();
     if (!/^\d{1,20}$/.test(rid)) throw badRequest('Pehle cart ya restaurant kholein — restaurant id chahiye.');
@@ -500,13 +509,14 @@ export const proProvider = {
       const key = String(code || '').trim().toUpperCase();
       if (!/^[A-Z0-9_-]{3,28}$/.test(key)) return;
       const previous = found.get(key);
-      if (previous && previous.applicable === true) return;
+      if (previous?.source === 'swiggy' && meta.source !== 'swiggy') return;
       found.set(key, {
         code: key,
-        title: String(title || key).slice(0, 80),
+        title: String(title || key).slice(0, 90),
         description: String(description || '').slice(0, 200),
-        applicable: meta.applicable !== false,
-        reason: String(meta.reason || '').slice(0, 140)
+        applicable: meta.applicable === false ? false : true,
+        reason: String(meta.reason || '').slice(0, 140),
+        source: meta.source === 'swiggy' ? 'swiggy' : 'promo'
       });
     };
     let discovery = false;
@@ -519,19 +529,25 @@ export const proProvider = {
       for (const cp of list) {
         push(cp?.coupon_code || cp?.couponCode || cp?.code || '', cp?.title || cp?.header || cp?.coupon_code, cp?.description || cp?.subtitle || '', {
           applicable: cp?.is_applicable !== false && cp?.applicable !== false,
-          reason: cp?.ineligible_reason || cp?.reason || ''
+          reason: cp?.ineligible_reason || cp?.reason || '',
+          source: 'swiggy'
         });
       }
       discovery = Boolean(mcp?.ok) || list.length > 0;
-    } catch { /* neeche sach bata denge */ }
-    const coupons = [...found.values()].sort((a, b) => Number(b.applicable) - Number(a.applicable)).slice(0, 20);
+    } catch { /* promo codes neeche hamesha aate hain */ }
+    // Bot ka engine inhe har order par test karta hai — isliye list kabhi
+    // khaali nahi dikhti aur user ko "coupon nahi hai" nahi bolna padta.
+    for (const code of ['SNACKIT', 'TRYNEW', 'STEALDEAL', 'SWIGGYIT', 'WELCOME50']) {
+      push(code, code === 'SNACKIT' ? 'Snackit offer' : 'Swiggy promo code', 'Swiggy ke promo code — APPLY karke asli bill dekhein', { source: 'promo' });
+    }
+    const all = [...found.values()];
+    const rank = c => (c.source === 'swiggy' ? 0 : 10) + (c.applicable === false ? 5 : 0);
+    const coupons = all.sort((a, b) => rank(a) - rank(b)).slice(0, 24);
     return {
       restaurantId: rid,
       coupons,
       discovery,
-      note: coupons.length
-        ? (discovery ? 'Ye Swiggy ke apne coupon list se hain. APPLY karne par asli bill aayega — discount tabhi lagta hai jab Swiggy deta hai.' : '')
-        : 'Swiggy ne abhi is restaurant ke liye coupon list nahi di. Neeche apna code daal kar CHECK karein — bill jo aayega wahi sach hai.'
+      note: 'APPLY dabaiye — Swiggy par asli bill aayega. Discount tabhi dikhega jab Swiggy deta hai; jo code lagta nahi uski asli wajah dikh jayegi.'
     };
   },
   async quoteCart(account, address, cart, coupon) {
