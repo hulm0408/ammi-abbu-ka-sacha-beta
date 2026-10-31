@@ -12,6 +12,7 @@ import http from 'http';
 import net from 'node:net';
 import { Telegraf, Markup } from 'telegraf';
 import { handleSwiggyProHttp } from './swiggy-pro-api.js';
+import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { logThrottled, startMemoryGuard, perfSnapshot } from './perf-guard.js';
 import { EVENT_OFFER_LINKS, activateAllEventOffers } from './event-offers.js';
 
@@ -191,7 +192,6 @@ import { scanFailuresLine } from './scan-diagnostics.js';
 import * as wafPool from './waf-pool.js';
 import * as cart from './swiggy-cart.js';
 import * as tracking from './order-tracking.js';
-import { sendPaymentLinkSms } from './sms-notify.js';
 import { requestSwiggyOtpViaBridge, requestSwiggyDeleteOtpViaBridge, verifySwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, signupSwiggyViaBridge, deactivateSwiggyAccountViaBridge, prewarmBrowser, checkLoggedInFromCookies, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, autoActivateEventOffers, EVENT_OFFER_OPTIONS, stripStaleWafCookie } from './swiggy-bridge.js';
 import {
   getOrderCurrentTopic,
@@ -289,7 +289,8 @@ import {
   truncateDisplayField,
   lookupOrder,
   orderNotFoundDiag,
-  stopOrderPaymentPoller
+  stopOrderPaymentPoller,
+  isQrGenerationInFlight
 } from './forwarded-order-flow.js';
 import {
   buildBossPanelHome,
@@ -1729,12 +1730,7 @@ async function sendPaymentQrToUser(order) {
       order.qrSent = true;
       order.qrDelivered = true;
       saveDb(getDb());
-      // Direct SMS to registered mobile with payment link (rare bot feature)
-      {
-        // Boss (30-10-2026): SMS me bhi sirf Swiggy ka payment link — boss ki UPI nahi.
-        const smsTarget = order.swiggyPaymentUrl || String(order.pendingSwiggyUpiUri || order.realUpiIntentUri || '');
-        if (smsTarget) sendPaymentLinkSms(order, smsTarget).catch(() => {});
-      }
+      // Recipient SMS is left to Swiggy; the bot does not send one.
       return;
     } catch (e) {
       console.error(`Failed to send custom QR photo: ${e.message}`);
@@ -1765,7 +1761,6 @@ async function sendPaymentQrToUser(order) {
       );
       order.qrSent = true;
       saveDb(getDb());
-      sendPaymentLinkSms(order, order.swiggyPaymentUrl).catch(()=>{});
       return;
     } catch (e) {
       console.error(`Failed to send payment URL: ${e.message}`);
@@ -2549,7 +2544,10 @@ async function authorizeMiniAppUser(user) {
 bot.command('pro', async (ctx) => {
   const url = configuredMiniAppUrl();
   if (!url) return ctx.reply('Mini App abhi configure nahi hai. Chat bot se order kar sakte hain.');
-  return ctx.reply('Mini App kholo. Chat bot pehle ki tarah available hai. In-app payment abhi available nahi hai.',
+  const checkoutNote = process.env.PRO_ENABLE_CHECKOUT === '1'
+    ? 'UPI checkout experimental hai; order aur payment ko Swiggy me verify karein.'
+    : 'In-app payment abhi available nahi hai.';
+  return ctx.reply(`Mini App kholo. Chat bot pehle ki tarah available hai. ${checkoutNote}`,
     Markup.inlineKeyboard([[Markup.button.webApp('🍽 Open Mini App', url)]]));
 });
 
@@ -6946,6 +6944,10 @@ bot.action(/^boss_prompt_cancel_(.+)$/, async (ctx) => {
   let order = lookupOrder(db, orderId);
 
   if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
+  if (hasPossibleSwiggyPlacement(order)) {
+    return ctx.answerCbQuery('Order Swiggy par ho sakta hai. Original Swiggy account me check/cancel karein; bot se cancel nahi hua.', { show_alert: true }).catch(() => {});
+  }
+
 
   if (!canTransitionOrder(order.status, 'CANCELLED')) {
     return ctx.answerCbQuery(`Cannot cancel: order is already ${order.status}`, { show_alert: true }).catch(() => {});
@@ -6999,6 +7001,10 @@ bot.action(/^(?:boss_confirm_cancel_|boss_cancel_order_)(.+)$/, async (ctx) => {
   let order = lookupOrder(db, orderId);
 
   if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
+  if (hasPossibleSwiggyPlacement(order)) {
+    return ctx.answerCbQuery('Order Swiggy par ho sakta hai. Original Swiggy account me check/cancel karein; bot se cancel nahi hua.', { show_alert: true }).catch(() => {});
+  }
+
 
   if (!canTransitionOrder(order.status, 'CANCELLED')) {
     return ctx.answerCbQuery(`Cannot cancel: order is already ${order.status}`, { show_alert: true }).catch(() => {});
@@ -8294,6 +8300,10 @@ bot.action(/^boss_action_sorry_(.+)$/, async (ctx) => {
   let order = lookupOrder(db, orderId);
 
   if (!order) { console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId)); return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {}); }
+  if (hasPossibleSwiggyPlacement(order)) {
+    return ctx.answerCbQuery('Order Swiggy par ho sakta hai. Original Swiggy account me check/cancel karein; bot se cancel nahi hua.', { show_alert: true }).catch(() => {});
+  }
+
 
   order.status = 'REJECTED';
   order.rejectedAt = new Date().toISOString();
@@ -8337,6 +8347,10 @@ bot.action(/^boss_action_cancel_(.+)$/, async (ctx) => {
   if (!order) {
     console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
     return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true }).catch(() => {});
+  }
+
+  if (hasPossibleSwiggyPlacement(order)) {
+    return ctx.answerCbQuery('Order Swiggy par ho sakta hai. Original Swiggy account me check/cancel karein; bot se cancel nahi hua.', { show_alert: true }).catch(() => {});
   }
 
   if (order.status === 'CANCELLED') {
@@ -9139,7 +9153,7 @@ bot.on('text', async (ctx, next) => {
     userWaitState[userId] = { action: 'waiting_recipient_mobile' };
     await ctx.reply(
       `✅ <b>${escapeHtml(recipientName)}</b> ke liye order\n\n` +
-      '<i>Uska <b>10-digit mobile number</b> bhejein — Swiggy tracking link + SMS isi number par aayega:</i>',
+      '<i>Uska <b>10-digit mobile number</b> bhejein — yeh recipient contact ke liye use hoga. Swiggy ka SMS alag se verify karna hoga:</i>',
       { parse_mode: 'HTML', reply_markup: { force_reply: true, selective: true, input_field_placeholder: '10-digit mobile number...' } }
     ).catch(() => null);
     return;
@@ -11157,6 +11171,15 @@ async function handleAddressLinkFlow(ctx) {
 }
 
 // Cancel Order with short colorful Confirmation
+// Local cancellation does not cancel an order at Swiggy. Once placement may
+// have been sent, keep the original account/order intact and direct the user
+// to Swiggy instead of claiming that a provider order was cancelled.
+function hasPossibleSwiggyPlacement(order) {
+  if (!order?.id) return false;
+  return Boolean(isQrGenerationInFlight(order.id) || readSwiggyPlacement(`chat:${String(order.id).trim()}`) ||
+    order.pendingSwiggyOrderId || order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.swiggyPlacedUnpaid);
+}
+
 async function handleCancelOrderConfirm(ctx, orderId = null) {
   const userId = ctx.from.id;
   const db = getDb();
@@ -11165,6 +11188,9 @@ async function handleCancelOrderConfirm(ctx, orderId = null) {
 
   if (!activeOrder && !draft.cart && !draft.address) {
     return ctx.reply('i <b>Abhi koi active order ya draft nahi hai.</b>', { parse_mode: 'HTML' });
+  }
+  if (hasPossibleSwiggyPlacement(activeOrder)) {
+    return ctx.reply('Swiggy order ho sakta hai. Bot ise cancel nahi kar sakta; original Swiggy account me My Orders check/cancel karein.');
   }
 
   const targetId = activeOrder ? activeOrder.id : 'draft';
@@ -13114,6 +13140,10 @@ bot.action(/^user_confirm_cancel_(.+)$/, async (ctx) => {
   // Security check: Must be the order's customer or boss
   if (Number(order.userId) !== Number(userId) && !isBoss(userId)) {
     return ctx.answerCbQuery('Unauthorized: Not your order', { show_alert: true }).catch(() => {});
+  }
+
+  if (hasPossibleSwiggyPlacement(order)) {
+    return ctx.answerCbQuery('Order Swiggy par ho sakta hai. Original Swiggy account me check/cancel karein; bot se cancel nahi hua.', { show_alert: true }).catch(() => {});
   }
 
   // State machine transition check
@@ -16415,7 +16445,7 @@ async function pushTrackingReadyNotice(order, { scan } = {}) {
     }
   } catch {}
 
-  // 4) Friends/parents SMS (deduped inside the notice helper by link + OTP).
+  // 4) Update the notice record; the bot does not send recipient SMS.
   try {
     const bossChat = order.bossChatId || db.config?.bossIds?.[0] || fallbackBoss;
     if (bossChat) await sendOrderDeliveryInfoNotice(bot.telegram, bossChat, order);

@@ -1,0 +1,281 @@
+// Fault-injection tests only. These DO NOT contact Swiggy or prove live ordering,
+// payment, OFO, tracking, notification or UPI-app compatibility.
+import { strict as assert } from 'node:assert';
+import { test, after } from 'node:test';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { spawnSync } from 'node:child_process';
+import jsQR from 'jsqr';
+import { PNG } from 'pngjs';
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sacha-checkout-test-'));
+Object.assign(process.env, {
+  DATA_DIR: tmp, DB_FILE: path.join(tmp, 'db.json'), ACCOUNTS_JSON_FILE: path.join(tmp, 'accounts.json'),
+  BOT_TOKEN: '123456:checkout-offline-test-token', PRO_VAULT_KEY: 'only-an-offline-test-key-12345',
+  PRO_ENABLE_CHECKOUT: '1', BOSS_ID: '8000', DB_ASYNC_WRITE: '0', NODE_ENV: 'test',
+  SWIGGY_BLOCK_LIVE_ORDER_PLACE: '1'
+});
+const { executeSingleSwiggyPlacement, readSwiggyPlacement } = await import('./swiggy-placement-journal.js');
+const { exactPaise } = await import('./swiggy-cart-integrity.js');
+const { validateUpiIntentForQr, shouldReusePendingQr } = await import('./payment-qr-guard.js');
+const { readProWorkspace, writeProWorkspace } = await import('./swiggy-pro-store.js');
+const { handleSwiggyProHttp } = await import('./swiggy-pro-api.js');
+const { detectOfoFromPlaceResponse, hasExplicitOfoCartFlag, withSwiggyAccountLock, releaseStaleAccountLocks } = await import('./swiggy-cart.js');
+const { getDb, saveDb } = await import('./store.js');
+const { executeRealQrGenerationForOrder, executeOrderBillSyncOnAccount, applyBossOrderUpdate } = await import('./forwarded-order-flow.js');
+
+const id = '123456789012';
+const otherId = '123456789099';
+const uri = 'upi://pay?pa=upiswiggy%40icici&pn=Swiggy&am=150.25&cu=INR&tr=offline-test';
+const receiver = { id: 'addr-1', name: 'Receiver', mobile: '9123456789', address: 'Test Road 1', lat: '18.5204', lng: '73.8567' };
+let calls = 0, paymentMode = 'pending', checkoutMode = 'ok';
+const paymentAccounts = [];
+const fake = {
+  async checkout(_account, _address, _cart, key) {
+    const reply = await executeSingleSwiggyPlacement(key, async () => {
+      calls++;
+      await new Promise(resolve => setTimeout(resolve, 30));
+      if (checkoutMode === 'timeout') throw new Error('simulated timeout after send');
+      return { placeRes: { ok: true, status: 200 }, json: { statusCode: 0, data: { order_id: id } } };
+    });
+    assert.equal(reply.placeRes.ok, true);
+    return { orderId: id, upiIntentUrl: checkoutMode === 'badamount' ? uri.replace('150.25', '150.24') : uri, paymentTxnId: 'ref-1', ofoConfirmed: false };
+  },
+  async checkPayment(account) {
+    paymentAccounts.push(account.phone);
+    if (paymentMode === 'wrong') return { paid: true, swiggyOrderId: otherId };
+    if (paymentMode === 'reported') return { paid: false, paymentVerified: true };
+    if (paymentMode === 'paid') return { paid: true, swiggyOrderId: id, orderStatus: 'Confirmed', trackingUrl: `https://www.swiggy.com/orders/${id}`, deliveryOtp: '1234' };
+    return { paid: false, paymentVerified: false };
+  },
+  async orders(account) { return account.phone === '9123456789' ? [{ id, restaurant: 'Mock' }] : [{ id: otherId, restaurant: 'Other' }]; },
+  async tracking(_account, orderId) { return { orderId, status: 'Confirmed', trackingUrl: 'https://evil.invalid/not-swiggy', deliveryOtp: '1234' }; },
+  async quoteCart(_a, address) { return { address, bill: { total: 150.25, coupon: '' }, ofoConfirmed: false }; }
+};
+const server = http.createServer(async (req, res) => {
+  if (!await handleSwiggyProHttp(req, res, { provider: fake, authorizeUser: async () => ({ allowed: true }) })) { res.writeHead(404); res.end(); }
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const base = `http://127.0.0.1:${server.address().port}`;
+after(async () => { await new Promise(resolve => server.close(resolve)); fs.rmSync(tmp, { recursive: true, force: true }); });
+function sign(user) {
+  const params = new URLSearchParams({ auth_date: String(Math.floor(Date.now()/1000)), user: JSON.stringify({ id: user, first_name: 'Test' }), query_id: 'offline' });
+  const text = [...params.entries()].map(([k, v]) => `${k}=${v}`).sort().join('\n');
+  const secret = crypto.createHmac('sha256', 'WebAppData').update(process.env.BOT_TOKEN).digest();
+  params.set('hash', crypto.createHmac('sha256', secret).update(text).digest('hex'));
+  return params.toString();
+}
+async function req(user, route, body) {
+  const r = await fetch(base + '/pro/api/' + route, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'X-Telegram-Init-Data': sign(user), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  });
+  return { status: r.status, body: await r.json() };
+}
+function seed(user) {
+  const quote = { total: 150.25, coupon: '', fetchedAt: new Date().toISOString() };
+  writeProWorkspace(String(user), {
+    version: 1,
+    accounts: {
+      a: { phone: '9123456789', name: 'Original', token: 'test-a', isLoggedIn: true },
+      b: { phone: '9234567890', name: 'Other', token: 'test-b', isLoggedIn: true }
+    }, activeAccountKey: 'a', selectedAddress: receiver, addressCandidates: [],
+    cart: { restaurantId: '123', restaurantName: 'Mock restaurant', forSomeoneElse: true,
+      items: [{ lineKey: 'line', id: '456', menu_item_id: 456, name: 'Meal', qty: 1, variants: [], addons: [] }], quote }
+  });
+  return quote;
+}
+const confirmation = quote => ({ confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt });
+
+test('durable barrier makes one POST under concurrency and blocks replay', async () => {
+  let sent = 0;
+  const results = await Promise.allSettled(Array.from({ length: 25 }, () => executeSingleSwiggyPlacement('chat:race', async () => { sent++; await new Promise(r => setTimeout(r, 25)); return { placeRes: { ok: true, status: 200 }, json: { statusCode: 0, data: { order_id: id } } }; })));
+  assert.equal(sent, 1);
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+  assert.equal(readSwiggyPlacement('chat:race').state, 'PROVIDER_ACCEPTED');
+  await assert.rejects(executeSingleSwiggyPlacement('chat:race', async () => { sent++; }), e => e.diag?.placementAttempted === true);
+  assert.equal(sent, 1);
+});
+
+test('timeout after send is UNKNOWN, survives a process restart and never resends', async () => {
+  let sent = 0;
+  await assert.rejects(executeSingleSwiggyPlacement('chat:uncertain', async () => { sent++; throw new Error('timeout'); }), e => e.diag?.placementAttempted === true);
+  assert.equal(readSwiggyPlacement('chat:uncertain').state, 'UNKNOWN');
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    const j = await import('./swiggy-placement-journal.js');
+    let sent = false; try { await j.executeSingleSwiggyPlacement('chat:uncertain', async()=>{sent=true}); } catch(e) { if (!e.diag?.placementAttempted || sent) process.exit(2); }
+    if (j.readSwiggyPlacement('chat:uncertain')?.state !== 'UNKNOWN') process.exit(3);
+  `], { cwd: process.cwd(), env: process.env, encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(sent, 1);
+});
+
+test('journal storage errors fail before send; unreadable records remain blocked', async () => {
+  const before = process.env.DATA_DIR;
+  const blocked = path.join(tmp, 'not-a-directory'); fs.writeFileSync(blocked, 'x');
+  process.env.DATA_DIR = blocked;
+  let sent = 0;
+  await assert.rejects(executeSingleSwiggyPlacement('chat:disk', async () => { sent++; }), e => e.diag?.placementAttempted === false);
+  assert.equal(sent, 0);
+  process.env.DATA_DIR = before;
+  const key = 'chat:corrupt';
+  const filename = crypto.createHash('sha256').update(key).digest('hex') + '.json';
+  fs.writeFileSync(path.join(tmp, 'swiggy-placement-journal', filename), 'not json');
+  assert.equal(readSwiggyPlacement(key).state, 'UNKNOWN');
+  assert.equal(readSwiggyPlacement(key).unreadable, true);
+  await assert.rejects(executeSingleSwiggyPlacement(key, async () => { sent++; }), e => e.diag?.placementAttempted === true);
+  assert.equal(sent, 0);
+});
+
+test('a timed-out waiter and maintenance do not unlock an active account job', async () => {
+  let releaseFirst, enteredThird = false;
+  const hold = new Promise(resolve => { releaseFirst = resolve; });
+  const first = withSwiggyAccountLock('lock-fault-test', () => hold);
+  // Let the first holder enter before queueing the timeout.
+  await new Promise(resolve => setTimeout(resolve, 10));
+  await assert.rejects(withSwiggyAccountLock('lock-fault-test', async () => {}, { maxWaitMs: 1000 }), e => e.code === 'ACCOUNT_LOCK_TIMEOUT');
+  const maintenance = await releaseStaleAccountLocks({ olderThanMs: 1000 });
+  assert.equal(maintenance.released.length, 0);
+  const third = withSwiggyAccountLock('lock-fault-test', async () => { enteredThird = true; }, { maxWaitMs: 3000 });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(enteredThird, false);
+  releaseFirst(); await first; await third;
+  assert.equal(enteredThird, true);
+});
+
+test('chat QR callers coalesce and never fail over after an ambiguous placement', async () => {
+  const db = getDb();
+  db.config.accounts = {
+    a: { isLoggedIn: true, phone: '9123456789', token: 'mock-a' },
+    b: { isLoggedIn: true, phone: '9234567890', token: 'mock-b' }
+  };
+  db.orders['chat-race'] = { id: 'chat-race', status: 'ACCEPTED', selectedAccount: 'a', orderAccount: '9123456789' };
+  saveDb(db);
+  let generated = 0;
+  const generator = async () => {
+    generated++; await new Promise(resolve => setTimeout(resolve, 30));
+    const e = new Error('session expired after sending');
+    e.diag = { code: 'SESSION_EXPIRED', placementAttempted: true };
+    throw e;
+  };
+  const args = { orderId: 'chat-race', telegram: {}, chatId: 1, customRealQrGenerator: generator };
+  const first = executeRealQrGenerationForOrder(args), second = executeRealQrGenerationForOrder(args);
+  assert.equal(first, second);
+  const outcomes = await Promise.allSettled([first, second]);
+  assert.ok(outcomes.every(x => x.status === 'rejected' && x.reason.diag.placementAttempted));
+  assert.equal(generated, 1); assert.equal(getDb().orders['chat-race'].selectedAccount, 'a');
+});
+
+test('chat cart changes and account sync remain blocked after an uncertain send', async () => {
+  const db = getDb();
+  db.orders['chat-unknown'] = { id: 'chat-unknown', status: 'ACCEPTED', selectedAccount: 'a', cart: 'original' };
+  saveDb(db);
+  await assert.rejects(executeSingleSwiggyPlacement('chat:chat-unknown', async () => { throw new Error('timeout'); }));
+  await assert.rejects(executeOrderBillSyncOnAccount({ orderId: 'chat-unknown', accKey: 'b' }), e => e.diag?.placementAttempted === true);
+  const update = await applyBossOrderUpdate({ orderId: 'chat-unknown', cart: 'different cart' });
+  assert.equal(update.ok, false); assert.equal(getDb().orders['chat-unknown'].cart, 'original');
+});
+
+test('money, UPI and OFO guards reject fractional paise, wrong amount and mere OFO mentions', () => {
+  assert.equal(exactPaise('150.25'), 15025);
+  assert.equal(exactPaise('150.251'), null);
+  assert.equal(exactPaise(''), null);
+  assert.equal(validateUpiIntentForQr(uri, { amount: 150.25 }).valid, true);
+  assert.equal(validateUpiIntentForQr(uri, { amount: 150.26 }).valid, false);
+  assert.equal(validateUpiIntentForQr(uri.replace('150.25', '150.250'), { amount: 150.25 }).valid, false);
+  assert.equal(validateUpiIntentForQr(uri + '&amount=150.25', { amount: 150.25 }).valid, false);
+  assert.equal(shouldReusePendingQr({ pendingSwiggyUpiUri: uri, pendingQrCreatedAt: Date.now(), pendingQrAmount: 150.25, finalPayable: 150.26 }).reuse, false);
+  assert.equal(detectOfoFromPlaceResponse({ data: { ofo: false, recipient_phone: '9123456789' } }).ofo, false);
+  assert.equal(hasExplicitOfoCartFlag({ message: 'ofo', config: { ofo: true } }), false);
+  assert.equal(hasExplicitOfoCartFlag({ is_order_for_someone_else: true }), true);
+});
+
+test('checkout requires opt-in, explicit consent, fresh quote and exact approved amount', async () => {
+  const quote = seed(8101);
+  process.env.PRO_ENABLE_CHECKOUT = '0';
+  assert.equal((await req(8101, 'checkout', confirmation(quote))).status, 503);
+  process.env.PRO_ENABLE_CHECKOUT = '1';
+  assert.equal((await req(8101, 'checkout', { ...confirmation(quote), confirmCheckout: false })).status, 400);
+  assert.equal((await req(8101, 'checkout', { ...confirmation(quote), expectedTotal: 150.24 })).status, 400);
+  assert.equal((await req(8101, 'checkout', { ...confirmation(quote), expectedTotal: 150.251 })).status, 400);
+  assert.equal((await req(8101, 'checkout', { ...confirmation(quote), quoteFetchedAt: 'old' })).status, 400);
+  const ws = readProWorkspace('8101'); ws.cart.quote.fetchedAt = new Date(Date.now() - 6 * 60_000).toISOString(); writeProWorkspace('8101', ws);
+  assert.equal((await req(8101, 'checkout', confirmation(ws.cart.quote))).status, 400);
+  assert.equal(calls, 0);
+});
+
+test('two taps create one provider attempt and display the exact provider URI as the QR', async () => {
+  const quote = seed(8102);
+  const results = await Promise.all([req(8102, 'checkout', confirmation(quote)), req(8102, 'checkout', confirmation(quote))]);
+  assert.deepEqual(results.map(r => r.status).sort(), [200, 409]);
+  assert.equal(calls, 1);
+  const output = results.find(r => r.status === 200).body.checkout;
+  assert.equal(output.status, 'PAYMENT_PENDING'); assert.equal(output.upiIntentUrl, uri); assert.equal(output.orderId, id);
+  const png = PNG.sync.read(Buffer.from(output.qrDataUrl.split(',')[1], 'base64'));
+  assert.equal(jsQR(new Uint8ClampedArray(png.data), png.width, png.height)?.data, uri);
+  assert.equal((await req(8102, 'accounts/remove', { key: 'a' })).status, 409);
+  assert.equal((await req(8102, 'cart/sync', { confirmReplaceSwiggyCart: true })).status, 409);
+  const bob = (await req(8103, 'bootstrap')).body;
+  assert.equal(bob.checkout, null); assert.equal(JSON.stringify(bob).includes(uri), false);
+});
+
+test('status uses original account, does not accept a different order and hides QR after payment report', async () => {
+  assert.equal((await req(8102, 'accounts/select', { key: 'b' })).status, 200);
+  paymentMode = 'wrong';
+  let result = await req(8102, 'checkout/status', {});
+  assert.equal(result.body.checkout.status, 'PAYMENT_PENDING'); assert.equal(result.body.checkout.paymentVerified, false);
+  assert.equal(paymentAccounts.at(-1), '9123456789');
+  paymentMode = 'reported'; result = await req(8102, 'checkout/status', {});
+  assert.equal(result.body.checkout.paymentVerified, true); assert.equal(result.body.checkout.qrDataUrl, undefined);
+  paymentMode = 'pending'; result = await req(8102, 'checkout/status', {});
+  assert.equal(result.body.checkout.paymentVerified, true); assert.equal(result.body.checkout.qrDataUrl, undefined);
+  paymentMode = 'paid'; result = await req(8102, 'checkout/status', {});
+  assert.equal(result.body.checkout.status, 'PAID'); assert.equal(result.body.checkout.orderId, id); assert.equal(result.body.checkout.upiIntentUrl, undefined);
+  assert.equal((await req(8102, 'checkout/finish', {})).status, 409);
+  result = await req(8102, 'checkout/finish', { confirmNewDraft: true });
+  assert.equal(result.body.checkout, null); assert.equal(readProWorkspace('8102').checkoutGeneration, 1);
+});
+
+test('tracking requires ownership in current account; foreign tracking links are stripped', async () => {
+  seed(8104);
+  assert.equal((await req(8104, `orders/tracking?id=${otherId}`)).status, 404);
+  const result = await req(8104, `orders/tracking?id=${id}`);
+  assert.equal(result.status, 200); assert.equal(result.body.tracking.orderId, id);
+  assert.equal(result.body.tracking.trackingUrl, ''); assert.equal(result.body.tracking.deliveryOtp, '1234');
+});
+
+test('timeout after POST and invalid provider QR both leave persistent, non-retryable state', async () => {
+  checkoutMode = 'timeout'; const q = seed(8105); let result = await req(8105, 'checkout', confirmation(q));
+  assert.equal(result.body.checkout.status, 'OUTCOME_UNKNOWN');
+  const count = calls;
+  assert.equal((await req(8105, 'checkout', confirmation(q))).status, 409);
+  assert.equal((await req(8105, 'checkout/finish', { confirmNewDraft: true })).status, 409);
+  assert.equal((await req(8105, 'accounts/select', { key: 'b' })).status, 200);
+  assert.equal((await req(8105, 'cart/sync', { confirmReplaceSwiggyCart: true })).status, 409);
+  assert.equal((await req(8105, 'bootstrap')).body.checkout.status, 'OUTCOME_UNKNOWN'); assert.equal(calls, count);
+  checkoutMode = 'badamount'; const q2 = seed(8106); result = await req(8106, 'checkout', confirmation(q2));
+  assert.equal(result.body.checkout.status, 'OUTCOME_UNKNOWN'); assert.equal(result.body.checkout.qrDataUrl, undefined);
+  assert.equal((await req(8106, 'checkout', confirmation(q2))).status, 409);
+});
+
+test('a stale workspace or account failover cannot bypass the generation barrier', async () => {
+  checkoutMode = 'ok'; const q = seed(8107);
+  const key = 'pro:8107:0';
+  await assert.rejects(executeSingleSwiggyPlacement(key, async () => { throw new Error('lost after send'); }));
+  // Simulate a stale replica that has no checkout record and a refreshed quote.
+  const ws = readProWorkspace('8107'); ws.activeAccountKey = 'b'; ws.cart.quote.fetchedAt = new Date().toISOString(); writeProWorkspace('8107', ws);
+  const before = calls;
+  const out = await req(8107, 'checkout', confirmation(ws.cart.quote));
+  assert.equal(out.body.checkout.status, 'OUTCOME_UNKNOWN'); assert.equal(calls, before);
+});
+
+test('production bot entrypoints do not call an SMS gateway for recipients', () => {
+  for (const file of ['index.js', 'forwarded-order-flow.js', 'swiggy-pro-api.js', 'swiggy-pro-provider.js']) {
+    const src = fs.readFileSync(file, 'utf8');
+    assert.doesNotMatch(src, /\b(?:sendDirectOrderSms|sendPaymentLinkSms|sendSmsViaGateway)\s*\(/);
+  }
+});

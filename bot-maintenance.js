@@ -76,6 +76,7 @@ export async function runMaintenance(deps = {}, { reason = 'AUTO', dryRun = fals
     dryRun: Boolean(dryRun),
     lagMs: getEventLoopLagMs(),
     locksReleased: [],
+    locksObserved: [],
     reservationsReleased: [],
     scansReset: 0,
     stuckJobs: [],
@@ -86,15 +87,12 @@ export async function runMaintenance(deps = {}, { reason = 'AUTO', dryRun = fals
   const cart = deps.cart || null;
   const tracking = deps.tracking || null;
 
-  // 1) Account locks — sirf wahi release karo jo `maxAgeMs` se purane hain.
+  // Active account locks are observations, not locks we have released.
   if (cart && typeof cart.getAccountLockStats === 'function') {
-    const stats = cart.getAccountLockStats().catch?.(() => null) || cart.getAccountLockStats();
-    const resolved = stats && typeof stats.then === 'function' ? await stats.catch(() => null) : stats;
+    const resolved = await Promise.resolve().then(() => cart.getAccountLockStats()).catch(() => null);
     if (resolved && Array.isArray(resolved.locks)) {
-      for (const lock of resolved.locks) {
-        const ageMs = Number(lock.ageMs || 0);
-        report.locksReleased.push({ id: lock.id, ageMs, ageSec: Math.round(ageMs / 1000) });
-      }
+      report.locksObserved = resolved.locks.map(lock => ({ id: lock.id, ageMs: Number(lock.ageMs || 0) }));
+      if (dryRun && report.locksObserved.length) report.notes.push(`${report.locksObserved.length} active lock(s) — none released`);
     }
   }
   if (cart && typeof cart.releaseStaleAccountLocks === 'function' && !dryRun) {

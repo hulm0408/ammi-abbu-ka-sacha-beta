@@ -14,6 +14,7 @@ process.env.DB_FILE = path.join(tmp, 'db.json');
 process.env.ACCOUNTS_JSON_FILE = path.join(tmp, 'accounts.json');
 process.env.BOT_TOKEN = '123456:offline-test-bot-token';
 process.env.PRO_VAULT_KEY = 'offline-random-test-key-only';
+delete process.env.PRO_ENABLE_CHECKOUT;
 process.env.BOSS_ID = '7000';
 process.env.DB_ASYNC_WRITE = '0';
 
@@ -147,13 +148,13 @@ test('link auto-fill, menu and draft cart keep the receiver and server-provided 
   assert.equal(seen.quote[0].selected.address, address.address);
 });
 
-test('provider failures clear old quotes; no endpoint pretends to place an order or generate a QR', async () => {
+test('provider failures clear old quotes; experimental checkout is disabled by default', async () => {
   quoteFails = true;
   assert.equal((await request('/pro/api/cart/sync', alice, { confirmReplaceSwiggyCart: true, forSomeoneElse: true })).status, 502);
   assert.equal((await request('/pro/api/bootstrap', alice)).body.cart.quote, null);
   const checkout = await request('/pro/api/checkout', alice, {});
-  assert.equal(checkout.status, 501);
-  assert.match(checkout.body.error, /not enabled/);
+  assert.equal(checkout.status, 503);
+  assert.match(checkout.body.error, /disabled/);
   assert.equal((await request('/pro/api/orders', alice)).body.orders[0].status, 'Status unavailable');
 });
 

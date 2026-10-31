@@ -99,3 +99,6 @@ extracted_mp4_frames/
 !test_v86_ofo_integrated_flow.mjs
 
 !test_v87_miniapp_security_and_flow.mjs
+
+!test_v88_checkout_safety.mjs
+!test_v89_provider_faults.mjs

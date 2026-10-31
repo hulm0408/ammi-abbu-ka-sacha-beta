@@ -2,12 +2,20 @@ import {
   buildSwiggyAndroidClientHeaders, buildSwiggyCartItemsPayload, buildOfoCartFields,
   dapiFetch, fetchAccountAddresses, fetchSwiggyAndroidProfile, getSwiggySessionAuth, isValidIndianDeliveryCoordinates,
   parseDapiCartPayload, resolveSharedOfoAddress, saveAddressToAccount,
-  swiggyCartUpdate, verifySwiggySessionLive, withSwiggyAccountLock,
+  swiggyCartGet, swiggyCartUpdate, verifySwiggySessionLive, withSwiggyAccountLock,
+  checkRealSwiggyPaymentAndExtractTracking, detectOfoFromPlaceResponse, hasExplicitOfoCartFlag, normalizeSwiggyOrderId,
+  extractSwiggyProvidedTrackingUrl, extractSwiggyDeliveryOtp, isZeroSmsTestSandboxActive,
   extractDeepLinkFromReferrerOrUrl
 } from './swiggy-cart.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { getDb } from './store.js';
 import crypto from 'node:crypto';
+import { sameCartItems, sameDeliveryRecipient, exactPaise } from './swiggy-cart-integrity.js';
+import { executeSingleSwiggyPlacement } from './swiggy-placement-journal.js';
+import { validateUpiIntentForQr } from './payment-qr-guard.js';
+export { sameCartItems, sameDeliveryRecipient } from './swiggy-cart-integrity.js';
+
+const bootFetch = globalThis.fetch;
 
 function unavailable(message) {
   const e = new Error(message);
@@ -178,54 +186,7 @@ export async function expandProShareLink(raw) {
 // Compare the item IDs, quantities AND selected add-ons/variants, not just
 // the number of items. Otherwise a customized group-cart meal could silently
 // become a different meal while the Mini App claims the bill was verified.
-export function sameCartItems(expected, actual) {
-  const makeSignature = (item) => {
-    const id = String(item?.menu_item_id || item?.itemId || item?.id || '');
-    if (!/^\d+$/.test(id)) return null;
-    const choices = (list, choiceKeys) => {
-      if (!Array.isArray(list)) return null;
-      const output = [];
-      for (const choice of list) {
-        const group = String(choice?.group_id ?? choice?.groupId ?? '');
-        const choiceId = String(choiceKeys.map(key => choice?.[key]).find(v => v !== undefined && v !== null) ?? '');
-        if (!group || !choiceId) return null;
-        output.push(`${group}:${choiceId}`);
-      }
-      return output.sort();
-    };
-    const variants = choices(item.variants || [], ['variation_id', 'variationId', 'id']);
-    const addons = choices(item.addons || [], ['choice_id', 'choiceId', 'id']);
-    if (!variants || !addons) return null;
-    return JSON.stringify([id, variants, addons]);
-  };
-  const aggregate = (list) => {
-    if (!Array.isArray(list) || !list.length) return null;
-    const result = new Map();
-    for (const item of list) {
-      const signature = makeSignature(item);
-      const quantity = Number(item.qty ?? item.quantity);
-      if (!signature || !Number.isInteger(quantity) || quantity <= 0) return null;
-      result.set(signature, (result.get(signature) || 0) + quantity);
-    }
-    return result;
-  };
-  const left = aggregate(expected), right = aggregate(actual);
-  return Boolean(left && right && left.size === right.size && [...left].every(([key, qty]) => right.get(key) === qty));
-}
 
-export function sameDeliveryRecipient(expected, saved) {
-  const expectedPhone = normalizeIndianMobileNumber(expected?.mobile || '');
-  const savedPhone = normalizeIndianMobileNumber(saved?.mobile || '');
-  const normalizeText = value => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
-  if (!expectedPhone || expectedPhone !== savedPhone || !normalizeText(expected?.name) || normalizeText(expected.name) !== normalizeText(saved?.name)) return false;
-  if (!normalizeText(expected?.address) || normalizeText(expected.address) !== normalizeText(saved?.address)) return false;
-  if (!isValidIndianDeliveryCoordinates(expected?.lat, expected?.lng) || !isValidIndianDeliveryCoordinates(saved?.lat, saved?.lng)) return false;
-  const toRad = n => n * Math.PI / 180;
-  const lat1 = Number(expected.lat), lat2 = Number(saved.lat);
-  const dLat = toRad(lat2 - lat1), dLng = toRad(Number(saved.lng) - Number(expected.lng));
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return 2 * 6371000 * Math.asin(Math.sqrt(Math.min(1, a))) <= 35;
-}
 
 function checkoutLockKey(account) {
   const phone = normalizeIndianMobileNumber(account.phone || account.mobile || '');
@@ -239,6 +200,45 @@ function checkoutLockKey(account) {
   );
   const fallback = customerId || phone || crypto.createHash('sha256').update(String(account.token || account.tid || '')).digest('hex').slice(0, 20);
   return shared?.[0] || `pro:${fallback}`;
+}
+
+// Extract only values actually returned by the provider. Never manufacture a
+// merchant UPI URI, order ID or transaction reference.
+function placementDetails(json) {
+  const data = json?.data?.order_data || json?.data?.orderData || json?.data || {};
+  const findIntent = (value, depth = 0) => {
+    if (depth > 15 || !value) return '';
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (/^upi:\/\/pay\?/i.test(text)) return text;
+      if ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']'))) {
+        try { return findIntent(JSON.parse(text), depth + 1); } catch {}
+      }
+      return '';
+    }
+    if (typeof value !== 'object') return '';
+    for (const child of Object.values(value)) {
+      const found = findIntent(child, depth + 1);
+      if (found) return found;
+    }
+    return '';
+  };
+  let redirect = data.app_redirection_info || data.appRedirectionInfo || null;
+  if (typeof redirect === 'string') { try { redirect = JSON.parse(redirect); } catch { redirect = null; } }
+  return {
+    orderId: normalizeSwiggyOrderId(data.order_id || data.orderId || ''),
+    upiIntentUrl: findIntent(json),
+    paymentTxnId: String(data.targeted_marketplace_payment_reference_id ||
+      data.payment_info_v2?.payment_transactions?.[0]?.marketplace_reference_id ||
+      redirect?.upiRedirect?.upiIntentRedirect?.transactionId || '').slice(0, 200)
+  };
+}
+
+function attemptedPlacementError(message, code, orderId = '') {
+  const err = unavailable(message);
+  err.code = code;
+  err.diag = { code, placementAttempted: true, placedOrderId: normalizeSwiggyOrderId(orderId) };
+  return err;
 }
 
 export const proProvider = {
@@ -339,28 +339,37 @@ export const proProvider = {
     return withSwiggyAccountLock(checkoutLockKey(account), async () => {
       const saved = await saveAddressToAccount(account, address);
       if (!saved?.addressId || !saved?.addressDetails) throw unavailable(saved?.error || 'Swiggy did not confirm the delivery address.');
-      if (!sameDeliveryRecipient(address, saved.addressDetails)) throw unavailable('Swiggy returned a different receiver or location. Check the address before syncing again.');
+      // A create-address response that only echoes our input is not readback.
+      const savedList = await fetchAccountAddresses(account);
+      const confirmedAddress = savedList.find(a => String(a.id || '') === String(saved.addressId));
+      if (!confirmedAddress || !sameDeliveryRecipient(address, confirmedAddress)) {
+        throw unavailable('Swiggy did not read back the same receiver, street and location. No bill or order was created.');
+      }
       const payload = {
         restaurantId: cart.restaurantId, address_id: String(saved.addressId), couponCode: coupon || '',
         cartItems: buildSwiggyCartItemsPayload(cart.items), mealItems: [], subscriptionItems: [],
         ...(cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: address }) : {})
       };
       const result = await swiggyCartUpdate(account, payload, { lat, lng, flushFirst: true });
-      const data = result?.json?.data;
+      // The update wrapper can echo the requested address ID. Fetch the cart
+      // independently before displaying a bill or treating an ID as bound.
+      const readback = successCode(result?.json?.statusCode) ? await swiggyCartGet(account, { lat, lng }) : null;
+      const data = readback?.json?.data;
       const meta = data?.cartMeta || data;
       const parsed = data && parseDapiCartPayload(data);
-      if (!successCode(result?.json?.statusCode) || !parsed || !meta || !Array.isArray(parsed.items)) throw unavailable('Swiggy did not confirm the cart. Refresh in Swiggy before trying again.');
-      if (!sameCartItems(cart.items, parsed.items) || String(meta.address_id || '') !== String(saved.addressId)) {
+      if (!successCode(readback?.json?.statusCode) || !parsed || !meta || !Array.isArray(parsed.items)) throw unavailable('Swiggy did not confirm the cart. Refresh in Swiggy before trying again.');
+      const boundAddress = String(meta.address_id || meta.delivery_address?.id || data.address_id || data.delivery_address?.id || '');
+      if (!sameCartItems(cart.items, parsed.items) || boundAddress !== String(saved.addressId)) {
         throw unavailable('Swiggy returned different items or address. No bill is being shown; check the Swiggy cart.');
       }
       const total = Number(meta.order_total);
-      if (!Number.isFinite(total) || total <= 0) throw unavailable('Swiggy did not return a valid payable amount.');
+      if (exactPaise(total) === null || total <= 0) throw unavailable('Swiggy did not return a valid payable amount.');
       const returnedNumber = (...values) => {
         const raw = values.find(v => v !== undefined && v !== null && v !== '');
         return raw === undefined || !Number.isFinite(Number(raw)) ? null : Number(raw);
       };
       return {
-        address: saved.addressDetails,
+        address: confirmedAddress,
         bill: {
           itemTotal: returnedNumber(meta.item_total, meta.cart_subtotal),
           deliveryFee: returnedNumber(meta.positiveDeliveryChargesExclusive, meta.delivery_charges),
@@ -373,6 +382,123 @@ export const proProvider = {
         ofoConfirmed: false
       };
     });
+  },
+  async checkout(account, address, cart, placementKey) {
+    const { lat, lng } = coords(address);
+    if (process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE === '1' ||
+        (globalThis.fetch === bootFetch && isZeroSmsTestSandboxActive())) {
+      throw badRequest('Order placement is blocked in this environment; no simulated order or QR was created.');
+    }
+    const expected = Number(cart?.quote?.total);
+    if (!address?.id || !address?.name || !normalizeIndianMobileNumber(address?.mobile) ||
+        !Array.isArray(cart?.items) || !cart.items.length || exactPaise(expected) === null || expected <= 0) {
+      throw badRequest('Confirm the recipient and refresh the Swiggy bill before checkout.');
+    }
+    return withSwiggyAccountLock(checkoutLockKey(account), async () => {
+      const [auth, liveCart, savedAddresses] = await Promise.all([
+        getSwiggySessionAuth(account, false),
+        swiggyCartGet(account, { lat, lng, timeoutMs: 8000 }),
+        fetchAccountAddresses(account)
+      ]);
+      if (!auth?.userId || !auth?.jwtTid) throw unavailable('Swiggy session could not be verified. No order was placed.');
+      const actualAddress = savedAddresses.find(a => String(a.id || '') === String(address.id));
+      if (!actualAddress || !sameDeliveryRecipient(address, actualAddress)) {
+        throw unavailable('Swiggy did not confirm the same receiver and delivery location. No order was placed.');
+      }
+      const accountPhone = normalizeIndianMobileNumber(account?.phone || account?.mobile || '');
+      const receiverPhone = normalizeIndianMobileNumber(actualAddress.mobile || '');
+      if ((!accountPhone || accountPhone !== receiverPhone) && !cart.forSomeoneElse) {
+        throw badRequest('The receiver differs from this account. Select “Order for someone else” and review a fresh bill. No order was placed.');
+      }
+      const data = liveCart?.json?.data;
+      const meta = data?.cartMeta || data;
+      const parsed = data ? parseDapiCartPayload(data) : null;
+      const liveTotal = Number(meta?.order_total);
+      const addressId = String(meta?.address_id || meta?.delivery_address?.id || data?.address_id || data?.delivery_address?.id || '');
+      const cartId = String(meta?.originalCartId || meta?.cartId || meta?.cart_id || '');
+      const coupon = String(parsed?.couponCode || '').toUpperCase();
+      const approvedCoupon = String(cart.quote.coupon || '').toUpperCase();
+      if (!successCode(liveCart?.json?.statusCode) || !parsed || !cartId ||
+          !sameCartItems(cart.items, parsed.items) || addressId !== String(address.id) ||
+          (cart.forSomeoneElse && !hasExplicitOfoCartFlag(meta)) ||
+          (parsed.restaurantId && String(parsed.restaurantId) !== String(cart.restaurantId)) ||
+          exactPaise(liveTotal) === null || exactPaise(liveTotal) !== exactPaise(expected) || coupon !== approvedCoupon) {
+        throw unavailable('Swiggy cart, recipient/OFO, coupon or amount could not be confirmed. No order was placed; review it in Swiggy and sync a new bill.');
+      }
+      const recipient = cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: actualAddress }) : {};
+      const body = {
+        address_id: addressId, lat, lng, payment_cod_method: 'UPIIntent',
+        ...recipient,
+        order_total: liveTotal, bill_total: liveTotal, cart_total: liveTotal,
+        cart_total_shown_to_coupon: meta.cart_total_shown_to_coupon ?? liveTotal,
+        total_without_coupon_discount: meta.total_without_coupon_discount ?? liveTotal,
+        original_order_total: meta.original_order_total ?? liveTotal,
+        transaction_amount: liveTotal, updated_amount: liveTotal, amount: liveTotal,
+        cartId, cart_id: cartId, originalCartId: cartId,
+        upi_transaction_info: { intent_app: 'com.google.android.apps.nbu.paisa.user', intent_app_display_name: 'Google Pay' }
+      };
+      const headers = buildSwiggyAndroidClientHeaders(account, {
+        tid: liveCart?.json?.tid || auth.jwtTid, token: auth.token, sid: auth.sid,
+        deviceId: auth.deviceId, userId: auth.userId, lat, lng,
+        extraHeaders: { paymentamount: String(liveTotal), cartid: cartId, cartaddressid: addressId, addressid: addressId }
+      });
+      const result = await executeSingleSwiggyPlacement(placementKey, async () => {
+        const response = await fetch('https://chkout.swiggy.com/api/v2/order/place', {
+          method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(12000)
+        });
+        const text = await response.text();
+        let json = null;
+        try { json = JSON.parse(text); } catch {}
+        return { placeRes: response, json };
+      });
+      const details = placementDetails(result?.json);
+      const check = details.upiIntentUrl
+        ? validateUpiIntentForQr(details.upiIntentUrl, { amount: expected, requireAmount: true })
+        : { valid: false, info: {} };
+      if (!result?.placeRes?.ok || !successCode(result?.json?.statusCode) || !details.orderId ||
+          !check.valid || exactPaise(check.info?.amount) === null || exactPaise(check.info.amount) !== exactPaise(expected)) {
+        throw attemptedPlacementError(
+          'Swiggy did not return a verifiable order ID and matching UPI payment. An order may exist; check My Orders on this account. Do not retry.',
+          'SWIGGY_PLACEMENT_RESPONSE_UNCERTAIN', details.orderId
+        );
+      }
+      return { ...details, amount: expected, ofoConfirmed: detectOfoFromPlaceResponse(result.json).ofo === true };
+    });
+  },
+  async checkPayment(account, checkout) {
+    return checkRealSwiggyPaymentAndExtractTracking({
+      account,
+      order: {
+        pendingSwiggyOrderId: checkout.orderId,
+        pendingSwiggyPaasId: checkout.paymentTxnId,
+        finalPayable: checkout.amount,
+        restaurantName: checkout.restaurantName
+      }
+    });
+  },
+  async tracking(account, rawId) {
+    const id = normalizeSwiggyOrderId(rawId);
+    if (!id) throw badRequest('Invalid Swiggy order ID.');
+    const [track, delivery] = await Promise.all([
+      dapiFetch(account, `order/trackV4?order_id=${encodeURIComponent(id)}&type=full&version=V2`, { timeoutMs: 8000 }).catch(() => null),
+      dapiFetch(account, `order/trackV2/de?order_id=${encodeURIComponent(id)}`, { timeoutMs: 8000 }).catch(() => null)
+    ]);
+    const validData = response => {
+      if (response?.status !== 200 || !successCode(response?.json?.statusCode) || !response?.json?.data) return null;
+      const value = response.json.data;
+      const returnedId = String(value.order_id || value.orderId || '');
+      return returnedId && returnedId !== id ? null : value;
+    };
+    const t = validData(track), d = validData(delivery);
+    if (!t && !d) throw unavailable('Swiggy did not return tracking details for this order.');
+    return {
+      orderId: id,
+      status: String(t?.order_status_details?.status_message || t?.order_status || ''),
+      eta: String(t?.sla_time || t?.order_status_details?.eta || ''),
+      trackingUrl: extractSwiggyProvidedTrackingUrl(t, d) || '',
+      deliveryOtp: extractSwiggyDeliveryOtp(t, { delivery: d }) || '',
+      deliveryPartner: { name: String(d?.name || ''), phone: String(d?.mobile || '') }
+    };
   },
   async orders(account) {
     const result = await dapiFetch(account, 'order/all', { timeoutMs: 10000 });

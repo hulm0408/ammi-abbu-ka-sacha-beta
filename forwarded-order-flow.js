@@ -21,11 +21,11 @@ function _isLazyRateLimited(userId, maxPerWindow = 5, windowMs = 60_000) {
 }
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
 import { validateUpiIntentForQr, describeQrRef, shouldReusePendingQr } from './payment-qr-guard.js';
+import { readSwiggyPlacement, placementAlreadyAttemptedError } from './swiggy-placement-journal.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { OFFER_TRACKS } from './account-views.js';
 import { lockAccountToOrder, releaseAccountLock } from './order-account-lock.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
-import { sendPaymentLinkSms } from './sms-notify.js';
 import { startOrderTrackingAuto, ensureOrderTracking, isTerminalDeliveryStatus } from './order-tracking.js';
 import {
   detectRecipientRole,
@@ -82,6 +82,14 @@ export function orderNotFoundDiag(db, orderId) {
     }
     return `Order #${asked} nahi mila. Expire ho gaya ho sakta hai — naya order banayein ya Swiggy numeric ID se Extract Tracking Link try karein.`;
   } catch { return `Order #${String(orderId)} nahi mila`; }
+}
+
+function placementForChatOrder(order) {
+  if (!order?.id) return null;
+  return readSwiggyPlacement(`chat:${String(order.id).trim()}`) ||
+    (order.pendingSwiggyOrderId || order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.swiggyPlacedUnpaid
+      ? { state: 'LEGACY_PENDING', orderId: order.pendingSwiggyOrderId || '' }
+      : null);
 }
 
 // Genuine Swiggy page used as an honest fallback (never a synthesised tracking URL).
@@ -2018,6 +2026,11 @@ async function executeOrderBillSyncOnAccountInternal({
     throw new Error(`Order #${orderId} not found. ` + orderNotFoundDiag(db, orderId));
   }
 
+  // Resyncing or switching accounts clears pending payment fields. Do not do
+  // it once this logical order may already exist on Swiggy.
+  const existingPlacement = placementForChatOrder(order);
+  if (existingPlacement || isQrGenerationInFlight(order.id)) throw placementAlreadyAttemptedError(existingPlacement || { state: 'IN_FLIGHT' });
+
   // SPEED: baseline auth call (ek network round-trip) sync ke saath PARALLEL
   // chalti hai, sync ke baad sequential nahi — ID switch ~1 RTT tez.
   const baselineAcc = accKey === 'BEST'
@@ -2374,15 +2387,14 @@ export async function notifyBossOrderPlacedNoIntent(telegram, { orderId = '', ph
       `◈ Order: <b>#${escapeHtml(String(orderId))}</b>\n` +
       `# Swiggy order: <code>${escapeHtml(String(placedOrderId || '—'))}</code>\n` +
       `☎ ID: <code>${escapeHtml(String(phone || '—'))}</code>\n\n` +
-      `<i>Swiggy ne order accept kar liya ("Done Successfully") par UPI intent nahi diya. ` +
-      `Isliye bot ne doosra account try NAHI kiya — warna doosra unpaid order ban jata. ` +
-      `Customer ko payment link bhejein ya naya QR generate karein; order dobara place nahi hoga.</i>`,
+      `<i>Swiggy ne request accept ki, lekin verified order ID ya sahi UPI intent nahi mila. ` +
+      `Doosra QR ya account try nahi hua. Isi Swiggy account ke My Orders me check karein; ` +
+      `pehle order ka status clear kiye bina dobara order mat dein.</i>`,
       {
         parse_mode: 'HTML',
         link_preview_options: { is_disabled: true },
         ...Markup.inlineKeyboard([
-          [Markup.button.callback('🔁 Naya QR (isi order par)', `fwd_gen_qr_${String(orderId)}`)],
-          [Markup.button.url('↗ Swiggy payments', 'https://www.swiggy.com/payments')]
+          [Markup.button.url('↗ Swiggy My Orders', 'https://www.swiggy.com/my-account/orders')]
         ])
       }
     );
@@ -2479,10 +2491,17 @@ async function executeRealQrGenerationForOrderInternal({
     err.code = 'PAID_IS_FINAL_NO_NEW_QR';
     throw err;
   }
+  if (orderBillSyncInFlight.has(String(order.id))) {
+    const err = new Error('Bill sync is still in progress. Review the finished bill before placing the order.');
+    err.diag = { code: 'BILL_SYNC_IN_FLIGHT', placementAttempted: false };
+    throw err;
+  }
 
   let accKey = order.selectedAccount;
   let acc = accKey ? db.config?.accounts?.[accKey] : null;
   if (!acc || !acc.isLoggedIn) {
+    const attempted = placementForChatOrder(order);
+    if (attempted) throw placementAlreadyAttemptedError(attempted);
     const autoPick = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false });
     if (autoPick?.success && autoPick.winningKey) {
       accKey = autoPick.winningKey;
@@ -2496,9 +2515,8 @@ async function executeRealQrGenerationForOrderInternal({
     }
   }
 
-  const generator = customRealQrGenerator || generateRealSwiggyMerchantUpiQr;
-  // The real generator takes the WRAPPED form so `forceNewQr` actually reaches
-  // Swiggy (a third positional arg would be silently ignored → same QR again).
+  // The real generator uses the wrapped form. forceNewQr never bypasses an
+  // existing placement; it can only affect whether a valid QR is reused.
   const runGenerator = (accArg, orderArg, force = false) => (
     customRealQrGenerator
       ? customRealQrGenerator(accArg, orderArg)
@@ -2506,23 +2524,15 @@ async function executeRealQrGenerationForOrderInternal({
   );
   let realQr;
   try {
-    // Per-account lock: 10 orders on 10 different Swiggy IDs generate ALL 10 QRs 100% simultaneously in parallel (~1.8s)!
-    // Hard deadline: a real QR takes ~2-8s; if Swiggy/Chromium stalls we fail with a
-    // clear reason instead of hanging the handler for minutes ("QR kaam nahi karta").
-    const qrBudgetMs = Math.max(15_000, Number(process.env.QR_GEN_BUDGET_MS) || 60_000);
-    let qrTimer = null;
-    realQr = await Promise.race([
-      withSwiggyAccountLock(accKey, () => runGenerator(acc, order, forceNewQr)),
-      new Promise((resolve) => {
-        qrTimer = setTimeout(() => resolve(null), qrBudgetMs);
-        if (typeof qrTimer.unref === 'function') qrTimer.unref();
-      })
-    ]).finally(() => { if (qrTimer) clearTimeout(qrTimer); });
+    // Do not race a deadline against a continuing placement worker. A timeout
+    // does not cancel that worker and used to let a retry create a second order.
+    // Individual network calls have their own deadlines; this promise remains
+    // in the in-flight map until the worker actually finishes.
+    realQr = await withSwiggyAccountLock(accKey, () => runGenerator(acc, order, forceNewQr));
     if (!realQr) {
-      const qrTimeoutErr = new Error(`Payment QR ${Math.round(qrBudgetMs / 1000)}s me nahi bana (Swiggy slow/WAF). Payment verify mat karein — dobara tap karein.`);
-      qrTimeoutErr.code = 'QR_GENERATION_TIMEOUT';
-      qrTimeoutErr.diag = { code: 'QR_GENERATION_TIMEOUT', stage: 'GENERATE_REAL_SWIGGY_QR', budgetMs: qrBudgetMs };
-      throw qrTimeoutErr;
+      const err = new Error('Payment details were not returned. Check Swiggy My Orders before trying anything else.');
+      err.diag = { code: 'QR_RESULT_MISSING', stage: 'GENERATE_REAL_SWIGGY_QR', placementAttempted: true };
+      throw err;
     }
   } catch (qrErr) {
     const failure = classifySwiggyAccountFailure({
@@ -2550,12 +2560,13 @@ async function executeRealQrGenerationForOrderInternal({
         upsertOrder(placedOrder.id, placedOrder);
       }
       const noIntentErr = new Error(
-        `Swiggy ne order #${placedId || '—'} place kar diya par payment intent (UPI QR) nahi diya. ` +
-        `Payment link se pay karein ya "Naya QR" dabaiye — dobara order place nahi hoga.`
+        `Swiggy ne request accept ki (order #${placedId || '—'}) par verified payment details nahi mili. ` +
+        `Isi account ke Swiggy My Orders me check karein; dobara order mat dein.`
       );
       noIntentErr.diag = {
         code: 'QR_PLACED_NO_INTENT',
         stage: 'GENERATE_REAL_SWIGGY_QR',
+        placementAttempted: true,
         placedOrderId: placedId,
         paymentFallbacks: qrErr?.diag?.paymentFallbacks || null,
         accountPhone: acc?.phone || accKey
@@ -2570,6 +2581,9 @@ async function executeRealQrGenerationForOrderInternal({
       throw noIntentErr;
     }
 
+    // A transport error or provider response after dispatch is ambiguous,
+    // even when the message mentions an expired/suspended account.
+    if (qrErr?.diag?.placementAttempted === true) throw qrErr;
     if (!failure.suspended && !failure.sessionDead) throw qrErr;
 
     const failedFirstKey = String(accKey || '');
@@ -2629,6 +2643,8 @@ async function executeRealQrGenerationForOrderInternal({
           switched = true;
         }
       } catch (nextErr) {
+        // Never continue the failover loop once any account may have placed it.
+        if (nextErr?.diag?.placementAttempted === true) throw nextErr;
         lastErr = nextErr;
         const nextFailure = classifySwiggyAccountFailure({
           message: String(nextErr?.message || ''),
@@ -2694,6 +2710,7 @@ async function executeRealQrGenerationForOrderInternal({
     badQrErr.diag = {
       code: 'QR_INTENT_INVALID',
       stage: 'GENERATE_REAL_SWIGGY_QR',
+      placementAttempted: Boolean(placementForChatOrder(order)),
       problems: intentGate.problems,
       accountPhone: acc?.phone || accKey
     };
@@ -2949,7 +2966,7 @@ export async function handleBossForwardedOrderInput(
               // SMS band — Swiggy khud recipient ke number par bhejta hai
 
               try {
-                await ctx.reply(`✓ Tracking link attached to ${targetOrder.id} — SMS sent to recipient (Telegram disabled).`).catch(()=>{});
+                await ctx.reply(`✓ Tracking link attached to ${targetOrder.id}. The bot did not send an SMS; Swiggy's own notification has not been verified.`).catch(()=>{});
               } catch(e){}
             }
             allocatedOrderId = null;
@@ -3111,8 +3128,6 @@ export async function handleBossForwardedOrderInput(
               formatOrderBodyFn,
               customRealQrGenerator
             });
-            const qrDoneOrder = getDb().orders?.[targetOrderId];
-            if (qrDoneOrder?.swiggyPaymentUrl || qrDoneOrder?.realUpiIntentUri) sendPaymentLinkSms(qrDoneOrder, qrDoneOrder.swiggyPaymentUrl || qrDoneOrder.realUpiIntentUri).catch(()=>{});
           }
         } catch (syncErr) {
           const errDb = getDb();
@@ -3289,6 +3304,9 @@ export function registerForwardedOrderHandlers(bot, {
       return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
     }
 
+    if (isQrGenerationInFlight(order.id) || placementForChatOrder(order)) {
+      return ctx.answerCbQuery('Placement may already exist. Check the original Swiggy account; switching is blocked.', { show_alert: true });
+    }
     // Protect active unpaid orders on busy IDs unless explicitly confirmed with FORCE!
     if (accKey !== 'BEST' && !forceUse) {
       const busyMap = getBusySwiggyAccountsMap(db, orderId);
@@ -3392,6 +3410,9 @@ export function registerForwardedOrderHandlers(bot, {
     const db = getDb();
     const order = lookupOrder(db, orderId);
     if (!order) return { success: false, error: 'Order not found' };
+    if (isQrGenerationInFlight(order.id) || placementForChatOrder(order)) {
+      return { success: false, error: 'Swiggy placement may already exist. Check My Orders on the original account; account switching is blocked.' };
+    }
 
     let target = null;
     if (forcedKey) {
@@ -3472,6 +3493,7 @@ export function registerForwardedOrderHandlers(bot, {
     const order = lookupOrder(getDb(), orderId);
     if (!order) return ctx.answerCbQuery('Order not found', { show_alert: true });
     if (!canManageAccountChoice(order, ctx.from.id)) return ctx.answerCbQuery('Unauthorized', { show_alert: true });
+    if (isQrGenerationInFlight(order.id) || placementForChatOrder(order)) return ctx.answerCbQuery('Placement may already exist. Check the original Swiggy account.', { show_alert: true });
     if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
       return ctx.answerCbQuery('Bill approval lock hai — pehle naya bill banayein.', { show_alert: true });
     }
@@ -3492,6 +3514,11 @@ export function registerForwardedOrderHandlers(bot, {
       for (let i = 0; i < 3 && current?.success; i++) {
         const out = await runInstantAccountSwitch(ctx, orderId, { forcedKey: current.key, reason: i === 0 ? 'next_id' : 'auto_retry' });
         attempts.push({ phone: current.phone, ok: out.success, error: out.error || '' });
+        const currentOrder = lookupOrder(getDb(), orderId);
+        if (currentOrder && (isQrGenerationInFlight(currentOrder.id) || placementForChatOrder(currentOrder))) {
+          await ctx.reply('Placement may already exist. Check the original Swiggy account; account switching stopped.').catch(() => {});
+          return;
+        }
         if (out.success) {
           await ctx.reply(
             `⚡ <b>ID switch ho gayi: ${escapeHtml(String(current.phone))}</b>\n` +
@@ -3652,7 +3679,6 @@ export function registerForwardedOrderHandlers(bot, {
   // 2. Change Auto-Selected Swiggy Account before payment (Auto-cycles to next best ID with ZERO manual picker!)
   bot.action(/^(?:fwd_change_auto_sel|fwd_rechoose_acc)_([A-Za-z0-9_]+)$/, async (ctx) => {
     const orderId = ctx.match[1];
-    stopOrderPaymentPoller(orderId);
     const db = getDb();
     let order = lookupOrder(db, orderId);
     if (!order) {
@@ -3663,9 +3689,13 @@ export function registerForwardedOrderHandlers(bot, {
     if (!isBoss(ctx.from.id) && !isOwner) {
       return ctx.answerCbQuery('Unauthorized', { show_alert: true });
     }
+    if (isQrGenerationInFlight(order.id) || placementForChatOrder(order)) {
+      return ctx.answerCbQuery('Placement may already exist. Check the original Swiggy account; switching is blocked.', { show_alert: true });
+    }
     if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
       return ctx.answerCbQuery('Customer bill approval locks account changes.', { show_alert: true });
     }
+    stopOrderPaymentPoller(orderId);
 
     const prevAccount = order.selectedAccount;
     if (prevAccount) {
@@ -3881,11 +3911,13 @@ export function registerForwardedOrderHandlers(bot, {
   bot.action(/^fwd_cancel_([A-Za-z0-9_]+)$/, async (ctx) => {
     if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized');
     const orderId = ctx.match[1];
-    stopOrderPaymentPoller(orderId);
-
     const db = getDb();
     const order = db.orders?.[orderId];
     if (!order) return ctx.answerCbQuery('Order already removed', { show_alert: true });
+    if (isQrGenerationInFlight(order.id) || placementForChatOrder(order)) {
+      return ctx.answerCbQuery('The bot cannot cancel a possibly placed Swiggy order. Check/cancel it in the original Swiggy account.', { show_alert: true });
+    }
+    stopOrderPaymentPoller(orderId);
 
     const freedAccKey = order.selectedAccount;
     const freedAcc = freedAccKey ? db.config?.accounts?.[freedAccKey] : null;
@@ -4099,6 +4131,10 @@ export function registerForwardedOrderHandlers(bot, {
     }
     if (!canManageOrder(order, ctx.from?.id)) {
       ctx.answerCbQuery('Unauthorized', { show_alert: true }).catch(() => {});
+      return null;
+    }
+    if (isQrGenerationInFlight(order.id) || placementForChatOrder(order)) {
+      ctx.answerCbQuery('Checkout is in progress or unresolved. Check the original Swiggy account; do not change or retry this cart.', { show_alert: true }).catch(() => {});
       return null;
     }
     return order;
@@ -4331,6 +4367,9 @@ export function registerForwardedOrderHandlers(bot, {
     const order = db.orders?.[wait.orderId] || lookupOrder(db, wait.orderId);
     if (!order) return next();
     if (!canManageOrder(order, ctx.from?.id)) return next();
+    if (isQrGenerationInFlight(order.id) || placementForChatOrder(order)) {
+      return ctx.reply('Checkout in progress or unresolved. Check the original Swiggy account; do not change the cart.');
+    }
 
     const { key: accKey, acc } = panelAccount(order);
     if (!acc || (!acc.cookies && !acc.tid && !acc.token)) {
@@ -4650,6 +4689,9 @@ export function registerForwardedOrderHandlers(bot, {
       console.warn('[OrderLookup] miss', orderNotFoundDiag(db, orderId));
       return ctx.answerCbQuery('Order not found — ' + orderNotFoundDiag(db, orderId), { show_alert: true });
     }
+    if (isQrGenerationInFlight(order.id) || placementForChatOrder(order)) {
+      return ctx.answerCbQuery('Placement may already exist; do not change the cart. Check Swiggy My Orders.', { show_alert: true });
+    }
     if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
       return ctx.answerCbQuery('Customer bill approval locks offer and bill changes.', { show_alert: true });
     }
@@ -4950,7 +4992,7 @@ export function registerForwardedOrderHandlers(bot, {
     } catch (err) {
       // Self-heal: transient account/WAF problems get one automatic re-pick +
       // one automatic QR retry before Boss hears about it.
-      if (isRetryableFetchError(err)) {
+      if (err?.diag?.placementAttempted !== true && !placementForChatOrder(order) && isRetryableFetchError(err)) {
         try {
           await autoAssignBestAccountWithFallback({ telegram: ctx.telegram, chatId: ctx.chat.id, orderId, formatOrderBodyFn });
           await executeRealQrGenerationForOrder({
@@ -5129,7 +5171,7 @@ export async function applyBossOrderUpdate({
   if (order.status === 'APPROVAL_PENDING' || order.billApprovedByUser) {
     return { ok: false, error: 'The bill has been sent for approval or approved; ask the customer to report an issue before changing delivery details.' };
   }
-  const swiggyCheckoutStarted = Boolean(order.pendingSwiggyOrderId || order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.cardStage === 'QR_GENERATED');
+  const swiggyCheckoutStarted = Boolean(isQrGenerationInFlight(order.id) || placementForChatOrder(order) || order.cardStage === 'QR_GENERATED');
   if (swiggyCheckoutStarted && (cart || address || location)) {
     return { ok: false, error: 'Cart and delivery details cannot be edited after Swiggy has created a payment QR/order. Resolve or cancel the existing Swiggy order first.' };
   }

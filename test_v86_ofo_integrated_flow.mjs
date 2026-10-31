@@ -151,8 +151,8 @@ check('index.js mein sendParentSmsNotification nahi hai', !/sendParentSmsNotific
 check('index.js mein sendDirectOrderSms nahi hai', !/sendDirectOrderSms\s*\(/.test(indexSrc));
 check('forwarded-order-flow.js mein sendParentSmsNotification nahi hai', !/sendParentSmsNotification\s*\(/.test(forwardedSrc));
 check('forwarded-order-flow.js mein sendDirectOrderSms nahi hai', !/sendDirectOrderSms\s*\(/.test(forwardedSrc));
-check('index.js mein sendPaymentLinkSms import hai', /sendPaymentLinkSms/.test(indexSrc));
-check('forwarded-order-flow.js mein sendPaymentLinkSms import hai', /sendPaymentLinkSms/.test(forwardedSrc));
+check('index.js recipient ko payment-link SMS nahi bhejta', !/sendPaymentLinkSms\s*\(/.test(indexSrc));
+check('forwarded-order-flow.js recipient ko payment-link SMS nahi bhejta', !/sendPaymentLinkSms\s*\(/.test(forwardedSrc));
 
 // ── 5. Order creation — recipient fields attach ─────────────────────────
 console.log('\n=== 5. Order creation — recipient fields attach ===');

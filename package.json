@@ -9,7 +9,7 @@
     "test": "node test_comprehensive_audit_suite.mjs",
     "test:live": "node test_live_address_and_cart_e2e.mjs",
     "test:guards": "node run_guards.mjs",
-    "test:pro": "node --test test_v87_miniapp_security_and_flow.mjs",
+    "test:pro": "node --test test_v87_miniapp_security_and_flow.mjs test_v88_checkout_safety.mjs test_v89_provider_faults.mjs",
     "test:lazy": "node test_v40_lazy_boss_autopilot_e2e.mjs",
     "manual:create": "node manual-account-creator.js",
     "local:autopilot": "node local-autopilot.js"
@@ -24,6 +24,7 @@
   "devDependencies": {
     "@railway/cli": "^5.69.0",
     "acorn": "^8.19.0",
-    "acorn-walk": "^8.3.5"
+    "acorn-walk": "^8.3.5",
+    "pngjs": "^5.0.0"
   }
 }
