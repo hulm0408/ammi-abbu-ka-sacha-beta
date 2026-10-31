@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import QRCode from 'qrcode';
 import { validateUpiIntentForQr } from './payment-qr-guard.js';
 import { readSwiggyPlacement } from './swiggy-placement-journal.js';
+import { checkRateLimit, rateLimitMessage, rateLimitState } from './pro-rate-limit.js';
 import { exactPaise } from './swiggy-cart-integrity.js';
 import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder } from './swiggy-cart.js';
 import { deleteAccount, getDb, isBoss, saveDb, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
@@ -65,6 +66,36 @@ function error(statusCode, message) {
   const e = new Error(message);
   e.statusCode = statusCode;
   return e;
+}
+
+/**
+ * Boss (31-10-2026, round 17): "PEHLE SAARI POSSIBILITIES IDENTIFY KARKE BLOCK
+ * KARO". Har mehnga/nuksaan wala route ek hi jagah se rate-limited hai —
+ * 429 + asli wajah + kitni der baad.
+ */
+function enforceRateLimit(user, bucket) {
+  const db = getDb();
+  const result = checkRateLimit(db, user.id, bucket);
+  saveDb(db);
+  if (!result.allowed) {
+    const e = error(429, rateLimitMessage(bucket, result));
+    e.code = 'RATE_LIMITED';
+    e.retryAfterSec = result.retryAfterSec;
+    e.bucket = bucket;
+    throw e;
+  }
+  return result;
+}
+
+/** Sirf padhne ke liye — kitna quota bacha hai (app me dikhane ke liye). */
+export function rateLimitSnapshot(userId) {
+  const db = getDb();
+  const out = {};
+  for (const bucket of ['accountImport', 'otpSend', 'walletClaim', 'walletTopup', 'checkout', 'cartSync']) {
+    const state = rateLimitState(db, userId, bucket);
+    out[bucket] = { used: state.used, max: state.max, remaining: state.remaining };
+  }
+  return out;
 }
 
 function json(res, status, payload) {
@@ -469,6 +500,14 @@ function topupIntents(db) {
 function createTopupIntent(db, userId, amountPaise) {
   const all = topupIntents(db);
   const now = Date.now();
+  // Ek user ke paas ek hi zinda top-up — purane khule intent band (warna ek
+  // user kai intent bana kar uljha sakta tha).
+  for (const rec of Object.values(all)) {
+    if (String(rec.userId) === String(userId) && !rec.usedAt && Number(rec.expiresAt || 0) > now) {
+      rec.usedAt = new Date(now).toISOString();
+      rec.supersededBy = 'naya top-up khula';
+    }
+  }
   const id = `ti_${now}_${crypto.randomBytes(3).toString('hex')}`;
   all[id] = {
     id, userId: String(userId), amountPaise: Math.round(Number(amountPaise) || 0),
@@ -566,9 +605,19 @@ async function claimWalletTopup(user, body) {
   let creditPaise = claimedPaise;
   let request = null;
   {
+    // Boss (31-10-2026, round 17): bina provider verify, bada amount apne aap
+    // credit karna hi "jitna bol raha" ka darwaza tha. Ab auto-credit sirf
+    // chhote amount tak (default ₹15 = ek order ki fee); usse zyada → PENDING,
+    // boss approve karega. Env: WALLET_AUTO_CREDIT_MAX_PAISE.
+    const autoMaxPaise = (() => {
+      const raw = Number(process.env.WALLET_AUTO_CREDIT_MAX_PAISE);
+      return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 1500;
+    })();
+    const autoVerify = claimedPaise <= autoMaxPaise;
     const submitted = await submitTopupRequest(db, {
       userId: user.id, utr, amountPaise: claimedPaise, name: user.firstName || '',
-      note: 'Mini App claim', autoVerify: true, minPaise: 100
+      note: autoVerify ? 'Mini App claim' : `Mini App claim ₹${rupees(claimedPaise)} — boss approval chahiye`,
+      autoVerify, minPaise: 100
     });
     if (!submitted.ok) {
       const e = error(submitted.code === 'DUPLICATE_UTR' ? 409 : 400, submitted.reason || 'UTR accept nahi hua.');
@@ -582,6 +631,8 @@ async function claimWalletTopup(user, body) {
     if (request) markTopupIntentUsed(db, intent.id, request.id);
   }
   if (!db.config.topupClaims || typeof db.config.topupClaims !== 'object') db.config.topupClaims = {};
+  const pending = String(request?.status || '').toUpperCase() === 'PENDING';
+  if (pending) creditPaise = 0; // jhooth nahi — abhi kuch jama nahi hua
   if (request) db.config.topupClaims[request.id] = { ...request, creditedPaise: creditPaise, utr };
   saveDb(db);
   const wallet = walletView(user, { history: true });
@@ -589,9 +640,12 @@ async function claimWalletTopup(user, body) {
     wallet,
     verified,
     creditedPaise: creditPaise,
-    message: wallet.ready
-      ? `Balance ₹${wallet.balance} ho gaya — ab order place kar sakte hain.`
-      : `₹${rupees(creditPaise)} jama hua. Abhi balance ₹${wallet.balance} hai — ₹${wallet.shortfall} aur add karein.`
+    pending,
+    message: pending
+      ? `₹${rupees(claimedPaise)} ka claim boss ke paas approval ke liye chala gaya (bada amount bina bank verify ke auto-credit nahi hota). Abhi balance ₹${wallet.balance} hai.`
+      : (wallet.ready
+        ? `Balance ₹${wallet.balance} ho gaya — ab order place kar sakte hain.`
+        : `₹${rupees(creditPaise)} jama hua. Abhi balance ₹${wallet.balance} hai — ₹${wallet.shortfall} aur add karein.`)
   };
 }
 
@@ -805,7 +859,9 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (ws.lastClosed) { delete ws.lastClosed; writeProWorkspace(user.id, ws); }
         json(res, 200, {
           ok: true, ...publicState(user, ws), wallet: walletView(user), backup: userBackupView(user),
-          idle: { timeoutMs: idle.timeoutMs, closed: idleClosed, abandoned: Array.isArray(ws.abandoned) ? ws.abandoned.slice(-3) : [] }
+          idle: { timeoutMs: idle.timeoutMs, closed: idleClosed, abandoned: Array.isArray(ws.abandoned) ? ws.abandoned.slice(-3) : [] },
+          // Round 17: har user ka apna quota — kaun si cheez kitni baar ho chuki.
+          rateLimits: rateLimitSnapshot(user.id)
         });
         return;
       }
@@ -818,6 +874,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/accounts/send-otp' && req.method === 'POST') {
+        enforceRateLimit(user, 'otpSend');
         const body = await bodyJson(req);
         const phone = normalizeIndianMobileNumber(body.phone);
         if (!phone) throw error(400, 'Enter a valid 10-digit Indian mobile number.');
@@ -855,6 +912,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/accounts/verify-otp' && req.method === 'POST') {
+        enforceRateLimit(user, 'otpVerify');
         const body = await bodyJson(req);
         const digits = String(body.otp || '').trim();
         if (!ws.otpPhone || !/^\d{6}$/.test(digits)) throw error(400, 'Request an OTP and enter its six digits.');
@@ -891,6 +949,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/accounts/import' && req.method === 'POST') {
+        enforceRateLimit(user, 'accountImport');
         const body = await bodyJson(req);
         const session = normalizeSwiggySessionPayload(body.session);
         if (!session || !(session.token || session.tid || session.cookies)) throw error(400, 'Session JSON must contain Swiggy credentials.');
@@ -902,6 +961,28 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         // Never display or use a JSON-supplied phone as a verified Swiggy
         // account phone when the provider did not return it.
         const phone = verifiedPhone || '';
+        // Boss (31-10-2026, round 17): ek hi Swiggy ID do jagah nahi chalegi.
+        // Warna ek hi ID se do log order karte aur "ek order = ek ID" ka lock
+        // toot jata. Vault (boss/shared) ka ID private workspace me copy nahi
+        // ho sakta — sirf wahi user jiske paas pehle se hai use refresh kar sakta hai.
+        if (!isBoss(user.id)) {
+          const mine = Object.entries(ws.accounts || {});
+          const alreadyMine = mine.some(([, a]) =>
+            (phone && normalizeIndianMobileNumber(a.phone || a.mobile || '') === phone) ||
+            (live.customerId && String(a.customerId || '') === String(live.customerId))
+          );
+          if (!alreadyMine) {
+            const shared = Object.entries(getDb().config?.accounts || {}).find(([, a]) =>
+              (phone && normalizeIndianMobileNumber(a?.phone || a?.mobile || '') === phone) ||
+              (live.customerId && String(a?.customerId || '') === String(live.customerId))
+            );
+            if (shared) {
+              const e = error(409, 'Ye Swiggy ID pehle se operator ke paas hai — ise apne workspace me add nahi kar sakte (ek ID = ek order). Doosri ID se order karein.');
+              e.code = 'ACCOUNT_ALREADY_MANAGED';
+              throw e;
+            }
+          }
+        }
         storeAccount(user, ws, {
           ...session, phone, mobile: phone, customerId: live.customerId || session.customerId || '',
           name: live.name || session.name || 'Swiggy account', swiggyName: live.name || '',
@@ -1011,6 +1092,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/offers/claim' && req.method === 'POST') {
+        enforceRateLimit(user, 'offersClaim');
         const body = await bodyJson(req);
         const key = String(body.key || '');
         const map = accountMap(user, ws);
@@ -1115,6 +1197,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/addresses/resolve' && req.method === 'POST') {
+        enforceRateLimit(user, 'addressResolve');
         requireEditableCart(ws);
         const body = await bodyJson(req);
         const account = currentAccount(user, ws);
@@ -1208,6 +1291,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/cart/import-group' && req.method === 'POST') {
+        enforceRateLimit(user, 'cartImport');
         requireEditableCart(ws);
         const body = await bodyJson(req);
         const account = currentAccount(user, ws);
@@ -1263,6 +1347,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/cart/sync' && req.method === 'POST') {
+        enforceRateLimit(user, 'cartSync');
         const body = await bodyJson(req);
         requireEditableCart(ws);
         const account = currentAccount(user, ws);
@@ -1342,6 +1427,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/wallet/topup' && req.method === 'POST') {
+        enforceRateLimit(user, 'walletTopup');
         // Boss (31-10-2026, round 11): "DEFAULT UPI mius@ybl ... PAYMENT WILL
         // BE AUTO VERIFIED." Yahan asli UPI intent + QR banta hai — user apne
         // UPI app se paisa bhej sakta hai.
@@ -1368,6 +1454,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         return;
       }
       if (route === '/pro/api/wallet/claim' && req.method === 'POST') {
+        enforceRateLimit(user, 'walletClaim');
         const out = await claimWalletTopup(user, await bodyJson(req));
         json(res, 200, { ok: true, ...out });
         return;
@@ -1444,6 +1531,10 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           e.wallet = wallet;
           throw e;
         }
+        // Boss (31-10-2026, round 17): rate limit sirf ASLI placement par lagti
+        // hai — validation fail hone par nahi. Warna user galat bill theek karte
+        // karte hi block ho jata.
+        enforceRateLimit(user, 'checkout');
         // Persist the logical ID before the provider can send a placement POST.
         writeProWorkspace(user.id, ws);
         let providerReturned = false;
@@ -1591,7 +1682,8 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         'ADDRESS', 'OFO', 'COUPON', 'AMOUNT', 'AMOUNT_MISSING', 'RESTAURANT', 'GROUP_CART_EXPIRED',
         'GROUP_CART_PLACED', 'GROUP_CART_BUSY', 'GROUP_CART_FETCH_FAILED', 'SWIGGY_ACCOUNT_NOT_REGISTERED',
         'OTP_IDENTITY_MISSING', 'WALLET_LOW_BALANCE', 'INVALID_UPI', 'DUPLICATE_UTR',
-        'UTR_REQUIRED', 'UTR_INVALID', 'NO_TOPUP_INTENT', 'TOPUP_AMOUNT_MISMATCH'
+        'UTR_REQUIRED', 'UTR_INVALID', 'NO_TOPUP_INTENT', 'TOPUP_AMOUNT_MISMATCH',
+        'RATE_LIMITED', 'ACCOUNT_ALREADY_MANAGED', 'AMOUNT_TOO_LOW'
       ]);
       const code = KNOWN_CODES.has(String(err?.code || '')) ? err.code : undefined;
       json(res, status, {

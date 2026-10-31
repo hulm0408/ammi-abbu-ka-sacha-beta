@@ -403,3 +403,28 @@ ke bina claim nahi, ₹15 par ₹500 ka dawa reject, prune ke baad same UTR bloc
 block, ek intent ek baar, `am`+`amount` QR, dono galat ho to asli wajah, DOM form).
 `test_v104` 11, `test_v100` 14, `test_v101` 10, `test_v72` 99, `test_v75` 29 —
 sweep: `test:guards` **73/73 (130s)**, `test:pro` **41/41**, `npm test` **132/132**, bossbot **49/49**.
+
+## Round 17 (31-10-2026): pehle saari possibilities identify, phir block
+
+Boss: *"KOI BHI KAAM KARNE SE PEHLE KITNI POSSIBILITIES HOSAKTI SABKO IDENTIFY KARKE BLOCK KARDIA KAR NA."*
+
+Ab ek hi file me poori list + block + test ka naksha hai: **`POSSIBILITY_MATRIX.md`**
+(A paisa/UTR, B order/QR, C Swiggy ID/session, D offers, E data-truth).
+
+Is round me naye block jo pehle khule the:
+
+| Naya block | Kya rokta hai |
+|---|---|
+| `pro-rate-limit.js` (naya module, `RATE_LIMITS` ek jagah) | import 8/h, OTP 8/h + verify 15/15m, claim 10/h, top-up 20/h, **asli placement** 6/15m, bill sync 90/m, cart import 20/10m, offer claim 20/h, address resolve 30/30m — 429 + "X minute baad" |
+| `ACCOUNT_ALREADY_MANAGED` | operator ke vault ka Swiggy ID private workspace me copy nahi hota (ek ID = ek order) |
+| Auto-credit cap (`WALLET_AUTO_CREDIT_MAX_PAISE`, default ₹15) | bada amount bina bank verify apne aap credit nahi — PENDING par boss ke paas, `creditedPaise: 0` (jhooth nahi) |
+| Ek zinda top-up intent | naya top-up purana khud band karta hai — kai intent se uljhna band |
+| Bootstrap me `rateLimits` | user/boss ko quota dikhta hai, chhupta nahi |
+
+Rate limit jaan-boojh kar **placement par** lagti hai, validation par nahi — warna galat bill
+theek karte karte user block ho jata. `test_v106_possibility_matrix.mjs` (11 checks) isi baat ko
+bhi pakadta hai.
+
+### Tests
+`test_v106` **11/11** · sweep: `test:guards` **74/74 (129s)**, `test:pro` **41/41**,
+`npm test` **132/132**, bossbot **49/49**.

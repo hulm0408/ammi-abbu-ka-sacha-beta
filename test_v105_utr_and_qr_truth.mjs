@@ -136,10 +136,10 @@ test('wallet: "jitna bol raha" band — ₹15 ka top-up par ₹500 ka dawa rejec
 
 test('wallet: amount body me na ho to bhi sirf top-up ka amount judta hai', async () => {
   seed(7106);
-  const topup = await req(7106, 'wallet/topup', { amountPaise: 2000 });
+  const topup = await req(7106, 'wallet/topup', { amountPaise: 1000 });
   const out = await req(7106, 'wallet/claim', { topupId: topup.body.topup.topupId, utr: '444455556666' });
   assert.equal(out.status, 200);
-  assert.equal(walletBalancePaise(getDb(), '7106'), 2000);
+  assert.equal(walletBalancePaise(getDb(), '7106'), 1000, 'top-up ka amount, body ka nahi');
 });
 
 // ── 3. Same UTR dobara — prune ke baad bhi ────────────────────────────────
