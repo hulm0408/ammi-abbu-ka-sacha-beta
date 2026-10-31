@@ -816,3 +816,26 @@ body.dark #toast { background: #16232f; border-color: #24394a; color: #e8f1f7; }
 .order-row .row-content p { font-size: var(--t-12); }
 .order-status-card { border-left: 3px solid var(--green); }
 .chip-row { display: flex; gap: var(--s-2); flex-wrap: wrap; margin: var(--s-3) 0; }
+
+/* Round 29 (boss): "EK PAGE ME SAARI INFORMATION" — coupon rows cart page par hi */
+.coupon-inline {
+  display: grid; grid-template-columns: 48px 1fr auto; align-items: center; gap: var(--s-3);
+  padding: var(--s-3) var(--s-3); border: 1px dashed var(--tint-blue-line);
+  border-radius: var(--r-md); background: var(--tint-blue); margin-top: var(--s-2);
+}
+.coupon-inline-ribbon {
+  display: grid; place-items: center; height: 40px; border-radius: var(--r-sm);
+  background: #fff; border: 1px solid var(--tint-blue-line); line-height: 1.05;
+  font-size: var(--t-11); font-weight: 800; color: #12657f;
+}
+.coupon-inline-ribbon b { font-size: var(--t-14); letter-spacing: -.2px; }
+.coupon-inline-ribbon small { font-size: 8.5px; font-weight: 800; color: var(--muted); }
+.coupon-inline-copy { display: grid; min-width: 0; }
+.coupon-inline-copy strong { font-size: var(--t-14); font-weight: 800; letter-spacing: .2px; }
+.coupon-inline-copy small { font-size: var(--t-11); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coupon-inline-copy small.ok { color: #0f8a4a; font-weight: 700; }
+.coupon-inline-copy small.no { color: #c0392b; font-weight: 700; }
+.coupon-inline .coupon-cta { white-space: nowrap; }
+
+/* Idle rule chip — pay bar ke andar, ek line, baaki page saaf */
+.pay-bar .idle-note { display: block; margin-top: 2px; font-size: 10px; font-weight: 600; color: var(--muted); max-width: 130px; line-height: 1.25; }

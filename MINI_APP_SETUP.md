@@ -820,3 +820,43 @@ animations, switch/address/pay-tile/pay-bar/delivered-hero CSS, ≤380px media, 
 toggle chal raha hai + import button saamne, address row, payment tiles + Updating pill,
 delivered hero + Back to Orders pill.
 Sweep: guards **85/85 (157s)**, `npm test` **132/132**, `test:pro` **41/41**.
+
+---
+
+## Round 29 — "Ek page me saari information", koi lecture nahi
+
+Boss: *"USKA BOT KITNA PRECISE HAI AND TERA WALA KITNA BEKAR HAI — EK PAGE ME SAARI
+INFORMATION WO DE RAHA, TU USER KO BATATE BATATE DAM TOD DE RAHA."*
+
+Sach: cart page par 1,939 characters text tha — bill ka poora plain-text copy **dobara**
+dikhta tha, aur har card ke neeche ek paragraph samjhata tha ki app kaise chalta hai.
+Ab visible text **1,305 characters** hai aur kaam ki har cheez **ek hi page** par hai.
+
+### Kya badla
+* **Duplicate bill gone** — `<pre class="bill-plain">` ab `hidden` rehta hai, `Poora hisaab`
+  dabane par khulta hai. (Text DOM me hai — copy/verify ke liye — par screen par wall nahi.)
+* **Coupons usi page par** — SAVINGS CORNER me 3 coupon rows + **APPLY**, aur
+  `Saare coupons (n)`. Cart khulte hi list khud load hoti hai (`maybeAutoCoupons`, same
+  restaurant ke liye ek hi baar — loop nahi). Page badalne ki zaroorat nahi.
+* **Lecture lines hatayi** — "Neeche Pay Now dabane par Swiggy ek asli order request
+  banata hai…", "Share link, swiggy.com/gc/…", "Swiggy se aaya bill…", payment card ki
+  poori paragraph, "Balance poora hai — Pay dabate hi…".
+* **2-minute rule** — text wahi (sach chhupaya nahi), par pay bar ke andar **ek chhoti
+  chip** (`.pay-bar .idle-note`), page ke beech me paragraph nahi.
+* **ETA strip** se duplicate "Deliver to <address>" pill hataya (neeche address row
+  pehle se hai). Savings banner ab `✨ ₹28 saved! · CODE` — bas.
+* **Wallet card** — "Kitna paisa bhejna hai?" ab ek line: *UPI mius@ybl par bhejein,
+  12-digit UTR daaliye — jitna paisa sach me aaya utna hi judega.* (Sach wahi, shabd kam.)
+* **Payment tiles** — `Visa, Mastercard, RuPay · app se nahi` / `Not available — UPI se
+  pay karein`. Card chalne ka dikhawa nahi.
+
+### Kya nahi chheda (jaan-boojh kar)
+* UTR credit ka sach, fee ka sach, "kaunsi UPI par paisa jata hai", delivery OTP warning,
+  operator-ID restriction — ye **chhupane wali cheezein nahi** hain. Inhe chhota likha,
+  hataya nahi. (v105/v112/v100 ke tests inhi shabdon ko pakadte hain.)
+
+### Tests
+`test_v118_one_page_no_lecture.mjs` **5 checks** — bill plain-text hidden + ek tap par
+khulta hai; coupons inline + APPLY se asli `cart/sync`; purani lecture lines gayab;
+6 zaroori blocks ek page par; visible text < 1500 chars; idle chip pay bar me.
+Sweep: guards **86/86 (160s)**, `npm test` **132/132**, `test:pro` **41/41**.
