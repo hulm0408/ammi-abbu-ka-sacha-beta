@@ -201,3 +201,32 @@ Swiggy ka cart readback (jisse hum bill banate hain) OFO flag **deti hi nahi**, 
 * **Tests:** `test_v100_miniapp_wallet_ofo_autobill.mjs` (14 checks) — OFO soft (order jaata hai, `ofoConfirmed:false`, note sach), auto coupon (best total, `couponTried`), `cart/sync` me `autoCoupon`, wallet default UPI/fee/low balance, ₹10 → ₹5 → ready, topup QR `pa=mius%40ybl`, boss-only UPI change, `WALLET_LOW_BALANCE` par provider tak baat nahi, fee charge + refund, bill text ki exact lines, auto bill.
 * `test_v89` (7) aur `test_v88` (41) update kiye — OFO flag ab blocking nahi, aur checkout tests wallet funded karte hain.
 * Sweep: `test:guards` **68/68 (126s)**, `test:pro` **41/41**, `npm test` **132/132**, DOM v90/v93/v94/v96/v97/v98 **58/58**, v99 **7/7**, v100 **14/14**.
+
+## Round 12 (31-10-2026): QR na aana, forwarded address bind, UTR auto verify
+
+### 1. "QR NAHI AYA PAYMENT KA AISA HO GAYA"
+Asli case: Swiggy ne order **accept** kar liya (`order_id` mil gaya) par QR/intent nahi mila → app `OUTCOME_UNKNOWN` me chala jata tha aur QR kabhi nahi dikhta tha.
+* **Intent extraction ab poore jawab me dhoondti hai** (jaisa bot karta hai): `app_redirection_info` ke saath `payment_fallbacks`, nested `order_data`, aur JSON text me escaped `upi:\/\/pay?...&amp;` bhi decode hota hai. Pehle sirf ek structured field dekha jata tha — wahi QR na aane ki wajah thi.
+* **Order bana par QR nahi mila** → ab alag, saaf haalat: checkout `PAYMENT_PENDING` + `qrMissing: true` + `qrMissingReason` + `orderId` (plus Swiggy ne koi payment page link diya ho to `paymentPageUrl`). Koi jhootha QR nahi, koi naya order nahi.
+* **QR ka amount bill se match na kare to wo QR kabhi nahi dikhaya jaata** — wajah saaf ("QR ₹99, bill ₹70").
+* App me card: *"Swiggy ne order le liya par payment QR nahi diya"* + order ID + **"dobara order mat karein"** + `Payment check karein` (Swiggy paid bataye to PAID + tracking) + Swiggy ka payment page link (agar mila).
+* Fee is haalat me kati rehti hai (order Swiggy par bana hua hai).
+
+### 2. "Swiggy did not accept the verified delivery address" (forwarded order)
+Address text me PIN/city na hone par Swiggy ka address-create reject ho jata tha, jabki lat/lng sahi the. Ab:
+* `addressTextHints()` address text se **PIN, city, state** nikalta hai (jo likha hai wahi; invent nahi) aur wahi `city`/`pincode` bheja jaata hai.
+* MCP `create_address` ab **3 variants** try karta hai (split lines / poora address ek line / sirf text + coords, bina postal code) — har variant me receiver ka naam + phone.
+* **Usi receiver ka saved address** (same 10-digit phone) 40m ke andar ho to wahi reuse hota hai (`reusedSaved: true`), 150m tak ka fallback bhi — kisi doosre ka address kabhi nahi. Isse duplicate addresses aur `DELIVERY_ADDRESS_BIND_FAILED` dono kam hote hain.
+* Ye `saveAddressToAccount` shared hai — bot ka forwarded flow aur Mini App dono same rasta chalte hain.
+
+### 3. "UTR AUTO VERIFY NAHI HO RAHA"
+`UPI_UTR_VERIFY_URL` set na hone par har UTR boss ke approve karne par atakta tha (`PENDING`, balance 0). Ab:
+* UTR (8–30 chars, duplicate check ke baad) **turant credit** hota hai → `AUTO_VERIFIED`, request me `verifiedBy: 'user-claim'` (jhootha "provider verified" nahi).
+* Koi naya `+/−` nahi: duplicate UTR ab bhi reject, amount limit/min wahi.
+* Purana strict behaviour chahiye to `UPI_REQUIRE_PROVIDER_VERIFY=1` (tab sirf provider verify ya boss approve).
+* Mini App ka "Paisa bhej diya" wala rasta bhi isi se chalta hai — ab message: *"Balance ₹15 ho gaya — ab order place kar sakte hain."*
+
+### Tests
+`test_v101_qr_recovery_address_utr.mjs` (10 checks): escaped/text intent milta hai, intent missing → `SWIGGY_PLACED_NO_UPI_INTENT` + order ID, amount mismatch par QR block, API `qrMissing` → `PAYMENT_PENDING` (OUTCOME_UNKNOWN nahi) + barrier, address hints, MCP variant, same-receiver reuse, UTR auto credit + duplicate, DOM card.
+`test_v72` update (99 checks) — auto credit + strict mode dono.
+Sweep: `test:guards` **69/69 (120s)**, `test:pro` **41/41**, `npm test` **132/132**, bossbot **49/49**.

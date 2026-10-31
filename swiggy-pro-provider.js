@@ -305,11 +305,35 @@ function placementDetails(json) {
     }
     return '';
   };
+  // Boss (31-10-2026, round 12): "QR NAHI AYA". Swiggy kabhi intent ko
+  // `app_redirection_info` se bahar (payment_fallbacks / HTML-escaped text /
+  // nested order_data) bhejta hai. Sirf structured field dekhna hi QR na aane
+  // ki wajah thi — ab poore jawab me text-scan bhi hota hai (jaisa bot karta hai).
+  const findIntentInText = (value) => {
+    let text = '';
+    try { text = JSON.stringify(value); } catch { return ''; }
+    const matches = String(text).match(/upi:\/\/pay\?[^"'\\\s<]+/g) || [];
+    for (const raw of matches) {
+      const decoded = raw.replace(/\\u0026/g, '&').replace(/\\\//g, '/').replace(/&amp;/g, '&');
+      if (/[?&]pa=/.test(decoded)) return decoded;
+    }
+    return '';
+  };
+  const findHttpPaymentLink = (value) => {
+    let text = '';
+    try { text = JSON.stringify(value); } catch { return ''; }
+    const matches = String(text).match(/https:\/\/[^"'\\\s<]+/g) || [];
+    const link = matches.find(u => /(?:^|\/)(?:payments?|upi|pay)\b/i.test(u) && !/swiggy\.com\/(?:orders|ofo\/track)/i.test(u));
+    return link ? String(link).replace(/\\u0026/g, '&').replace(/\\\//g, '/') : '';
+  };
   let redirect = data.app_redirection_info || data.appRedirectionInfo || null;
   if (typeof redirect === 'string') { try { redirect = JSON.parse(redirect); } catch { redirect = null; } }
+  const paymentFallbacks = json?.data?.payment_fallbacks || data.payment_fallbacks || json?.data?.order_data?.payment_fallbacks || null;
   return {
     orderId: normalizeSwiggyOrderId(data.order_id || data.orderId || ''),
-    upiIntentUrl: findIntent(json),
+    upiIntentUrl: findIntent(json) || findIntentInText(json),
+    paymentFallbacks,
+    paymentPageUrl: findHttpPaymentLink(paymentFallbacks) || '' ,
     paymentTxnId: String(data.targeted_marketplace_payment_reference_id ||
       data.payment_info_v2?.payment_transactions?.[0]?.marketplace_reference_id ||
       redirect?.upiRedirect?.upiIntentRedirect?.transactionId || '').slice(0, 200)
@@ -780,12 +804,27 @@ export const proProvider = {
       const check = details.upiIntentUrl
         ? validateUpiIntentForQr(details.upiIntentUrl, { amount: expected, requireAmount: true })
         : { valid: false, info: {} };
-      if (!result?.placeRes?.ok || !successCode(result?.json?.statusCode) || !details.orderId ||
-          !check.valid || exactPaise(check.info?.amount) === null || exactPaise(check.info.amount) !== exactPaise(expected)) {
+      if (!result?.placeRes?.ok || !successCode(result?.json?.statusCode) || !details.orderId) {
         throw attemptedPlacementError(
           'Swiggy did not return a verifiable order ID and matching UPI payment. An order may exist; check My Orders on this account. Do not retry.',
           'SWIGGY_PLACEMENT_RESPONSE_UNCERTAIN', details.orderId
         );
+      }
+      const amountOk = exactPaise(check.info?.amount) !== null && exactPaise(check.info.amount) === exactPaise(expected);
+      if (!check.valid || !amountOk) {
+        // Order BAN gaya hai — "rejected" kehna jhooth hota. Bas QR nahi mila.
+        // Isko OUTCOME_UNKNOWN me daalna hi confusion tha; ab alag haalat.
+        const intentProblem = details.upiIntentUrl
+          ? `Swiggy ka QR amount bill se match nahi karta (QR ₹${check.info?.amount ?? '?'}, bill ₹${expected}).`
+          : 'Swiggy ne order accept kiya par UPI payment QR/intent nahi diya.';
+        const err = unavailable(`${intentProblem} Order #${details.orderId} Swiggy par bana hua hai — dobara order na karein.`);
+        err.code = 'SWIGGY_PLACED_NO_UPI_INTENT';
+        err.diag = {
+          code: 'SWIGGY_PLACED_NO_UPI_INTENT', placementAttempted: true, placedOrderId: details.orderId,
+          qrMissing: true, intentProblem, paymentFallbacks: details.paymentFallbacks || null,
+          paymentPageUrl: details.paymentPageUrl || '', paymentTxnId: details.paymentTxnId || ''
+        };
+        throw err;
       }
       // Boss (31-10-2026, round 11): Swiggy ka cart readback OFO flag deta hi
       // nahi, isliye pehle har OFO order "flag nahi mila" par ruk jaata tha.

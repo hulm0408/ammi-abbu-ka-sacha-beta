@@ -5086,6 +5086,24 @@ export async function fetchAllAccountsSavedAddresses() {
 
 // Match or save delivery address into target Swiggy account via verified `POST /dapi/address`
 // Ensures Swiggy binds a real `address_id` and calculates exact distance-based delivery charges!
+/**
+ * Boss (31-10-2026, round 12): forwarded order par "Swiggy did not accept the
+ * verified delivery address" — address me PIN/city nahi hone par Swiggy ka
+ * address-create reject ho jata tha, jabki lat/lng sahi the. Ye helper sirf
+ * address TEXT se hints nikalta hai (koi invent nahi): PIN agar likha ho,
+ * aur sheher/state ke naam.
+ */
+export function addressTextHints(text) {
+  const raw = String(text || '');
+  const parts = raw.split(',').map(p => p.trim()).filter(Boolean);
+  const pin = (raw.match(/\b([1-8]\d{5})\b/) || [])[1] || '';
+  const junk = /^(?:india|bharat|odisha|orissa|maharashtra|karnataka|delhi|uttar pradesh|rajasthan|gujarat|west bengal|tamil nadu|telangana|andhra pradesh|kerala|punjab|haryana|madhya pradesh|bihar|jharkhand|chhattisgarh|assam|goa)$/i;
+  const cleaned = parts.filter(p => !junk.test(p) && !/^\d{6}$/.test(p));
+  const city = cleaned.length ? cleaned[cleaned.length - 1] : '';
+  const state = parts.find(p => junk.test(p) && !/^india$|^bharat$/i.test(p)) || '';
+  return { pin, city: String(city || '').slice(0, 60), state: String(state || '').slice(0, 40) };
+}
+
 export async function saveAddressToAccount(account, addrDetails, existingAddresses = null) {
   if (!account || !addrDetails) return { addressId: '', addressDetails: addrDetails || null, createdNew: false };
 
@@ -5129,8 +5147,31 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
     };
   }
 
+  // Reuse a saved address of the SAME receiver at the SAME spot (within 40m),
+  // even when the text is written differently ("1st house, Golden villa…").
+  // Ye jhooth nahi — wahi phone, wahi jagah. Isse forwarded order atakta nahi.
+  const sameSpot = savedList.find(sa => {
+    if (!sa?.id) return false;
+    if (normalizeIndianMobile(sa.mobile || sa.phone) !== rawPhone) return false;
+    if (!isValidIndianDeliveryCoordinates(sa.lat, sa.lng)) return false;
+    return distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng) < 40;
+  });
+  if (sameSpot) {
+    return {
+      addressId: String(sameSpot.id),
+      addressDetails: { ...enriched, ...sameSpot, id: String(sameSpot.id), mobile: rawPhone },
+      createdNew: false,
+      reusedSaved: true
+    };
+  }
+
   // 2. Create the explicitly supplied delivery address on the selected Swiggy account.
   // Automatically mints `_session_tid` + `_csrf` in ~650ms via Zero-Chromium HTTP & retries with fresh session if needed!
+  const hints = addressTextHints(enriched.address);
+  if (!String(enriched.city || '').trim() || /^(?:address|delivery|shared location)$/i.test(String(enriched.city || '').trim())) {
+    if (hints.city) enriched.city = hints.city;
+  }
+  if (!String(enriched.pincode || '').match(/^[1-8]\d{5}$/) && hints.pin) enriched.pincode = hints.pin;
 
   for (let saveAttempt = 0; saveAttempt < 2; saveAttempt++) {
     try {
@@ -5185,38 +5226,60 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
 
       // Zero-Chromium Official Swiggy Food MCP `create_address` fallback (`200ms`, zero `_csrf` / WebView dependency!)
       const postalMatch = fullAddr.match(/\b([1-8]\d{5})\b/);
-      const mcpCreated = await callSwiggyFoodMcpTool(account, 'create_address', {
-        fullAddress: fullAddr,
-        addressLine: flatNo,
-        addressLine2: landmarkStr,
-        locality: areaStr,
-        city: citySlug,
-        postalCode: postalMatch?.[1] || String(enriched.pincode || ''),
-        latitude: Number(enriched.lat),
-        longitude: Number(enriched.lng),
-        addressCategory: 'OTHER',
-        addressTag: String(enriched.annotation || 'Order Delivery').slice(0, 30),
-        userName: String(enriched.name || account.swiggyName || account.name || 'Customer').trim(),
-        userPhone: rawPhone,
-        receiverName: String(enriched.name || account.swiggyName || account.name || 'Customer').trim(),
-        receiverPhone: rawPhone
-      }, 6500).catch(() => null);
-      const mcpId =
-        mcpCreated?.structured?.id ||
-        mcpCreated?.structured?.addressId ||
-        mcpCreated?.structured?.address_id ||
-        mcpCreated?.structured?.data?.id ||
-        '';
-      if (mcpId) {
-        return {
-          addressId: String(mcpId),
-          addressDetails: { ...enriched, id: String(mcpId) },
-          createdNew: true
-        };
+      const pinCode = postalMatch?.[1] || String(enriched.pincode || '');
+      const receiver = String(enriched.name || account.swiggyName || account.name || 'Customer').trim();
+      const variants = [
+        { fullAddress: fullAddr, addressLine: flatNo, addressLine2: landmarkStr, locality: areaStr || citySlug, city: citySlug, ...(pinCode ? { postalCode: pinCode } : {}) },
+        // Variant 2: poora address ek line me — jab upar ka split Swiggy ko samajh na aaye.
+        { fullAddress: fullAddr, addressLine: fullAddr.slice(0, 120), addressLine2: landmarkStr || areaStr, locality: areaStr || citySlug, city: citySlug, ...(pinCode ? { postalCode: pinCode } : {}) },
+        // Variant 3: sirf text + coords (postal code daalne par reject hota hai).
+        { fullAddress: fullAddr, locality: areaStr || citySlug, city: citySlug }
+      ];
+      for (const variant of variants) {
+        const mcpCreated = await callSwiggyFoodMcpTool(account, 'create_address', {
+          ...variant,
+          latitude: Number(enriched.lat),
+          longitude: Number(enriched.lng),
+          addressCategory: 'OTHER',
+          addressTag: String(enriched.annotation || 'Order Delivery').slice(0, 30),
+          userName: receiver,
+          userPhone: rawPhone,
+          receiverName: receiver,
+          receiverPhone: rawPhone
+        }, 6500).catch(() => null);
+        const mcpId =
+          mcpCreated?.structured?.id ||
+          mcpCreated?.structured?.addressId ||
+          mcpCreated?.structured?.address_id ||
+          mcpCreated?.structured?.data?.id ||
+          '';
+        if (mcpId) {
+          return {
+            addressId: String(mcpId),
+            addressDetails: { ...enriched, id: String(mcpId) },
+            createdNew: true
+          };
+        }
       }
     } catch (err) {
       console.warn('[saveAddressToAccount] Attempt warning:', err.message);
     }
+  }
+
+  // Aakhri honest rasta: usi receiver phone ka saved address jo 150m ke andar
+  // hai — same jagah, same aadmi. Kisi doosre ka address kabhi nahi.
+  const nearSaved = savedList.find(sa => sa?.id &&
+    normalizeIndianMobile(sa.mobile || sa.phone) === rawPhone &&
+    isValidIndianDeliveryCoordinates(sa.lat, sa.lng) &&
+    distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng) < 150);
+  if (nearSaved) {
+    return {
+      addressId: String(nearSaved.id),
+      addressDetails: { ...enriched, ...nearSaved, id: String(nearSaved.id), mobile: rawPhone },
+      createdNew: false,
+      reusedSaved: true,
+      reusedReason: 'same receiver ka saved address 150m ke andar tha'
+    };
   }
 
   // Never substitute the closest or first saved address when creation fails.
