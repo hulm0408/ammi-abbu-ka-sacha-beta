@@ -1586,3 +1586,11 @@ body.is-loading { cursor: progress; }
 .bill-loading .bill-loading-copy strong { display: block; font-size: 14px; letter-spacing: -.01em; }
 .bill-loading .bill-loading-copy small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; line-height: 1.35; }
 .bill-loading .bill-loading-copy .link-button { margin-top: 6px; font-size: 11px; }
+
+/* Round 35: offer claim ka sach — bill card par ek chhoti line. */
+.bill-offer-note {
+  display: flex; align-items: center; gap: 6px; margin: 8px 0 2px;
+  padding: 6px 9px; border-radius: 10px; background: #f4fbf7; border: 1px solid #d9efe4;
+  color: #146b41; font-size: 11px; font-weight: 700; line-height: 1.35;
+}
+.bill-offer-note .icon { width: 13px; height: 13px; flex: 0 0 auto; }

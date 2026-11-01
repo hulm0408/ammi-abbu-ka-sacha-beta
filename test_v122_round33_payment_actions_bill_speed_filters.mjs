@@ -304,23 +304,21 @@ function seedWorkspace() {
   });
 }
 
-test('bill do kadam me: pehle fast (turant), phir optimize (best coupon)', async () => {
+// Round 35 (boss): "BILL CHANGE HOJATA ... CONSISTENT NAHI HAI" — do kadam
+// (fast phir optimize) hata diya. Ab ek hi bill: jo dikha wahi Pay Now par.
+test('bill ek hi kadam me: poora quote (jo dikha wahi Pay par jata hai)', async () => {
   seedWorkspace();
   quotePhases.length = 0;
   const first = await post('cart/sync', { confirmReplaceSwiggyCart: true, autoCoupon: true, forSomeoneElse: false });
   assert.equal(first.status, 200);
-  assert.deepEqual(quotePhases, ['fast'], 'pehle sirf fast bill');
-  assert.equal(first.body.cart.quote.total, 402);
-  assert.equal(first.body.cart.quote.optimizePending, true, 'optimize bacha hai — app batati hai');
-
-  const second = await post('cart/optimize', {});
-  assert.equal(second.status, 200);
-  assert.deepEqual(quotePhases, ['fast', 'full'], 'phir poora check');
-  assert.equal(second.body.cart.quote.total, 352, 'best coupon ke baad sasta');
-  assert.equal(second.body.cart.quote.optimizePending, false);
-  // Total phir bhi Swiggy ka hi hai (352 = provider ka jawab)
-  assert.match(appSource, /optimizeBill\(/);
-  assert.match(appSource, /api\('cart\/optimize', 'POST'/);
+  assert.deepEqual(quotePhases, ['full'], 'ek hi poora bill — koi chhupa hua doosra phase nahi');
+  assert.equal(first.body.cart.quote.total, 352, 'best coupon pehle bill me hi');
+  assert.equal(first.body.cart.quote.optimizePending, false);
+  // Client sirf poora bill maangta hai; koi background swap nahi.
+  assert.doesNotMatch(appSource, /optimizeBill\(/);
+  assert.match(appSource, /phase: 'full'/);
+  // Fast phase sirf jaan-boojh kar maanga ja sakta hai (chat handoff), default nahi.
+  assert.match(apiSource, /body\.phase === 'fast' \? 'fast' : 'full'/);
 });
 
 // ── 5. Bill ka hisaab ────────────────────────────────────────────────────

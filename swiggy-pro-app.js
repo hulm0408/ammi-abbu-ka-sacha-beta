@@ -745,9 +745,17 @@
       const qr = c.qrDataUrl && /^data:image\/png;base64,/.test(c.qrDataUrl) && c.upiIntentUrl && /^upi:\/\/pay\?/i.test(c.upiIntentUrl)
         ? `<img class="payment-qr" src="${esc(c.qrDataUrl)}" alt="Swiggy UPI payment QR"><a class="button green block" href="${esc(c.upiIntentUrl)}">Open UPI app</a><p class="hint">Pay ${money(c.amount)} only once. If your UPI app cannot open here, scan this QR with another device.</p>` : '';
       const paidNote = c.paymentVerified ? '<div class="warning">Payment was reported, but order confirmation is still pending. Do not pay again.</div>' : '';
-      return `<div class="card"><div class="card-title">${icon('receipt')} Payment pending</div>${id}${warning}${paidNote}${qr}<p class="hint">${c.ofoConfirmed ? 'Swiggy returned an OFO flag; recipient SMS is not verified.' : 'Swiggy has not confirmed OFO acceptance or recipient SMS.'}</p><button class="button primary block" data-action="checkout-status">Check payment & order ${icon('refresh')}</button><button class="button soft block" data-action="checkout-orders">Check original account's orders here</button></div>`;
+      return `<div class="card"><div class="card-title">${icon('receipt')} Payment pending</div>${id}${warning}${paidNote}${qr}<p class="hint">${c.ofoConfirmed ? 'Swiggy returned an OFO flag; recipient SMS is not verified.' : 'Swiggy has not confirmed OFO acceptance or recipient SMS.'}</p><button class="button primary block" data-action="checkout-status">Check payment & order ${icon('refresh')}</button></div>`;
     }
-    return `<div class="card"><div class="card-title">${icon('receipt')} Checkout needs checking</div>${id}<div class="warning">${esc(c.message || 'The result is unknown. An order may exist; do not place another.')}</div>${c.orderId ? `<button class="button primary block" data-action="checkout-status">Check this order ${icon('refresh')}</button>` : ''}<button class="button soft block" data-action="checkout-orders">Check original account's orders here</button></div>`;
+    // Boss (round 35): "CHECKOUT NEEDS CHECKING KA CARD ARAHA AND BUTTON AARAHA
+    // CHECK THIS ORDER AND CHECK ORIGINAL ACCOUNT BLAH BAKH — ISKO HATADO,
+    // CANCEL KARDU." Isliye yahan sirf ek saaf raasta: cancel karo, cart wapas,
+    // naya order karo. Swiggy par order ban gaya ho to uska sach neeche likha
+    // rehta hai — hum use cancel nahi kar sakte, isliye jhooth nahi bolte.
+    const stuck = c.status === 'SUBMITTING'
+      ? 'Order Swiggy ko ja raha hai. 5-10 second ruk kar isi card par cancel dabaiye — jawab aane par yahan sach dikhega.'
+      : esc(c.message || 'Ye checkout band nahi hua. Cancel karke cart wapas lein — dobara order tabhi karein jab My Orders khaali dikhe.');
+    return `<div class="card cancel-card"><div class="card-title">${icon('receipt')} Checkout band karein</div>${id}<div class="warning">${stuck}</div><button class="button danger-soft block" type="button" data-action="checkout-cancel">Order cancel karein</button><p class="hint">Cancel karne par: paisa nahi katega, wallet fee wapas (agar li gayi thi), aur cart dobara khul jayega.</p></div>`;
   }
   /**
    * Boss (31-10-2026): "CART WALA PAGE JAISA DIKHAYA WAISA HI — OPTION BAHUT
@@ -778,7 +786,9 @@
     const deliveryFree = deliveryKnown && num(q.deliveryFee) === 0;
     const savings = num(q.totalSavings) || (discount + freeCash + tradeDiscount + deliverySaved);
     const distance = q.deliveryDistance ? ` <small>${esc(q.deliveryDistance)}</small>` : '';
-    return `<div class="card bill-card" id="bill-details"><div class="card-title">${icon('receipt')} Bill Details ${q.optimizePending === true ? '<span class="bill-chip">Best coupon check…</span>' : ''} <button class="icon-button right" type="button" data-action="bill-refresh" aria-label="Refresh bill">${icon('refresh')}</button></div><div class="divider"></div>${present(q.itemTotal) ? row('Items Total', money(q.itemTotal)) : ''}${discount > 0 ? row(`Coupon ${esc(q.coupon || '')}`, `−${money(discount)}`, 'saving') : ''}${freeCash > 0 ? row('Extra Discount (Free Cash)', `−${money(freeCash)}`, 'saving') : ''}${tradeDiscount > 0 ? row('Extra Discount (Restaurant)', `−${money(tradeDiscount)}`, 'saving') : ''}${oneFee > 0 ? row('Swiggy One Lite Membership', `+${money(oneFee)}`) : ''}${deliveryFree ? `<div class="bill-row free-delivery"><span>Free Delivery</span><strong>${deliverySaved > 0 ? `${money(deliverySaved)} saved` : 'Applied'}</strong></div>` : ''}${deliveryKnown ? row(`Delivery Fee${distance}`, deliveryFree ? `FREE${deliverySaved > 0 ? ` (${money(deliverySaved)} saved)` : ''}` : money(q.deliveryFee), deliveryFree ? 'saving' : '') : ''}${packing > 0 ? row('Packing Charges', money(packing)) : ''}${(taxes + other) > 0 ? row('GST &amp; Other Charges', money(taxes + other)) : ''}${offer > 0 ? row('Extra saving (bill me)', `−${money(offer)}`, 'saving') : ''}${savings > 0 ? `<div class="bill-row total-savings"><span>Total Savings</span><strong>${money(savings)}</strong></div>` : ''}<div class="bill-row total"><span>To Pay</span><span>${money(q.total)}</span></div></div>`;
+    // Offer claim ka sach — chhoti si line, sirf jab server ne kuch kaha ho.
+    const offerLine = q.offerNote ? `<div class="bill-offer-note">${icon('spark')} ${esc(q.offerNote)}</div>` : '';
+    return `<div class="card bill-card" id="bill-details"><div class="card-title">${icon('receipt')} Bill Details ${q.optimizePending === true ? '<span class="bill-chip">Best coupon check…</span>' : ''} <button class="icon-button right" type="button" data-action="bill-refresh" aria-label="Refresh bill">${icon('refresh')}</button></div>${offerLine}<div class="divider"></div>${present(q.itemTotal) ? row('Items Total', money(q.itemTotal)) : ''}${discount > 0 ? row(`Coupon ${esc(q.coupon || '')}`, `−${money(discount)}`, 'saving') : ''}${freeCash > 0 ? row('Extra Discount (Free Cash)', `−${money(freeCash)}`, 'saving') : ''}${tradeDiscount > 0 ? row('Extra Discount (Restaurant)', `−${money(tradeDiscount)}`, 'saving') : ''}${oneFee > 0 ? row('Swiggy One Lite Membership', `+${money(oneFee)}`) : ''}${deliveryFree ? `<div class="bill-row free-delivery"><span>Free Delivery</span><strong>${deliverySaved > 0 ? `${money(deliverySaved)} saved` : 'Applied'}</strong></div>` : ''}${deliveryKnown ? row(`Delivery Fee${distance}`, deliveryFree ? `FREE${deliverySaved > 0 ? ` (${money(deliverySaved)} saved)` : ''}` : money(q.deliveryFee), deliveryFree ? 'saving' : '') : ''}${packing > 0 ? row('Packing Charges', money(packing)) : ''}${(taxes + other) > 0 ? row('GST &amp; Other Charges', money(taxes + other)) : ''}${offer > 0 ? row('Extra saving (bill me)', `−${money(offer)}`, 'saving') : ''}${savings > 0 ? `<div class="bill-row total-savings"><span>Total Savings</span><strong>${money(savings)}</strong></div>` : ''}<div class="bill-row total"><span>To Pay</span><span>${money(q.total)}</span></div></div>`;
   }
   /**
    * Boss (01-11-2026, round 34): "REMOVE THAT DASH WHICH ANIMATION — LITTLE
@@ -965,7 +975,9 @@
     const locked = cartLocked();
     const lockAttr = locked ? 'disabled' : '';
     if (state.checkout?.status === 'PAYMENT_PENDING') return renderPaymentScreen(state.checkout);
-    const lockedNotice = locked ? '<div class="warning">Checkout pending ya unknown hai. Cart/receiver changes band hain; pehle original account check karein.</div>' : '';
+    // Boss (round 35): "CHECK ORIGINAL ACCOUNT BLAH BAKH ... HATADO" — ab
+    // seedha raasta: cancel karo, cart wapas, naya order.
+    const lockedNotice = locked ? '<div class="warning">Ek checkout khula hai. Neeche diye button se cancel karein — phir cart aur order dobara chal jayenge.</div>' : '';
     // Boss (31-10-2026): "CART PARSE KARNE WALA BUTTON SIDHA ACTIVE KAR NAKI
     // DROP DOWN PAR CLICK KARNE KE BAAD." Isliye koi toggle nahi — input aur
     // button hamesha saamne, seedha dabao.
@@ -1137,7 +1149,9 @@
       .then(confirmed => confirmed && signature === billSyncSignature() ? api('cart/sync', 'POST', {
         confirmReplaceSwiggyCart: true,
         forSomeoneElse: cart.forSomeoneElse === true,
-        coupon: '', autoCoupon: true
+        coupon: '', autoCoupon: true,
+        // Round 35 (boss): ek hi bill — jo dikha wahi Pay Now par bhi.
+        phase: 'full'
       }) : null)
       .then(out => {
         // Do not show an old account/address/cart's quote after the user has
@@ -1151,29 +1165,16 @@
         } else if (state.tab === 'cart') render();
         else renderNav();
         if (out.cart?.quote) toast('Bill taiyar — Swiggy ka hisaab neeche hai.');
-        if (out.cart?.quote?.optimizePending) optimizeBill(signature);
       }).catch(e => { if (signature === billSyncSignature()) toast(e?.message || 'Swiggy ne bill nahi diya.'); });
   }
 
   /**
-   * Round 33: pehla bill turant (fast), phir yeh — offers + One Lite + best
-   * coupon. Bill sudhar jata hai par total phir bhi sirf Swiggy ka hota hai.
-   * Cart/address badal gaya to jawab chhod dete hain (purana bill na chipke).
+   * Round 35 (boss): "BILL CHANGE HOJATA ... CONSISTENT NAHI HAI".
+   * Pehle pehla bill fast aata tha aur peeche se `cart/optimize` usko badal
+   * deta tha. Ab bill ek hi baar me poora aata hai (`phase: 'full'`), isliye
+   * jo number Pay bar par dikha wahi checkout par jata hai. Purana helper
+   * hata diya — koi chhupa hua doosra quote nahi.
    */
-  function optimizeBill(signature) {
-    if (state.billOptimizing) return;
-    state.billOptimizing = true;
-    api('cart/optimize', 'POST', {})
-      .then(out => {
-        if (!out || (signature && signature !== billSyncSignature())) return;
-        merge(out);
-        if (state.tab === 'cart') render(); else renderNav();
-        const q = out.cart?.quote;
-        if (q && q.optimizePending === false && Number(q.discount || 0) > 0) toast(`Best coupon laga — ${money(q.total)}`, 'ok');
-      })
-      .catch(() => { /* chup-chaap: pehla bill pehle se dikh raha hai */ })
-      .finally(() => { state.billOptimizing = false; });
-  }
 
   function renderAccountAccess() {
     if (!state.user?.isBoss) return '';

@@ -791,16 +791,34 @@ export const proProvider = {
         return lastReadback;
       };
 
-      // ── Step 0: ₹50-off / free-cash offers claim (bot ka same call) ────────
-      // Ye claim hi bill me "Extra Discount (Free Cash)" laata hai. Pehle Mini
-      // App ise kabhi nahi karta tha — isliye ₹50 kabhi nahi lagta tha.
-      const claimPromise = quickBill || fast || cart.skipOfferClaim === true ? Promise.resolve(null) : Promise.race([
+      // ── Step 0: ₹50-off / free-cash / night offers claim (bot ka same call) ─
+      // Boss (round 35): "FREE CASH ABHI BHI NAHI LAG RAHA". Pichhle round me
+      // claim sirf doosre (full) phase me chalta tha, isliye pehle bill me free
+      // cash nahi aata tha. Ab full bill = pehla bill, aur usme claim ka jawab
+      // PEHLE liya jata hai (bounded), taaki free cash/night cash usi bill me ho.
+      // Claim fail ho to bill phir bhi aata hai — bas sach likha jata hai.
+      const claimEnabled = !(quickBill || fast || cart.skipOfferClaim === true);
+      const claimPromise = claimEnabled ? Promise.race([
         activateAllEventOffers(account).catch(err => ({ success: false, reason: String(err?.message || err).slice(0, 120) })),
-        new Promise(resolve => { const t = setTimeout(() => resolve(null), 6000); if (typeof t.unref === 'function') t.unref(); })
-      ]);
+        new Promise(resolve => { const t = setTimeout(() => resolve(null), 12_000); if (typeof t.unref === 'function') t.unref(); })
+      ]) : Promise.resolve(null);
 
       // ── Step 1: plain cart + One Lite (delivery free) ─────────────────────
       let subscriptionItems = Array.isArray(cart.activeSubscriptionItems) ? cart.activeSubscriptionItems : [];
+      // Claim ka jawab pehle — free cash/night cash tabhi bill me aata hai.
+      const claimResult = claimEnabled ? await claimPromise : null;
+      const claimNote = (() => {
+        if (!claimEnabled) return 'Offer claim is baar nahi chala (fast bill).';
+        if (!claimResult) return 'Offer claim 12 second me jawab nahi de paya — bill bina extra free cash ka hai.';
+        if (claimResult.success === false) return `Offer claim fail: ${String(claimResult.reason || 'Swiggy ne reason nahi diya').slice(0, 120)}`;
+        const sum = claimResult.summary || {};
+        if (Number(sum.preLocked || 0) > 0 && Number(sum.claimed || 0) === 0) {
+          return 'Swiggy ke hisaab se ye ID ye offer pehle le chuki hai (PRE_LOCKED) — free cash dobara nahi milega.';
+        }
+        return Number(sum.claimed || 0) > 0
+          ? `${Number(sum.claimed)} offer claim hua (${Number(sum.alreadyActive || 0)} pehle se active).`
+          : 'Offers pehle se active hain — bill me wahi discount dikhega jo Swiggy deta hai.';
+      })();
       let base = await push({ couponCode: requestedCoupon, subscriptionItems });
       const deliveryFee = Number(base.parsed?.deliveryFee || 0);
       if (!quickBill && !fast && cart.autoOneLite !== false && deliveryFee > 1 && Number(base.parsed?.swiggyOneMembershipFee || 0) === 0) {
@@ -975,6 +993,8 @@ export const proProvider = {
       engine.deliveryFee = Number(parsed?.deliveryFee || 0);
       engine.phase = phase;
       engine.addressReused = engineAddressReused;
+      engine.offerClaim = claimResult ? (claimResult.summary || {}) : null;
+      engine.offerNote = claimNote;
       return {
         address: confirmedAddress,
         addressFingerprint: addressDigest,
@@ -1010,6 +1030,7 @@ export const proProvider = {
           totalSavings: parsed?.totalSavings ?? null,
           subscriptionItems,
           engine,
+          offerNote: claimNote,
           total
         },
         // Sending OFO fields is not proof that Swiggy accepted OFO placement.
