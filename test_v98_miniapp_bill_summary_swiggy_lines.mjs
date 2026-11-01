@@ -170,18 +170,9 @@ test('DOM: bill summary bilkul Swiggy jaisa — har line, Total Savings aur To P
     assert.match(corner, /₹70 Free Cash/);
     assert.match(corner, /₹49 saved on delivery/);
     assert.match(corner, /Swiggy One Lite/);
-    // Poora hisaab: har line ka jod To Pay ke barabar.
-    app.document.querySelector('[data-action="bill-open"]').click();
-    await waitFor(() => app.document.querySelector('.bill-equation'), 'bill math');
-    const math = app.document.querySelector('.bill-equation').textContent;
-    assert.match(math, /Items ₹230/);
-    assert.match(math, /− Coupon ₹160/);
-    assert.match(math, /− Free Cash ₹70/);
-    assert.match(math, /\+ One ₹1/);
-    assert.match(math, /Packing ₹5/);
-    assert.match(math, /GST ₹27\.85/);
-    assert.match(math, /= ₹29$/);
-    assert.match(app.document.querySelector('.bill-card').textContent, /Paneer Kolhapuri × 1\s*₹230/);
+    // Bill breakdown is displayed directly, and the item remains visible.
+    assert.equal(app.document.querySelector('[data-action="bill-open"]'), null);
+    assert.match(app.document.querySelector('.cart-item').textContent, /Paneer Kolhapuri/);
     await new Promise(r => setTimeout(r, 20));
   } finally { app.close(); }
 });

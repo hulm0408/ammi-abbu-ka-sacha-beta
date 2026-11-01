@@ -305,8 +305,9 @@ test('DOM: cart page Swiggy jaisa — savings banner, Savings Corner, meal rail,
     assert.ok(app.document.querySelector('[data-action="coupon-remove"]'), 'Remove button');
     assert.match(text, /Complete your meal/i);
     assert.ok(app.document.querySelector('.meal-card [data-action="dish-add"]'), 'meal rail se add hota hai');
-    assert.ok(app.document.querySelector('[data-action="bill-open"]'), 'View Detailed Bill');
-    assert.match(app.document.querySelector('.pay-bar .pay-now').textContent, /Proceed to Pay/);
+    assert.ok(app.document.querySelector('.bill-card'), 'returned bill is directly visible');
+    assert.equal(app.document.querySelector('[data-action="bill-open"]'), null);
+    assert.match(app.document.querySelector('.pay-bar .pay-now').textContent, /Pay Now/);
     assert.ok(app.document.querySelector('.rating-chip'), 'restaurant rating');
     // Purani cheezein bhi intact.
     assert.ok(app.document.querySelector('form[data-form="group-cart"]'));

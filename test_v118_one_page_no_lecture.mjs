@@ -82,17 +82,14 @@ async function openCart(state, responder) {
   return dom;
 }
 
-test('cart: poora bill ka plain-text copy user ko nahi dikhta (ek tap par khulta hai)', async () => {
+test('cart: returned bill is directly visible without an expansion toggle', async () => {
   const dom = await openCart(withCart());
   const { window } = dom;
   try {
-    await waitFor(() => window.document.querySelector('.bill-plain'), 'bill text node');
-    const pre = window.document.querySelector('.bill-plain');
-    assert.equal(pre.hasAttribute('hidden'), true, 'shuru me chhupa hua');
-    assert.equal(visibleText(window.document.querySelector('main')).includes('Bill Summary'), false, 'wall of text page par nahi');
-    window.document.querySelector('[data-action="bill-open"]').click();
-    await waitFor(() => !window.document.querySelector('.bill-plain').hasAttribute('hidden'), 'khul gaya');
-    assert.match(window.document.querySelector('.bill-plain').textContent, /To Pay: ₹402/);
+    const bill = await waitFor(() => window.document.querySelector('.bill-card'), 'bill');
+    assert.match(visibleText(bill), /To Pay.*₹402/);
+    assert.equal(window.document.querySelector('[data-action="bill-open"]'), null);
+    assert.equal(window.document.querySelector('.bill-plain'), null);
   } finally { window.close(); }
 });
 
@@ -117,7 +114,7 @@ test('cart: koi lecture paragraph nahi — page par text kam', async () => {
   const dom = await openCart(withCart());
   const { window } = dom;
   try {
-    await waitFor(() => window.document.querySelector('.pay-method-card'), 'payment card');
+    await waitFor(() => window.document.querySelector('.bill-card'), 'bill card');
     const text = visibleText(window.document.querySelector('main'));
     for (const dead of [
       /Neeche Pay Now dabane par Swiggy ek asli order request/i,
@@ -126,21 +123,20 @@ test('cart: koi lecture paragraph nahi — page par text kam', async () => {
       /Payment alag se UPI se hoti hai/i
     ]) assert.equal(dead.test(text), false, 'purani lecture line hata di: ' + dead);
     // Sab kuch ek page par: address, items, coupon, bill, payment, pay bar.
-    for (const key of ['DELIVERING TO', 'Your Order', 'SAVINGS CORNER', 'Bill Details', 'Payment: UPI / QR', 'PAY USING UPI']) {
+    for (const key of ['DELIVERING TO', 'Your Order', 'SAVINGS CORNER', 'Bill Details', 'Pay Now']) {
       assert.ok(text.includes(key), key);
     }
     assert.ok(text.length < 1500, `visible text budget — actual ${text.length}`);
   } finally { window.close(); }
 });
 
-test('cart: 2 minute ka rule page par rehta hai, par chhoti chip me', async () => {
+test('cart: idle countdown copy is removed without changing the server rule', async () => {
   const state = withCart({ idle: { timeoutMs: 120000 } });
   const dom = await openCart(state);
   const { window } = dom;
   try {
-    const note = await waitFor(() => window.document.querySelector('.pay-bar .idle-note'), 'idle chip');
-    assert.match(note.textContent, /2 minute tak koi activity nahi/);
-    assert.match(note.textContent, /band ho jayega/i);
+    await waitFor(() => window.document.querySelector('.pay-bar'), 'pay bar');
+    assert.equal(window.document.querySelector('.pay-bar .idle-note'), null);
   } finally { window.close(); }
 });
 

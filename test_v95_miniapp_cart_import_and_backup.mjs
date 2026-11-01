@@ -239,7 +239,7 @@ test('DOM: khaali link par seedha message, koi request nahi', async () => {
   } finally { app.close(); }
 });
 
-test('DOM: boss ko Tools me backup ka sach dikhta hai aur button chalta hai', async () => {
+test('DOM: boss Tools removes backup card without invoking backup or deleting data', async () => {
   const backup = { cloud: { enabled: true, lastOkAt: '', lastError: '' }, dbMirror: { enabled: true, rows: 7, lastAt: '2026-10-31T10:00:00.000Z' }, restored: { count: 2, lastAt: '', lastFrom: 'db-mirror' }, vaultSource: 'DERIVED' };
   const bossState = state({ user: { name: 'Boss', isBoss: true }, backup });
   const app = harness({ responder: call => {
@@ -249,14 +249,10 @@ test('DOM: boss ko Tools me backup ka sach dikhta hai aur button chalta hai', as
   try {
     await waitFor(() => app.document.querySelector('form[data-form="send-otp"]'), 'accounts');
     app.document.querySelector('[data-action="nav"][data-tab="tools"]').click();
-    await waitFor(() => app.document.querySelector('[data-action="backup-now"]'), 'backup button');
-    const card = app.document.querySelector('.backup-card').textContent;
-    assert.match(card, /7 workspace saved/);
-    assert.match(card, /ON/);
-    assert.match(card, /2 baar/);
-    app.document.querySelector('[data-action="backup-now"]').click();
-    await waitFor(() => app.calls.some(c => c.url.endsWith('/backup')), 'backup call');
-    await new Promise(r => setTimeout(r, 20));
+    await waitFor(() => app.document.querySelector('#content')?.textContent.includes('ID access'), 'tools');
+    assert.equal(app.document.querySelector('.backup-card'), null);
+    assert.equal(app.document.querySelector('[data-action="backup-now"]'), null);
+    assert.equal(app.calls.some(c => c.url.endsWith('/backup')), false);
   } finally { app.close(); }
 });
 

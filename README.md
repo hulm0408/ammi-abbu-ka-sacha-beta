@@ -18,7 +18,7 @@ Telegram bot built for Swiggy food ordering with saved-address, group-cart, bill
 2. Open the Mini App, choose an authorized ID or Auto Choose, and confirm the fetched address and recipient.
 3. Check the fetched cart, consent to replacing the selected Swiggy cart, and review the provider's bill before Pay Now.
 
-Boss grants individual shared IDs under **Tools → ID access** after each user contacts the bot. The bot does not send recipient SMS; whether Swiggy sends one is unverified. Old chat orders remain available; [`SIMPLE_CHAT_FLOW.md`](./SIMPLE_CHAT_FLOW.md) documents the earlier chat-only flow. `SIMPLE_CHAT_MODE=0` changes legacy screens but does not disable the new production link handoff.
+All authenticated Telegram users can select current and future operator-uploaded IDs by default. Boss can revoke or restore a known user's access under **Tools → ID access**; user-owned accounts remain private and operator sessions cannot be exported by other users. The bot does not send recipient SMS; whether Swiggy sends one is unverified. Old chat orders remain available; [`SIMPLE_CHAT_FLOW.md`](./SIMPLE_CHAT_FLOW.md) documents the earlier chat-only flow. `SIMPLE_CHAT_MODE=0` changes legacy screens but does not disable the new production link handoff.
 
 ## 📍 Address intake rule (URL-first)
 

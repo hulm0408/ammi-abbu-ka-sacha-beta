@@ -231,10 +231,8 @@ test('DOM: cart Swiggy jaisa — restaurant head, outlet dropdown, FREE delivery
     assert.match(text, /FREE/);
     assert.match(text, /2\.1 km/);
     assert.equal(/farak hai/.test(text), false, 'mismatch warning box kabhi nahi');
-    // Payment copy Swiggy jaisa.
-    assert.match(text, /PhonePe, Paytm, CRED & koi bhi UPI app/);
-    assert.match(text, /Visa, Mastercard, RuPay/);
-    assert.match(text, /PAY USING UPI/);
+    // The redundant payment card/copy is removed, but Pay Now remains.
+    assert.doesNotMatch(text, /PAY USING UPI|Payment: UPI \/ QR|Bill updating/i);
     // Pay band ab band nahi — asli Pay Now.
     assert.match(text, /Pay Now/);
     assert.equal(/payment band/i.test(text), false);
@@ -325,6 +323,7 @@ test('DOM: restaurant kholne par pehle outlet/location sheet (Swiggy jaisa)', as
   ];
   const app = harness({ responder: call => {
     if (call.url.includes('/search?q=')) return { ok: true, restaurants: results };
+    if (call.url.includes('/restaurants/outlets?')) return { ok: true, outlets: results };
     if (call.url.includes('/menu?id=')) return { ok: true, restaurant: { id: '203', name: 'Pizza Junction', area: 'Hadapsar', isOpen: true }, categories: [{ title: 'Pizza', items: [] }] };
     return base;
   } });
@@ -386,13 +385,13 @@ test('DOM: checkout page Swiggy jaisa — ETA, address, Your Order, bill, paymen
     assert.match(text, /DELIVERING TO/i);
     assert.match(text, /Your Order/);
     assert.match(text, /Bill Details/);
-    assert.match(text, /Payment Method/);
+    assert.doesNotMatch(text, /Payment Method|PAY USING UPI/);
     // Section order Swiggy jaisa: address pehle, order uske baad, payment sabse neeche.
     const html = app.document.querySelector('#content').innerHTML;
     const at = needle => html.indexOf(needle);
     assert.ok(at('eta-strip') < at('DELIVERING TO'), 'ETA pehle, address baad me');
     assert.ok(at('DELIVERING TO') < at('Your Order'), 'address pehle, order baad me');
-    assert.ok(at('Bill Details') < at('Payment Method'), 'bill pehle, payment baad me');
+    assert.ok(at('Bill Details') < at('Pay Now'), 'bill visible above pay bar');
     const pay = app.document.querySelector('.pay-bar button');
     assert.equal(pay.disabled, false, 'Pay Now active hai');
     assert.match(pay.textContent, /Pay Now/);
@@ -414,10 +413,14 @@ test('DOM: bill na ho to bhi Pay Now chalta hai — pehle bill, phir order', asy
     const pay = app.document.querySelector('.pay-bar button');
     assert.equal(pay.disabled, false, 'bill ke bina bhi Pay Now dab sakta hai');
     assert.match(pay.textContent, /Pay Now/);
-    pay.click();
-    // Pehle bill, phir confirm dialog.
-    await waitFor(() => app.calls.some(c => c.url.endsWith('/cart/sync')), 'auto bill');
-    await waitFor(() => app.document.querySelector('.confirm-dialog'), 'confirm');
+    // Sync may replace the account's existing Swiggy cart, so consent first.
+    await waitFor(() => app.document.querySelector('.confirm-dialog .button.primary'), 'cart sync consent');
+    assert.equal(app.calls.some(c => c.url.endsWith('/cart/sync')), false);
+    app.document.querySelector('.confirm-dialog .button.primary').click();
+    await waitFor(() => app.calls.some(c => c.url.endsWith('/cart/sync')), 'bill sync');
+    await waitFor(() => app.document.querySelector('.bill-card') && !app.document.querySelector('.confirm-dialog'), 'returned bill');
+    app.document.querySelector('.pay-bar .pay-now').click();
+    await waitFor(() => app.document.querySelector('.confirm-dialog'), 'payment consent');
     assert.match(app.document.querySelector('.confirm-dialog').textContent, /Pay ₹335/);
     app.document.querySelector('.confirm-dialog .button.primary').click();
     await waitFor(() => app.calls.some(c => c.url.endsWith('/checkout')), 'checkout call');

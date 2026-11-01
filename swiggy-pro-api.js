@@ -134,27 +134,43 @@ async function bodyJson(req) {
 }
 
 /**
- * The operator sees the vault; each other Telegram user sees only their own
- * private accounts and the specific operator accounts explicitly granted to
- * them. Missing or unreadable grant data fails closed. Grant changes do not
- * delete any account or workspace.
+ * Operator IDs are available to authenticated Telegram users by default, as
+ * requested. A Boss can deny a particular user/ID in Tools; user-owned IDs
+ * remain private. Old per-ID grant hashes are retained for compatibility.
+ * Decisions are key-bound so replacing an account cannot silently undo a deny.
  */
+const SHARED_ACCESS_DENIED = '!';
+const unconfirmedAccessChanges = new Set();
+const accessDecisionKey = (userId, accountKey) => `${userId}\0${accountKey}`;
 function sharedAccountMap() {
   try { return getDb().config?.accounts || {}; } catch { return {}; }
 }
-function grantIdentity(account) {
-  const phone = normalizeIndianMobileNumber(account?.phone || account?.mobile || '');
-  const customerId = String(account?.customerId || '').trim();
-  const identity = phone ? `phone:${phone}` : (customerId && customerId !== '0' && customerId !== '-1' ? `customer:${customerId}` : '');
-  return identity ? crypto.createHash('sha256').update(`pro-account-access:${identity}`).digest('hex') : '';
+function offerTrackStatus(rec) {
+  const status = String(rec?.status || rec?.state || 'NOT_CLAIMED');
+  // The primary campaign can already be active while another is partial or was
+  // just claimed. Only describe the overall track as already claimed if any
+  // detailed results also confirm that every campaign was already active.
+  const allAlready = !Array.isArray(rec?.results) || rec.results.every(r =>
+    r?.verified === true && ['ALREADY_ACTIVE', 'ALREADY_VERIFIED', 'ALREADY_CLAIMED'].includes(String(r.state || '').toUpperCase()));
+  return rec?.alreadyActive === true && rec?.verified === true && status.toUpperCase() === 'CLAIMED' && allAlready
+    ? 'ALREADY_CLAIMED' : status;
+}
+function sharedAccountAllowed(db, userId, key) {
+  if (unconfirmedAccessChanges.has(accessDecisionKey(userId, key))) return false;
+  const decisions = db.config?.proAccountGrants;
+  if (decisions !== undefined && (!decisions || typeof decisions !== 'object' || Array.isArray(decisions))) return false;
+  const row = decisions?.[String(userId)];
+  if (row !== undefined && (!row || typeof row !== 'object' || Array.isArray(row))) return false;
+  const decision = row?.[key];
+  // Unknown/corrupt entries are not permission to share. Missing is the new
+  // default; old valid grant hashes continue to allow the account.
+  return decision === undefined || (typeof decision === 'string' && /^[a-f0-9]{64}$/.test(decision));
 }
 function accountMap(user, workspace) {
-  const shared = sharedAccountMap();
+  const db = getDb();
+  const shared = db.config?.accounts || {};
   if (isBoss(user.id)) return shared;
-  const grants = getDb().config?.proAccountGrants?.[String(user.id)] || {};
-  const allowed = Object.fromEntries(Object.entries(shared).filter(([key, account]) =>
-    Object.prototype.hasOwnProperty.call(grants, key) && grantIdentity(account) && grants[key] === grantIdentity(account)
-  ));
+  const allowed = Object.fromEntries(Object.entries(shared).filter(([key]) => sharedAccountAllowed(db, user.id, key)));
   return { ...allowed, ...workspace.accounts };
 }
 /**
@@ -223,8 +239,9 @@ function listAccounts(user, workspace) {
             key: track.key,
             label: track.label,
             emoji: track.emoji,
-            status: String(rec?.status || rec?.state || 'NOT_CLAIMED'),
-            verified: rec?.verified === true || rec?.status === 'CLAIMED' || rec?.status === 'ALREADY_ACTIVE',
+            status: offerTrackStatus(rec),
+            // A saved status alone is not a provider read-back verification.
+            verified: rec?.verified === true,
             message: String(rec?.message || '').slice(0, 160)
           };
         }),
@@ -474,7 +491,7 @@ function offerClaimSummary(result) {
     const rec = offers[track.key] || null;
     return {
       key: track.key, label: track.label, emoji: track.emoji,
-      status: String(rec?.status || rec?.state || 'NOT_CLAIMED'),
+      status: offerTrackStatus(rec),
       verified: rec?.verified === true,
       message: String(rec?.message || '').slice(0, 200)
     };
@@ -947,7 +964,6 @@ function chatHandoffView(user, ws) {
 }
 function bossAccountAccessView() {
   const db = getDb();
-  const grants = db.config?.proAccountGrants && typeof db.config.proAccountGrants === 'object' ? db.config.proAccountGrants : {};
   const accounts = Object.entries(db.config?.accounts || {}).map(([key, a]) => ({
     key, name: String(a?.swiggyName || a?.name || 'Swiggy ID').slice(0, 80), phoneMasked: maskAccountPhone(a?.phone || a?.mobile || '')
   }));
@@ -956,10 +972,7 @@ function bossAccountAccessView() {
     .sort((a, b) => Number(b[1]?.lastSeen || 0) - Number(a[1]?.lastSeen || 0)).slice(0, 300)
     .map(([id, u]) => ({
       id, name: String([u?.firstName, u?.lastName].filter(Boolean).join(' ') || u?.username || id).slice(0, 80),
-      allowed: accounts.filter(a => {
-        const identity = grantIdentity(db.config?.accounts?.[a.key]);
-        return identity && grants[id]?.[a.key] === identity;
-      }).map(a => a.key)
+      allowed: accounts.filter(a => sharedAccountAllowed(db, id, a.key)).map(a => a.key)
     }));
   return { accounts, users };
 }
@@ -1250,9 +1263,8 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         });
         return;
       }
-      // Only the operator can grant individual shared IDs to a known Telegram
-      // user. Existing records are retained; an absent grant always means no
-      // access. A user must first contact the bot so the operator can identify them.
+      // Only the operator can override default shared-ID access for a known
+      // Telegram user. Denials do not remove any account or workspace.
       if (route === '/pro/api/boss/account-access' && req.method === 'GET') {
         if (!isBoss(user.id)) throw error(403, 'ID access sirf admin manage kar sakta hai.');
         json(res, 200, { ok: true, access: bossAccountAccessView() });
@@ -1270,16 +1282,36 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         }
         if (!key || ['__proto__', 'prototype', 'constructor'].includes(key) ||
             !Object.prototype.hasOwnProperty.call(db.config?.accounts || {}, key)) throw error(404, 'Operator ID nahi mili.');
-        if (!db.config.proAccountGrants || typeof db.config.proAccountGrants !== 'object' || Array.isArray(db.config.proAccountGrants)) db.config.proAccountGrants = {};
+        if (db.config.proAccountGrants === undefined) db.config.proAccountGrants = {};
+        if (!db.config.proAccountGrants || typeof db.config.proAccountGrants !== 'object' || Array.isArray(db.config.proAccountGrants)) {
+          throw error(503, 'ID access data unreadable; operator must restore it before changing access.');
+        }
         const previous = db.config.proAccountGrants[target];
-        const grants = previous && typeof previous === 'object' && !Array.isArray(previous) ? { ...previous } : {};
-        if (body.allow) {
-          const identity = grantIdentity(db.config.accounts[key]);
-          if (!identity) throw error(400, 'Is ID ka saved phone ya customer ID nahi mila.');
-          grants[key] = identity;
-        } else delete grants[key];
+        if (previous !== undefined && (!previous || typeof previous !== 'object' || Array.isArray(previous))) {
+          throw error(503, 'This user’s ID access data is unreadable; restore it before changing access.');
+        }
+        const grants = previous ? { ...previous } : {};
+        if (body.allow) delete grants[key];
+        else grants[key] = SHARED_ACCESS_DENIED;
         db.config.proAccountGrants[target] = grants;
-        if (!saveDbDurable(db)) throw error(503, 'ID access save nahi hua. Dobara check karein.');
+        const guard = accessDecisionKey(target, key);
+        if (!saveDbDurable(db)) {
+          // saveDb may have updated its in-memory cache before a write/fsync
+          // failed. Never allow an unconfirmed change in this process; attempt
+          // to persist a deny as well, and require a successful retry to clear it.
+          unconfirmedAccessChanges.add(guard);
+          try {
+            const rollback = getDb();
+            rollback.config.proAccountGrants ||= {};
+            rollback.config.proAccountGrants[target] = { ...(rollback.config.proAccountGrants[target] || {}), [key]: SHARED_ACCESS_DENIED };
+            saveDbDurable(rollback);
+          } catch { /* the in-process deny remains active */ }
+          throw error(503, 'ID access save nahi hua. Dobara check karein.');
+        }
+        unconfirmedAccessChanges.delete(guard);
+        if (sharedAccountAllowed(getDb(), target, key) !== body.allow) {
+          throw error(409, 'ID access changed concurrently. Check and retry.');
+        }
         json(res, 200, { ok: true, access: bossAccountAccessView() });
         return;
       }
@@ -1993,6 +2025,12 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         currentAccount(user, ws);
         const menu = ws.menu;
         const id = String(body.itemId || '');
+        // A background menu request must never make an item tap add a dish
+        // from a different restaurant. Old clients without this field retain
+        // their existing behavior; the Mini App always supplies it.
+        if (body.restaurantId && String(menu?.restaurant?.id || '') !== String(body.restaurantId)) {
+          throw error(400, 'Menu changed. Open the restaurant again before adding an item.');
+        }
         const item = menu?.categories?.flatMap(c => c.items || []).find(i => i.id === id);
         if (!item) throw error(404, 'Menu item not found. Open its restaurant again.');
         if (menu.restaurant?.isOpen === false || item.inStock === false) throw error(400, 'This item is unavailable.');
@@ -2072,17 +2110,24 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const account = currentAccount(user, ws);
         if (!ws.selectedAddress) throw error(400, 'Pehle delivery address chunein.');
         const list = await provider.search(account, ws.selectedAddress, name);
-        const norm = value => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        // Substring matching incorrectly treated similarly named restaurants as
+        // branches. Keep only distinct IDs with the same normalized name; do
+        // not invent outlets when Swiggy search does not return them.
+        const norm = value => String(value || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
         const target = norm(name);
+        const seen = new Set();
         const outlets = (Array.isArray(list) ? list : [])
-          .filter(r => norm(r.name) === target || norm(r.name).includes(target) || target.includes(norm(r.name)))
+          .filter(r => {
+            const id = String(r?.id || '');
+            if (!target || !id || seen.has(id) || norm(r.name) !== target) return false;
+            seen.add(id); return true;
+          })
           .slice(0, 20)
           .map(r => ({
-            id: String(r.id || ''), name: String(r.name || ''), area: String(r.area || ''),
+            id: String(r.id), name: String(r.name || ''), area: String(r.area || ''),
             distance: String(r.distance || ''), time: String(r.time || ''), rating: String(r.rating || ''), ratings: String(r.ratings || ''),
             isOpen: r.isOpen === true ? true : r.isOpen === false ? false : null
-          }))
-          .filter(r => r.id);
+          }));
         json(res, 200, { ok: true, outlets, note: outlets.length ? '' : 'Is naam ka koi outlet nahi mila. Search me poora naam try karein.' });
         return;
       }

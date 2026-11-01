@@ -141,8 +141,8 @@ test('order detail: bill lines sirf jo Swiggy ne di, warna total-only sach', asy
     const row = await waitFor(() => dom.window.document.querySelector('[data-action="order-detail"]'), 'order row');
     row.click();
     const card = await waitFor(() => [...dom.window.document.querySelectorAll('.card')].find(c => /Payment & bill/.test(c.textContent)), 'bill card');
-    assert.match(card.textContent, /Total paid/);
-    assert.match(card.textContent, /line-by-line bill nahi diya/);
+    assert.match(card.textContent, /Total/);
+    assert.doesNotMatch(card.textContent, /Total paid|line-by-line bill nahi diya/);
   } finally { dom.window.close(); }
 
   const richOrder = {
@@ -159,7 +159,7 @@ test('order detail: bill lines sirf jo Swiggy ne di, warna total-only sach', asy
     assert.match(card.textContent, /Platform fee/);
     assert.match(card.textContent, /Coupon discount/);
     assert.match(card.textContent, /−₹10/);
-    assert.match(card.textContent, /Total paid/);
+    assert.match(card.textContent, /Total/);
   } finally { dom.window.close(); }
 });
 

@@ -147,7 +147,7 @@ test('share link copy hota hai aur Telegram share sheet khulta hai', async () =>
   } finally { window.close(); }
 });
 
-test('share link na mile to jhooth nahi — saaf wajah + dobara maangne ka button', async () => {
+test('share link na mile to concise unavailable state, no fabricated link or refresh control', async () => {
   const state = baseState({
     orders: [{ id: '111', status: 'PAID', restaurant: 'R', amount: 200, placedAt: 'x', items: [] }],
     orderTracking: { orderId: '111', status: 'Placed', trackingUrl: '', tried: ['FYI_CTA', 'ORDER_DETAILS'] }
@@ -163,10 +163,9 @@ test('share link na mile to jhooth nahi — saaf wajah + dobara maangne ka butto
     window.document.querySelector('[data-action="nav"][data-tab="orders"]').click();
     const row = await waitFor(() => window.document.querySelector('[data-action="order-detail"]'), 'row');
     row.click();
-    const card = await waitFor(() => window.document.querySelector('.share-card'), 'share card');
-    assert.match(card.textContent, /share link nahi diya/i);
-    assert.match(card.textContent, /Hum apna link nahi banate/i);
-    assert.ok(card.querySelector('[data-action="order-tracking"]'), 'dobara maangne ka button');
+    const card = await waitFor(() => window.document.querySelector('.share-card')?.textContent.includes('Link unavailable') && window.document.querySelector('.share-card'), 'share unavailable');
+    assert.match(card.textContent, /Link unavailable/i);
+    assert.equal(card.querySelector('[data-action="order-tracking"]'), null);
     assert.equal(/^https:\/\//.test(card.querySelector('[data-share-input]')?.value || ''), false);
   } finally { window.close(); }
 });

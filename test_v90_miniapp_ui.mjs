@@ -202,9 +202,9 @@ test('uncertain checkout offers in-app original-account history without clearing
     assert.match(app.document.body.textContent, /order fail nahi|doosra order na karein/i);
     assert(app.calls.some(c => c.url.endsWith('/orders?scope=checkout')));
     app.document.querySelector('[data-action="order-detail"]').click();
-    app.document.querySelector('[data-action="order-tracking"]').click();
-    await waitFor(() => !app.document.body.textContent.includes('Swiggy has not returned tracking details yet.'), 'tracking response');
-    assert(app.calls.some(c => c.url.includes('/orders/tracking?') && c.url.includes('scope=checkout')));
+    await waitFor(() => app.calls.some(c => c.url.includes('/orders/tracking?') && c.url.includes('scope=checkout')), 'automatic share-link request');
+    assert.equal(app.document.querySelector('[data-action="order-tracking"]'), null, 'no tracking refresh control');
+    assert.match(app.document.body.textContent, /Share link/);
     assert.deepEqual(app.external, []);
   } finally { app.close(); }
 });
