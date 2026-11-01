@@ -506,7 +506,10 @@ function saveProviderQuote(ws, quote) {
     ...billBreakdown(quote.bill, { items: ws.cart?.items || [] }),
     // Asli coupon code (billBreakdown discount na hone par isse clear kar
     // deta hai) — checkout isi se Swiggy ka live coupon match karta hai.
-    couponCode: String(quote.bill?.coupon || '').toUpperCase(),
+    couponCode: String(quote.bill?.couponCode || quote.bill?.coupon || '').toUpperCase(),
+    couponSaving: Number(quote.bill?.discount) > 0 ? Number(quote.bill.discount) : 0,
+    couponReason: String(quote.bill?.couponReason || '').slice(0, 160),
+    offerTracks: Array.isArray(quote.bill?.offerTracks) ? quote.bill.offerTracks.slice(0, 2) : [],
     autoCoupon: quote.bill?.autoCoupon === true,
     couponTried: Array.isArray(quote.bill?.couponTried) ? quote.bill.couponTried.slice(0, 5) : [],
     ofoConfirmed: quote.ofoConfirmed === true,
@@ -2149,6 +2152,16 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const requested = String(url.searchParams.get('id') || '').trim();
         const restaurantId = requested || String(ws.cart?.restaurantId || '');
         if (!/^\d{1,20}$/.test(restaurantId)) throw error(400, 'Pehle cart ya restaurant kholein.');
+        const cached = ws.cart?.quote?.engine?.couponOptions;
+        if (String(ws.cart?.restaurantId || '') === restaurantId && Array.isArray(cached) && cached.length) {
+          const trials = new Map((ws.cart.quote.engine.couponTrials || []).map(t => [String(t.code).toUpperCase(), t]));
+          const coupons = cached.map(c => {
+            const t = trials.get(String(c.code).toUpperCase());
+            return { ...c, applicable: t ? t.ok !== false : c.applicable !== false, reason: t && t.ok === false ? String(t.reason || c.reason || '') : (c.reason || '') };
+          });
+          json(res, 200, { ok: true, coupons, note: '', discovery: true });
+          return;
+        }
         const out = await provider.coupons(account, ws.selectedAddress || {}, restaurantId);
         json(res, 200, { ok: true, ...out });
         return;
@@ -2207,7 +2220,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         // quote. `body.phase === 'fast'` sirf tab jab koi jaan-boojh kar turant
         // number maange (chat handoff) — default poora hi hai.
         const phase = body.phase === 'fast' ? 'fast' : 'full';
-        const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon, { phase });
+        const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon, { phase, autoCoupon: ws.cart.autoCoupon !== false });
         saveProviderQuote(ws, quote);
         // Bill ke saath outlet ka sach bhi — header/outlet row ke liye.
         if (ws.menu?.restaurant && String(ws.menu.restaurant.id) === String(ws.cart.restaurantId)) {

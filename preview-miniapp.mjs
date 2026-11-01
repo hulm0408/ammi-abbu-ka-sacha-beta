@@ -61,7 +61,7 @@ const demoState = {
     restaurantId: 'demo-1', restaurantName: 'The Curry House', restaurantArea: 'Green Park',
     restaurantTime: '30–40 mins', restaurantRating: '4.4',
     items: [{ id: 'demo-dish-1', lineKey: 'demo-line-1', name: 'Paneer tikka bowl', price: 189, qty: 2, isVeg: true }],
-    quote: { itemTotal: 378, deliveryFee: 28, deliverySaved: 28, taxes: 42, total: 448, coupon: '', discount: 0, offerNote: '1 offer claim hua (0 pehle se active).', fetchedAt: now.toISOString() }
+    quote: { itemTotal: 378, deliveryFee: 28, deliverySaved: 28, taxes: 42, total: 398, coupon: '', couponCode: '', discount: 0, freeCash: 50, offerNote: '2 Free Cash claim active.', offerTracks: [{ key: 'lateNight', label: 'Night', status: 'CLAIMED', verified: true }, { key: 'breakfast', label: 'Breakfast', status: 'CLAIMED', verified: true }], fetchedAt: now.toISOString() }
   },
   coupons: [
     { code: 'DEMO50', title: '₹50 OFF', description: 'Example offer for this preview.' },
@@ -115,7 +115,7 @@ function sceneState(scene) {
     };
   }
   if (scene === 'billloading') {
-    // Round 34: bill abhi aa raha hai — creative receipt loader + 2-minute rule.
+    // Bill abhi aa raha hai — curved circular loader.
     state.cart.quote = null;
     state.cart.optimizePending = false;
   }
@@ -218,7 +218,14 @@ function previewBoot(scene) {
       if (route === 'cart/clear') { STATE.cart = null; return json(STATE); }
       if (route === 'cart/sync') {
         recalculate();
-        if (body.coupon && STATE.cart?.quote) { STATE.cart.quote.coupon = body.coupon; STATE.cart.quote.discount = 25; STATE.cart.quote.total -= 25; }
+        if (STATE.cart?.quote) {
+          const q = STATE.cart.quote;
+          const code = String(body.coupon || '').toUpperCase();
+          const itemTotal = (STATE.cart.items || []).reduce((n, i) => n + Number(i.price || 0) * Number(i.qty || 0), 0);
+          const discount = code === 'DEMO50' ? Math.min(50, itemTotal) : code === 'DEMO20' ? Math.min(100, Math.round(itemTotal * 0.2)) : code === 'WELCOME' ? Math.min(25, itemTotal) : 0;
+          const freeCash = itemTotal > 0 ? 50 : 0;
+          Object.assign(q, { itemTotal, coupon: discount > 0 ? code : '', couponCode: discount > 0 ? code : '', discount, couponSaving: discount, freeCash, total: Math.max(0, itemTotal + 70 - freeCash - discount), fetchedAt: new Date().toISOString() });
+        }
         return json(STATE);
       }
       if (route === 'orders') return json({ ok: true, orders: STATE.orders, detailAllowed: true });

@@ -11,7 +11,7 @@
     menuLoading: false, menuQuery: '', orders: null, ordersScope: 'active', order: null, orderTracking: null, orderLinkLoading: false, ordersLoading: false, ordersDetailAllowed: true,
     cachedAccounts: [], busy: false, loading: 0, resultsLoading: false, deleteFlow: null, claimBusyKey: '', claimResult: null, couponOpen: false,
     outlets: null, outletsOpen: false, outletsLoading: false, backup: null, backupBusy: false,
-    coupons: null, couponsNote: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, ordersFilter: 'all', accountQuery: '', accountFilters: [], payWindow: null, payTicks: 0, payExpired: false, shareNote: '',
+    coupons: null, couponsNote: '', couponsError: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, ordersFilter: 'all', accountQuery: '', accountFilters: [], payWindow: null, payTicks: 0, payExpired: false, shareNote: '',
     meal: null, mealFor: '', mealLoading: false, couponDraft: '', groupCartDraft: '', groupCartOn: true,
     track: null, trackData: null, trackError: '', trackBusy: false,
     orderFee: null, checkoutWarning: '',
@@ -44,6 +44,23 @@
   const $ = selector => document.querySelector(selector);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
   const money = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) ? `₹${Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—';
+  function playLoader(label = 'Loading', size = '') {
+    return `<span class="play-loader${size ? ' ' + size : ''}" role="status" aria-label="${esc(label)}"><svg viewBox="0 0 48 48" aria-hidden="true" focusable="false"><circle class="play-loader-track" cx="24" cy="24" r="20"></circle><circle class="play-loader-arc" cx="24" cy="24" r="20"></circle></svg><span class="sr-only">${esc(label)}</span></span>`;
+  }
+  function couponSaving(q) {
+    if (!q) return 0;
+    if (Number(q.discount) > 0) return Number(q.discount);
+    return q.discountAlreadyApplied === true ? Math.max(0, Number(q.couponSaving || 0)) : 0;
+  }
+  function couponBadge(c) {
+    const text = `${c?.title || ''} ${c?.description || ''}`;
+    const pct = text.match(/(\d{1,3})\s*%/);
+    if (pct) return `<b>${esc(pct[1])}%</b><small>OFF</small>`;
+    const flat = text.match(/(?:₹|rs\.?|inr)\s*(\d[\d,]*(?:\.\d{1,2})?)/i) || text.match(/(\d[\d,]*(?:\.\d{1,2})?)\s*(?:₹|rs\.?|inr|off)/i);
+    if (flat) return `<b>${money(Number(String(flat[1]).replace(/,/g, '')))}</b><small>OFF</small>`;
+    return `<b>DEAL</b>`;
+  }
+
   const iconPaths = {
     accounts:'<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="4"/>',
     address:'<path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/>',
@@ -773,7 +790,6 @@
    * wahi naam — jo Swiggy ke bill summary me aate hain. Number Swiggy ka.
    */
   function renderBill(q) {
-    // No estimate is presented as a Swiggy bill; an absent quote stays blank.
     if (!q) return '';
     const num = v => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? 0 : Number(v));
     const present = v => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
@@ -786,24 +802,16 @@
     const deliveryFree = deliveryKnown && num(q.deliveryFee) === 0;
     const savings = num(q.totalSavings) || (discount + freeCash + tradeDiscount + deliverySaved);
     const distance = q.deliveryDistance ? ` <small>${esc(q.deliveryDistance)}</small>` : '';
-    // Offer claim ka sach — chhoti si line, sirf jab server ne kuch kaha ho.
     const offerLine = q.offerNote ? `<div class="bill-offer-note">${icon('spark')} ${esc(q.offerNote)}</div>` : '';
-    return `<div class="card bill-card" id="bill-details"><div class="card-title">${icon('receipt')} Bill Details ${q.optimizePending === true ? '<span class="bill-chip">Best coupon check…</span>' : ''} <button class="icon-button right" type="button" data-action="bill-refresh" aria-label="Refresh bill">${icon('refresh')}</button></div>${offerLine}<div class="divider"></div>${present(q.itemTotal) ? row('Items Total', money(q.itemTotal)) : ''}${discount > 0 ? row(`Coupon ${esc(q.coupon || '')}`, `−${money(discount)}`, 'saving') : ''}${freeCash > 0 ? row('Extra Discount (Free Cash)', `−${money(freeCash)}`, 'saving') : ''}${tradeDiscount > 0 ? row('Extra Discount (Restaurant)', `−${money(tradeDiscount)}`, 'saving') : ''}${oneFee > 0 ? row('Swiggy One Lite Membership', `+${money(oneFee)}`) : ''}${deliveryFree ? `<div class="bill-row free-delivery"><span>Free Delivery</span><strong>${deliverySaved > 0 ? `${money(deliverySaved)} saved` : 'Applied'}</strong></div>` : ''}${deliveryKnown ? row(`Delivery Fee${distance}`, deliveryFree ? `FREE${deliverySaved > 0 ? ` (${money(deliverySaved)} saved)` : ''}` : money(q.deliveryFee), deliveryFree ? 'saving' : '') : ''}${packing > 0 ? row('Packing Charges', money(packing)) : ''}${(taxes + other) > 0 ? row('GST &amp; Other Charges', money(taxes + other)) : ''}${offer > 0 ? row('Extra saving (bill me)', `−${money(offer)}`, 'saving') : ''}${savings > 0 ? `<div class="bill-row total-savings"><span>Total Savings</span><strong>${money(savings)}</strong></div>` : ''}<div class="bill-row total"><span>To Pay</span><span>${money(q.total)}</span></div></div>`;
+    const couponCode = esc(q.coupon || q.couponCode || '');
+    const couponRow = discount > 0 ? row(`Coupon ${couponCode}`.trim(), `−${money(discount)}`, 'saving')
+      : q.discountAlreadyApplied === true && couponCode ? row(`Coupon ${couponCode}`, 'Included', 'saving') : '';
+    return `<div class="card bill-card" id="bill-details"><div class="card-title">${icon('receipt')} Bill Details <button class="icon-button right" type="button" data-action="bill-refresh" aria-label="Refresh bill">${icon('refresh')}</button></div>${offerLine}<div class="divider"></div>${present(q.itemTotal) ? row('Items Total', money(q.itemTotal)) : ''}${couponRow}${freeCash > 0 ? row('Free Cash', `−${money(freeCash)}`, 'saving') : ''}${tradeDiscount > 0 ? row('Restaurant Discount', `−${money(tradeDiscount)}`, 'saving') : ''}${oneFee > 0 ? row('Swiggy One Lite Membership', `+${money(oneFee)}`) : ''}${deliveryFree ? `<div class="bill-row free-delivery"><span>Free Delivery</span><strong>${deliverySaved > 0 ? `${money(deliverySaved)} saved` : 'Applied'}</strong></div>` : ''}${deliveryKnown ? row(`Delivery Fee${distance}`, deliveryFree ? `FREE${deliverySaved > 0 ? ` (${money(deliverySaved)} saved)` : ''}` : money(q.deliveryFee), deliveryFree ? 'saving' : '') : ''}${packing > 0 ? row('Packing Charges', money(packing)) : ''}${(taxes + other) > 0 ? row('GST &amp; Other Charges', money(taxes + other)) : ''}${offer > 0 ? row('Extra saving (bill me)', `−${money(offer)}`, 'saving') : ''}${savings > 0 ? `<div class="bill-row total-savings"><span>Total Savings</span><strong>${money(savings)}</strong></div>` : ''}<div class="bill-row total"><span>To Pay</span><span>${money(q.total)}</span></div></div>`;
   }
-  /**
-   * Boss (01-11-2026, round 34): "REMOVE THAT DASH WHICH ANIMATION — LITTLE
-   * CREATIVE WHICH DENOTES BILLS ARE LOADING."
-   *
-   * Isliye jab tak asli bill nahi aata, ek chhoti si "receipt print ho rahi
-   * hai" card dikhti hai: bill ki lines ek-ek karke aati hain (top se neeche),
-   * na round spinner, na sweeping dash. Aur kitna hoga — koi number nahi.
-   * Ye `.bill-card` nahi hai, taaki "bill ke bina bill card nahi" rule bacha rahe.
-   */
   function renderBillLoading(q, cart) {
-    if (q || !cart || !(cart.items || []).length) return '';
-    return `<div class="card bill-loading" role="status" aria-live="polite"><div class="card-title">${icon('receipt')} Bill Details</div><div class="divider"></div><div class="bill-loading-body"><span class="bill-paper" aria-hidden="true"><i></i><i></i><i></i><i class="total"></i></span><div class="bill-loading-copy"><strong>Bill ban raha hai…</strong><small>Swiggy se asli bill aa raha hai — koi andaaza nahi.</small><button class="link-button" type="button" data-action="bill-refresh">Nahi aa raha? Dobara try</button></div></div></div>`;
+    if (q || !cart || !(cart.items || []).length || cartLocked()) return '';
+    return `<div class="card bill-loading-card" aria-live="polite">${playLoader('Bill calculate ho raha hai', 'large')}<strong>Bill calculate ho raha hai…</strong><button class="text-button bill-loading-retry" type="button" data-action="bill-refresh">Retry</button></div>`;
   }
-  /** Kitna bacha — sirf jo Swiggy ke bill me asli me dikha. */
   function savedAmount(q) {
     if (!q) return 0;
     // Swiggy ne khud "Total Savings" diya ho to wahi sach hai (usme free
@@ -821,58 +829,32 @@
     if (!q) return '';
     const num = v => (v === null || v === undefined || !Number.isFinite(Number(v)) ? 0 : Number(v));
     const rows = [];
-    if (q.coupon && num(q.discount) > 0) {
-      rows.push(`<div class="saving-row"><span class="saving-icon">%</span><span class="row-content"><strong>${money(num(q.discount))} saved with ${esc(q.coupon)}</strong><small>Coupon Swiggy ne khud lagaya</small></span><span class="saving-badge on">✓ Applied</span><button class="text-button" type="button" data-action="coupon-remove">Remove</button></div>`);
+    const appliedCode = String(q.couponCode || q.coupon || '').toUpperCase();
+    const saving = couponSaving(q);
+    const applied = Boolean(appliedCode && (saving > 0 || q.discountAlreadyApplied === true));
+    if (applied) {
+      rows.push(`<div class="saving-row"><span class="saving-icon">%</span><span class="row-content"><strong>${saving > 0 ? money(saving) + ' saved with ' : ''}${esc(appliedCode)}</strong><small>${saving > 0 ? 'Coupon applied' : 'Discount item total me included'}</small></span><span class="saving-badge on">✓ Applied</span>${state.couponView ? '' : `<button class="text-button" type="button" data-action="coupon-remove" ${state.couponBusy ? 'disabled' : ''}>Remove</button>`}</div>`);
     }
     if (num(q.freeCash) > 0) {
-      rows.push(`<div class="saving-row"><span class="saving-icon one">cash</span><span class="row-content"><strong>${money(num(q.freeCash))} Free Cash</strong><small>Extra discount bill me pehle se laga hai</small></span><span class="saving-badge on">✓ Applied</span></div>`);
+      const tracks = Array.isArray(q.offerTracks) ? q.offerTracks.filter(t => t?.verified === true).map(t => t.label).join(' + ') : '';
+      rows.push(`<div class="saving-row"><span class="saving-icon one">cash</span><span class="row-content"><strong>${money(num(q.freeCash))} Free Cash</strong><small>${esc(tracks ? tracks + ' claim applied' : 'Bill me applied')}</small></span><span class="saving-badge on">✓ Applied</span></div>`);
     }
-    if (num(q.tradeDiscount) > 0) {
-      rows.push(`<div class="saving-row"><span class="saving-icon">%</span><span class="row-content"><strong>${money(num(q.tradeDiscount))} restaurant discount</strong><small>Restaurant ne bill me diya</small></span><span class="saving-badge on">✓ Applied</span></div>`);
-    }
-    if (q.deliveryFee === 0 && num(q.deliverySaved) > 0) {
-      rows.push(`<div class="saving-row"><span class="saving-icon one">one</span><span class="row-content"><strong>${money(num(q.deliverySaved))} saved on delivery</strong><small>Free delivery ${q.deliveryDistance ? '· ' + esc(q.deliveryDistance) : ''}</small></span><span class="saving-badge on">✓ Applied</span></div>`);
-    }
-    if (num(q.oneMembershipFee) > 0) {
-      rows.push(`<div class="saving-row"><span class="saving-icon one">one</span><span class="row-content"><strong>Swiggy One Lite ${money(num(q.oneMembershipFee))}</strong><small>Membership fee bill me juda hai</small></span><span class="saving-badge">Charged</span></div>`);
-    }
-    // Boss (31-10-2026, round 14): engine ne kya kiya — saaf dikhta hai.
-    const eng = q.engine || null;
-    if (eng) {
-      const bits = [];
-      if (eng.oneLite === 'applied') bits.push('+₹1 One Lite se delivery FREE');
-      if (eng.freeCash > 0) bits.push(`₹${eng.freeCash} free cash`);
-      if (Array.isArray(eng.couponTrials) && eng.couponTrials.length) bits.push(`${eng.couponTrials.length} coupon ka asli bill check hua`);
-      if (eng.offersClaimed > 0) bits.push(`${eng.offersClaimed} offer claim hua`);
-      if (bits.length) {
-        rows.push(`<p class="hint engine-line">Engine: ${esc(bits.join(' · '))}${eng.couponTrials?.some(t => t.ok) ? ` — sabse kam bill wala coupon laga (${esc(q.coupon || '')})` : ''}</p>`);
-      }
-    }
-    const totalSaved = num(q.totalSavings);
-    // Round 29 (boss): "EK PAGE ME SAARI INFORMATION" — coupon list yahin,
-    // chhoti rows me, APPLY ke saath. Page badalne ki zaroorat nahi; poora
-    // list chahiye to "Saare coupons".
-    const appliedCode = String(q.coupon || '').toUpperCase();
-    const inlineCoupons = (state.coupons || [])
-      .filter(c => String(c.code || '').toUpperCase() !== appliedCode || !appliedCode)
-      .slice(0, 3)
-      .map(c => {
-        const busy = state.couponBusy === c.code;
-        const result = (state.couponResults || {})[c.code];
-        const label = String(c.title || '').trim() || 'Offer';
-        const pct = String(label + ' ' + String(c.description || '')).match(/(\d{1,2})\s*%\s*off/i);
-        const ribbon = pct ? `${pct[1]}%` : label.slice(0, 7);
-        return `<div class="coupon-inline"><span class="coupon-inline-ribbon"><b>${esc(ribbon)}</b>${pct ? '<small>OFF</small>' : ''}</span><div class="coupon-inline-copy"><strong>${esc(c.code)}</strong><small>${esc(c.description || label)}</small>${result ? `<small class="${result.ok ? 'ok' : 'no'}">${result.ok ? `Laga — ${money(result.saved)} saving` : esc(result.message || 'Swiggy ne nahi liya')}</small>` : ''}</div><button class="coupon-cta" type="button" data-action="coupon-pick" data-code="${esc(c.code)}" ${busy || cartLocked() ? 'disabled' : ''}>${busy ? 'APPLYING…' : 'APPLY'}</button></div>`;
-      }).join('');
+    if (num(q.tradeDiscount) > 0) rows.push(`<div class="saving-row"><span class="saving-icon">%</span><span class="row-content"><strong>${money(num(q.tradeDiscount))} Restaurant Discount</strong></span><span class="saving-badge on">✓ Applied</span></div>`);
+    if (q.oneApplied === true) rows.push(`<div class="saving-row"><span class="saving-icon one">ONE</span><span class="row-content"><strong>Free Delivery</strong><small>Swiggy One Lite</small></span><span class="saving-badge on">✓ Applied</span><button class="text-button" type="button" data-action="one-remove" ${state.couponBusy ? 'disabled' : ''}>Remove</button></div>`);
+    const totalSaved = savedAmount(q);
+    const inlineCoupons = (state.coupons || []).filter(c => String(c.code).toUpperCase() !== appliedCode).slice(0, 3).map(c => {
+      const busy = state.couponBusy === c.code;
+      const result = (state.couponResults || {})[c.code];
+      return `<div class="coupon-inline"><span class="coupon-inline-ribbon">${couponBadge(c)}</span><div class="coupon-inline-copy"><strong>${esc(c.code)}</strong><small>${esc(c.description || c.title || '')}</small>${result ? `<small class="${result.ok ? 'ok' : 'no'}">${result.ok ? `Applied — ${money(result.saved)} saved` : esc(result.message || 'Swiggy ne nahi liya')}</small>` : ''}</div><button class="coupon-cta" type="button" data-action="coupon-pick" data-code="${esc(c.code)}" ${state.couponBusy || cartLocked() || c.applicable === false ? 'disabled' : ''}>${busy ? playLoader('Applying', 'tiny') : 'APPLY'}</button></div>`;
+    }).join('');
     const strip = !rows.length && !inlineCoupons
-      ? `<p class="hint">${state.couponsLoading ? 'Coupons aa rahe hain…' : (state.couponsNote || 'Is bill par koi discount nahi laga.')}</p>`
+      ? `<div class="coupon-empty">${state.couponsLoading ? playLoader('Coupons load ho rahe hain', 'small') + '<span>Coupons load ho rahe hain…</span>' : `<span>${esc(state.couponsError || state.couponsNote || 'Is bill par koi coupon nahi laga.')}</span><button class="text-button" type="button" data-action="coupon-open">View coupons</button>`}</div>`
       : inlineCoupons;
     const more = (state.coupons || []).length
-      ? `<button class="text-button coupon-open-link" type="button" data-action="coupon-open">Saare coupons (${(state.coupons || []).length})</button>`
-      : '';
-    return `<div class="card savings-corner"><div class="card-title">SAVINGS CORNER${totalSaved > 0 ? `<span class="pill green right">${money(totalSaved)} saved</span>` : ''}${more}</div>${rows.length ? rows.join('') : ''}${strip}</div>`;
+      ? `<button class="text-button coupon-open-link" type="button" data-action="coupon-open">All coupons (${state.coupons.length})</button>`
+      : state.couponsLoading ? '' : '<button class="text-button coupon-open-link" type="button" data-action="coupon-open">Apply coupon</button>';
+    return `<div class="card savings-corner"><div class="card-title">SAVINGS CORNER${totalSaved > 0 ? `<span class="pill green right">${money(totalSaved)} saved</span>` : ''}${more}</div>${rows.join('')}${strip}</div>`;
   }
-  /** "Complete Your Meal" rail — isi restaurant ke asli menu se. */
   function renderMealRail(cart) {
     if (!state.meal || state.mealLoading) return '';
     const inCart = new Set((cart.items || []).map(i => String(i.id)));
@@ -896,38 +878,35 @@
     const cart = state.cart;
     const q = cart?.quote;
     const results = state.couponResults || {};
-    const appliedCode = String(q?.coupon || '').toUpperCase();
-    const percentOf = text => {
-      const m = String(text || '').match(/(\d{1,2})\s*%\s*off/i);
-      return m ? `${m[1]}% OFF` : 'OFFER';
-    };
-    const applied = appliedCode && Number(q.discount) > 0
-      ? `<p class="section-title">Applied coupon</p><article class="coupon-tile applied"><span class="coupon-ribbon"><b>${money(q.discount)}</b><small>OFF</small></span><div class="coupon-body"><div class="coupon-head"><strong>${esc(appliedCode)}</strong><button class="coupon-cta" type="button" data-action="coupon-remove">REMOVE</button></div><p class="coupon-line">Save ${money(q.discount)} on this order!</p><p class="coupon-desc">Swiggy ke bill me ye discount pehle se laga hua hai.</p></div></article>`
+    const appliedCode = String(q?.couponCode || q?.coupon || '').toUpperCase();
+    const appliedSaving = couponSaving(q);
+    const isCouponApplied = Boolean(appliedCode && (appliedSaving > 0 || q?.discountAlreadyApplied === true));
+    const applied = isCouponApplied
+      ? `<p class="section-title">Applied coupon</p><article class="coupon-tile applied"><span class="coupon-ribbon">${appliedSaving > 0 ? `<b>${money(appliedSaving)}</b><small>SAVED</small>` : '<b>✓</b><small>ON</small>'}</span><div class="coupon-body"><div class="coupon-head"><span class="coupon-code">${esc(appliedCode)}</span><button class="coupon-cta" type="button" data-action="coupon-remove" ${state.couponBusy ? 'disabled' : ''}>REMOVE</button></div><p class="coupon-line">${appliedSaving > 0 ? `Save ${money(appliedSaving)} on this order` : 'Discount item total me included'}</p></div></article>`
       : '';
     const tile = c => {
-      const isApplied = appliedCode === c.code && Number(q?.discount) > 0;
-      const busy = state.couponBusy === c.code;
-      const result = results[c.code];
+      const code = String(c.code || '').toUpperCase();
+      const isApplied = isCouponApplied && appliedCode === code;
+      const busy = state.couponBusy === code;
+      const result = results[code];
       const action = isApplied
         ? '<span class="coupon-cta off">✓ APPLIED</span>'
-        : `<button class="coupon-cta" type="button" data-action="coupon-pick" data-code="${esc(c.code)}" ${busy || cartLocked() ? 'disabled' : ''}>${busy ? 'APPLYING…' : 'APPLY'}</button>`;
+        : `<button class="coupon-cta" type="button" data-action="coupon-pick" data-code="${esc(code)}" ${state.couponBusy || cartLocked() || c.applicable === false ? 'disabled' : ''}>${busy ? playLoader('Applying coupon', 'tiny') + ' APPLYING' : 'APPLY'}</button>`;
       const resultLine = result
-        ? `<p class="coupon-result ${result.ok ? 'ok' : 'no'}">${result.ok ? `Laga — ${money(result.saved)} ki saving` : esc(result.message || 'Swiggy ne ye code nahi liya.')}</p>`
-        : '';
-      return `<article class="coupon-tile${isApplied ? ' applied' : ''}"><span class="coupon-ribbon"><b>${esc(percentOf(c.title + ' ' + c.description))}</b></span><div class="coupon-body"><div class="coupon-head"><strong>${esc(c.code)}</strong>${action}</div><p class="coupon-line">${esc(c.title || c.code)}</p><p class="coupon-desc">${esc(c.description || '')}</p>${resultLine}</div></article>`;
+        ? `<p class="coupon-result ${result.ok ? 'ok' : 'no'}" role="status">${result.ok ? `Applied — ${money(result.saved)} saved` : esc(result.message || 'Swiggy ne ye code accept nahi kiya.')}</p>`
+        : c.applicable === false && c.reason ? `<p class="coupon-result no">${esc(c.reason)}</p>` : '';
+      return `<article class="coupon-tile${isApplied ? ' applied' : ''}${c.applicable === false ? ' ineligible' : ''}"><span class="coupon-ribbon">${couponBadge(c)}</span><div class="coupon-body"><div class="coupon-head"><span class="coupon-code">${esc(code)}</span>${action}</div><p class="coupon-line">${esc(c.title || code)}</p>${c.description ? `<p class="coupon-desc">${esc(c.description)}</p>` : ''}${resultLine}</div></article>`;
     };
     const list = state.coupons || [];
     const body = state.couponsLoading
-      ? skeletonRows(3, 2)
-      : (list.length ? list.map(tile).join('') : `<div class="card"><p class="hint">Coupon list aa rahi hai — upar APPLY dabaiye.</p></div>`);
+      ? `<div class="coupon-loading">${playLoader('Coupons load ho rahe hain')}<span>Coupons load ho rahe hain…</span></div>`
+      : state.couponsError
+        ? `<div class="card"><p class="warning">${esc(state.couponsError)}</p><button class="button soft block" type="button" data-action="coupon-retry">Retry</button></div>`
+        : list.length ? list.map(tile).join('')
+          : `<div class="card"><p class="hint">Is restaurant par koi coupon nahi mila.</p><button class="button soft block" type="button" data-action="coupon-retry">Refresh coupons</button></div>`;
     const sheetHead = `<div class="coupon-sheet-head"><span class="icon-tile">${icon('receipt')}</span><h2>Apply Coupon</h2><button class="icon-button" type="button" data-action="coupon-back" aria-label="Band karein">${icon('close')}</button></div>`;
-    // Round 49 ka niyam: coupon list hamesha, sirf APPLY buttons — code type
-    // karne ka box nahi (reference me hai, par wahan humara niyam upar hai).
-    // Rule 3C: coupon ek bottom sheet hai — peeche cart dimmed dikhta hai.
-    // Band karne ke 3 raste: close button, backdrop tap, Escape.
-    return `<div class="coupon-overlay" data-action="coupon-back" aria-hidden="true"></div><section class="coupon-sheet" role="dialog" aria-modal="true" aria-label="Apply Coupon"><div class="sheet-grip"></div>${sheetHead}${applied}<div class="coupon-count">AVAILABLE COUPONS <b>${Array.isArray(list) ? list.length : 0}</b></div><p class="section-title">Aapke liye offers</p>${body}<p class="hint">${esc(state.couponsNote || 'APPLY dabaiye — asli bill Swiggy se aayega. Discount tabhi dikhega jab Swiggy deta hai.')}</p></section>`;
+    return `<div class="coupon-overlay" data-action="coupon-back" aria-hidden="true"></div><section class="coupon-sheet" role="dialog" aria-modal="true" aria-label="Apply Coupon"><div class="sheet-grip"></div>${sheetHead}${applied}<div class="coupon-count">${isCouponApplied ? 'MORE OFFERS' : 'AVAILABLE COUPONS'} <b>${list.length}</b></div><div class="coupon-list">${body}</div></section>`;
   }
-  /** Payment ke baad asli tracking — status Swiggy se, guess nahi. */
   function renderTrack() {
     const t = state.track;
     const data = state.trackData;
@@ -1010,26 +989,9 @@
     const saved = savedAmount(q);
     const savingsBanner = saved > 0 ? `<div class="savings-banner">${icon('spark')} ${money(saved)} saved!${q?.coupon ? ` · ${esc(q.coupon)}` : ''}</div>` : '';
     const eta = `<div class="eta-strip"><span class="eta-clock">${icon('orders')}</span><span class="eta-copy"><strong>${cart.restaurantTime ? `Delivery in ${esc(cart.restaurantTime)}` : 'Delivery time Swiggy se aayega'}</strong><small>${esc([cart.restaurantName, cart.restaurantArea].filter(Boolean).join(' · '))}</small></span></div>`;
-    // Pay bar: Swiggy jaisa — bada amount + bill link left, green pay right.
-    // Boss (round 34): "BESIDE PAY NOW BUTTON ADD SOMETHING" — bill aane ke baad
-    // Pay Now ke bagal me 2 minute ka live clock. Uske andar tap karo, warna
-    // sab saaf ho jata hai (server wahi karta hai).
-    const idleLeft = q ? payRemaining() : 0;
-    const idleChip = q
-      ? (idleLeft > 0
-        ? `<span class="idle-chip" title="Itne time me Pay Now dabaiye"><span class="idle-dot" aria-hidden="true"></span><b data-pay-countdown>${payCountdownText(idleLeft)}</b></span>`
-        : '<span class="idle-chip expired"><b>Time up</b></span>')
-      : '';
-    // Ek chhoti line — boss ka rule saaf bole, lecture na ho. Pay bar ke andar
-    // NAHI (round 33: pay bar par lambi copy nahi) — bar ke thik upar.
-    const idleNote = q
-      ? '<p class="idle-note">2 minute tak koi activity nahi — sab band ho jayega.</p>'
-      : '<p class="idle-note">Bill aane ke baad 2 minute honge Pay Now ke liye — tab tak kuch saaf nahi hoga.</p>';
-    // Bill ke bina bhi Pay Now chalta hai (round 27 ka rule) — dabane par pehle
-    // asli bill aata hai, phir payment. Bas total "—" rehta hai, koi andaaza nahi.
     const billReady = Boolean(q && Number.isFinite(Number(q.total)));
-    const payBar = `<div class="pay-bar"><button class="button green pay-now" type="button" data-action="checkout-start" ${locked || !state.checkoutEnabled ? 'disabled' : ''} ${!state.checkoutEnabled ? `title="${esc(state.checkoutBlockReason || '')}"` : ''}>${state.checkoutEnabled ? `Pay Now ${icon('arrow')}` : 'Payment band'}</button><div class="pay-left"><strong aria-label="Bill amount">${billReady ? money(q.total) : '—'}</strong>${idleChip}</div></div>${state.checkoutEnabled ? '' : `<div class="warning pay-blocked">Payment abhi band hai — ${esc(state.checkoutBlockReason || 'server ne reason nahi diya')}</div>`}`;
-    return `${head('CHECKOUT', 'Checkout', '')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${renderSavingsCorner(q)}${renderBill(q)}${renderBillLoading(q, cart)}${state.checkoutWarning ? `<div class="warning" role="alert">${esc(state.checkoutWarning)}</div>` : ''}${idleNote}${payBar}`;
+    const payBar = `<div class="pay-bar"><button class="button green pay-now" type="button" data-action="checkout-start" ${locked || !state.checkoutEnabled ? 'disabled' : ''} ${!state.checkoutEnabled ? `title="${esc(state.checkoutBlockReason || '')}"` : ''}>${state.checkoutEnabled ? `Pay Now ${icon('arrow')}` : 'Payment band'}</button><div class="pay-left">${billReady ? `<strong aria-label="Bill amount">${money(q.total)}</strong>` : playLoader('Bill amount load ho raha hai', 'small')}</div></div>${state.checkoutEnabled ? '' : `<div class="warning pay-blocked">Payment abhi band hai — ${esc(state.checkoutBlockReason || 'server ne reason nahi diya')}</div>`}`;
+    return `${head('CHECKOUT', 'Checkout', '')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${renderSavingsCorner(q)}${renderBill(q)}${renderBillLoading(q, cart)}${state.checkoutWarning ? `<div class="warning" role="alert">${esc(state.checkoutWarning)}</div>` : ''}${payBar}`;
   }
   /**
    * Order detail ka bill/payment hissa (round 30). Rule: sirf wahi line jo
@@ -1242,12 +1204,6 @@
    * (user ko button dabane ki zaroorat nahi).
    */
   let idleTimer = null;
-  let payCountdown = null;
-  /**
-   * Boss (01-11-2026, round 34): "AFTER BILL IS FETCHED YOU HAVE 2 MINUTES TO
-   * CLICK PAY NOW, OTHERWISE EVERYTHING WILL GET CLEAR."
-   * Clock bill ke `fetchedAt` se chalta hai — bill load hone ke dauraan nahi.
-   */
   function payDeadline() {
     const timeout = Number(state.idle?.timeoutMs || 0) || 2 * 60 * 1000;
     const fetched = Date.parse(String(state.cart?.quote?.fetchedAt || ''));
@@ -1257,23 +1213,6 @@
   function payRemaining() {
     const deadline = payDeadline();
     return deadline ? Math.max(0, deadline - Date.now()) : 0;
-  }
-  /** `m:ss` — Pay Now ke bagal me dikhta hai. */
-  function payCountdownText(ms) {
-    const total = Math.max(0, Math.ceil(ms / 1000));
-    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
-  }
-  function startPayCountdown() {
-    if (payCountdown) return;
-    payCountdown = setInterval(() => {
-      const el = document.querySelector('[data-pay-countdown]');
-      if (!el) { clearInterval(payCountdown); payCountdown = null; return; }
-      const left = payRemaining();
-      el.textContent = left > 0 ? payCountdownText(left) : '0:00';
-      el.classList.toggle('is-low', left > 0 && left <= 30_000);
-      if (left <= 0) { clearInterval(payCountdown); payCountdown = null; }
-    }, 1000);
-    if (typeof payCountdown?.unref === 'function') payCountdown.unref();
   }
   function scheduleIdleRefresh() {
     clearTimeout(idleTimer);
@@ -1625,8 +1564,12 @@
         const cartInput = document.querySelector('form[data-form="group-cart"] input[name="url"]');
         if (cartInput) state.groupCartDraft = cartInput.value;
       } catch { /* window band ho gaya */ }
+      const couponSheetBefore = content.querySelector('.coupon-sheet');
+      const couponSheetScroll = couponSheetBefore ? couponSheetBefore.scrollTop : 0;
       const views = { accounts: renderAccounts, address: renderAddress, search: renderSearch, cart: renderCart, orders: renderOrders, tools: renderTools };
       content.innerHTML = state.auth ? (handoffShown() ? renderChatHandoff() : views[state.tab]()) : renderConnection();
+      const couponSheetAfter = content.querySelector('.coupon-sheet');
+      if (couponSheetAfter && couponSheetScroll) couponSheetAfter.scrollTop = couponSheetScroll;
       if (state.auth && state.tab === 'search' && state.menu && !handoffShown()) applyMenuSearch();
       const nextReceiverSources = receiverSources(content);
       restoreReceiverInputs(content, receiverDrafts, nextReceiverSources);
@@ -1659,7 +1602,6 @@
       }
       maybeAutoBill();
       maybeFetchHandoff();
-      if (payRemaining() > 0) startPayCountdown();
       scheduleIdleRefresh();
       schedulePaymentPoll();
     } catch { /* window band ho gaya */ }
@@ -1780,23 +1722,25 @@
     state.autoCouponsFor = id;
     loadCoupons();
   }
-  async function loadCoupons() {
-    if (state.couponsLoading) return;
+  async function loadCoupons(force = false) {
+    if (state.couponsLoading && !force) return;
     const id = String(state.cart?.restaurantId || '');
     if (!id) return;
     const request = ++couponRequestVersion;
     const context = cartSourceContext();
     const current = () => request === couponRequestVersion && context === cartSourceContext();
-    state.couponsLoading = true; render();
+    state.couponsLoading = true; state.couponsError = ''; render();
     try {
       const out = await api('coupons?id=' + encodeURIComponent(id));
       if (!current()) return;
       state.coupons = Array.isArray(out.coupons) ? out.coupons : [];
       state.couponsNote = out.note || '';
+      state.couponsError = '';
     } catch (e) {
       if (!current()) return;
       state.coupons = [];
-      state.couponsNote = e.message || 'Coupon list nahi aayi.';
+      state.couponsError = e.message || 'Coupon list nahi aayi.';
+      state.couponsNote = state.couponsError;
     } finally {
       if (request === couponRequestVersion) { state.couponsLoading = false; if (state.tab === 'cart' && !state.track) render(); }
     }
@@ -1886,7 +1830,7 @@
   }
   async function applyCoupon(code, button) {
     const value = String(code || '').trim().toUpperCase();
-    if (!value || value === state.couponBusy) return;
+    if (!value || state.couponBusy || cartLocked()) return;
     if (!receiverReady()) return;
     const request = ++couponWriteVersion;
     const signature = billSyncSignature();
@@ -1894,18 +1838,21 @@
     state.couponBusy = value; render();
     try {
       const out = await api('cart/sync', 'POST', {
-        coupon: value,
+        coupon: value, autoCoupon: false,
         forSomeoneElse: state.cart?.forSomeoneElse === true,
-        confirmReplaceSwiggyCart: true
+        confirmReplaceSwiggyCart: true, phase: 'full'
       });
       if (!current()) return;
       merge(out);
-      const applied = Number(out.cart?.quote?.discount || 0);
-      state.couponResults = { ...(state.couponResults || {}), [value]: applied > 0
-        ? { ok: true, saved: applied }
-        : { ok: false, message: 'Swiggy ne is code par discount nahi diya — bill me 0 dikha.' } };
+      const q = state.cart?.quote;
+      const actual = String(q?.couponCode || q?.coupon || '').toUpperCase();
+      const saved = couponSaving(q);
+      const applied = actual === value && (saved > 0 || q?.discountAlreadyApplied === true);
+      state.couponResults = { ...(state.couponResults || {}), [value]: applied
+        ? { ok: true, saved }
+        : { ok: false, message: q?.couponReason || 'Swiggy ne is code par discount nahi diya.' } };
       render();
-      toast(applied > 0 ? `${value} lag gaya — ${money(applied)} ki saving.` : `${value} par Swiggy ne discount nahi diya.`, applied > 0 ? 'ok' : 'bad');
+      toast(applied ? `${value} applied${saved > 0 ? ' — ' + money(saved) + ' saved' : ''}` : `${value} par Swiggy ne discount nahi diya.`, applied ? 'ok' : 'bad');
     } catch (e) {
       if (!current()) return;
       state.couponResults = { ...(state.couponResults || {}), [value]: { ok: false, message: e?.message || 'Swiggy ne ye coupon nahi liya.' } };
@@ -1915,22 +1862,25 @@
       if (request === couponWriteVersion) { state.couponBusy = ''; render(); }
     }
   }
-  /** Coupon hatana — phir se asli bill. */
   async function removeCoupon() {
-    if (!receiverReady()) return;
+    if (state.couponBusy || cartLocked() || !receiverReady()) return;
     const request = ++couponWriteVersion;
     const signature = billSyncSignature();
-    const out = await api('cart/sync', 'POST', {
-      coupon: '',
-      autoCoupon: false,
-      forSomeoneElse: state.cart?.forSomeoneElse === true,
-      confirmReplaceSwiggyCart: true
-    });
-    if (request !== couponWriteVersion || signature !== billSyncSignature()) return;
-    merge(out);
-    state.couponResults = {};
-    render();
-    toast('Coupon hata diya — naya bill aa gaya.', 'ok');
+    state.couponBusy = '__remove__'; render();
+    try {
+      const out = await api('cart/sync', 'POST', {
+        coupon: '', autoCoupon: false,
+        forSomeoneElse: state.cart?.forSomeoneElse === true,
+        confirmReplaceSwiggyCart: true, phase: 'full'
+      });
+      if (request !== couponWriteVersion || signature !== billSyncSignature()) return;
+      merge(out);
+      state.couponResults = {};
+      render();
+      toast('Coupon removed', 'ok');
+    } finally {
+      if (request === couponWriteVersion) { state.couponBusy = ''; render(); }
+    }
   }
   function forms(event) {
     const form = event.target.closest('form[data-form]');
@@ -2125,6 +2075,7 @@
     }
     if (action === 'toggle-coupon' || action === 'coupon-open') { couponReturnAction = action; couponReturnY = window.scrollY || 0; state.couponView = true; state.couponOpen = true; render(); if (state.coupons === null) loadCoupons(); return; }
     if (action === 'coupon-back') { closeCouponSheet(); return; }
+    if (action === 'coupon-retry') { state.coupons = null; state.couponsError = ''; loadCoupons(true); return; }
     if (action === 'coupon-sheet-stop') { return; }
     if (action === 'track-close') { stopTrackPolling(); state.track = null; state.trackData = null; state.trackError = ''; render(); window.scrollTo(0, 0); return; }
     if (action === 'outlets-toggle') {
