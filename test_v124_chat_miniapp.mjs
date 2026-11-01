@@ -305,8 +305,9 @@ test('manual used-ID selection requires consent; shared session identity remains
   seed(uid, {});
   saveChatHandoffLinks(uid, { cart: cartLink, address: addressLink });
   const id = readChatHandoff(uid).id;
-  let r = await req(uid, 'bootstrap'); assert.equal(r.body.accounts.length, 0, 'shared ID is private by default');
-  r = await req(uid, 'accounts/select', { key: 'shared', confirmUsed: true }); assert.equal(r.status, 404);
+  let r = await req(uid, 'bootstrap'); assert.equal(r.body.accounts[0].key, 'shared', 'operator ID is shared by default');
+  r = await req(uid, 'accounts/select', { key: 'shared' }); assert.equal(r.body.code, 'ACCOUNT_NEEDS_CONFIRM');
+  r = await req(uid, 'accounts/session?key=shared'); assert.equal(r.status, 403, 'shared sessions are never exported');
   r = await req(uid, 'boss/account-access', { userId: String(uid), accountKey: 'shared', allow: true, confirm: true }); assert.equal(r.status, 403);
   r = await req(9001, 'boss/account-access', { userId: String(uid), accountKey: 'shared', allow: true }); assert.equal(r.status, 400);
   r = await req(9001, 'boss/account-access', { userId: '5999', accountKey: 'shared', allow: true, confirm: true }); assert.equal(r.status, 400);
@@ -315,9 +316,9 @@ test('manual used-ID selection requires consent; shared session identity remains
   assert.equal(r.status, 200); assert(r.body.access.users.find(u => u.id === String(uid)).allowed.includes('shared'));
   saveDb(staleBeforeGrant);
   r = await req(uid, 'bootstrap'); assert.equal(r.body.accounts[0].key, 'shared', 'stale save does not erase an unrelated grant');
-  assert.equal((await req(5108, 'bootstrap')).body.accounts.length, 0, 'grant does not leak to another user');
+  assert((await req(5108, 'bootstrap')).body.accounts.some(a => a.key === 'shared'), 'other users also receive default shared access');
   const changed = getDb(); changed.config.accounts.shared.phone = '9678901234'; saveDb(changed);
-  assert.equal((await req(uid, 'bootstrap')).body.accounts.length, 0, 'grant does not follow a different account identity');
+  assert((await req(uid, 'bootstrap')).body.accounts.some(a => a.key === 'shared'), 'default sharing also covers replacement identities');
   const restored = getDb(); restored.config.accounts.shared.phone = '9567890123'; saveDb(restored);
   r = await req(uid, 'chat-handoff/start', { handoffId: id }); assert.equal(r.status, 200);
   r = await req(uid, 'chat-handoff/select', { handoffId: id, auto: true }); assert.equal(r.status, 404);

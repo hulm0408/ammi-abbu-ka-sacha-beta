@@ -111,6 +111,13 @@ try {
     await page.waitForSelector('#bottom-nav [data-tab="accounts"]:not([disabled])');
     if (dark) await page.click('[data-action="theme"]');
     await check('accounts');
+    const accountLayout = await page.evaluate(() => {
+      const row = document.querySelector('.ac-row.active');
+      const tags = [...row.querySelectorAll('.offer-chip')].map(el => { const r = el.getBoundingClientRect(); return { top: r.top, right: r.right }; });
+      const primary = row.querySelector('.ac-main').getBoundingClientRect();
+      return { tags, primaryRight: primary.right, height: row.getBoundingClientRect().height };
+    });
+    ensure(accountLayout.tags.length === 5 && accountLayout.tags.every(t => Math.abs(t.top - accountLayout.tags[0].top) < 1 && t.right <= accountLayout.primaryRight + 1) && accountLayout.height <= 100, `${currentLabel}: compact single-line offers ${JSON.stringify(accountLayout)}`);
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)); await pause();
     const clearance = await page.evaluate(() => ({ last: document.querySelector('.ac-cta')?.getBoundingClientRect().bottom, dock: document.querySelector('.cart-dock')?.getBoundingClientRect().top }));
     ensure(clearance.last <= clearance.dock, `${currentLabel}: account form hidden by dock`);
@@ -124,9 +131,21 @@ try {
     ensure(await page.evaluate(() => !document.querySelector('.app-shell').hasAttribute('inert') && document.activeElement?.dataset.action === 'restaurant'), `${currentLabel}: outlet focus not restored`);
     await page.click('[data-action="restaurant"]'); await page.waitForSelector('.sheet-overlay'); await page.click('[data-sheet-outlet="demo-1"]');
     await page.waitForSelector('.menu-hero'); await check('menu');
+    await page.waitForSelector('.menu-stepper [data-qty="3"]');
+    await page.type('[data-input="menu-search"]', 'Paneer');
+    await page.evaluate(() => { window.__qaMenuInput = document.querySelector('[data-input="menu-search"]'); });
+    await tapVisible('.menu-stepper [data-qty="3"]');
+    await page.waitForFunction(() => document.querySelector('.menu-stepper span')?.textContent === '3');
+    ensure(await page.evaluate(() => document.querySelector('[data-input="menu-search"]') === window.__qaMenuInput && window.__qaMenuInput.value === 'Paneer' && [...document.querySelectorAll('[data-menu-item]')].filter(row => row.hidden).length >= 1), `${currentLabel}: menu quantity reset the filtered screen`);
     await tab('cart'); await page.waitForSelector('.pay-bar'); await check('checkout');
+    const bill = await page.evaluate(() => ({
+      visible: !!document.querySelector('#bill-details .bill-row.total'),
+      text: document.querySelector('#content').textContent,
+      toggles: !!document.querySelector('[data-action="bill-toggle"], [data-action="toggle-bill"]')
+    }));
+    ensure(bill.visible && /Bill Details/.test(bill.text) && /To Pay/.test(bill.text) && /Pay Now/.test(bill.text) && !bill.toggles && !/View Detailed Bill|Payment: UPI \/ QR|PAY USING UPI|Bill Updating/.test(bill.text), `${currentLabel}: direct bill/payment controls ${JSON.stringify(bill)}`);
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)); await check('checkout bottom');
-    await page.click('[data-action="coupon-open"]'); await page.waitForSelector('.coupon-sheet'); await check('coupon sheet');
+    await tapVisible('[data-action="coupon-open"]'); await page.waitForSelector('.coupon-sheet'); await check('coupon sheet');
     const coupon = await page.evaluate(() => ({ underlay: !!document.querySelector('.coupon-underlay[inert] .restaurant-cart'), focus: !!document.activeElement?.closest('.coupon-sheet'), navInert: document.querySelector('.bottom-nav').hasAttribute('inert') }));
     ensure(coupon.underlay && coupon.focus && coupon.navInert, `${currentLabel}: coupon focus/inert ${JSON.stringify(coupon)}`);
     await page.keyboard.press('Escape'); await page.waitForFunction(() => !document.querySelector('.coupon-sheet'));
@@ -134,7 +153,12 @@ try {
     ensure(['coupon-open', 'toggle-coupon'].includes(restored.action) && !restored.inert, `${currentLabel}: coupon focus not restored`);
     await tab('orders'); await page.waitForSelector('[data-action="order-detail"]'); await check('orders');
     await page.click('[data-action="order-detail"]'); await page.waitForSelector('.order-top-actions'); await check('order detail');
-    await tab('tools'); await check('tools');
+    await page.waitForFunction(() => /Link unavailable/.test(document.querySelector('.share-card')?.textContent || ''));
+    const order = await page.evaluate(() => ({ text: document.querySelector('#content').textContent, share: !!document.querySelector('.share-card') }));
+    ensure(order.share && !/Refresh tracking|Open tracking on Swiggy|SMS explanation/i.test(order.text), `${currentLabel}: order details ${JSON.stringify(order)}`);
+    await tab('tools'); await page.waitForSelector('[data-action="claim-offers"]'); await check('tools');
+    const tools = await page.evaluate(() => ({ text: document.querySelector('#content').textContent, buttons: [...document.querySelectorAll('[data-action="claim-offers"]')].map(el => el.textContent.trim()) }));
+    ensure(/ID access/.test(tools.text) && /Claimed/.test(tools.text) && /Already claimed/.test(tools.text) && /Failed/.test(tools.text) && tools.buttons.every(label => label === 'Claim') && !/Live Order \+ SMS|Data Backup|Backup ka asli sach|Login ID ka data|campaign ID/i.test(tools.text), `${currentLabel}: tools ${JSON.stringify(tools)}`);
     await open('paypending'); if (!await page.$('.pay-screen')) await tab('cart');
     await page.waitForSelector('.pay-screen'); await check('payment');
     ensure(!await page.$('#cart-dock .cart-dock'), `${currentLabel}: cart dock visible during payment`);

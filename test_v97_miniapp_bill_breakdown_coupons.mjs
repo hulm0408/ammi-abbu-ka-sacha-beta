@@ -166,16 +166,9 @@ test('DOM: bill ka poora hisaab — har line + jod ka equation', async () => {
     assert.match(bill, /To Pay/);
     assert.match(bill, /₹335/);
     assert.equal(/farak hai/i.test(bill), false, 'darawne mismatch box nahi');
-    // Poora hisaab kholne par item-wise + equation.
-    app.document.querySelector('[data-action="bill-open"]').click();
-    await waitFor(() => app.document.querySelector('.bill-equation'), 'bill math');
-    const math = app.document.querySelector('.bill-equation').textContent;
-    assert.match(math, /Items ₹274/);
-    assert.match(math, /Delivery FREE/);
-    assert.match(math, /Packing ₹18/);
-    assert.match(math, /GST ₹43\.08/);
-    assert.match(math, /= ₹335/);
-    assert.match(app.document.querySelector('.bill-card').textContent, /Margherita × 2/);
+    // The complete returned bill is already visible; no toggle is needed.
+    assert.equal(app.document.querySelector('[data-action="bill-open"]'), null);
+    assert.match(app.document.querySelector('.cart-item').textContent, /Margherita/);
     // Swiggy ki bill summary lines: One Lite fee, free delivery saving, total savings.
     assert.match(app.document.querySelector('.bill-card').textContent, /Delivery Fee/);
     await new Promise(r => setTimeout(r, 20));

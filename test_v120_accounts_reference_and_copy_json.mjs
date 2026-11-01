@@ -265,10 +265,10 @@ test('server: apne account ka session milta hai aur wahi import me chalta hai', 
   assert.match(out.body.note, /share na karein/i);
 });
 
-test('server: ungranted ID is hidden and a granted vault session stays operator-only', async () => {
+test('server: shared ID is selectable by default but its vault session stays operator-only', async () => {
   const out = await call('accounts/session?key=vault_acc', '7001');
-  assert.equal(out.status, 404, JSON.stringify(out.body));
-  assert.equal(JSON.stringify(out.body).includes('vault-secret-sentinel'), false, 'ungranted token leak nahi');
+  assert.equal(out.status, 403, JSON.stringify(out.body));
+  assert.equal(JSON.stringify(out.body).includes('vault-secret-sentinel'), false, 'shared token leak nahi');
 
   const current = getDb();
   current.knownUsers ||= {};

@@ -283,7 +283,7 @@ test('api: bootstrap me boss ko identities summary aati hai', async () => {
 const html = fs.readFileSync(new URL('./swiggy-pro.html', import.meta.url), 'utf8').replace(/<script[^>]*src="[^"]*"[^>]*><\/script>/g, '');
 const appSource = fs.readFileSync(new URL('./swiggy-pro-app.js', import.meta.url), 'utf8');
 
-test('DOM: Tools me "Login ID ka data" card — per ID status + Backup + Verify buttons', async () => {
+test('DOM: Tools hides the login-data card while backend durability APIs remain tested', async () => {
   const state = {
     ok: true, user: { name: 'Boss', isBoss: true },
     accounts: [{ key: 'op', name: 'Operator', phone: '9000011111', active: true, isLoggedIn: true, owner: 'operator' }],
@@ -314,14 +314,11 @@ test('DOM: Tools me "Login ID ka data" card — per ID status + Backup + Verify 
     };
     await waitFor(() => window.document.querySelector('[data-tab="tools"]:not([disabled])'), 'nav');
     window.document.querySelector('[data-tab="tools"]').click();
-    await waitFor(() => /Login ID ka data/.test(window.document.querySelector('#content').textContent), 'card');
+    await waitFor(() => /ID access/.test(window.document.querySelector('#content').textContent), 'tools');
     const text = window.document.querySelector('#content').textContent;
-    assert.match(text, /IDs saved/);
-    assert.match(text, /Session saved/);
-    assert.match(text, /Expired/);
-    assert.match(text, /deploy ke baad wapas aaya/);
-    assert.ok(window.document.querySelector('[data-action="identities-backup"]'));
-    assert.ok(window.document.querySelector('[data-action="identities-verify"]'));
+    assert.doesNotMatch(text, /Login ID ka data|IDs saved|deploy ke baad wapas aaya/);
+    assert.equal(window.document.querySelector('[data-action="identities-backup"]'), null);
+    assert.equal(window.document.querySelector('[data-action="identities-verify"]'), null);
   } finally { window.close(); }
 });
 

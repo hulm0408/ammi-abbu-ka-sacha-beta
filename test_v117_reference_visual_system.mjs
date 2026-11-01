@@ -122,7 +122,7 @@ test('cart: address row reference jaisa (pin + DELIVERING TO + chevron)', async 
   } finally { window.close(); }
 });
 
-test('cart: UPI / QR payment and bill-updating state are shown without fake payment options', async () => {
+test('cart: payment and updating cards are omitted while real checkout stays available', async () => {
   const pending = cartState();
   pending.cart.quote = null;
   const dom = boot(pending);
@@ -130,11 +130,10 @@ test('cart: UPI / QR payment and bill-updating state are shown without fake paym
   try {
     await waitFor(() => window.document.querySelector('[data-tab="cart"]:not([disabled])'), 'nav');
     window.document.querySelector('[data-tab="cart"]').click();
-    const method = await waitFor(() => window.document.querySelector('.pay-method-card'), 'pay method');
-    assert.match(method.textContent, /Payment: UPI \/ QR/);
-    assert.match(method.textContent, /Bill updating/);
-    assert.equal(method.querySelectorAll('.pay-option').length, 0, 'unavailable payment methods are not presented as choices');
-    assert.ok(window.document.querySelector('.pay-bar .updating-pill .spinner'), 'updating spinner');
+    await waitFor(() => window.document.querySelector('.pay-bar .pay-now'), 'pay bar');
+    assert.equal(window.document.querySelector('.pay-method-card'), null);
+    assert.equal(window.document.querySelector('.pay-bar .updating-pill'), null);
+    assert.equal(window.document.querySelector('.pay-now').disabled, false);
   } finally { window.close(); }
 });
 

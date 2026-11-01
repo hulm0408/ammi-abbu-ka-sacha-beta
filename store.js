@@ -688,7 +688,8 @@ function buildBaselines(pristineText) {
     deleted: toMap(base.config?.deletedAccounts),
     vault: toMap(base.sessionVault),
     drafts: toMap(base.drafts),
-    proAccountGrants: toMap(base.config?.proAccountGrants)
+    proAccountGrants: toMap(base.config?.proAccountGrants),
+    proAccountGrantsRaw: base.config?.proAccountGrants
   };
 }
 
@@ -1050,36 +1051,54 @@ function mergeConcurrentWriters(data) {
     }
   }
 
-  // Mini App shared-ID grants are security decisions, not last-writer-wins
-  // config. A stale account/wallet/snapshot writer must never undo a revoke.
-  // Merge each grant against its read baseline; conflicting changes deny.
+  // Mini App shared-ID access overrides are security decisions, not
+  // last-writer-wins config. Missing means the default shared access; '!' is
+  // an explicit deny. A stale writer must never erase a deny, and conflicting
+  // or malformed decisions must fail closed.
   if (data.config && typeof data.config === 'object') {
-    const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-    const caller = object(data.config.proAccountGrants);
-    const disk = object(liveDisk?.config?.proAccountGrants);
-    const baseRows = object(base.proAccountGrants);
-    const haveBaseline = typeof data.__pristineText === 'string';
-    const merged = {};
-    for (const uid of new Set([...Object.keys(caller), ...Object.keys(disk), ...Object.keys(baseRows)])) {
-      if (!/^\d{1,20}$/.test(uid)) continue;
-      let prior = {};
-      try { prior = object(JSON.parse(baseRows[uid] || '{}')); } catch {}
-      const local = object(caller[uid]);
-      const live = object(disk[uid]);
-      const row = {};
-      for (const key of new Set([...Object.keys(prior), ...Object.keys(local), ...Object.keys(live)])) {
-        if (['__proto__', 'prototype', 'constructor'].includes(key)) continue;
-        const before = prior[key], wanted = local[key], current = live[key];
-        let value;
-        if (!haveBaseline) value = wanted === current ? current : undefined;
-        else if (wanted === before) value = current;
-        else if (current === before || wanted === current) value = wanted;
-        // Divergent concurrent decisions, including any revoke, fail closed.
-        if (typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)) row[key] = value;
+    const isObject = value => value && typeof value === 'object' && !Array.isArray(value);
+    const invalid = value => value !== undefined && !isObject(value);
+    const malformed = [data.config.proAccountGrants, liveDisk?.config?.proAccountGrants, base.proAccountGrantsRaw].find(invalid);
+    if (malformed !== undefined) {
+      // Never turn an unreadable decision map into the permissive default.
+      // Preserve the bad data for operator recovery and deny shared access.
+      data.config.proAccountGrants = malformed;
+    } else {
+      const caller = data.config.proAccountGrants || {};
+      const disk = liveDisk?.config?.proAccountGrants || {};
+      const baseRows = base.proAccountGrants || {};
+      const haveBaseline = typeof data.__pristineText === 'string';
+      const merged = {};
+      for (const uid of new Set([...Object.keys(caller), ...Object.keys(disk), ...Object.keys(baseRows)])) {
+        if (!/^\d{1,20}$/.test(uid)) continue;
+        let prior;
+        try { prior = Object.hasOwn(baseRows, uid) ? JSON.parse(baseRows[uid]) : undefined; }
+        catch { prior = '!'; }
+        if ([prior, caller[uid], disk[uid]].some(invalid)) {
+          // Preserve a malformed user row rather than erasing possible denials.
+          merged[uid] = [prior, caller[uid], disk[uid]].find(invalid);
+          continue;
+        }
+        prior ||= {};
+        const local = caller[uid] || {};
+        const live = disk[uid] || {};
+        const row = {};
+        for (const key of new Set([...Object.keys(prior), ...Object.keys(local), ...Object.keys(live)])) {
+          if (['__proto__', 'prototype', 'constructor'].includes(key)) continue;
+          const before = prior[key], wanted = local[key], current = live[key];
+          let value;
+          if (!haveBaseline) value = wanted === current ? current : '!';
+          else if (wanted === before) value = current;
+          else if (current === before || wanted === current) value = wanted;
+          else value = '!'; // Divergent changes deny rather than falling back to shared-by-default.
+          if (value === '!') row[key] = value;
+          else if (typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)) row[key] = value;
+          else if (value !== undefined) row[key] = '!';
+        }
+        if (Object.keys(row).length) merged[uid] = row;
       }
-      if (Object.keys(row).length) merged[uid] = row;
+      data.config.proAccountGrants = merged;
     }
-    data.config.proAccountGrants = merged;
   }
 
   if (typeof data.orders === 'object' && data.orders !== null) {

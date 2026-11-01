@@ -119,7 +119,7 @@ test('toast: kaam hua to hara tick, fail hua to laal "!" — jhooth nahi', async
   } finally { window.close(); }
 });
 
-test('cart: bill/coupon aate waqt khaali jagah nahi — "Finding the best coupon" shimmer', async () => {
+test('cart: pending bill has no fake bill or coupon shimmer card', async () => {
   const cart = {
     restaurantId: '201', restaurantName: 'Biryani', restaurantArea: 'Aliganj',
     items: [{ lineKey: 'l', name: 'Biryani', price: 68, qty: 1 }], quote: null
@@ -129,11 +129,9 @@ test('cart: bill/coupon aate waqt khaali jagah nahi — "Finding the best coupon
   try {
     await waitFor(() => window.document.querySelector('[data-tab="cart"]:not([disabled])'), 'nav');
     window.document.querySelector('[data-tab="cart"]').click();
-    const card = await waitFor(() => window.document.querySelector('.finding-coupon-card'), 'finding coupon card');
-    assert.match(card.textContent, /Finding the best coupon/);
-    assert.match(card.textContent, /Checking offers/i);
-    assert.ok(card.querySelector('.spinner'), 'spinner hai');
-    assert.ok(card.querySelector('.skeleton-line'), 'shimmer line hai');
+    await waitFor(() => window.document.querySelector('.pay-bar'), 'cart');
+    assert.equal(window.document.querySelector('.finding-coupon-card'), null);
+    assert.equal(window.document.querySelector('.bill-card'), null, 'no provider bill was returned');
   } finally { window.close(); }
 });
 

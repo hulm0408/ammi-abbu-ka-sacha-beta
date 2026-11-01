@@ -43,7 +43,13 @@ const demoState = {
   ok: true,
   user: { id: '9000', name: 'Demo', firstName: 'Demo', isBoss: true },
   accounts: [
-    { key: 'demo-account-1', name: 'Ammi', phoneMasked: '90••••0001', active: true, status: 'USED', selectable: true, isLoggedIn: true, owner: 'self', offerTracks: [{ label: 'Breakfast offer', status: 'NOT_CLAIMED' }] },
+    { key: 'demo-account-1', name: 'Ammi', phoneMasked: '90••••0001', active: true, status: 'USED', selectable: true, isLoggedIn: true, owner: 'self', offerTracks: [
+      { label: 'Late night (9PM–6AM)', emoji: '🌙', status: 'CLAIMED', verified: true },
+      { label: 'Breakfast (7AM–11AM)', emoji: '☀️', status: 'ALREADY_CLAIMED', verified: true },
+      { label: 'Extra ₹50 offer', emoji: '💸', status: 'FAILED', verified: false },
+      { label: 'Weekend offer', emoji: '🎉', status: 'NOT_CLAIMED', verified: false },
+      { label: 'Karwa Chauth', emoji: '🪔', status: 'NOT_CLAIMED', verified: false }
+    ] },
     { key: 'demo-account-2', name: 'Abbu', phoneMasked: '90••••0002', active: false, status: 'READY', selectable: true, isLoggedIn: true, owner: 'self', offerTracks: [] }
   ],
   activeAccount: { key: 'demo-account-1', name: 'Ammi', phoneMasked: '90••••0001' },

@@ -23,7 +23,7 @@ const { getDb, saveDb } = await import('./store.js');
 
 const db = getDb();
 db.config.accounts = {
-  // Operator IDs are visible only where the owner has granted them.
+  // Legacy grant hashes remain accepted; operator IDs are now shared by default.
   acc_operator_used: { phone: '9876500001', name: 'Operator used', token: 'op-token-1', isLoggedIn: true, ordersVerifiedLive: true, totalOrdersCount: 4, freeCashBalance: 50 },
   acc_operator_fresh: { phone: '9876500002', name: 'Operator fresh', token: 'op-token-2', isLoggedIn: true, ordersVerifiedLive: true, totalOrdersCount: 0 },
   acc_operator_expired: { phone: '9876500003', name: 'Operator expired', isLoggedIn: true, isLoggedOut: true }
@@ -385,8 +385,8 @@ test('DOM: used ID par warning dialog, phir confirmUsed ke saath select', async 
     return state();
   } });
   try {
-    await waitFor(() => app.document.querySelector('[data-action="account-select"]'), 'used row');
-    app.document.querySelector('[data-action="account-select"]').click();
+    await waitFor(() => app.document.querySelector('[data-action="account-select"][data-key="acc_operator_used"]'), 'used row');
+    app.document.querySelector('[data-action="account-select"][data-key="acc_operator_used"]').click();
     await waitFor(() => app.document.querySelector('.confirm-dialog'), 'warning dialog');
     const text = app.document.querySelector('.confirm-dialog').textContent;
     assert.match(text, /Ye ID pehle use ho chuki hai/);
@@ -409,9 +409,8 @@ test('DOM: checkout page Swiggy jaisa — group cart, delivering to, coupon, bil
     assert.match(text, /Your Order/);
     assert.match(text, /Apply coupon/);
     assert.match(text, /Bill Details/i);
-    assert.match(text, /Payment: UPI \/ QR/);
-    assert.doesNotMatch(text, /Cash on Delivery/, 'unavailable payment methods stay hidden');
-    assert.match(text, /PAY USING UPI/);
+    assert.doesNotMatch(text, /Payment: UPI \/ QR|PAY USING UPI|Cash on Delivery/, 'redundant payment card stays hidden');
+    assert.match(text, /Pay Now/);
     // Coupon page khulta hai — koi code type karne ka box nahi, sirf APPLY.
     assert.equal(app.document.querySelector('input[name="coupon"]'), null);
     app.document.querySelector('[data-action="toggle-coupon"]').click();

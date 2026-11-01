@@ -150,7 +150,9 @@ test('vault key khud banti hai (dead-end nahi), par purana data galat key se nah
 test('static app is served without exposing API data; private and boss views stay separate', async () => {
   const page = await fetch(base + '/pro');
   assert.equal(page.status, 200);
-  assert.match(await page.text(), /Sacha Beta/);
+  const html = await page.text();
+  assert.match(html, /ORDER PLACER/);
+  assert.doesNotMatch(html, /Sacha Beta/i);
   assert.match(page.headers.get('content-security-policy'), /default-src 'self'/);
   // Shared operator row sabko dikhti hai, par uska token kabhi nahi.
   const bobView = (await request('/pro/api/bootstrap', bob)).body;

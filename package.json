@@ -26,7 +26,7 @@
     "test:miniapp-layout": "node tools/verify-miniapp-layout.mjs",
     "test:live": "node test_live_address_and_cart_e2e.mjs",
     "test:guards": "node run_guards.mjs",
-    "test:pro": "node --test test_v87_miniapp_security_and_flow.mjs test_v88_checkout_safety.mjs test_v89_provider_faults.mjs test_v90_miniapp_ui.mjs test_v124_chat_miniapp.mjs test_v125_quick_bill.mjs tests/miniapp-design-system.test.mjs",
+    "test:pro": "node --test test_v87_miniapp_security_and_flow.mjs test_v88_checkout_safety.mjs test_v89_provider_faults.mjs test_v90_miniapp_ui.mjs test_v124_chat_miniapp.mjs test_v125_quick_bill.mjs tests/miniapp-design-system.test.mjs tests/miniapp-shared-access.test.mjs",
     "test:chat-handoff": "node --test test_v124_chat_miniapp.mjs test_v125_quick_bill.mjs",
     "test:lazy": "node test_v40_lazy_boss_autopilot_e2e.mjs",
     "manual:create": "node manual-account-creator.js",
