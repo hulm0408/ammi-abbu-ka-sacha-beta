@@ -512,6 +512,9 @@ function saveProviderQuote(ws, quote) {
     ofoConfirmed: quote.ofoConfirmed === true,
     // Bill turant aaya, par offers/One Lite/coupon ka check bacha hai.
     optimizePending: quote.optimizePending === true,
+    // Round 35: offer claim ka SACH — free cash laga, ya Swiggy ne mana kiya.
+    // Bill card par ek chhoti line, taaki "free cash nahi laga" ka andhera na rahe.
+    offerNote: String(quote.offerNote || '').slice(0, 160),
     fetchedAt: new Date().toISOString()
   };
   return ws.cart.quote;
@@ -2198,10 +2201,12 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         // One Lite (+₹1) subscription jo bill me laga, wo cart par bhi yaad
         // rakho — warna agla sync/place usse gira kar delivery fee wapas le aata.
         ws.cart.activeSubscriptionItems = Array.isArray(ws.cart.activeSubscriptionItems) ? ws.cart.activeSubscriptionItems : [];
-        // Round 33: pehle sirf asli bill (fast), phir peeche se best-coupon
-        // (cart/optimize). Boss ki shikayat: "bill calculate hone me bahut time
-        // lag raha hai". `body.phase === 'full'` par purana poora raasta chalta hai.
-        const phase = body.phase === 'full' ? 'full' : 'fast';
+        // Round 35 (boss): "JO BILL DIKHA RAHA PAY NOW PAR CLICK KARTA HU TO WO
+        // CHANGE HOJATA" — do kadam (fast phir optimize) hi is badlav ki jad
+        // thi. Ab ek hi bill: poora offer/One Lite/coupon check pehle, phir
+        // quote. `body.phase === 'fast'` sirf tab jab koi jaan-boojh kar turant
+        // number maange (chat handoff) — default poora hi hai.
+        const phase = body.phase === 'fast' ? 'fast' : 'full';
         const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon, { phase });
         saveProviderQuote(ws, quote);
         // Bill ke saath outlet ka sach bhi — header/outlet row ke liye.

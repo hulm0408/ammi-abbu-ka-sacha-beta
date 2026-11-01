@@ -198,3 +198,11 @@ bar). Har async ka end: success / error / retry — koi infinite spinner nahi.
 | Pay bar | bada total + Pay Now | total + **live 2-minute clock chip** + Pay Now. Koi text lecture nahi |
 | Bill loading | shimmer/skeleton | chhoti "receipt print" card (lines print hoti hain) — spinner/dash nahi |
 | Load bar | — | hata diya (boss ne dash animation mana kiya) |
+
+## 12. Round 35 — cancel card, ek hi bill, claim ka sach
+
+| Cheez | Reference (Swiggy) | Yahan |
+|---|---|---|
+| Cancel | cancel → order band | checkout band + fee wapas + cart wapas; Swiggy ka bana order nahi (sach likha) |
+| Bill | ek hi final bill | ek hi poora quote; Pay bar ka number = checkout ka `expectedTotal` |
+| Offers | applied discount dikhta hai | bill par `1 offer claim hua` / `PRE_LOCKED` ki chhoti honest line |

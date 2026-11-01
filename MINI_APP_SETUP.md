@@ -1016,3 +1016,11 @@ band nahi hota. Koi match na ho to line dikhti hai.
 * Guard: `test_v123_round34_bill_faster_pay_window.mjs` **12 checks** (`npm run test:round34`).
   `npm test` 132/132, `test:pro` 93/93, `run_guards` 77/91 (14 = wahi purane env/network suites
   jo `origin/main` par bhi fail hote hain; `test_v102` ab pass — pehle baseline me fail tha).
+* **Round 35 (cancel saaf + bill consistent + free cash):** uncertain checkout ka "needs checking"
+  card gaya — ab `.cancel-card` sirf **Order cancel karein** (fee wapas, cart wapas, order dobara
+  ho sakta hai). Bill do-kadam (fast → optimize) hata diya: **ek hi poora bill**, jo Pay bar par
+  dikha wahi `expectedTotal` ban kar checkout jata hai. Offer claim ka jawab cart push se pehle
+  liya jata hai, isliye free cash/night cash usi bill me aata hai; bill card par claim ka sach
+  (`offerNote`) dikhta hai.
+* Guard: `test_v124_round35_cancel_and_consistent_bill.mjs` **8 checks** (`npm run test:round35`).
+  `npm test` 132/132, `test:pro` 93/93, `run_guards` 78/92 (14 = wahi purane env/network suites).

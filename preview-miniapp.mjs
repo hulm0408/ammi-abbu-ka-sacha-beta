@@ -61,7 +61,7 @@ const demoState = {
     restaurantId: 'demo-1', restaurantName: 'The Curry House', restaurantArea: 'Green Park',
     restaurantTime: '30–40 mins', restaurantRating: '4.4',
     items: [{ id: 'demo-dish-1', lineKey: 'demo-line-1', name: 'Paneer tikka bowl', price: 189, qty: 2, isVeg: true }],
-    quote: { itemTotal: 378, deliveryFee: 28, deliverySaved: 28, taxes: 42, total: 448, coupon: '', discount: 0, fetchedAt: now.toISOString() }
+    quote: { itemTotal: 378, deliveryFee: 28, deliverySaved: 28, taxes: 42, total: 448, coupon: '', discount: 0, offerNote: '1 offer claim hua (0 pehle se active).', fetchedAt: now.toISOString() }
   },
   coupons: [
     { code: 'DEMO50', title: '₹50 OFF', description: 'Example offer for this preview.' },
@@ -106,6 +106,13 @@ function sceneState(scene) {
   if (scene === 'share') {
     // Swiggy ka asli share link jaisa — preview me sirf dikhane ke liye.
     state.orders[0].trackingUrl = 'https://www.swiggy.com/ofo/track/DEMO-TOKEN-9F2A';
+  }
+  if (scene === 'cancel') {
+    // Round 35: uncertain checkout — ab sirf cancel ka raasta.
+    state.checkout = {
+      status: 'OUTCOME_UNKNOWN', orderId: 'DEMO-1001', amount: 448,
+      accountPhone: '90••••0001', message: 'The response was lost. Ek order ban gaya ho sakta hai.'
+    };
   }
   if (scene === 'billloading') {
     // Round 34: bill abhi aa raha hai — creative receipt loader + 2-minute rule.

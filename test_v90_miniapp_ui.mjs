@@ -168,7 +168,9 @@ test('checkout uses an in-app consent dialog, preserves full details, and only s
     assert.equal(checkoutCalls.length, 1);
     assert.equal(checkoutCalls[0].body.confirmCheckout, true);
     assert.equal(checkoutCalls[0].body.expectedTotal, 150.25);
-    await waitFor(() => app.document.body.textContent.includes('Cart/receiver changes band hain'), 'locked draft');
+    // Round 35: locked draft ki line badal gayi (boss: "original account check"
+    // hatado) — ab seedha cancel ka raasta batati hai.
+    await waitFor(() => app.document.body.textContent.includes('Neeche diye button se cancel karein'), 'locked draft');
     assert(app.document.querySelector('[data-action="qty"]').disabled);
     app.document.querySelector('[data-tab="address"]').click();
     await waitFor(() => app.document.body.textContent.includes('No saved addresses (offline).'), 'address response');
@@ -183,28 +185,38 @@ test('checkout uses an in-app consent dialog, preserves full details, and only s
   } finally { app.close(); }
 });
 
-test('uncertain checkout offers in-app original-account history without clearing the duplicate-order warning', async () => {
+// Boss (round 35): "CHECKOUT NEEDS CHECKING KA CARD ... CHECK THIS ORDER AND
+// CHECK ORIGINAL ACCOUNT BLAH BAKH ... ISKO HATADO CANCEL KARDU". Uncertain
+// checkout par ab sirf ek saaf raasta — cancel, cart wapas, naya order.
+test('uncertain checkout par sirf cancel ka raasta — koi check-order button nahi', async () => {
   const state = normalState();
   state.activeAccount = { ...account, key: 'b', name: 'Other selected account' };
-  state.checkout = { status: 'OUTCOME_UNKNOWN', accountPhone: account.phone, message: 'An order may exist; do not retry.' };
+  state.checkout = { status: 'OUTCOME_UNKNOWN', accountPhone: account.phone, orderId: '123456789012', message: 'An order may exist; do not retry.' };
   const app = harness({ responder: call => {
     if (call.url.endsWith('/bootstrap')) return response(state);
-    if (call.url.includes('/orders?scope=checkout')) return response({ ok: true, orders: [{ id: '123456789012', restaurant: 'Demo', status: 'Pending', items: [], amount: 150.25 }] });
-    if (call.url.includes('/orders/tracking?')) return response({ ok: true, tracking: { orderId: '123456789012', status: 'Pending' } });
+    if (call.url.endsWith('/checkout/cancel')) return response({ ok: true, checkout: null, cart: normalState().cart, message: 'Checkout band. Paisa nahi kata.' });
     return response({ ok: false, error: 'unexpected' }, 500);
   } });
   try {
     await waitFor(() => app.document.querySelector('[data-tab="cart"]:not([disabled])'), 'connected navigation');
     app.document.querySelector('[data-tab="cart"]').click();
-    await waitFor(() => app.document.querySelector('[data-action="checkout-orders"]'), 'original-account history button');
-    app.document.querySelector('[data-action="checkout-orders"]').click();
-    await waitFor(() => app.document.querySelector('[data-action="order-detail"]'), 'original-account orders');
-    assert.match(app.document.body.textContent, /order fail nahi|doosra order na karein/i);
-    assert(app.calls.some(c => c.url.endsWith('/orders?scope=checkout')));
-    app.document.querySelector('[data-action="order-detail"]').click();
-    await waitFor(() => app.calls.some(c => c.url.includes('/orders/tracking?') && c.url.includes('scope=checkout')), 'automatic share-link request');
-    assert.equal(app.document.querySelector('[data-action="order-tracking"]'), null, 'no tracking refresh control');
-    assert.match(app.document.body.textContent, /Share link/);
-    assert.deepEqual(app.external, []);
+    await waitFor(() => app.document.querySelector('[data-action="checkout-cancel"]'), 'cancel button');
+    // Boss ne jo hataane kaha wo bilkul nahi hai.
+    assert.equal(app.document.querySelector('[data-action="checkout-orders"]'), null, 'original account orders button nahi');
+    assert.equal(app.document.querySelector('[data-action="checkout-status"]'), null, 'check-this-order button nahi');
+    assert.match(app.document.body.textContent, /Checkout band karein/);
+    assert.match(app.document.body.textContent, /Order cancel karein/);
+    // Cancel → API call, checkout clear, cart wapas.
+    app.document.querySelector('[data-action="checkout-cancel"]').click();
+    let confirmBtn = null;
+    await waitFor(() => {
+      confirmBtn = app.document.querySelector('.confirm-dialog .button.danger, .confirm-dialog .button.primary');
+      return Boolean(confirmBtn);
+    }, 'cancel confirm dialog');
+    confirmBtn.click();
+    await waitFor(() => app.calls.some(c => c.url.endsWith('/checkout/cancel')), 'cancel api');
+    await waitFor(() => app.document.querySelector('.pay-bar .pay-now'), 'cart unlocked after cancel');
+    assert.equal(app.document.querySelector('[data-action="checkout-cancel"]'), null, 'cancel card chala gaya');
+    assert.equal(app.external.length, 0);
   } finally { app.close(); }
 });

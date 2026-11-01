@@ -619,3 +619,22 @@ BE AFTER BILL IS FETCHED YOU HAVE 2 MINUTES TO CLICK PAY NOW OTHERWISE EVERYTHIN
 **Kya nahi kiya (sach):** Swiggy ka cart write/readback **hum skip nahi kar sakte** — bill sirf
 Swiggy ke jawab se banta hai. Cache sirf tab lagta hai jab naam + phone + street + PIN bilkul
 wahi ho (fingerprint). Isse zyada tez karna = Swiggy se jhooth bolna.
+
+## VII. Round 35 — cancel saaf, bill consistent, free cash pehle bill me
+
+Boss: *"ORDER CANCEL HOJANA CHAHIYE BUT CHECKOUT NEEDS CHECKING KA CARD ARAHA … CHECK THIS ORDER
+AND CHECK ORIGINAL ACCOUNT … ISKO HATADO … FREE CASH ABHI BHI NAHI LAG RAHA … JO BILL DIKHA RAHA
+PAY NOW PAR CLICK KARTA HU TO WO CHANGE HOJATA … CONSISTENT NAHI HAI."*
+
+| Cheez | Kaise | Proof |
+|---|---|---|
+| Cancel = cancel | `/checkout/cancel` checkout band karta hai, wallet fee wapas, cart wapas — order dobara ho sakta hai. `PAID` par 409 (jhoothi cancellation nahi) | `test_v124` #1–#3 |
+| "Needs checking" card gaya | Ab `.cancel-card` — sirf **Order cancel karein** + ek chhoti line. `checkout-orders` aur `checkout-status` buttons nahi | `test_v124` #6/#7, `test_v90` #5, `screenshots/21-cancel-card.png` |
+| Locked line | "pehle original account check karein" hata — "neeche diye button se cancel karein" | `test_v90` #4 |
+| Bill consistent | Do kadam (fast → optimize) hata diye. Ab ek hi poora bill (`phase: 'full'`); jo Pay bar par dikha wahi `expectedTotal` ban kar checkout jata hai | `test_v124` #4, `test_v122` #7 (naya contract) |
+| Free cash / night cash | Offer claim ka jawab cart push se **pehle** liya jata hai (12s tak) — isliye free cash usi pehle bill me aata hai, agle me nahi | `test_v124` #5 |
+| Claim ka sach | Bill card par chhoti line: `1 offer claim hua` / `Swiggy ke hisaab se ye ID pehle le chuki hai (PRE_LOCKED)` / claim fail ki asli wajah | `test_v124` #8, `screenshots/22-bill-offer-note.png` |
+
+**Kya nahi kiya (sach):** Swiggy par bana hua order hum cancel nahi kar sakte — cancel sirf humara
+checkout band karta hai, aur wahi app me saaf likha jata hai. Free cash tabhi lagta hai jab Swiggy
+us campaign par discount deta hai; `PRE_LOCKED` par koi jugaad nahi, bas sach dikhta hai.
