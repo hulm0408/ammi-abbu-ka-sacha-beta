@@ -129,7 +129,8 @@ test('DOM: coupon page — koi code box nahi, har coupon par APPLY, result asli'
     await waitFor(() => app.document.querySelectorAll('.coupon-tile').length === 3, 'coupon tiles');
     assert.equal(app.document.querySelector('input[name="coupon"]'), null, 'code type karne ka box nahi');
     assert.equal(app.document.querySelector('form[data-form="sync"]'), null);
-    const applies = [...app.document.querySelectorAll('[data-action="coupon-pick"]')];
+    assert.ok(app.document.querySelector('.coupon-underlay[inert]'), 'cart sheet ke neeche inert hai');
+    const applies = [...app.document.querySelectorAll('.coupon-sheet [data-action="coupon-pick"]')];
     assert.equal(applies.length, 3, 'har coupon par APPLY — locked bhi');
     assert.equal(/available nahi|nahi di|koi coupon nahi/i.test(app.document.body.textContent), false);
     // SNACKIT APPLY → asli bill se ₹140 saving, aur card par result dikhe.
@@ -139,7 +140,7 @@ test('DOM: coupon page — koi code box nahi, har coupon par APPLY, result asli'
     await waitFor(() => app.document.querySelector('.coupon-result.ok'), 'saving result');
     assert.match(app.document.querySelector('.coupon-result.ok').textContent, /₹140/);
     // TRYNEW APPLY → Swiggy ne discount nahi diya, saaf batao (jhooth nahi).
-    const trynewBtn = [...app.document.querySelectorAll('[data-action="coupon-pick"]')].find(b => b.dataset.code === 'TRYNEW');
+    const trynewBtn = [...app.document.querySelectorAll('.coupon-sheet [data-action="coupon-pick"]')].find(b => b.dataset.code === 'TRYNEW');
     trynewBtn.click();
     await waitFor(() => app.calls.filter(c => c.url.endsWith('/cart/sync')).length >= 2, 'second sync');
     await waitFor(() => app.document.querySelector('.coupon-result.no'), 'no-discount result');

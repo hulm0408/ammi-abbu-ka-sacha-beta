@@ -66,7 +66,7 @@
   const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name] || ''}</svg>`;
   const tile = (name, green = false) => `<span class="icon-tile${green ? ' green' : ''}">${icon(name)}</span>`;
   const cartLocked = () => Boolean(state.checkout && state.checkout.status !== 'PAID');
-  const head = (eyebrow, title, sub, end = '') => `<div class="page-heading"><div><h1>${esc(title)}</h1>${String(sub || '').startsWith('Swiggy order #') ? `<p>${esc(sub)}</p>` : ''}</div>${end}</div>`;
+  const head = (eyebrow, title, sub, end = '') => `<div class="page-heading"><div>${eyebrow ? `<span class="page-eyebrow">${esc(eyebrow)}</span>` : ''}<h1>${esc(title)}</h1>${String(sub || '').startsWith('Swiggy order #') ? `<p>${esc(sub)}</p>` : ''}</div>${end}</div>`;
   const empty = (symbol, title, text) => `<div class="empty"><div class="large-icon">${icon(symbol)}</div><strong>${esc(title)}</strong>${esc(text)}</div>`;
   /**
    * Round 27 (boss): toast ab Swiggy jaisa — upar se drop, icon ke saath, aur
@@ -101,11 +101,37 @@
   // inside the Mini App, preserve the full recipient/amount text, and default
   // to cancellation on dismissal. Only one prompt can be open at a time.
   let confirmationOpen = false;
-  function confirmInApp({ title, message, confirmText = 'Continue', danger = false, choices = null }) {
+  // Dialogs live beside the app shell. Preserve any existing inert state so a
+  // confirmation on top of a sheet restores the sheet, not the page behind it.
+  function lockModalBackground(overlay) {
+    const saved = Array.from(document.body.children)
+      .filter(el => el !== overlay && !/^(SCRIPT|STYLE|LINK)$/.test(el.tagName))
+      .map(el => ({ el, inert: el.hasAttribute('inert'), aria: el.getAttribute('aria-hidden') }));
+    for (const { el } of saved) { el.setAttribute('inert', ''); el.setAttribute('aria-hidden', 'true'); }
+    return () => {
+      for (const { el, inert, aria } of saved) {
+        if (!el.isConnected) continue;
+        if (!inert) el.removeAttribute('inert');
+        if (aria === null) el.removeAttribute('aria-hidden'); else el.setAttribute('aria-hidden', aria);
+      }
+    };
+  }
+  function restoreDialogFocus(el, identity = null) {
+    // A background response may have repainted the original trigger while the
+    // dialog was open; find its equivalent in the current view in that case.
+    if (!el?.isConnected) { if (identity) restoreFocus(document, identity); return; }
+    if (el.closest('[inert], [hidden]') || typeof el.focus !== 'function') return;
+    // run() temporarily disables its triggering button until the task settles.
+    if (el.disabled && el.dataset.busy === '1') { el.dataset.dialogReturnFocus = '1'; return; }
+    if (el.disabled) return;
+    try { el.focus({ preventScroll: true }); } catch { el.focus(); }
+  }
+  function confirmInApp({ title, message, confirmText = 'Continue', danger = false, choices = null, opener = null }) {
     if (confirmationOpen) return Promise.resolve(false);
     confirmationOpen = true;
     return new Promise(resolve => {
-      const previousFocus = document.activeElement;
+      const previousFocus = opener || document.activeElement;
+      const previousIdentity = describeFocus(previousFocus);
       const overlay = document.createElement('div');
       overlay.className = 'confirm-overlay';
       const dialog = document.createElement('section');
@@ -144,15 +170,15 @@
       dialog.append(heading, body, actions);
       overlay.append(dialog);
       let settled = false;
+      let unlockBackground = () => {};
       const finish = approved => {
         if (settled) return;
         settled = true;
         confirmationOpen = false;
         document.removeEventListener('keydown', onKeyDown);
         overlay.remove();
-        if (previousFocus?.isConnected && typeof previousFocus.focus === 'function') {
-          try { previousFocus.focus({ preventScroll: true }); } catch { previousFocus.focus(); }
-        }
+        unlockBackground();
+        restoreDialogFocus(previousFocus, previousIdentity);
         resolve(approved);
       };
       const onKeyDown = event => {
@@ -160,9 +186,9 @@
         if (event.key === 'Tab') {
           const order = [cancel, ...optionButtons, ...(optionButtons.length ? [] : [confirm])];
           const at = order.indexOf(document.activeElement);
-          if (at === -1) return;
           event.preventDefault();
-          const next = event.shiftKey ? (at === 0 ? order.at(-1) : order[at - 1]) : (at === order.length - 1 ? order[0] : order[at + 1]);
+          const next = at === -1 ? (event.shiftKey ? order.at(-1) : order[0])
+            : event.shiftKey ? (at === 0 ? order.at(-1) : order[at - 1]) : (at === order.length - 1 ? order[0] : order[at + 1]);
           next.focus();
         }
       };
@@ -172,7 +198,8 @@
       overlay.addEventListener('click', event => { if (event.target === overlay) finish(false); });
       document.addEventListener('keydown', onKeyDown);
       document.body.append(overlay);
-      cancel.focus();
+      try { cancel.focus({ preventScroll: true }); } catch { cancel.focus(); }
+      unlockBackground = lockModalBackground(overlay);
     });
   }
   async function api(path, method = 'GET', body) {
@@ -229,7 +256,12 @@
       } else toast(e.message || 'Something went wrong.');
     } finally {
       state.busy = false;
-      if (button?.isConnected) { delete button.dataset.busy; button.disabled = false; button.classList.remove('button-busy'); }
+      if (button?.isConnected) {
+        const returnFocus = button.dataset.dialogReturnFocus === '1';
+        delete button.dataset.busy; delete button.dataset.dialogReturnFocus;
+        button.disabled = false; button.classList.remove('button-busy');
+        if (returnFocus && document.activeElement === document.body) restoreDialogFocus(button);
+      }
       stopLoading();
     }
   }
@@ -264,13 +296,27 @@
     return a?.annotation || a?.name || a?.label || 'Delivery address';
   }
   const normName = value => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  function trapDialogTab(event, dialog) {
+    if (event.key !== 'Tab') return;
+    const controls = Array.from(dialog.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])'))
+      .filter(el => !el.closest('[hidden], [inert]'));
+    if (!controls.length) { event.preventDefault(); return; }
+    const index = controls.indexOf(document.activeElement);
+    if (index === -1 || (event.shiftKey && index === 0) || (!event.shiftKey && index === controls.length - 1)) {
+      event.preventDefault();
+      (event.shiftKey ? controls[controls.length - 1] : controls[0]).focus();
+    }
+  }
+  let dismissOutletSheet = null;
   /**
    * Boss (31-10-2026): "RESTAURANT KA LOCATION CHOOSE KARNE WALA SEARCH PAR
    * CLICK KARKE RESTAURANT KHOLU TAB DENA". Swiggy jaisa: ek naam ke kai
    * outlet ho to pehle location sheet, phir menu.
    */
-  function openOutletSheet(name, outlets, currentId = '') {
-    document.querySelector('.sheet-overlay')?.remove();
+  function openOutletSheet(name, outlets, currentId = '', opener = null) {
+    if (dismissOutletSheet) dismissOutletSheet(false);
+    const previousFocus = opener || document.activeElement;
+    const previousIdentity = describeFocus(previousFocus);
     const overlay = document.createElement('div');
     overlay.className = 'sheet-overlay';
     const sheet = document.createElement('section');
@@ -293,11 +339,28 @@
       <div class="sheet-list">${current ? `<p class="outlet-list-title">Current Outlet</p>${row(current, true)}` : ''}${others.length ? `<p class="outlet-list-title">Other Outlets Around You</p>${others.map(o => row(o, false)).join('')}` : ''}</div>`;
     overlay.append(sheet);
     document.body.append(overlay);
+    const onKey = event => {
+      if (confirmationOpen) return;
+      if (event.key === 'Escape') { event.preventDefault(); dismissOutletSheet?.(); return; }
+      trapDialogTab(event, sheet);
+    };
+    let unlockBackground = () => {};
+    dismissOutletSheet = (restore = true) => {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      unlockBackground();
+      dismissOutletSheet = null;
+      if (restore) restoreDialogFocus(previousFocus, previousIdentity);
+    };
+    document.addEventListener('keydown', onKey);
+    const close = sheet.querySelector('[data-sheet-close]');
+    try { close?.focus({ preventScroll: true }); } catch { close?.focus(); }
+    unlockBackground = lockModalBackground(overlay);
     overlay.addEventListener('click', event => {
-      if (event.target === overlay || event.target.closest('[data-sheet-close]')) { overlay.remove(); return; }
+      if (event.target === overlay || event.target.closest('[data-sheet-close]')) { dismissOutletSheet?.(); return; }
       const pick = event.target.closest('[data-sheet-outlet]');
       if (!pick) return;
-      overlay.remove();
+      dismissOutletSheet?.(false);
       run(() => openMenu(pick.dataset.sheetOutlet));
     });
   }
@@ -313,22 +376,52 @@
     const target = normName(name);
     return (state.results || []).filter(r => r.id && normName(r.name) === target);
   }
+  let renderedNav = '';
+  let renderedDock = '';
   function renderNav() {
     const tabs = [['accounts','Accounts'],['address','Address'],['search','Search'],['cart','Cart'],['orders','Orders'],['tools','Tools']];
-    $('#bottom-nav').innerHTML = tabs.map(([id, label]) => `<button type="button" data-action="nav" data-tab="${id}" class="${state.tab === id ? 'selected' : ''}" ${state.tab === id ? 'aria-current="page"' : ''} ${state.auth ? '' : 'disabled'}>${icon(id)}<span>${label}</span></button>`).join('');
-    const chip = $('#account-chip');
-    const chipPhone = state.activeAccount?.phone || state.activeAccount?.phoneMasked || '';
-    // Round 31: reference me chip me person icon + number hai (text node nahi).
-    const chipText = chip.querySelector('#account-chip-text') || chip;
-    chipText.textContent = state.auth ? (chipPhone ? `+91 ${chipPhone}` : 'Select account') : 'Not connected';
-    chip.disabled = !state.auth;
     const cart = state.auth ? state.cart : null;
     const quantity = cart?.items?.reduce((n, i) => n + Number(i.qty || 0), 0) || 0;
-    if (state.auth && state.chatHandoff && state.handoffHidden) {
-      $('#cart-dock').innerHTML = `<button type="button" class="cart-dock" data-action="handoff-resume"><span class="dock-icon">${icon('cart')}</span><span class="dock-copy"><strong>Chat links</strong><small>Mini App mein continue karein</small></span><span class="dock-cta">Continue →</span></button>`;
-    } else {
-      $('#cart-dock').innerHTML = !handoffShown() && cart && quantity && state.tab !== 'cart' ? `<button type="button" class="cart-dock" data-action="nav" data-tab="cart"><span class="dock-icon">${icon('cart')}</span><span class="dock-copy"><strong>${quantity} item${quantity === 1 ? '' : 's'} · ${esc(cart.restaurantName)}</strong><small>${cart.quote ? `Swiggy bill ${money(cart.quote.total)}` : 'Bill not checked yet'}</small></span><span class="dock-cta">View cart →</span></button>` : '';
+    const nav = $('#bottom-nav');
+    const navHtml = tabs.map(([id, label]) => {
+      const selected = !handoffShown() && state.tab === id;
+      return `<button type="button" data-action="nav" data-tab="${id}" class="${selected ? 'selected' : ''}" ${selected ? 'aria-current="page"' : ''} ${id === 'cart' && quantity ? `aria-label="Cart, ${quantity} item${quantity === 1 ? '' : 's'}"` : ''} ${state.auth ? '' : 'disabled'}><span class="nav-icon">${icon(id)}${id === 'cart' && quantity ? `<span class="nav-count" aria-hidden="true">${quantity > 99 ? '99+' : quantity}</span>` : ''}</span><span>${label}</span></button>`;
+    }).join('');
+    if (renderedNav !== navHtml) { nav.innerHTML = navHtml; renderedNav = navHtml; }
+
+    const chip = $('#account-chip');
+    const chipPhone = state.activeAccount?.phone || state.activeAccount?.phoneMasked || '';
+    const chipName = state.activeAccount?.name || '';
+    const chipText = chip.querySelector('#account-chip-text') || chip;
+    chipText.textContent = state.auth ? (chipName || (chipPhone ? `+91 ${chipPhone}` : 'Select account')) : 'Not connected';
+    const accountDescription = state.auth ? [chipName, chipPhone ? `+91 ${chipPhone}` : ''].filter(Boolean).join(' · ') || 'Select account' : 'Not connected';
+    chip.setAttribute('aria-label', `Account: ${accountDescription}`);
+    chip.title = accountDescription;
+    chip.disabled = !state.auth;
+
+    // Keep the one existing dock tied to the server cart. A pending/unknown
+    // checkout takes precedence over both the cart shortcut and the chat draft.
+    let dockHtml = '';
+    if (state.auth && !state.checkout && !state.track && !state.couponView) {
+      if (state.chatHandoff && state.handoffHidden) {
+        const detail = cart && quantity ? `${esc(cart.restaurantName || 'Cart')} · ${cart.quote ? money(cart.quote.total) : 'Bill not checked yet'}` : 'Mini App mein continue karein';
+        dockHtml = `<button type="button" class="cart-dock" data-action="handoff-resume"><span class="dock-icon">${icon('link')}</span><span class="dock-copy"><strong>Chat links${quantity ? ` · ${quantity} item${quantity === 1 ? '' : 's'}` : ''}</strong><small>${detail}</small></span><span class="dock-cta">Continue ${icon('arrow')}</span></button>`;
+      } else if (!handoffShown() && cart && quantity && state.tab !== 'cart') {
+        const description = `${quantity} item${quantity === 1 ? '' : 's'} · ${cart.restaurantName || 'Cart'} · ${cart.quote ? `Swiggy bill ${money(cart.quote.total)}` : 'Bill not checked yet'}`;
+        dockHtml = `<button type="button" class="cart-dock" data-action="nav" data-tab="cart" aria-label="View cart: ${esc(description)}"><span class="dock-icon">${icon('cart')}</span><span class="dock-copy"><strong>${quantity} item${quantity === 1 ? '' : 's'} · ${esc(cart.restaurantName || 'Cart')}</strong><small>${cart.quote ? `Swiggy bill ${money(cart.quote.total)}` : 'Bill not checked yet'}</small></span><span class="dock-cta">View cart ${icon('arrow')}</span></button>`;
+      }
     }
+    const dock = $('#cart-dock');
+    if (renderedDock !== dockHtml) { dock.innerHTML = dockHtml; renderedDock = dockHtml; }
+    document.body.classList.toggle('has-dock', Boolean(dockHtml));
+  }
+  function renderThemeControl() {
+    const button = $('.theme-button');
+    if (!button) return;
+    const dark = document.body.classList.contains('dark');
+    button.setAttribute('aria-pressed', String(dark));
+    button.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
+    button.innerHTML = icon(dark ? 'sun' : 'moon');
   }
   /**
    * Boss (01-11-2026, round 31): reference screenshot — "Add Account" card,
@@ -387,7 +480,7 @@
         // Emoji sirf tab jab server de — warna 🎁 tofu ban sakta hai. Fallback
         // par chhota dot + label ka pehla akshar.
         const glyph = t.emoji ? esc(t.emoji) : `<i class="offer-dot" aria-hidden="true"></i>`;
-        return `<span class="offer-chip ${on ? 'on' : 'off'}" title="${esc(t.label)}">${glyph}${on ? ' ✓' : ''}</span>`;
+        return `<span class="offer-chip ${on ? 'on' : 'off'}" title="${esc(t.label)}">${glyph}<span>${esc(t.label || 'Offer')}</span>${on ? ' ✓' : ''}</span>`;
       }).join('');
       const extras = [a.freeCash > 0 ? `₹${esc(a.freeCash)} free cash` : '', trackIcons].filter(Boolean).join(' ');
       const phoneLine = a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned';
@@ -434,7 +527,8 @@
       ? `<div class="ac-search">${icon('search')}<input type="search" data-input="account-search" value="${esc(state.accountQuery || '')}" placeholder="Search Account..." aria-label="Search account"></div>`
       : '';
 
-    return `${lockedNotice}${addCard}${savedHead}${search}${noResultLive}${rememberedNote}${rows}${state.deleteFlow ? `<div class="card delete-card"><div class="card-title">${icon('trash')} Swiggy delete OTP<small>Swiggy ne ${esc(state.deleteFlow.phoneMasked || 'account phone')} par 6-digit delete OTP bheja hai. Ye account Swiggy se hamesha ke liye delete ho jayega.</small></div><form data-form="delete-otp">${field('Delete OTP', 'otp', '6-digit OTP', '', 'inputmode=\"numeric\" autocomplete=\"one-time-code\" maxlength=\"6\" required')}<button class="button danger block" type="submit">Swiggy se delete karein ${icon('trash')}</button><button class="text-button" type="button" data-action="delete-cancel">Cancel</button></form></div>` : ''}`;
+    const saved = `${savedHead}${search}${noResultLive}${rememberedNote}${rows}`;
+    return `${head('YOUR SPACE', 'Accounts', '')}${lockedNotice}${state.accounts.length ? `${saved}${addCard}` : `${addCard}${saved}`}${state.deleteFlow ? `<div class="card delete-card"><div class="card-title">${icon('trash')} Swiggy delete OTP<small>Swiggy ne ${esc(state.deleteFlow.phoneMasked || 'account phone')} par 6-digit delete OTP bheja hai. Ye account Swiggy se hamesha ke liye delete ho jayega.</small></div><form data-form="delete-otp">${field('Delete OTP', 'otp', '6-digit OTP', '', 'inputmode=\"numeric\" autocomplete=\"one-time-code\" maxlength=\"6\" required')}<button class="button danger block" type="submit">Swiggy se delete karein ${icon('trash')}</button><button class="text-button" type="button" data-action="delete-cancel">Cancel</button></form></div>` : ''}`;
   }
   function addressCard(a, selected = false) {
     const lockAttr = cartLocked() ? 'disabled' : '';
@@ -779,13 +873,15 @@
       : '';
     return `${head('PAYMENT', `Pay ${money(c.amount)}`, c.orderId ? `Swiggy order #${esc(c.orderId)}` : 'Swiggy order bana hai')}<div class="card pay-screen"><div class="card-title">${tile(hasQr ? 'receipt' : 'orders')}<span class="title-copy"><strong>${hasQr ? 'UPI se pay karein' : 'Payment abhi ruka hua hai'}</strong><small>${esc(hasQr ? (c.message || 'QR Swiggy se aaya hai — scan karke pay karein.') : 'Swiggy ne order le liya, bas QR nahi diya.')}</small></span></div>${verifyStrip}${qr}<p class="hint">${hasQr ? 'Paisa sirf isi QR par dein — ek hi baar.' : ''} ${c.paymentVerified ? 'Payment report hui hai, order confirm hone ka intezaar hai — dobara na dein.' : ''}</p><button class="button primary block" type="button" data-action="checkout-status">${icon('refresh')} Payment check karein</button>${c.orderId ? `<button class="button soft block" type="button" data-action="track-open" data-id="${esc(c.orderId)}">Order track karein</button>` : ''}<button class="button soft block" type="button" data-action="checkout-orders">Original account ke orders</button></div>`;
   }
-  function renderCart() {
+  function renderCart(behindCoupon = false) {
     // QR aaya to 5-minute verify शुरू (render ke andar se, kyunki yahi entry point hai).
     if (state.checkout?.status === 'PAYMENT_PENDING' && state.checkout.paymentVerified !== true) {
       try { schedulePaymentPoll(); } catch { /* render kabhi na toote */ }
     }
     if (state.track) return renderTrack();
-    if (state.couponView) return renderCouponPage();
+    // The sheet overlays the actual cart, rather than replacing it with a blank
+    // screen. The background is inert while the dialog is open.
+    if (state.couponView && !behindCoupon) return `<div class="coupon-underlay" inert aria-hidden="true">${renderCart(true)}</div>${renderCouponPage()}`;
     const cart = state.cart;
     const locked = cartLocked();
     const lockAttr = locked ? 'disabled' : '';
@@ -832,7 +928,7 @@
     const savingsBanner = saved > 0 ? `<div class="savings-banner">${icon('spark')} ${money(saved)} saved!${q?.coupon ? ` · ${esc(q.coupon)}` : ''}</div>` : '';
     const eta = `<div class="eta-strip"><span class="eta-clock">${icon('orders')}</span><span class="eta-copy"><strong>${cart.restaurantTime ? `Delivery in ${esc(cart.restaurantTime)}` : 'Delivery time Swiggy se aayega'}</strong><small>${esc([cart.restaurantName, cart.restaurantArea].filter(Boolean).join(' · '))}</small></span></div>`;
     // Pay bar: Swiggy jaisa — bada amount + bill link left, green pay right.
-    const payBar = `<div class="pay-bar"><button class="button green pay-now" type="button" data-action="checkout-start" ${locked || !state.checkoutEnabled ? 'disabled' : ''} ${!state.checkoutEnabled ? `title="${esc(state.checkoutBlockReason || '')}"` : ''}>${state.checkoutEnabled ? `Pay Now · Proceed to Pay ${icon('arrow')}` : 'Payment band'}</button><div class="pay-left"><strong>${q ? money(q.total) : '—'}</strong><span class="link-button" role="button" tabindex="0" data-action="bill-open">${state.billOpen ? 'Bill band karein' : 'View Detailed Bill'}</span><small>PAY USING UPI</small>${idleNote}</div>${q ? '' : '<span class="updating-pill"><span class="spinner"></span>Updating</span>'}</div>${state.checkoutEnabled ? '' : `<div class="warning pay-blocked">Payment abhi band hai — wahi asli wajah: ${esc(state.checkoutBlockReason || 'server ne reason nahi diya')}</div>`}`;
+    const payBar = `<div class="pay-bar"><button class="button green pay-now" type="button" data-action="checkout-start" ${locked || !state.checkoutEnabled ? 'disabled' : ''} ${!state.checkoutEnabled ? `title="${esc(state.checkoutBlockReason || '')}"` : ''}>${state.checkoutEnabled ? `Pay Now <span class="sr-only">· Proceed to Pay</span> ${icon('arrow')}` : 'Payment band'}</button><div class="pay-left"><strong>${q ? money(q.total) : '—'}</strong><button class="link-button" type="button" data-action="bill-open">${state.billOpen ? 'Bill band karein' : 'View Detailed Bill'}</button><small>PAY USING UPI</small>${idleNote}</div>${q ? '' : '<span class="updating-pill"><span class="spinner"></span>Updating</span>'}</div>${state.checkoutEnabled ? '' : `<div class="warning pay-blocked">Payment abhi band hai — wahi asli wajah: ${esc(state.checkoutBlockReason || 'server ne reason nahi diya')}</div>`}`;
     return `${head('CHECKOUT', 'Checkout', '')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${!q ? renderFindingCoupon() : ''}${renderSavingsCorner(q)}${renderBill(q, cart)}${renderPayment(cart)}${state.checkoutWarning ? `<div class="warning" role="alert">${esc(state.checkoutWarning)}</div>` : ''}${payBar}`;
   }
   /**
@@ -1055,14 +1151,14 @@
         const stateText = String(t.status || '').toUpperCase();
         const on = t.verified === true || ['CLAIMED', 'ALREADY_ACTIVE', 'ACTIVE'].includes(stateText);
         const label = on ? 'CLAIMED' : stateText === 'NOT_CLAIMED' ? 'NOT CLAIMED' : stateText.replace(/_/g, ' ');
-        return `<div class="offer-row"><span class="offer-emoji">${t.emoji || '🎁'}</span><span class="row-content"><strong>${esc(t.label)}</strong><p>${esc(t.message || '')}</p></span><span class="pill ${on ? 'green' : stateText === 'NOT_CLAIMED' ? 'grey' : 'amber'}">${esc(label)}</span></div>`;
+        return `<div class="offer-row"><span class="offer-emoji" aria-hidden="true">${t.emoji ? esc(t.emoji) : icon('spark')}</span><span class="row-content"><strong>${esc(t.label)}</strong><p>${esc(t.message || '')}</p></span><span class="pill ${on ? 'green' : stateText === 'NOT_CLAIMED' ? 'grey' : 'amber'}">${esc(label)}</span></div>`;
       }).join('');
       const claimButton = canClaim
         ? `<button class="button ${a.active ? 'green' : 'outline'} block" type="button" data-action="claim-offers" data-key="${esc(a.key)}" ${state.claimBusyKey === a.key || a.status === 'SESSION_EXPIRED' ? 'disabled' : ''}>${state.claimBusyKey === a.key ? 'Claim ho raha hai…' : (a.active ? 'Chaar offers claim karein' : 'Is ID par claim karein')}</button>`
         : '<p class="hint">Operator ka ID — claim band. Apna ID add karein.</p>';
       return `<div class="card"><div class="card-title">${tile('tools')}<span class="title-copy">${esc(a.name)}<small>${a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned'} · ${a.owner === 'operator' ? 'Operator' : 'Aapka'}</small></span></div>${tracks}${claimButton}</div>`;
     }).join('');
-    const result = state.claimResult ? `<div class="card"><div class="card-title">${icon('check')} Claim ka sach</div>${(state.claimResult.tracks || []).map(t => `<div class="offer-row"><span class="offer-emoji">${t.emoji || '🎁'}</span><span class="row-content"><strong>${esc(t.label)}</strong><p>${esc(t.message || '')}</p></span><span class="pill ${t.verified ? 'green' : 'amber'}">${esc(String(t.status || '').replace(/_/g, ' '))}</span></div>`).join('')}<p class="hint">Do baar claim nahi hota — pehle se laga ho to ALREADY ACTIVE dikhta hai.</p></div>` : '';
+    const result = state.claimResult ? `<div class="card"><div class="card-title">${icon('check')} Claim ka sach</div>${(state.claimResult.tracks || []).map(t => `<div class="offer-row"><span class="offer-emoji" aria-hidden="true">${t.emoji ? esc(t.emoji) : icon('spark')}</span><span class="row-content"><strong>${esc(t.label)}</strong><p>${esc(t.message || '')}</p></span><span class="pill ${t.verified ? 'green' : 'amber'}">${esc(String(t.status || '').replace(/_/g, ' '))}</span></div>`).join('')}<p class="hint">Do baar claim nahi hota — pehle se laga ho to ALREADY ACTIVE dikhta hai.</p></div>` : '';
     return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${renderAccountAccess()}${result}${accounts}${renderIdentitiesCard()}${renderLiveOrderCard()}${renderBackupCard()}${renderDoctorCard()}`;
   }
   function renderConnection() {
@@ -1258,6 +1354,10 @@
     if (!h.activeId) return '';
     const back = `<button class="text-button" type="button" data-action="handoff-leave" ${state.handoffBusy ? 'disabled' : ''}>Link flow band karein</button>`;
     const change = h.stage !== 'ACCOUNT' ? `<button class="text-button" type="button" data-action="handoff-reselect" ${state.handoffBusy ? 'disabled' : ''}>ID badlein</button>` : '';
+    const footer = `<div class="handoff-links">${change}${back}</div>`;
+    const steps = [['ACCOUNT', 'ID'], ['ADDRESS', 'Address'], ['CART', 'Cart'], ['BILL', 'Bill']];
+    const stageIndex = steps.findIndex(([stage]) => stage === h.stage);
+    const progress = stageIndex < 0 ? '' : `<nav class="handoff-steps" aria-label="Chat link order steps">${steps.map(([stage, label], index) => `<span class="handoff-step ${index < stageIndex ? 'done' : index === stageIndex ? 'current' : ''}" ${stage === h.stage ? 'aria-current="step"' : ''}><span class="handoff-step-number">${index + 1}</span><span>${label}</span></span>`).join('')}</nav>`;
     const loading = state.handoffBusy ? '<p class="hint">Swiggy se check ho raha hai…</p>' : '';
     const failed = state.handoffError ? `<div class="warning" role="alert">${esc(state.handoffError)}</div><button class="button soft block" data-action="handoff-retry">Dobara try karein</button><p class="hint">Link na khule to chat mein naya link bhejein.</p>` : '';
     if (h.stage === 'ACCOUNT') {
@@ -1266,25 +1366,25 @@
         const detail = [a.phoneMasked || a.phone || '', a.status === 'UNVERIFIED' ? 'Not verified' : a.status || ''].filter(Boolean).join(' · ');
         return `<button type="button" class="handoff-account" data-action="handoff-choose" data-key="${esc(a.key)}" ${allowed && !state.handoffBusy ? '' : 'disabled'}><span><strong>${esc(a.name || 'Swiggy ID')}</strong><small>${esc(detail || a.reason || '')}</small></span><span>${allowed ? 'Choose' : 'Unavailable'}</span></button>`;
       }).join('');
-      return `${head('', 'Choose ID', '')}<div class="card"><button class="button primary block" data-action="handoff-auto" ${state.accounts.some(a => a.selectable) && !state.handoffBusy ? '' : 'disabled'}>Auto Choose</button><p class="hint">Ya ID chunein:</p><div class="handoff-accounts">${rows || '<p class="hint">Koi ID available nahi hai. Admin se baat karein.</p>'}</div>${loading}</div>${back}`;
+      return `${progress}${head('', 'Choose ID', '')}<div class="card"><button class="button primary block" data-action="handoff-auto" ${state.accounts.some(a => a.selectable) && !state.handoffBusy ? '' : 'disabled'}>Auto Choose</button><p class="hint">Ya ID chunein:</p><div class="handoff-accounts">${rows || '<p class="hint">Koi ID available nahi hai. Admin se baat karein.</p>'}</div>${loading}</div>${footer}`;
     }
     if (h.stage === 'ADDRESS') {
       const a = h.address;
-      if (!a) return `${head('', 'Address', '')}<div class="card">${failed || loading || '<p class="hint">Address link khol rahe hain…</p>'}</div>${change}${back}`;
+      if (!a) return `${progress}${head('', 'Address', '')}<div class="card">${failed || loading || '<p class="hint">Address link khol rahe hain…</p>'}</div>${footer}`;
       const name = state.handoffName === null ? a.name || '' : state.handoffName;
       const mobile = state.handoffMobile === null ? a.mobile || '' : state.handoffMobile;
-      return `${head('', 'Address confirm karein', '')}<div class="card"><p>${esc(a.address)}${a.area ? ', ' + esc(a.area) : ''}${a.city ? ', ' + esc(a.city) : ''}</p><form data-form="handoff-address">${field('Receiver name', 'receiver_name', 'Naam', name, 'required maxlength="120"')}${field('Mobile number', 'receiver_mobile', '10-digit mobile', mobile, 'required inputmode="tel" maxlength="16"')}<button class="button primary block" type="submit">Confirm address</button></form></div>${change}${back}`;
+      return `${progress}${head('', 'Address confirm karein', '')}<div class="card"><p>${esc(a.address)}${a.area ? ', ' + esc(a.area) : ''}${a.city ? ', ' + esc(a.city) : ''}</p><form data-form="handoff-address">${field('Receiver name', 'receiver_name', 'Naam', name, 'required maxlength="120"')}${field('Mobile number', 'receiver_mobile', '10-digit mobile', mobile, 'required inputmode="tel" maxlength="16"')}<button class="button primary block" type="submit">Confirm address</button></form></div>${footer}`;
     }
     if (h.stage === 'CART') {
-      if (!h.cartFetched || !state.cart) return `${head('', 'Cart', '')}<div class="card">${failed || loading || '<p class="hint">Cart link khol rahe hain…</p>'}</div>${change}${back}`;
+      if (!h.cartFetched || !state.cart) return `${progress}${head('', 'Cart', '')}<div class="card">${failed || loading || '<p class="hint">Cart link khol rahe hain…</p>'}</div>${footer}`;
       const items = state.cart.items.map(i => `<div class="bill-row"><span>${esc(i.name || 'Item')}</span><strong>× ${esc(i.qty || i.quantity || 1)}</strong></div>`).join('');
-      return `${head('', 'Cart check karein', '')}<div class="card"><div class="card-title">${esc(state.cart.restaurantName || 'Restaurant')}</div>${items}<p class="hint">Continue karne par selected ID ka Swiggy cart replace hoga aur address save hoga.</p>${failed}${loading}<button class="button primary block" data-action="handoff-bill" ${state.handoffBusy ? 'disabled' : ''}>Continue to bill</button></div>${change}${back}`;
+      return `${progress}${head('', 'Cart check karein', '')}<div class="card"><div class="card-title">${esc(state.cart.restaurantName || 'Restaurant')}</div>${items}<p class="hint">Continue karne par selected ID ka Swiggy cart replace hoga aur address save hoga.</p>${failed}${loading}<button class="button primary block" data-action="handoff-bill" ${state.handoffBusy ? 'disabled' : ''}>Continue to bill</button></div>${footer}`;
     }
     if (h.stage === 'BILL' && state.cart?.quote) {
       const a = state.selectedAddress || {};
       const items = (state.cart.items || []).map(i => `<div class="bill-row"><span>${esc(i.name || 'Item')}</span><strong>× ${esc(i.qty || i.quantity || 1)}</strong></div>`).join('');
       const fee = state.orderFee?.exempt ? 'Bot order fee: free' : `Bot wallet fee: ${money(Number(state.orderFee?.paise || 0) / 100)}`;
-      return `${head('', 'Bill & Pay', '')}<div class="card"><strong>${esc(state.cart.restaurantName || 'Restaurant')}</strong>${items}<p class="hint">${esc(a.name || '')} · ${esc(a.mobile || '')}<br>${esc(a.address || '')}</p></div>${renderHandoffBill(state.cart.quote, state.cart)}<p class="hint">${esc(fee)}</p>${state.checkoutWarning ? `<div class="warning" role="alert">${esc(state.checkoutWarning)}</div>` : ''}${loading}<button class="button green block" data-action="checkout-start" ${!state.checkoutEnabled || state.handoffBusy ? 'disabled' : ''}>Pay Now · ${money(state.cart.quote.total)}</button>${state.checkoutEnabled ? '' : `<p class="warning">${esc(state.checkoutBlockReason || 'Payment abhi band hai.')}</p>`}${state.cart.quote.quickBill ? `<button class="button soft block" data-action="handoff-offers" ${state.handoffBusy ? 'disabled' : ''}>Find offers</button>` : ''}${change}${back}`;
+      return `${progress}${head('', 'Bill & Pay', '')}<div class="card"><strong>${esc(state.cart.restaurantName || 'Restaurant')}</strong>${items}<p class="hint">${esc(a.name || '')} · ${esc(a.mobile || '')}<br>${esc(a.address || '')}</p></div>${renderHandoffBill(state.cart.quote, state.cart)}<p class="hint">${esc(fee)}</p>${state.checkoutWarning ? `<div class="warning" role="alert">${esc(state.checkoutWarning)}</div>` : ''}${loading}<button class="button green block" data-action="checkout-start" ${!state.checkoutEnabled || state.handoffBusy ? 'disabled' : ''}>Pay Now · ${money(state.cart.quote.total)}</button>${state.checkoutEnabled ? '' : `<p class="warning">${esc(state.checkoutBlockReason || 'Payment abhi band hai.')}</p>`}${state.cart.quote.quickBill ? `<button class="button soft block" data-action="handoff-offers" ${state.handoffBusy ? 'disabled' : ''}>Find offers</button>` : ''}${footer}`;
     }
     return `<div class="card"><p>Draft refresh karein.</p><button class="button primary block" data-action="handoff-refresh">Refresh</button></div>`;
   }
@@ -1312,20 +1412,140 @@
     state.handoffAutoFor = signature;
     queueMicrotask(() => fetchHandoffPart(h.stage));
   }
+  let renderedView = '';
+  let viewAnimationTimer = null;
+  let renderedReceiverSources = {};
+  // Keep unsaved receiver edits only while the same server address is on the
+  // same screen. These values stay in the DOM/in-memory, never in the cache.
+  function receiverSources(root) {
+    const key = a => JSON.stringify([state.activeAccount?.key || '', a?.ref || '', a?.id || '', a?.address || '', a?.lat || '', a?.lng || '', a?.name || '', a?.mobile || '']);
+    const sources = {};
+    if (root.querySelector('form[data-form="contact"]')) sources.contact = key(state.selectedAddress);
+    if (root.querySelector('form[data-form="confirm-address"]')) sources['confirm-address'] = key(state.pendingAddress);
+    return sources;
+  }
+  function rememberReceiverInputs(root) {
+    return Object.entries(renderedReceiverSources).map(([type, source]) => {
+      const form = root.querySelector(`form[data-form="${type}"]`);
+      if (!form) return null;
+      const values = {};
+      for (const name of ['name', 'mobile']) {
+        const input = form.elements.namedItem(name);
+        if (input && 'value' in input) values[name] = input.value;
+      }
+      return { type, source, values };
+    }).filter(Boolean);
+  }
+  function restoreReceiverInputs(root, drafts, sources) {
+    for (const draft of drafts) {
+      if (draft.source !== sources[draft.type]) continue;
+      const form = root.querySelector(`form[data-form="${draft.type}"]`);
+      if (!form) continue;
+      for (const [name, value] of Object.entries(draft.values)) {
+        const input = form.elements.namedItem(name);
+        if (input && 'value' in input) input.value = value;
+      }
+    }
+  }
+  function viewKey() {
+    if (!state.auth) return 'connection';
+    if (handoffShown()) return `handoff:${state.chatHandoff?.stage || ''}:${Boolean(state.checkout)}`;
+    if (state.tab === 'search') return state.menu ? 'search:menu' : 'search';
+    if (state.tab === 'cart') return state.track ? 'cart:track' : state.couponView ? 'cart:coupons' : state.checkout?.status === 'PAYMENT_PENDING' ? 'cart:payment' : 'cart';
+    if (state.tab === 'orders') return state.order ? 'orders:detail' : 'orders';
+    return state.tab;
+  }
+  // Async responses can repaint a view while the keyboard is open. Retain only
+  // the currently focused control and its value; never put it in localStorage.
+  function describeFocus(el) {
+    if (!el) return null;
+    const form = el.closest('form[data-form]');
+    const field = /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.type !== 'file';
+    if (field && (el.id || el.name || el.dataset.input)) {
+      const saved = { field: true, tag: el.tagName, id: el.id, name: el.name, input: el.dataset.input, form: form?.dataset.form || '', value: el.value };
+      try { saved.start = el.selectionStart; saved.end = el.selectionEnd; } catch { /* not a text input */ }
+      return saved;
+    }
+    if (el.dataset?.action) {
+      const data = {};
+      for (const key of ['key', 'code', 'ref', 'filter', 'id', 'user', 'qty', 'tab', 'mode', 'allow']) data[key] = el.dataset[key] || '';
+      return { action: el.dataset.action, data };
+    }
+    if (el.tagName === 'BUTTON' && form?.dataset.form && el.type === 'submit') return { submit: true, form: form.dataset.form };
+    return null;
+  }
+  function rememberFocus(root) {
+    const el = document.activeElement;
+    return el && root.contains(el) ? describeFocus(el) : null;
+  }
+  function restoreFocus(root, saved) {
+    if (!saved) return false;
+    const nodes = root.querySelectorAll(saved.field ? 'input,textarea,select' : saved.submit ? 'form[data-form] button' : '[data-action]');
+    const el = Array.from(nodes).find(node => {
+      if (node.disabled || node.closest('[inert], [hidden]')) return false;
+      if (saved.field) return node.tagName === saved.tag && (saved.id ? node.id === saved.id : saved.input ? node.dataset.input === saved.input : node.name === saved.name && (node.closest('form[data-form]')?.dataset.form || '') === saved.form);
+      if (saved.submit) return node.type === 'submit' && node.closest('form[data-form]')?.dataset.form === saved.form;
+      return node.dataset.action === saved.action && Object.entries(saved.data || {}).every(([key, value]) => (node.dataset[key] || '') === value);
+    });
+    if (!el) return false;
+    if (saved.field) {
+      try { el.value = saved.value; } catch { /* unsupported input type */ }
+    }
+    try { el.focus({ preventScroll: true }); } catch { el.focus(); }
+    if (saved.field && saved.start !== null && saved.start !== undefined) {
+      try { el.setSelectionRange(saved.start, saved.end); } catch { /* unsupported input type */ }
+    }
+    return true;
+  }
+  function setCouponChromeInert(open) {
+    for (const el of [$('.topbar'), $('#bottom-nav'), $('#cart-dock')]) {
+      if (!el) continue;
+      if (open) { el.setAttribute('inert', ''); el.setAttribute('aria-hidden', 'true'); }
+      else { el.removeAttribute('inert'); el.removeAttribute('aria-hidden'); }
+    }
+  }
   function render() {
     // Telegram WebView band hone ke baad bhi async response aa sakta hai —
     // tab render chup-chaap rukna chahiye, window crash nahi.
     try {
+      const content = $('#content');
+      const nextView = viewKey();
+      const wasCouponOpen = Boolean(content.querySelector('.coupon-sheet'));
+      const previousReceiverSources = renderedReceiverSources;
+      const receiverDrafts = renderedView === nextView ? rememberReceiverInputs(content) : [];
+      let focus = renderedView === nextView ? rememberFocus(content) : null;
       // Re-render par user ka typed text na ude (coupon code / group cart link).
       try {
         const couponInput = document.querySelector('input[name="coupon"]');
         if (couponInput) state.couponDraft = couponInput.value;
-        const cartInput = document.querySelector('input[name="url"]');
+        const cartInput = document.querySelector('form[data-form="group-cart"] input[name="url"]');
         if (cartInput) state.groupCartDraft = cartInput.value;
       } catch { /* window band ho gaya */ }
       const views = { accounts: renderAccounts, address: renderAddress, search: renderSearch, cart: renderCart, orders: renderOrders, tools: renderTools };
-      $('#content').innerHTML = state.auth ? (handoffShown() ? renderChatHandoff() : views[state.tab]()) : renderConnection();
+      content.innerHTML = state.auth ? (handoffShown() ? renderChatHandoff() : views[state.tab]()) : renderConnection();
+      const nextReceiverSources = receiverSources(content);
+      restoreReceiverInputs(content, receiverDrafts, nextReceiverSources);
+      // A newly resolved/selected address must keep its own auto-filled fields,
+      // rather than inheriting focus/value from the previous recipient.
+      if (focus?.field && Object.hasOwn(previousReceiverSources, focus.form) && previousReceiverSources[focus.form] !== nextReceiverSources[focus.form]) focus = null;
+      renderedReceiverSources = nextReceiverSources;
       renderNav();
+      renderThemeControl();
+      const couponOpen = Boolean(content.querySelector('.coupon-sheet'));
+      setCouponChromeInert(couponOpen);
+      if (couponOpen && !wasCouponOpen) {
+        try { content.querySelector('.coupon-sheet [data-action="coupon-back"]')?.focus({ preventScroll: true }); } catch { /* WebView closed */ }
+      } else if (focus && !restoreFocus(content, focus) && couponOpen) {
+        try { content.querySelector('.coupon-sheet [data-action="coupon-back"]')?.focus({ preventScroll: true }); } catch { /* WebView closed */ }
+      }
+      if (renderedView !== nextView) {
+        content.classList.remove('view-enter');
+        void content.offsetWidth;
+        content.classList.add('view-enter');
+        clearTimeout(viewAnimationTimer);
+        viewAnimationTimer = setTimeout(() => content.classList.remove('view-enter'), 260);
+      }
+      renderedView = nextView;
       $('#connection-notice').hidden = true;
       if (state.idleClosed) {
         const closed = state.idleClosed;
@@ -1509,9 +1729,18 @@
     }
     return true;
   }
+  let couponReturnAction = 'coupon-open';
+  let couponReturnY = 0;
   /** Coupon APPLY — seedha Swiggy bill. Koi code type nahi, koi extra tap nahi. */
   function closeCouponSheet() {
-    state.couponView = false; state.coupons = null; render(); window.scrollTo(0, 0);
+    state.couponView = false; state.coupons = null; render();
+    window.scrollTo({ top: couponReturnY, behavior: 'auto' });
+    const original = document.querySelector(`[data-action="${couponReturnAction}"]`);
+    const trigger = original || document.querySelector('[data-action="toggle-coupon"]');
+    if (trigger) {
+      if (!original) trigger.scrollIntoView?.({ block: 'center', behavior: 'auto' });
+      try { trigger.focus({ preventScroll: true }); } catch { trigger.focus(); }
+    }
   }
   async function applyCoupon(code, button) {
     const value = String(code || '').trim().toUpperCase();
@@ -1558,6 +1787,7 @@
     if (!form) return;
     event.preventDefault();
     const type = form.dataset.form; const data = new FormData(form); const button = form.querySelector('button[type="submit"],button:not([type])');
+    const confirmWithTrigger = options => confirmInApp({ ...options, opener: button });
     run(async () => {
       if (type === 'handoff-address') {
         const out = await api('chat-handoff/confirm-address', 'POST', {
@@ -1572,7 +1802,7 @@
         } catch (e) {
           if (e.code !== 'SWIGGY_ACCOUNT_NOT_REGISTERED') throw e;
           // Boss (31-10-2026): "NAYA ACCOUNT HAI TO LOGIN HI NAHI HOTA."
-          if (!await confirmInApp({
+          if (!await confirmWithTrigger({
             title: 'Naya Swiggy account banayein?',
             message: `${phone} Swiggy par naya number hai. Isi number se naya Swiggy account banega (naam: ${state.user?.name || 'aapka naam'}), phir OTP aayega. Aage ke order isi account se honge.`,
             confirmText: 'Account banayein'
@@ -1596,7 +1826,7 @@
       } else if (type === 'group-cart') {
         const url = String(data.get('url') || state.groupCartDraft || '').trim();
         if (!url) { toast('Pehle group cart ka link paste karein.', 'bad'); return; }
-        if (state.cart && !await confirmInApp({ title: 'Draft cart replace karein?', message: 'Aapka draft cart is group cart se replace ho jayega. Purana draft chala jayega.', confirmText: 'Replace karein' })) return;
+        if (state.cart && !await confirmWithTrigger({ title: 'Draft cart replace karein?', message: 'Aapka draft cart is group cart se replace ho jayega. Purana draft chala jayega.', confirmText: 'Replace karein' })) return;
         const out = await api('cart/import-group', 'POST', { url, replace: Boolean(state.cart) });
         state.groupCartDraft = '';
         merge(out);
@@ -1614,7 +1844,7 @@
         // Coupon page ka APPLY bhi yahi raasta use karta hai (ek hi sach).
         const code = String(data.get('coupon') || state.couponDraft || '').trim().toUpperCase();
         if (code && !/^[A-Z0-9_-]{3,28}$/.test(code)) throw new Error('Coupon code galat lag raha hai (3-28 letters/numbers).');
-        if (!await confirmInApp({ title: 'Sync cart with Swiggy?', message: 'This replaces the current cart on your selected Swiggy account and may save the address there.', confirmText: 'Sync cart' })) return;
+        if (!await confirmWithTrigger({ title: 'Sync cart with Swiggy?', message: 'This replaces the current cart on your selected Swiggy account and may save the address there.', confirmText: 'Sync cart' })) return;
         if (!receiverReady()) return;
         // The prior quote is stale as soon as sync starts, including when the
         // response times out after Swiggy has changed the cart.
@@ -1627,6 +1857,40 @@
       }
     }, button);
   }
+  // Keep keyboard focus inside the coupon sheet, and allow the same Escape
+  // dismissal as the in-app confirmation and outlet sheet.
+  document.addEventListener('keydown', event => {
+    if (confirmationOpen || dismissOutletSheet) return;
+    const sheet = document.querySelector('.coupon-sheet');
+    if (!sheet) return;
+    if (event.key === 'Escape') { event.preventDefault(); closeCouponSheet(); return; }
+    trapDialogTab(event, sheet);
+  });
+
+  // In Telegram, the on-screen keyboard may shrink either the layout viewport
+  // or only visualViewport. Hide fixed bottom controls only while it obscures
+  // a focused text field; they return as soon as the keyboard closes.
+  let stableViewportHeight = window.innerHeight;
+  function syncKeyboardViewport() {
+    const active = document.activeElement;
+    const editing = active && (/^(TEXTAREA)$/.test(active.tagName) || (active.tagName === 'INPUT' && !/^(button|checkbox|radio|submit|reset|file)$/i.test(active.type)) || active.isContentEditable);
+    if (!editing) {
+      stableViewportHeight = window.innerHeight;
+      document.body.classList.remove('keyboard-open');
+      return;
+    }
+    const viewport = window.visualViewport;
+    const visibleHeight = viewport ? viewport.height + viewport.offsetTop : window.innerHeight;
+    const obscured = Math.max(stableViewportHeight - window.innerHeight, window.innerHeight - visibleHeight);
+    document.body.classList.toggle('keyboard-open', obscured > 140);
+  }
+  window.addEventListener('resize', syncKeyboardViewport);
+  window.addEventListener('orientationchange', () => { stableViewportHeight = window.innerHeight; syncKeyboardViewport(); });
+  window.visualViewport?.addEventListener('resize', syncKeyboardViewport);
+  window.visualViewport?.addEventListener('scroll', syncKeyboardViewport);
+  document.addEventListener('focusin', syncKeyboardViewport);
+  document.addEventListener('focusout', () => setTimeout(syncKeyboardViewport, 0));
+
   // Menu ke andar dish search — re-render ke bina, isliye typing smooth rehti hai.
   document.addEventListener('input', event => {
     if (event.target.closest('form[data-form="handoff-address"]')) {
@@ -1692,7 +1956,7 @@
       }
       return;
     }
-    if (action === 'theme') { document.body.classList.toggle('dark'); try { localStorage.setItem('pro-theme', document.body.classList.contains('dark') ? 'dark' : 'light'); } catch {} writeCache({ theme: document.body.classList.contains('dark') ? 'dark' : 'light' }); return; }
+    if (action === 'theme') { document.body.classList.toggle('dark'); renderThemeControl(); try { localStorage.setItem('pro-theme', document.body.classList.contains('dark') ? 'dark' : 'light'); } catch {} writeCache({ theme: document.body.classList.contains('dark') ? 'dark' : 'light' }); return; }
     if (action === 'account-mode') { state.mode = button.dataset.mode; state.otpSent = false; render(); return; }
     if (action === 'otp-reset') { state.otpSent = false; render(); return; }
     if (action === 'group-cart-toggle') {
@@ -1700,7 +1964,7 @@
       render();
       return;
     }
-    if (action === 'toggle-coupon' || action === 'coupon-open') { state.couponView = true; state.couponOpen = true; render(); window.scrollTo(0, 0); if (state.coupons === null) loadCoupons(); return; }
+    if (action === 'toggle-coupon' || action === 'coupon-open') { couponReturnAction = action; couponReturnY = window.scrollY || 0; state.couponView = true; state.couponOpen = true; render(); if (state.coupons === null) loadCoupons(); return; }
     if (action === 'coupon-back') { closeCouponSheet(); return; }
     if (action === 'coupon-sheet-stop') { return; }
     if (action === 'bill-open') {
@@ -1775,6 +2039,7 @@
       }
       return;
     }
+    const confirmWithTrigger = options => confirmInApp({ ...options, opener: button });
     run(async () => {
       if (action === 'access-refresh') { await loadAccountAccess(); }
       else if (action === 'access-toggle') {
@@ -1782,7 +2047,7 @@
         const account = (state.access?.accounts || []).find(a => a.key === button.dataset.key);
         if (!target || !account) throw new Error('User ya ID dobara choose karein.');
         const allow = button.dataset.allow === '1';
-        if (!await confirmInApp({ title: allow ? 'ID allow karein?' : 'ID access hataein?',
+        if (!await confirmWithTrigger({ title: allow ? 'ID allow karein?' : 'ID access hataein?',
           message: `${target.name} · ${account.name}${account.phoneMasked ? ' · ' + account.phoneMasked : ''}`,
           confirmText: allow ? 'Allow' : 'Remove' })) return;
         const out = await api('boss/account-access', 'POST', { userId: target.id, accountKey: account.key, allow, confirm: true });
@@ -1792,7 +2057,7 @@
       else if (action === 'handoff-start') {
         const h = state.chatHandoff;
         if (!h?.pendingId) return;
-        if (h.existingDraft && !await confirmInApp({ title: 'Draft replace karein?', message: 'Pehla Mini App draft backup mein rahega; naye links se naya draft khulega.', confirmText: 'Naya draft' })) return;
+        if (h.existingDraft && !await confirmWithTrigger({ title: 'Draft replace karein?', message: 'Pehla Mini App draft backup mein rahega; naye links se naya draft khulega.', confirmText: 'Naya draft' })) return;
         const out = await api('chat-handoff/start', 'POST', { handoffId: h.pendingId, confirmReplaceDraft: h.existingDraft === true });
         state.handoffIgnorePending = ''; state.handoffError = ''; state.handoffAutoFor = ''; state.handoffName = null; state.handoffMobile = null;
         merge(out); render();
@@ -1801,7 +2066,7 @@
         const row = action === 'handoff-choose' ? state.accounts.find(a => a.key === button.dataset.key) : null;
         let confirmUsed = false;
         if (row?.needsConfirm) {
-          if (!await confirmInApp({ title: 'ID pehle use ho chuki hai', message: 'Is ID ko phir bhi select karna hai?', confirmText: 'Select ID' })) return;
+          if (!await confirmWithTrigger({ title: 'ID pehle use ho chuki hai', message: 'Is ID ko phir bhi select karna hai?', confirmText: 'Select ID' })) return;
           confirmUsed = true;
         }
         state.handoffBusy = true; state.handoffError = ''; render();
@@ -1811,18 +2076,18 @@
         } finally { state.handoffBusy = false; render(); }
       }
       else if (action === 'handoff-reselect') {
-        if (!await confirmInApp({ title: 'ID badlein?', message: 'Address aur cart ko nayi ID ke liye phir check karna hoga.', confirmText: 'ID badlein' })) return;
+        if (!await confirmWithTrigger({ title: 'ID badlein?', message: 'Address aur cart ko nayi ID ke liye phir check karna hoga.', confirmText: 'ID badlein' })) return;
         const out = await api('chat-handoff/reselect', 'POST', { handoffId: state.chatHandoff?.activeId, confirmChange: true });
         state.handoffError = ''; state.handoffAutoFor = ''; state.handoffName = null; state.handoffMobile = null; merge(out); render();
       }
       else if (action === 'handoff-leave') {
-        if (!await confirmInApp({ title: 'Link flow band karein?', message: 'Draft backup mein rahega. Naye links chat mein bhej sakte hain.', confirmText: 'Band karein' })) return;
+        if (!await confirmWithTrigger({ title: 'Link flow band karein?', message: 'Draft backup mein rahega. Naye links chat mein bhej sakte hain.', confirmText: 'Band karein' })) return;
         const out = await api('chat-handoff/leave', 'POST', { handoffId: state.chatHandoff?.activeId, confirmLeave: true });
         state.handoffError = ''; state.handoffAutoFor = ''; merge(out); render();
       }
       else if (action === 'handoff-bill' || action === 'handoff-offers') {
         const offers = action === 'handoff-offers';
-        if (!await confirmInApp({
+        if (!await confirmWithTrigger({
           title: offers ? 'Offers check karein?' : 'Swiggy cart replace karein?',
           message: offers ? 'Selected ID ka cart phir sync hoga. One Lite subscription add nahi ki jayegi.' : 'Selected ID ka existing Swiggy cart replace hoga aur yeh address save hoga.',
           confirmText: offers ? 'Check offers' : 'Continue'
@@ -1846,7 +2111,7 @@
         catch (e) {
           if (e.code !== 'ACCOUNT_NEEDS_CONFIRM') throw e;
           // Boss (31-10-2026): used ID par warning, phir user chaahe to select.
-          if (!await confirmInApp({
+          if (!await confirmWithTrigger({
             title: 'Ye ID pehle use ho chuki hai',
             message: `${e.message}\n\nPhir bhi isi ID se order karna hai? Naya order isi ID par jayega.`,
             confirmText: 'Haan, select karein'
@@ -1858,7 +2123,7 @@
       else if (action === 'account-remove') {
         // Boss (31-10-2026): DELETE par DO option — database se, ya Swiggy se
         // (Swiggy se delete par unka delete OTP jayega).
-        const choice = await confirmInApp({
+        const choice = await confirmWithTrigger({
           title: 'Delete kaise karein?',
           message: 'Database se hatao: sirf yahan se ID hategi, Swiggy account chalta rahega.\n\nSwiggy se delete: Swiggy delete OTP bhejega aur account hamesha ke liye delete ho jayega — ye wapas nahi aata.',
           choices: [
@@ -1931,7 +2196,7 @@
         } finally { state.backupBusy = false; render(); }
       } else if (action === 'addresses-refresh') await loadAddresses();
       else if (action === 'cart-clear') {
-        if (!await confirmInApp({ title: 'Cart clear karein?', message: 'Draft cart ke saare items hat jayenge. Swiggy cart tab tak waisa hi rahega jab tak naya sync na ho.', confirmText: 'Clear cart', danger: true })) return;
+        if (!await confirmWithTrigger({ title: 'Cart clear karein?', message: 'Draft cart ke saare items hat jayenge. Swiggy cart tab tak waisa hi rahega jab tak naya sync na ho.', confirmText: 'Clear cart', danger: true })) return;
         await api('cart/clear', 'POST', { confirmClear: true });
         state.cart = null; state.outlets = null; state.outletsOpen = false; state.couponOpen = false;
         render(); toast('Cart clear ho gaya.');
@@ -1945,12 +2210,12 @@
         startTracking(id, 'checkout');
       }
       else if (action === 'bill-refresh') {
-        if (!await confirmInApp({ title: 'Fresh bill check?', message: 'Swiggy par cart dobara sync hoga aur naya bill aayega.', confirmText: 'Check bill' })) return;
+        if (!await confirmWithTrigger({ title: 'Fresh bill check?', message: 'Swiggy par cart dobara sync hoga aur naya bill aayega.', confirmText: 'Check bill' })) return;
         const out = await api('cart/sync', 'POST', { confirmReplaceSwiggyCart: true, forSomeoneElse: state.cart?.forSomeoneElse === true, coupon: String(state.cart?.quote?.couponCode || state.cart?.quote?.coupon || ''), autoCoupon: true });
         merge(out); render(); toast('Bill update ho gaya.');
       }
       else if (action === 'outlet-pick') {
-        if (state.cart && !await confirmInApp({ title: 'Doosra outlet?', message: 'Naye outlet ka item add karne par cart replace karna padega (Swiggy ek cart me do restaurant nahi leta).', confirmText: 'Outlet kholein' })) return;
+        if (state.cart && !await confirmWithTrigger({ title: 'Doosra outlet?', message: 'Naye outlet ka item add karne par cart replace karna padega (Swiggy ek cart me do restaurant nahi leta).', confirmText: 'Outlet kholein' })) return;
         const out = await api('menu?id=' + encodeURIComponent(button.dataset.id));
         state.menu = out; state.outletsOpen = false; state.outlets = null; state.tab = 'search'; writeCache({ tab: 'search' }); render(); window.scrollTo(0, 0);
       }
@@ -1959,17 +2224,17 @@
       else if (action === 'restaurant') {
         // Boss (31-10-2026): Swiggy ki tarah pehle outlet/location, phir menu.
         const sameName = outletsForName(button.dataset.name || '');
-        if (sameName.length > 1) { openOutletSheet(button.dataset.name, sameName, ''); return; }
+        if (sameName.length > 1) { openOutletSheet(button.dataset.name, sameName, '', button); return; }
         await openMenu(button.dataset.id);
       }
       else if (action === 'menu-outlets') {
         // Menu page se bhi location badalna — wahi sheet.
         const name = state.menu?.restaurant?.name || '';
         const known = outletsForName(name);
-        if (known.length > 1) { openOutletSheet(name, known, state.menu?.restaurant?.id); return; }
+        if (known.length > 1) { openOutletSheet(name, known, state.menu?.restaurant?.id, button); return; }
         const out = await api('restaurants/outlets?q=' + encodeURIComponent(name));
         const list = out.outlets || [];
-        if (list.length > 1) openOutletSheet(name, list, state.menu?.restaurant?.id);
+        if (list.length > 1) openOutletSheet(name, list, state.menu?.restaurant?.id, button);
         else toast('Aas-paas koi doosra outlet nahi mila.');
       }
       else if (action === 'dish-add') {
@@ -1977,7 +2242,7 @@
         try { out = await api('cart/add', 'POST', { itemId: button.dataset.id }); }
         catch (e) {
           if (e.status !== 409 || (state.checkout && state.checkout.status !== 'PAID')) throw e;
-          if (!await confirmInApp({ title: 'Replace draft cart?', message: 'The existing draft will be replaced with items from this restaurant.', confirmText: 'Replace draft' })) return;
+          if (!await confirmWithTrigger({ title: 'Replace draft cart?', message: 'The existing draft will be replaced with items from this restaurant.', confirmText: 'Replace draft' })) return;
           out = await api('cart/add', 'POST', { itemId: button.dataset.id, replace: true });
         }
         merge(out); render(); toast('Added to draft cart.');
@@ -1991,12 +2256,12 @@
         let quote = state.cart?.quote;
         if (!quote) {
           if (state.chatHandoff?.activeId) { state.handoffHidden = false; render(); toast('Pehle Mini App mein cart aur bill check karein.'); return; }
-          if (!await confirmInApp({ title: 'Swiggy cart sync karein?', message: 'Selected ID ka existing Swiggy cart replace hoga aur address save hoga.', confirmText: 'Sync cart' })) return;
+          if (!await confirmWithTrigger({ title: 'Swiggy cart sync karein?', message: 'Selected ID ka existing Swiggy cart replace hoga aur address save hoga.', confirmText: 'Sync cart' })) return;
           const synced = await api('cart/sync', 'POST', { confirmReplaceSwiggyCart: true, forSomeoneElse: state.cart?.forSomeoneElse === true, coupon: String(state.cart?.quote?.couponCode || state.cart?.quote?.coupon || ''), autoCoupon: true });
           merge(synced); quote = state.cart?.quote; render();
           if (!quote) throw new Error('Swiggy ne bill nahi diya. Dobara Pay Now dabayein.');
         }
-        if (!await confirmInApp({
+        if (!await confirmWithTrigger({
           title: `Pay ${money(quote.total)} — order confirm?`,
           message: `${state.cart.restaurantName || 'Restaurant'} · ${state.selectedAddress.name} · +91 ${state.selectedAddress.mobile}\n${state.selectedAddress.address}\n${state.orderFee?.exempt ? 'Order fee: free.' : `Order fee ${money(Number(state.orderFee?.paise || 0) / 100)} (bot wallet); Swiggy bill alag.`}\nSwiggy par order jayega. Result na aaye to dobara order na karein.`,
           confirmText: `Pay ${money(quote.total)}`
@@ -2046,7 +2311,7 @@
         toast(out.checkout?.status === 'PAID' ? 'Swiggy ne paid order de diya.' : 'Status check ho gaya. Paisa de diya ho to dobara na dein.');
       }
       else if (action === 'checkout-finish') {
-        if (!await confirmInApp({ title: 'Start a new draft?', message: 'The paid order remains in Swiggy order history.', confirmText: 'Start new draft' })) return;
+        if (!await confirmWithTrigger({ title: 'Start a new draft?', message: 'The paid order remains in Swiggy order history.', confirmText: 'Start new draft' })) return;
         const out = await api('checkout/finish', 'POST', { confirmNewDraft: true }); merge(out); state.orders = null; state.ordersScope = 'active'; render();
       }
       else if (action === 'checkout-orders') {

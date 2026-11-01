@@ -126,7 +126,7 @@ test('cart: koi lecture paragraph nahi — page par text kam', async () => {
       /Payment alag se UPI se hoti hai/i
     ]) assert.equal(dead.test(text), false, 'purani lecture line hata di: ' + dead);
     // Sab kuch ek page par: address, items, coupon, bill, payment, pay bar.
-    for (const key of ['DELIVERING TO', 'Your Order', 'SAVINGS CORNER', 'Bill Details', 'Payment Method', 'PAY USING UPI']) {
+    for (const key of ['DELIVERING TO', 'Your Order', 'SAVINGS CORNER', 'Bill Details', 'Payment: UPI / QR', 'PAY USING UPI']) {
       assert.ok(text.includes(key), key);
     }
     assert.ok(text.length < 1500, `visible text budget — actual ${text.length}`);

@@ -20,8 +20,16 @@ Is sandbox/image me `libnss3` / `libnspr4` nahi hote, isliye headless Chromium
 Chalane ka tareeqa:
 
 ```bash
+npm install --no-save --no-package-lock --ignore-scripts @sparticuz/chromium
+node --input-type=module -e "import chromium from '@sparticuz/chromium'; console.log(await chromium.executablePath())"
 bash tools/chromedeps/setup.sh
-npm install --no-save @sparticuz/chromium puppeteer-core
-npm run preview:miniapp      # alag terminal
-npm run shots:miniapp        # → screenshots/*.png (390×844 @2x)
+npm run preview:miniapp          # alag terminal; demo data only
+npm run shots:miniapp            # → screenshots/*.png (390×844 @2x)
+npm run test:miniapp-layout     # 320–430px, light/dark, sheets aur safe areas
 ```
+
+Agar system Chromium available hai, `CHROME_PATH=/path/to/chromium npm run
+test:miniapp-layout` use kar sakte hain; extra browser package aur stub zaroori
+nahi hain. Verifier sirf visibly labelled demo preview par interact karta hai.
+Isse real Swiggy order, payment, SMS ya Telegram device behaviour verify nahi
+hota.
