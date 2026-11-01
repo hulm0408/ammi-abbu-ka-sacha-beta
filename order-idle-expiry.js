@@ -33,6 +33,9 @@ export const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60 * 1000;
  * minute) phir bhi saaf hota hai, taaki pada na rahe.
  */
 export const STALE_DRAFT_TIMEOUT_MS = 15 * 60 * 1000;
+/** Placed-unpaid local checkout itni der baad sirf local band hota hai; Swiggy
+ * order ka cancel claim nahi. Journal/generation barrier naya order rokta nahi. */
+export const STALE_PLACED_TIMEOUT_MS = 15 * 60 * 1000;
 
 /** Bill aaya hai ya nahi — sirf asli fetchedAt maante hain. */
 export function billFetched(ws = {}) {
@@ -126,11 +129,18 @@ export function planIdleExpiry({ ws = null, now = Date.now(), timeoutMs = DEFAUL
   if (kind === 'DRAFT' && hasCart && !billFetched(ws) && idleMs < STALE_DRAFT_TIMEOUT_MS) {
     return { ...base, kind, idledAt, waitingForBill: true };
   }
-  // SUBMITTING may have crashed between saving the fee and creating the
-  // dispatch journal. A placed/unpaid order can still exist on Swiggy. Neither
-  // is safe to clear automatically or to unlock a second checkout.
-  if (kind === 'SUBMITTING' || kind === 'PLACED_UNPAID') {
-    return { ...base, kind, idledAt, orderId: String(checkout?.orderId || '') };
+  // SUBMITTING with a live/uncertain dispatch journal is never auto-cleared.
+  // If no journal exists, no POST was reserved: the stale local barrier can be
+  // refunded and cleared. A placed/unpaid order keeps its journal, but after a
+  // long idle the LOCAL checkout closes and the generation advances so the user
+  // is not trapped forever; we do not claim the Swiggy order was cancelled.
+  if (kind === 'SUBMITTING') {
+    if (placementInFlight) return { ...base, kind, idledAt, orderId: String(checkout?.orderId || '') };
+    return { expire: true, kind: 'SUBMITTING', idleMs, idledAt, refundFee: Boolean(checkout?.id), keepRecord: false, orderId: '' };
+  }
+  if (kind === 'PLACED_UNPAID') {
+    if (idleMs < STALE_PLACED_TIMEOUT_MS) return { ...base, kind, idledAt, orderId: String(checkout?.orderId || '') };
+    return { expire: true, kind, idleMs, idledAt, refundFee: false, keepRecord: true, orderId: String(checkout?.orderId || '') };
   }
   // Draft (cart/bill bana, order place nahi hua) — fee wapas, sab saaf.
   return { expire: true, kind: 'DRAFT', idleMs, idledAt, refundFee: Boolean(checkout && checkout.id), keepRecord: false, orderId: '' };
