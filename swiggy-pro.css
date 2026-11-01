@@ -1516,3 +1516,34 @@ body, .app-shell, .card, .bottom-nav, .input-wrap, .ac-input { transition: backg
 .menu-stepper span { min-width: 20px; text-align: center; }
 [data-menu-item][hidden], [data-category-block][hidden], .ac-row[hidden] { display: none; }
 .menu-qty-readonly { display: inline-block; padding: 9px 7px; border-radius: 10px; background: var(--green-light); color: var(--green); font-size: 12px; font-weight: 750; white-space: nowrap; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Round 33 (boss 01-11-2026): "USED FRESH NIGHT BREKFAST" filter chips,
+   payment page par sirf do button, aur share card ka Go back.
+   ══════════════════════════════════════════════════════════════════════════ */
+/* Chaar chip + Clear — 390px par ek line me nahi aate, isliye wrap. Koi chip
+   kat kar chhup na jaye (boss: filter dikhna chahiye, scroll me na ho). */
+.ac-filters { display: flex; flex-wrap: wrap; gap: 7px; padding: 2px 0 10px; }
+.ac-filter {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
+  padding: 7px 11px; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink-2);
+  font-size: 11.5px; font-weight: 800; letter-spacing: .04em; cursor: pointer;
+  transition: background .16s ease, color .16s ease, border-color .16s ease;
+}
+.ac-filter b { font-size: 10.5px; font-weight: 800; color: var(--ink-3, #7c8794); }
+.ac-filter.on { background: #0f7ea8; border-color: #0f7ea8; color: #fff; }
+.ac-filter.on b { color: rgba(255, 255, 255, .85); }
+.ac-filter.clear { color: #0f7ea8; border-style: dashed; }
+
+.pay-screen .pay-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.pay-screen { padding-bottom: 18px; }
+.pay-screen .pay-foot { padding-bottom: 6px; }
+.pay-screen .pay-actions .button { width: 100%; }
+.button.danger-soft { background: #fff1f0; color: #b3261e; border: 1px solid #f6cfcc; }
+.button.danger-soft:active:not(:disabled) { background: #ffe6e4; }
+.pay-foot { margin: 10px 0 0; text-align: center; }
+
+.share-card .share-actions + .button { margin-top: 8px; }
+.share-card .button.block { width: 100%; }
+.bill-chip { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; padding: 2px 8px; border-radius: 999px; background: #eaf6fd; color: #0f7ea8; font-size: 10.5px; font-weight: 800; }

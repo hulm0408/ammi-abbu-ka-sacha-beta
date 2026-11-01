@@ -24,6 +24,9 @@ export const RATE_LIMITS = {
   checkout: { max: 6, windowMs: 15 * 60 * 1000 },
   // Swiggy calls jo paise/ban ka risk rakhte hain.
   cartSync: { max: 90, windowMs: 60 * 1000 },
+  // Round 33: bill ka doosra kadam (offers + coupon trials) — mehnga hai,
+  // par bill ke saath hi chalta hai, isliye alag aur thoda tight bucket.
+  cartOptimize: { max: 40, windowMs: 60 * 1000 },
   cartImport: { max: 20, windowMs: 10 * 60 * 1000 },
   offersClaim: { max: 20, windowMs: 60 * 60 * 1000 },
   addressResolve: { max: 30, windowMs: 30 * 60 * 1000 }
@@ -102,6 +105,7 @@ export function rateLimitMessage(bucket, result) {
     walletTopup: 'top-up',
     checkout: 'order place karna',
     cartSync: 'bill sync',
+    cartOptimize: 'best coupon check',
     cartImport: 'cart import',
     offersClaim: 'offer claim',
     addressResolve: 'address resolve'

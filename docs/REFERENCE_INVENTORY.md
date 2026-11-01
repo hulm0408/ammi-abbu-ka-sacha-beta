@@ -181,3 +181,12 @@ bar). Har async ka end: success / error / retry — koi infinite spinner nahi.
 | Verify hone par | order My Orders me khulta hai | tabhi wahi hota hai: My Orders → order detail khud khulta hai |
 | Share | order ke three-dot → Share se `swiggy.com/ofo/track/<token>` | wahi link `.share-card` me: Copy + Telegram share |
 | 5 minute baad | — | saaf likha "5 minute poore ho gaye" + Payment check button (spinner nahi) |
+
+## 10. Round 33 — payment page, share/go-back, filters
+
+| Cheez | Reference (Swiggy) | Yahan |
+|---|---|---|
+| Payment page | QR + "I have paid" tarah ke action | QR + **I have paid** + **Cancel order**; bahar jane wala koi link nahi |
+| Payment ke baad | order My Orders me | My Orders → wahi order → share link + Copy + Go back |
+| Account list filter | — | `USED FRESH NIGHT BREAKFAST` chips, counts ke saath, multi-select |
+| Bill | ek hi baar me poora | pehla bill turant + peeche se best-coupon (chip dikhta hai) |

@@ -582,3 +582,22 @@ My Orders par jaye, order khole, aur Share link de."
 **Kya nahi kiya (sach):** Swiggy app ke andar ke "three dot → Share" par hum khud tap nahi
 karte (wo unki app hai, hamare control me nahi). Wahi link Swiggy ke `trackV4 cta_link` se
 aata hai — wahi yahan dikhta hai. Polling 5 minute ke baad band ho jati hai (battery/rate limit).
+
+## V. Payment page saaf + bill tez/sahi + account filters (Round 33)
+
+**Boss (01-11-2026):** "PAYMENT PAGE SE OPEN UPI APP HATAYE AND CANCEL ORDER AND I HAVE PAID
+KA OPTION DE BAS FALTU KE ORDER TRACK KARE ... BHAI BILL SAHI SE CALCULATE KARLE PLEASE ...
+SAVED ACCOUNT KE NICHE EK FILTER DEDO USED FRESH NIGHT BREKFAST ... MULTIPLE FILTER"
+
+| Cheez | Kaise | Proof |
+|---|---|---|
+| Payment page | Sirf: kitna dena hai, QR, **I have paid**, **Cancel order**. `Open UPI app` (upi:// link), track button, "original account ke orders" — sab hata diye | `test_v122` #1, `test_v104` #10, screenshot `screenshots/16-payment-two-buttons.png` |
+| Cancel order | Confirm → `POST /pro/api/checkout/cancel` → checkout band, wallet fee wapas (unpaid), cart wapas. Sach likha jata hai: Swiggy ka bana hua unpaid order hum cancel nahi kar sakte | `test_v122` #2 |
+| I have paid | `checkout/status` → PAID → seedha My Orders → wahi order → share link + **Copy** + **Go back** | `test_v122` #3, screenshots/18 |
+| Go back | `back-to-cart` → wahi normal cart page | `test_v122` #3 |
+| Bill tez | Do kadam: pehla bill **fast** (address + cart write + readback, ~4 calls), phir `cart/optimize` par offers + One Lite + coupon trials. Bill card par "Best coupon check…" chip | `test_v122` #7 |
+| Bill sahi | (a) "available" Swiggy Money ab discount nahi — sirf jo SACH ME kata (`swiggy_money`); (b) campaign free cash ek hi line (trade discount ke andar ho to double nahi); (c) residual GST me pehle se kata wallet wapas joda | `test_v122` #8/#9, `test_v103` 6/6 |
+| Account filters | Saved Accounts ke neeche `USED · FRESH · NIGHT · BREAKFAST` + counts, multi-select, Clear. Sirf sach: FRESH/USED live check se, NIGHT/BREAKFAST offer record se (jahan check nahi hua, dono nahi) | `test_v122` #5/#6, `screenshots/17-account-filters.png` |
+
+**Kya nahi kiya (sach):** Swiggy ke bane hue unpaid order ko hum cancel nahi kar sakte — wahi app
+me saaf likha jata hai (jhootha "cancel ho gaya" nahi).
