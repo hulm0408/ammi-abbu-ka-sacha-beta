@@ -79,6 +79,9 @@ const demoState = {
 
 function sceneState(scene) {
   const state = JSON.parse(JSON.stringify(demoState));
+  // Demo bill ka clock har request par taaza — preview me Pay Now ke bagal
+  // wala 2-minute countdown chalta hua dikhe.
+  if (state.cart?.quote) state.cart.quote.fetchedAt = new Date().toISOString();
   if (scene === 'empty') { state.cart = null; state.selectedAddress = null; }
   if (scene === 'blocked') {
     state.checkoutEnabled = false;
@@ -103,6 +106,11 @@ function sceneState(scene) {
   if (scene === 'share') {
     // Swiggy ka asli share link jaisa — preview me sirf dikhane ke liye.
     state.orders[0].trackingUrl = 'https://www.swiggy.com/ofo/track/DEMO-TOKEN-9F2A';
+  }
+  if (scene === 'billloading') {
+    // Round 34: bill abhi aa raha hai — creative receipt loader + 2-minute rule.
+    state.cart.quote = null;
+    state.cart.optimizePending = false;
   }
   if (scene.startsWith('handoff-')) {
     const stage = scene.slice('handoff-'.length).toUpperCase();
@@ -263,7 +271,7 @@ const server = http.createServer((req, res) => {
     const html = fs.readFileSync(path.join(ROOT, 'swiggy-pro.html'), 'utf8')
       .replace('<script src="https://telegram.org/js/telegram-web-app.js"></script>', '')
       .replace('<body>', `<body>${previewBoot(url.searchParams.get('scene') || '')}`)
-      .replace('<div id="loadbar"', '<div class="preview-notice" role="note">DEMO PREVIEW · No real orders or payments</div><div id="loadbar"');
+      .replace('<header class="topbar">', '<div class="preview-notice" role="note">DEMO PREVIEW · No real orders or payments</div><header class="topbar">');
     return send(200, TYPES['.html'], html);
   }
   if (url.pathname === '/healthz') return send(200, 'text/plain', 'ok');

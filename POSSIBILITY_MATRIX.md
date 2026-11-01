@@ -601,3 +601,21 @@ SAVED ACCOUNT KE NICHE EK FILTER DEDO USED FRESH NIGHT BREKFAST ... MULTIPLE FIL
 
 **Kya nahi kiya (sach):** Swiggy ke bane hue unpaid order ko hum cancel nahi kar sakte — wahi app
 me saaf likha jata hai (jhootha "cancel ho gaya" nahi).
+
+## VI. Round 34 — "checkout faster + Pay Now ke bagal kuch + dash hatao"
+
+Boss: *"MAKE THE CHECK OUT FASTER AND BESIDE PAY NOW BUTTON ADD SOMETHING AND REMOVE THAT DASH
+WHICH ANIMATION — NOT THE ROUND BUT LITTLE CREATIVE WHICH DENOTES BILLS ARE LOADING … IT SHOULD
+BE AFTER BILL IS FETCHED YOU HAVE 2 MINUTES TO CLICK PAY NOW OTHERWISE EVERYTHING WILL GET CLEAR."*
+
+| Cheez | Kaise | Proof |
+|---|---|---|
+| 2 minute ka clock **bill aane ke baad** | `planIdleExpiry` ab `cart.quote.fetchedAt` ko hi aakhri activity maanta hai; bill aane se pehle (DRAFT + cart, bill nahi) kuch saaf nahi hota. Bahut purana adhoora draft 15 min par phir bhi saaf (`STALE_DRAFT_TIMEOUT_MS`) | `test_v123` #1–#5, `test_v102` 14/14 |
+| Pay Now ke bagal kuch | `Pay Now` ke bagal (`.pay-left`) **live clock**: `● 1:59` (30 second bache to laal, khatam to "Time up"). Bill ke bina `—` — koi andaaza nahi | `test_v123` #9, `screenshots/19-paybar-pay-countdown.png` |
+| Dash animation hataayi | Upar ki patli sweeping load bar (`#loadbar`, `@keyframes loadbar-run`) HTML + CSS + JS se poori tarah gayi | `test_v123` #6 |
+| Bill load hone ka creative indicator | Bill ke liye chhoti **"receipt print"** card: bill ki lines ek-ek karke print hoti hain (bill-paper), na spinner na dash. Retry link bhi hai — dead end nahi | `test_v123` #7/#8/#10, `screenshots/20-bill-loading-closeup.png` |
+| Checkout tez | (a) address confirm 10 min cache (`cart.confirmedAddress` + fingerprint) — 2 Swiggy call kam; (b) cart write ke apne jawab me poora cart ho to alag readback GET nahi — 1 call kam; (c) fast phase timeout 7s (min 4s) — bill latakta nahi. Har jhooth-blocking validation waisa hi rehta hai | `test_v123` #11/#12 |
+
+**Kya nahi kiya (sach):** Swiggy ka cart write/readback **hum skip nahi kar sakte** — bill sirf
+Swiggy ke jawab se banta hai. Cache sirf tab lagta hai jab naam + phone + street + PIN bilkul
+wahi ho (fingerprint). Isse zyada tez karna = Swiggy se jhooth bolna.

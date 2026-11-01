@@ -102,7 +102,8 @@ const TESTS = [
   "test_v119_visual_qa_fixes.mjs",
   "test_v120_accounts_reference_and_copy_json.mjs",
   "test_v121_five_minute_verify_and_share_link.mjs",
-  "test_v122_round33_payment_actions_bill_speed_filters.mjs"
+  "test_v122_round33_payment_actions_bill_speed_filters.mjs",
+  "test_v123_round34_bill_faster_pay_window.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];

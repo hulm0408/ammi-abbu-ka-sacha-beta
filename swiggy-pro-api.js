@@ -492,6 +492,16 @@ function billBreakdown(bill, { expectedTotal = null, items = [] } = {}) {
 function saveProviderQuote(ws, quote) {
   if (Array.isArray(quote?.bill?.subscriptionItems)) ws.cart.activeSubscriptionItems = quote.bill.subscriptionItems;
   ws.selectedAddress = cleanAddress(quote.address);
+  // Round 34: ab confirmed address yaad rehta hai — agla bill 2 Swiggy call
+  // bacha kar turant aata hai (fingerprint match hone par hi reuse).
+  if (quote?.addressFingerprint && ws.cart) {
+    ws.cart.confirmedAddress = {
+      ...cleanAddress(quote.address),
+      id: String(quote.address?.id || ''),
+      fingerprint: String(quote.addressFingerprint),
+      savedAt: Date.now()
+    };
+  }
   ws.cart.quote = {
     ...billBreakdown(quote.bill, { items: ws.cart?.items || [] }),
     // Asli coupon code (billBreakdown discount na hone par isse clear kar

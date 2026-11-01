@@ -1007,3 +1007,12 @@ band nahi hota. Koi match na ho to line dikhti hai.
 * Accounts filter chips: `USED / FRESH / NIGHT / BREAKFAST` + count, multi-select + Clear.
 * Guard: `test_v122_round33_payment_actions_bill_speed_filters.mjs` **9 checks**.
   `npm test` **132/132**, `test:pro` **93/93**.
+* **Round 34 (checkout tez + Pay Now clock):** 2 minute ka window ab **bill fetch hone ke baad**
+  shuru hota hai (`cart.quote.fetchedAt`); bill aane se pehle kuch saaf nahi hota (15 min purana
+  adhoora draft phir bhi saaf). Pay Now ke bagal live clock `● m:ss` (30s bache par laal, khatam
+  par "Time up"). Patli `#loadbar` sweeping animation hata di; bill ke liye `.bill-loading`
+  "receipt print" card. Bill tez: address-confirm cache (10 min, fingerprint match),
+  cart-write ke jawab se readback, fast phase timeout 7s.
+* Guard: `test_v123_round34_bill_faster_pay_window.mjs` **12 checks** (`npm run test:round34`).
+  `npm test` 132/132, `test:pro` 93/93, `run_guards` 77/91 (14 = wahi purane env/network suites
+  jo `origin/main` par bhi fail hote hain; `test_v102` ab pass — pehle baseline me fail tha).
