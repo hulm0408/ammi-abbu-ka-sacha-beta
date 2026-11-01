@@ -350,6 +350,37 @@ function isWindowOpenNow(campaignId, info, nowMs) {
 }
 
 /**
+ * Bill ke liye ek hi campaign chuno: pehle ABHI khula window, warna agla
+ * nazdeeki upcoming window (bounded). Band aaj ki id par andha pre-lock nahi.
+ * Boundaries na hon to pehli id par purana vyavahaar rakhte hain — jhootha
+ * "open" nahi bolte.
+ */
+export function selectCampaignIdsForWindow(offerKey, ids, meta, nowMs = Date.now(), maxLookaheadMs = 26 * 3600 * 1000) {
+  const offer = getEventOffer(offerKey);
+  const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+  if (!offer?.windowed || !list.length) return { ids: list, reason: '' };
+  const bounds = (Array.isArray(meta?.[offerKey]?.boundaries) ? meta[offerKey].boundaries : [])
+    .map(b => ({ day: Number(b.day), start: Date.parse(b.startTime), end: Date.parse(b.endTime) }))
+    .filter(b => Number.isFinite(b.day) && Number.isFinite(b.start) && Number.isFinite(b.end) && b.end > b.start);
+  if (!bounds.length) return { ids: [list[0]], reason: 'WINDOW_UNKNOWN' };
+  const scored = list.map(id => {
+    const day = Number(String(id).match(/(\d+)\s*$/)?.[1] ?? NaN);
+    const scoped = bounds.filter(b => b.day === day);
+    const open = scoped.find(b => nowMs >= b.start && nowMs < b.end) || null;
+    const upcoming = scoped.filter(b => b.start > nowMs).sort((a, b) => a.start - b.start)[0] || null;
+    return { id, scoped, open, upcoming };
+  });
+  const open = scored.filter(x => x.open).sort((a, b) => a.open.end - b.open.end)[0];
+  if (open) return { ids: [open.id], reason: 'WINDOW_OPEN' };
+  const upcoming = scored.filter(x => x.upcoming && x.upcoming.start - nowMs <= maxLookaheadMs)
+    .sort((a, b) => a.upcoming.start - b.upcoming.start)[0];
+  if (upcoming) return { ids: [upcoming.id], reason: 'WINDOW_UPCOMING' };
+  // Boundaries mil gayi hain to sirf unhi ids par likho. Date-andaze wali id
+  // par closed-window claim nahi likhenge.
+  return { ids: [], reason: 'WINDOW_CLOSED' };
+}
+
+/**
  * Ek offer ke aaj ke + kal ke campaign id. `windowed` offers me day number
  * lagta hai; fixed offers me wahi id.
  */
@@ -364,12 +395,14 @@ export function campaignIdsForOffer(offerKey, meta, nowMs = Date.now()) {
     // Live boundaries ho to unse aaj ka day lo (Swiggy ka asli schedule).
     let day = swiggyDayNumber(nowMs);
     if (Array.isArray(info.boundaries) && info.boundaries.length) {
-      const hit = info.boundaries.find((b) => {
-        const s = Date.parse(b.startTime);
-        const e = Date.parse(b.endTime);
-        return Number.isFinite(s) && nowMs >= s && nowMs < e;
-      });
-      if (hit?.day) day = Number(hit.day);
+      const valid = info.boundaries
+        .map(b => ({ day: Number(b.day), start: Date.parse(b.startTime), end: Date.parse(b.endTime) }))
+        .filter(b => Number.isFinite(b.day) && Number.isFinite(b.start) && Number.isFinite(b.end));
+      const hit = valid.find(b => nowMs >= b.start && nowMs < b.end);
+      const upcoming = valid.filter(b => b.start > nowMs && b.start - nowMs <= 26 * 3600 * 1000).sort((a, b) => a.start - b.start)[0];
+      // Campaign day numbers page se aate hain; calendar date se andaza nahi.
+      if (hit) day = hit.day;
+      else if (upcoming) day = upcoming.day;
     }
     const ids = [`${prefix}${day}`, `${prefix}${day + 1}`];
     return { ids, source: info.source || 'PREFIX', prefix, fixed: '' };
@@ -915,7 +948,24 @@ export async function activateAllEventOffers(account, {
       const offer = getEventOffer(offerKey);
       if (!offer) return;
       let { ids, source } = campaignIdsForOffer(offerKey, resolvedMeta, nowMs);
-      if (currentWindowOnly && offer.windowed) ids = ids.slice(0, 1);
+      let windowReason = '';
+      if (currentWindowOnly && offer.windowed) {
+        const picked = selectCampaignIdsForWindow(offerKey, ids, resolvedMeta, nowMs);
+        ids = picked.ids;
+        windowReason = picked.reason;
+        if (!ids.length) {
+          failed += 1;
+          offers[offerKey] = {
+            key: offerKey, bossLabel: offer.bossLabel, name: offer.name, url: offer.url,
+            campaign: '', ids: [], metaSource: source, status: 'WINDOW_CLOSED', state: 'WINDOW_CLOSED',
+            verified: false, alreadyActive: false, writes: 0, campaignUrl: offer.url,
+            discount: (EVENT_OFFER_OPTIONS[offerValue] || EVENT_OFFER_OPTIONS[1]).shortLabel,
+            message: 'Is offer ka window abhi band hai aur agla window nazdeek nahi — band campaign par claim nahi likha.',
+            results: []
+          };
+          return;
+        }
+      }
       let ladderFailure = null;
 
       // Fixed offers (Extra ₹50 / Weekend): inke page par campaign id nahi hoti,
@@ -1065,6 +1115,7 @@ export async function activateAllEventOffers(account, {
         campaign: primary?.campaignId || '',
         ids,
         metaSource: source,
+        windowReason,
         status: allVerified
           ? 'CLAIMED'
           : anyClaimed

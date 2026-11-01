@@ -229,11 +229,11 @@
       unlockBackground = lockModalBackground(overlay);
     });
   }
-  async function api(path, method = 'GET', body) {
+  async function api(path, method = 'GET', body, { timeoutMs = 0 } = {}) {
     if (!initData) throw new Error('Open the Mini App from your bot in Telegram.');
     const headers = { 'X-Telegram-Init-Data': initData };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    const response = await fetch('/pro/api/' + path, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+    const response = await fetch('/pro/api/' + path, { method, headers, ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}), ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
     const result = await response.json().catch(() => ({}));
     if (!response.ok || !result.ok) {
       const e = new Error(result.error || 'Request failed. Please try again.');
@@ -770,7 +770,7 @@
     // naya order karo. Swiggy par order ban gaya ho to uska sach neeche likha
     // rehta hai — hum use cancel nahi kar sakte, isliye jhooth nahi bolte.
     const stuck = c.status === 'SUBMITTING'
-      ? 'Order Swiggy ko ja raha hai. 5-10 second ruk kar isi card par cancel dabaiye — jawab aane par yahan sach dikhega.'
+      ? 'Local checkout abhi band kar sakte hain. Cancel dabate hi cart wapas khulega; Swiggy ko gaya order agar bana ho to order history me dikhega.'
       : esc(c.message || 'Ye checkout band nahi hua. Cancel karke cart wapas lein — dobara order tabhi karein jab My Orders khaali dikhe.');
     return `<div class="card cancel-card"><div class="card-title">${icon('receipt')} Checkout band karein</div>${id}<div class="warning">${stuck}</div><button class="button danger-soft block" type="button" data-action="checkout-cancel">Order cancel karein</button><p class="hint">Cancel karne par: paisa nahi katega, wallet fee wapas (agar li gayi thi), aur cart dobara khul jayega.</p></div>`;
   }
@@ -1252,6 +1252,9 @@
   const PAY_POLL_MS = 5000;
   let paymentPollTimer = null;
   let payTicker = null;
+  // Cancel/finish invalidates any in-flight checkout/status response so a late
+  // poll cannot resurrect the "checkout khula hai" card after local close.
+  let checkoutEpoch = 0;
   function stopPaymentPoll() {
     clearTimeout(paymentPollTimer);
     paymentPollTimer = null;
@@ -1317,8 +1320,10 @@
     paymentPollTimer = setTimeout(async () => {
       paymentPollTimer = null;
       state.payTicks += 1;
+      const epoch = checkoutEpoch;
       try {
         const out = await api('checkout/status', 'POST', {});
+        if (epoch !== checkoutEpoch) return;
         merge(out);
         render();
         if (out.checkout?.status === 'PAID' && out.checkout.orderId) {
@@ -2382,7 +2387,9 @@
           throw new Error('Cart or bill changed. Review it again before paying.');
         }
         try {
+          const epoch = checkoutEpoch;
           const out = await api('checkout', 'POST', { confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt });
+          if (epoch !== checkoutEpoch) return;
           state.checkoutWarning = ''; merge(out); render();
           toast(out.checkout?.status === 'PAYMENT_PENDING' ? 'Payment details returned. Verify before paying.' : 'Check Swiggy My Orders; do not retry.');
         } catch (e) {
@@ -2414,7 +2421,9 @@
         // Boss (round 33): "I HAVE PAID" — ek hi button. Paisa de diya ho to
         // seedha My Orders khulta hai, wahi order khulta hai, aur Swiggy ka
         // share link + copy wahan milta hai.
+        const epoch = checkoutEpoch;
         const out = await api('checkout/status', 'POST', {});
+        if (epoch !== checkoutEpoch) return;
         merge(out); render();
         if (out.checkout?.status === 'PAID' && out.checkout.orderId) {
           stopPaymentPoll();
@@ -2433,15 +2442,25 @@
           confirmText: 'Haan, cancel', danger: true
         });
         if (!ok) return;
-        const out = await api('checkout/cancel', 'POST', { confirmCancel: true });
+        const epoch = ++checkoutEpoch;
         stopPaymentPoll();
         state.payWindow = null; state.payExpired = false; state.payTicks = 0;
         state.checkout = null;
-        state.cart = out.cart ?? state.cart;
         state.tab = 'cart';
         writeCache({ tab: 'cart' });
         render(); window.scrollTo(0, 0);
-        toast(out.message || 'Checkout cancel ho gaya. Cart wapas khula hai.', 'ok');
+        try {
+          const out = await api('checkout/cancel', 'POST', { confirmCancel: true }, { timeoutMs: 8000 });
+          if (epoch !== checkoutEpoch) return;
+          state.cart = out.cart ?? state.cart;
+          render();
+          toast(out.message || 'Checkout band. Cart wapas khula hai.', 'ok');
+        } catch (e) {
+          if (epoch !== checkoutEpoch) return;
+          try { merge(await api('bootstrap')); } catch {}
+          render();
+          toast(e?.name === 'TimeoutError' ? 'Cancel request time out hui. Server state dobara load kar diya — zaroorat ho to phir cancel dabaiye.' : (e.message || 'Cancel confirm nahi hua.'), 'bad');
+        }
       }
       else if (action === 'back-to-cart') {
         // Payment ke baad share link dikh raha hota hai — "Go back" dabate hi
@@ -2456,6 +2475,7 @@
       }
       else if (action === 'checkout-finish') {
         if (!await confirmWithTrigger({ title: 'Start a new draft?', message: 'The paid order remains in Swiggy order history.', confirmText: 'Start new draft' })) return;
+        checkoutEpoch++;
         const out = await api('checkout/finish', 'POST', { confirmNewDraft: true }); merge(out); state.orders = null; state.ordersScope = 'active'; render();
       }
       else if (action === 'checkout-orders') {

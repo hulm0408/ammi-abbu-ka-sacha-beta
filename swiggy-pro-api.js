@@ -1276,15 +1276,27 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
     return true;
   }
 
-  await withProWorkspaceLock(user.id, async () => {
+  const isCancelRoute = route === '/pro/api/checkout/cancel' && req.method === 'POST';
+  const runRequest = async () => {
     try {
       // Redeploy ke baad naya disk khali ho sakta hai — encrypted workspace
       // cloud vault se wapas (sirf jab local file na ho).
-      await ensureProWorkspaceHydrated(user.id);
-      const ws = readProWorkspace(user.id);
+      let ws;
+      if (isCancelRoute) {
+        ws = readProWorkspace(user.id);
+        if (!ws.checkout) {
+          await ensureProWorkspaceHydrated(user.id);
+          ws = readProWorkspace(user.id);
+        }
+      } else {
+        await ensureProWorkspaceHydrated(user.id);
+        ws = readProWorkspace(user.id);
+      }
       // Idle sweep — har request par, routes se pehle (boss: 2 minute rule).
-      const idle = applyIdleExpiry(user, ws, { route });
-      const handoffReconciled = reconcileChatFlow(user, ws);
+      // Cancel reads the freshest workspace after body parsing and must not
+      // race a stale idle-sweep write against an in-flight checkout.
+      const idle = isCancelRoute ? { changed: false, timeoutMs: idleTimeoutMs(getDb()) } : applyIdleExpiry(user, ws, { route });
+      const handoffReconciled = isCancelRoute ? false : reconcileChatFlow(user, ws);
       if (idle.changed || handoffReconciled) writeProWorkspace(user.id, ws);
       if (route === '/pro/api/bootstrap' && req.method === 'GET') {
         const quotedAt = Date.parse(ws.cart?.quote?.fetchedAt || '');
@@ -2251,38 +2263,52 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         json(res, 200, { ok: true, cart: ws.cart, selectedAddress: ws.selectedAddress });
         return;
       }
-      if (route === '/pro/api/checkout/cancel' && req.method === 'POST') {
-        // Boss (round 33): payment page par "Cancel order". Yahan hum jhooth
-        // nahi bolte: Swiggy ne jo order bana diya hai use hum cancel nahi kar
-        // sakte — apna checkout band karte hain, fee wapas karte hain (unpaid
-        // hai), aur cart wapas de dete hain.
+      if (isCancelRoute) {
+        // Local checkout close is immediate and does not call Swiggy. A placed
+        // Swiggy order is NOT claimed cancelled here; the journal is kept and
+        // the generation advances so the next explicit Pay uses a new key.
         const body = await bodyJson(req);
         if (body.confirmCancel !== true) throw error(400, 'Cancel confirm karein.');
-        const checkout = ws.checkout;
+        const current = readProWorkspace(user.id);
+        const checkout = current.checkout;
         if (!checkout) throw error(404, 'Koi checkout khula nahi hai.');
         if (checkout.status === 'PAID') throw error(409, 'Paid order yahan cancel nahi hota — Swiggy app se cancel karein.');
+        const generation = current.checkoutGeneration ?? 0;
+        if (!Number.isSafeInteger(generation) || generation < 0 || generation >= Number.MAX_SAFE_INTEGER) {
+          throw error(503, 'Checkout state is invalid; contact the operator.');
+        }
+        let placement = null;
+        try { placement = readSwiggyPlacement(`pro:${user.id}:${generation}`); } catch { placement = null; }
+        const placedOrderId = normalizeSwiggyOrderId(checkout.orderId || placement?.orderId || '');
+        const placementUncertain = Boolean(placement && ['SUBMITTING', 'PROVIDER_ACCEPTED', 'RESPONSE_UNCERTAIN', 'UNKNOWN'].includes(String(placement.state || '').toUpperCase()));
+        const mayBePlaced = Boolean(placedOrderId) || placementUncertain || checkout.status === 'OUTCOME_UNKNOWN';
         let refundLine = '';
-        try {
-          const freshWalletDb = getDb();
-          const refund = refundServiceFee(freshWalletDb, checkout, user.id, { reason: 'user ne payment page par cancel kiya' });
-          if (refund?.ok) {
-            saveDbDurable(freshWalletDb);
-            backupMoneyNow().catch(() => {});
-            refundLine = ' Wallet fee wapas kar di.';
-          }
-        } catch { /* refund ka sach neeche message me */ }
-        const placedOnSwiggy = Boolean(normalizeSwiggyOrderId(checkout.orderId));
-        ws.lastClosed = {
+        if (!mayBePlaced) {
+          try {
+            const freshWalletDb = getDb();
+            const refund = refundServiceFee(freshWalletDb, checkout, user.id, { reason: 'user ne payment page par cancel kiya' });
+            if (refund?.ok) {
+              saveDbDurable(freshWalletDb);
+              backupMoneyNow().catch(() => {});
+              refundLine = ' Wallet fee wapas kar di.';
+            }
+          } catch { /* refund ka sach neeche message me */ }
+        }
+        const placedOnSwiggy = mayBePlaced;
+        current.checkoutGeneration = generation + 1;
+        current.lastClosed = {
           at: new Date().toISOString(), orderId: String(checkout.orderId || ''), reason: 'USER_CANCELLED',
-          amount: Number(checkout.amount) || 0
+          amount: Number(checkout.amount) || 0, checkoutId: String(checkout.id || ''), generation
         };
-        ws.checkout = null;
-        writeProWorkspace(user.id, ws);
+        current.checkout = null;
+        writeProWorkspace(user.id, current);
         json(res, 200, {
-          ok: true, checkout: null, cart: ws.cart,
-          message: placedOnSwiggy
-            ? `Checkout band. Paisa nahi kata.${refundLine} Swiggy par ye unpaid order #${checkout.orderId} reh gaya hai — Swiggy usey khud cancel karta hai, hum use cancel nahi kar sakte.`
-            : `Checkout band. Paisa nahi kata.${refundLine} Cart wapas khula hai.`
+          ok: true, checkout: null, cart: current.cart,
+          message: placedOrderId
+            ? `Checkout band.${refundLine} Swiggy par order #${placedOrderId} abhi bhi hai — yahan se uska payment/cancel confirm nahi hua. Naya order alag checkout se ja sakta hai.`
+            : placedOnSwiggy
+              ? `Checkout band. Swiggy par order bana ho sakta hai — My Orders check karein. Naya order alag checkout se ja sakta hai.`
+              : `Checkout band. Paisa nahi kata.${refundLine} Cart wapas khula hai.`
         });
         return;
       }
@@ -2472,8 +2498,9 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         // account, quote refresh or concurrent stale workspace reads. Advance the
         // generation ONLY after this order is verified paid and explicitly closed.
         // Workspace/cart mutation still requires one app instance (see setup).
+        const checkoutToken = crypto.randomUUID();
         ws.checkout = {
-          id: checkoutId, accountKey: ws.activeAccountKey, accountPhone: String(account.phone || ''), status: 'SUBMITTING',
+          id: checkoutId, checkoutToken, accountKey: ws.activeAccountKey, accountPhone: String(account.phone || ''), status: 'SUBMITTING',
           accountCustomerId: customerId, accountSessionFingerprint: sessionFingerprint(accountMap(user, ws)[ws.activeAccountKey]),
           createdAt: new Date().toISOString(), amount: total, restaurantName: String(ws.cart.restaurantName || ''),
           // Round 21 ("NO SMS RECEIVED"): SMS ka sach receiver ke number par
@@ -2535,7 +2562,11 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         let providerReturned = false;
         let result;
         try {
-          result = await provider.checkout(account, ws.selectedAddress, ws.cart, placementKey);
+          const checkoutStillActive = () => {
+            try { return readProWorkspace(user.id).checkout?.checkoutToken === checkoutToken; }
+            catch { return false; }
+          };
+          result = await provider.checkout(account, ws.selectedAddress, ws.cart, placementKey, { isCancelled: () => !checkoutStillActive() });
           providerReturned = true;
           const orderId = normalizeSwiggyOrderId(result?.orderId);
           // Boss (31-10-2026, round 15): provider ne jo intent diya wo pehle se
@@ -2555,6 +2586,15 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           if (!isRenderableQrImage(qrDataUrl)) {
             throw new Error(`QR image ban nahi payi (${describeQrPlan({ ...qrPlan, ok: false })}). Swiggy se payment status check karein.`);
           }
+          const freshOnSuccess = readProWorkspace(user.id);
+          if (freshOnSuccess.checkout?.checkoutToken !== checkoutToken) {
+            if (orderId) {
+              freshOnSuccess.lastClosed = { ...(freshOnSuccess.lastClosed || {}), at: new Date().toISOString(), orderId, reason: 'PROVIDER_RETURNED_AFTER_CANCEL', amount: total };
+              writeProWorkspace(user.id, freshOnSuccess);
+            }
+            json(res, 200, { ok: true, checkout: publicCheckout(freshOnSuccess.checkout), cart: freshOnSuccess.cart, message: 'Checkout cancel ho chuka tha. Swiggy ka jawab baad me aaya; order history me check karein.' });
+            return;
+          }
           Object.assign(ws.checkout, {
             status: 'PAYMENT_PENDING', orderId, paymentTxnId: String(result.paymentTxnId || '').slice(0, 200),
             upiIntentUrl: qrUri, qrDataUrl, ofoConfirmed: result.ofoConfirmed === true,
@@ -2566,6 +2606,16 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           });
           writeProWorkspace(user.id, ws);
         } catch (err) {
+          const freshOnError = readProWorkspace(user.id);
+          if (freshOnError.checkout?.checkoutToken !== checkoutToken) {
+            const placedId = normalizeSwiggyOrderId(err?.diag?.placedOrderId || result?.orderId || readSwiggyPlacement(placementKey)?.orderId || '');
+            if (placedId) {
+              freshOnError.lastClosed = { ...(freshOnError.lastClosed || {}), at: new Date().toISOString(), orderId: placedId, reason: 'PROVIDER_ERROR_AFTER_CANCEL', amount: total };
+              writeProWorkspace(user.id, freshOnError);
+            }
+            json(res, 200, { ok: true, checkout: publicCheckout(freshOnError.checkout), cart: freshOnError.cart, message: 'Checkout cancel ho chuka tha. Order place nahi hua ya Swiggy order history me check karein.' });
+            return;
+          }
           // Boss (31-10-2026, round 12): "QR NAHI AYA AISA HO GAYA". Order ban
           // gaya par Swiggy ne QR nahi diya — ise "outcome unknown" ki tarah
           // chhupana galat tha. Ab order ID + asli wajah dikhati hai, aur
@@ -2620,9 +2670,11 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           // bill save karke dikhate hain, taaki user use dekh kar dobara Pay
           // dabaye. Order tabhi jaata hai jab user naya amount khud dekhe.
           if (err?.code === 'BILL_CHANGED' && err?.diag?.freshBill && ws.cart) {
+            if (Array.isArray(err.diag.freshBill.subscriptionItems)) ws.cart.activeSubscriptionItems = err.diag.freshBill.subscriptionItems;
             ws.cart.quote = {
               ...billBreakdown(err.diag.freshBill),
               couponCode: String(err.diag.freshBill.coupon || '').toUpperCase(),
+              couponSaving: Number(err.diag.freshBill.couponSaving ?? err.diag.freshBill.discount) || 0,
               ofoConfirmed: false, fetchedAt: new Date().toISOString()
             };
             writeProWorkspace(user.id, ws);
@@ -2695,6 +2747,14 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         } else if (checkout.paymentVerified) {
           checkout.message = 'Payment was reported by Swiggy, but this exact order is not yet confirmed. Check My Orders; do not pay again.';
         }
+        const freshStatus = readProWorkspace(user.id);
+        const sameCheckout = freshStatus.checkout && (checkout.checkoutToken
+          ? freshStatus.checkout.checkoutToken === checkout.checkoutToken
+          : String(freshStatus.checkout.id || '') === String(checkout.id || ''));
+        if (!sameCheckout) {
+          json(res, 200, { ok: true, checkout: publicCheckout(freshStatus.checkout), cart: freshStatus.cart });
+          return;
+        }
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, checkout: publicCheckout(checkout, { restricted: isSharedAccountFor(user, ws, checkout.accountKey) }) });
         return;
@@ -2721,7 +2781,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
       const KNOWN_CODES = new Set([
         'PRO_VAULT_NOT_CONFIGURED', 'PRO_VAULT_DECRYPT_FAILED', 'ACCOUNT_NEEDS_CONFIRM', 'ADDRESS_INCOMPLETE',
         'SHARED_ACCOUNT_RESTRICTED', 'BILL_CHANGED', 'CART_ITEMS', 'CART_FETCH', 'CART_PARSE', 'CART_ID',
-        'ADDRESS', 'OFO', 'COUPON', 'AMOUNT', 'AMOUNT_MISSING', 'RESTAURANT', 'GROUP_CART_EXPIRED',
+        'ADDRESS', 'OFO', 'COUPON', 'AMOUNT', 'AMOUNT_MISSING', 'RESTAURANT', 'FREE_CASH', 'TRADE_DISCOUNT', 'DELIVERY', 'DELIVERY_SAVED', 'ONE_MEMBERSHIP', 'CHECKOUT_CANCELLED', 'GROUP_CART_EXPIRED',
         'GROUP_CART_PLACED', 'GROUP_CART_BUSY', 'GROUP_CART_FETCH_FAILED', 'SWIGGY_ACCOUNT_NOT_REGISTERED',
         'OTP_IDENTITY_MISSING', 'WALLET_LOW_BALANCE', 'INVALID_UPI', 'DUPLICATE_UTR',
         'UTR_REQUIRED', 'UTR_INVALID', 'NO_TOPUP_INTENT', 'TOPUP_AMOUNT_MISMATCH',
@@ -2735,6 +2795,11 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         ...(err?.wallet ? { wallet: err.wallet } : {})
       });
     }
-  });
+  };
+  // Cancel is a control action: it must never wait behind a slow Swiggy
+  // checkout/provider call. Checkout completion re-checks its token before
+  // reviving state, so a late provider response cannot undo the cancel.
+  if (isCancelRoute) await runRequest();
+  else await withProWorkspaceLock(user.id, runRequest);
   return true;
 }

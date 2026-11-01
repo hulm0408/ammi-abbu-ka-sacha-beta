@@ -746,8 +746,11 @@ export const proProvider = {
         if (!sameCartItems(cart.items, parsed.items) || boundAddress !== addressId) {
           throw unavailable('Swiggy returned different items or address. No bill is being shown; check the Swiggy cart.');
         }
-        const total = Number(meta.order_total);
-        if (exactPaise(total) === null || total <= 0) throw unavailable('Swiggy did not return a valid payable amount.');
+        const rawCartTotal = Number(meta.order_total);
+        const total = Number(parsed.finalPayable ?? meta.order_total);
+        if (exactPaise(rawCartTotal) === null || rawCartTotal <= 0 || exactPaise(total) === null || total <= 0) {
+          throw unavailable('Swiggy did not return a valid payable amount.');
+        }
         lastReadback = {
           parsed, meta, total,
           coupon: String(parsed?.couponCode || '').toUpperCase(),
@@ -1010,6 +1013,11 @@ export const proProvider = {
         Number(parsed?.swiggyMoneyApplied || 0),
         Number(meta?.swiggy_money ?? meta?.swiggyMoney ?? 0) || 0
       );
+      // Swiggy Money kabhi cart me "available" hota hai aur place par
+      // `swiggy_pay_amount` se kata jata hai. Bill me wahi approved split dikhao
+      // jo QR me katega — balance ko dobara discount mat gino.
+      const walletSplitPayAmount = Math.max(0, Number(parsed?.walletSplitPayAmount || 0));
+      const walletApplied = Math.max(walletReallyDeducted, walletSplitPayAmount);
       const tradeTotal = Math.max(0, Number(parsed?.tradeDiscountTotal ?? 0));
       const campaignCash = Math.max(0, Number(parsed?.campaignFreeCash ?? 0));
       // Campaign free cash do jagah se aata hai — kabhi trade discount ke andar
@@ -1018,8 +1026,8 @@ export const proProvider = {
       // Split the trade discount: campaign Free Cash gets its own visible line,
       // merchant discount gets the remainder. Count the reward exactly once.
       const merchantDiscount = Math.max(0, tradeTotal - Math.min(campaignCash, tradeTotal));
-      const freeCashShown = campaignCash + walletReallyDeducted;
-      engine.freeCash = walletReallyDeducted;
+      const freeCashShown = campaignCash + walletApplied;
+      engine.freeCash = walletApplied;
       engine.campaignFreeCash = campaignCash;
       engine.freeCashAvailable = Math.max(0, Number(parsed?.freeCashBalance || 0));
       engine.deliveryFee = Number(parsed?.deliveryFee || 0);
@@ -1053,7 +1061,8 @@ export const proProvider = {
           // Ek hi baar: campaign free cash (agar trade discount me nahi hai) +
           // sirf jo Swiggy ne sach me kaata. Balance hona discount nahi hai.
           freeCash: freeCashShown > 0 ? freeCashShown : null,
-          freeCashWallet: walletReallyDeducted > 0 ? walletReallyDeducted : null,
+          freeCashWallet: walletApplied > 0 ? walletApplied : null,
+          walletSplitPayAmount,
           freeCashAvailable: Math.max(0, Number(parsed?.freeCashBalance || 0)),
           // Poora trade discount (restaurant + campaign free cash) — ye Swiggy
           // ke order_total ke andar pehle se hai, isliye ek hi line me.
@@ -1073,7 +1082,7 @@ export const proProvider = {
       };
     });
   },
-  async checkout(account, address, cart, placementKey) {
+  async checkout(account, address, cart, placementKey, options = {}) {
     const { lat, lng } = coords(address);
     if (process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE === '1' ||
         (globalThis.fetch === bootFetch && isZeroSmsTestSandboxActive())) {
@@ -1089,11 +1098,12 @@ export const proProvider = {
       throw badRequest('Confirm the recipient and refresh the Swiggy bill before checkout.');
     }
     return withSwiggyAccountLock(checkoutLockKey(account), async () => {
-      const [auth, liveCart, savedAddresses] = await Promise.all([
+      const [auth, initialCart, savedAddresses] = await Promise.all([
         getSwiggySessionAuth(account, false),
         swiggyCartGet(account, { lat, lng, timeoutMs: 8000 }),
         fetchAccountAddresses(account)
       ]);
+      let liveCart = initialCart;
       if (!auth?.userId || !auth?.jwtTid) throw unavailable('Swiggy session could not be verified. No order was placed.');
       const actualAddress = savedAddresses.find(a => String(a.id || '') === String(address.id));
       if (!actualAddress || !sameDeliveryRecipient(address, actualAddress)) {
@@ -1104,80 +1114,156 @@ export const proProvider = {
       if ((!accountPhone || accountPhone !== receiverPhone) && !cart.forSomeoneElse) {
         throw badRequest('The receiver differs from this account. Select “Order for someone else” and review a fresh bill. No order was placed.');
       }
-      const data = liveCart?.json?.data;
-      const meta = data?.cartMeta || data;
-      const parsed = data ? parseDapiCartPayload(data) : null;
-      const liveTotal = Number(meta?.order_total);
-      const addressId = String(meta?.address_id || meta?.delivery_address?.id || data?.address_id || data?.delivery_address?.id || '');
-      const cartId = String(meta?.originalCartId || meta?.cartId || meta?.cart_id || '');
-      const coupon = String(parsed?.couponCode || '').toUpperCase();
-      // Boss (31-10-2026, round 10): pehle yahan ek hi generic message aata tha
-      // ("cart, recipient/OFO, coupon or amount could not be confirmed") aur
-      // user ko pata hi nahi chalta tha kya badla. Ab har check alag hai aur
-      // uski asli wajah + dono numbers message me aate hain.
-      const problems = [];
-      const fail = (code, message, extra = {}) => problems.push({ code, message, ...extra });
-      if (!successCode(liveCart?.json?.statusCode) || !data) {
-        fail('CART_FETCH', `Swiggy ne cart nahi diya (HTTP ${liveCart?.status || '?'}${liveCart?.json?.statusCode !== undefined ? `, statusCode ${liveCart.json.statusCode}` : ''}).`);
-      } else if (!parsed) {
-        fail('CART_PARSE', 'Swiggy ka cart jawab samajh nahi aaya (items parse nahi hue).');
-      } else {
-        // Item IDs and quantities alone are insufficient: an add-on or variant
-        // can change while the total stays the same. The quote used this same
-        // strict readback, so checkout must fail closed on any mismatch.
-        if (!sameCartItems(cart.items, parsed.items)) fail('CART_ITEMS', 'Swiggy ke cart me items, variants ya add-ons badal gaye.');
-        if (parsed.restaurantId && String(parsed.restaurantId) !== String(cart.restaurantId)) {
-          fail('RESTAURANT', `Restaurant badal gaya — bill ${cart.restaurantId}, Swiggy ${parsed.restaurantId}.`);
+      const approvedQuote = cart?.quote || {};
+      const approvedSubs = Array.isArray(approvedQuote.subscriptionItems)
+        ? approvedQuote.subscriptionItems
+        : (Array.isArray(cart.activeSubscriptionItems) ? cart.activeSubscriptionItems : []);
+      const money = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+      const inspect = (cartResponse) => {
+        const data = cartResponse?.json?.data;
+        const meta = data?.cartMeta || data;
+        const parsed = data ? parseDapiCartPayload(data) : null;
+        const liveTotal = Number(parsed?.finalPayable ?? meta?.order_total);
+        const rawTotal = Number(meta?.order_total);
+        const addressId = String(meta?.address_id || meta?.delivery_address?.id || data?.address_id || data?.delivery_address?.id || '');
+        const cartId = String(meta?.originalCartId || meta?.cartId || meta?.cart_id || '');
+        const coupon = String(parsed?.couponCode || '').toUpperCase();
+        const problems = [];
+        const fail = (code, message, extra = {}) => problems.push({ code, message, ...extra });
+        if (!successCode(cartResponse?.json?.statusCode) || !data) {
+          fail('CART_FETCH', `Swiggy ne cart nahi diya (HTTP ${cartResponse?.status || '?'}${cartResponse?.json?.statusCode !== undefined ? `, statusCode ${cartResponse.json.statusCode}` : ''}).`);
+        } else if (!parsed) {
+          fail('CART_PARSE', 'Swiggy ka cart jawab samajh nahi aaya (items parse nahi hue).');
+        } else {
+          if (!sameCartItems(cart.items, parsed.items)) fail('CART_ITEMS', 'Swiggy ke cart me items, variants ya add-ons badal gaye.');
+          if (parsed.restaurantId && String(parsed.restaurantId) !== String(cart.restaurantId)) {
+            fail('RESTAURANT', `Restaurant badal gaya — bill ${cart.restaurantId}, Swiggy ${parsed.restaurantId}.`);
+          }
+          const liveCampaign = money(parsed.campaignFreeCash);
+          const liveWallet = Math.max(money(parsed.swiggyMoneyApplied), money(parsed.walletSplitPayAmount));
+          const liveFreeCash = liveCampaign + liveWallet;
+          const liveTrade = Math.max(0, money(parsed.tradeDiscountTotal) - Math.min(liveCampaign, money(parsed.tradeDiscountTotal)));
+          const expectedFreeCash = money(approvedQuote.freeCash);
+          const expectedTrade = money(approvedQuote.tradeDiscount);
+          const expectedCouponSaving = money(approvedQuote.couponSaving ?? approvedQuote.discount);
+          if (expectedFreeCash > 0 && liveFreeCash + 0.005 < expectedFreeCash) {
+            fail('FREE_CASH', `Free Cash gir gaya — bill me ₹${expectedFreeCash}, Swiggy cart me ₹${liveFreeCash}.`);
+          }
+          if (expectedTrade > 0 && liveTrade + 0.005 < expectedTrade) {
+            fail('TRADE_DISCOUNT', `Restaurant discount gir gaya — bill me ₹${expectedTrade}, Swiggy cart me ₹${liveTrade}.`);
+          }
+          if (expectedCouponSaving > 0 && money(parsed.discountAmount) + 0.005 < expectedCouponSaving) {
+            fail('COUPON', `Coupon discount gir gaya — bill me ₹${expectedCouponSaving}, Swiggy cart me ₹${money(parsed.discountAmount)}.`);
+          }
+          const expectedDelivery = approvedQuote.deliveryFee;
+          if (expectedDelivery !== null && expectedDelivery !== undefined && money(parsed.deliveryFee) > money(expectedDelivery) + 0.005) {
+            fail('DELIVERY', `Delivery fee badh gayi — bill me ₹${money(expectedDelivery)}, Swiggy cart me ₹${money(parsed.deliveryFee)}.`);
+          }
+          const expectedSaved = money(approvedQuote.deliverySaved);
+          if (expectedSaved > 0 && money(parsed.freeDeliveryDiscount) + 0.005 < expectedSaved) {
+            fail('DELIVERY_SAVED', `Free delivery saving gir gayi — bill me ₹${expectedSaved}, Swiggy cart me ₹${money(parsed.freeDeliveryDiscount)}.`);
+          }
+          if (approvedQuote.oneApplied === true && parsed.swiggyOneApplied !== true) {
+            fail('ONE_MEMBERSHIP', 'Swiggy One / One Lite free delivery benefit cart se hat gaya.');
+          }
+          if (money(approvedQuote.oneMembershipFee) > 0 && money(parsed.swiggyOneMembershipFee) <= 0 && money(parsed.deliveryFee) > 0) {
+            fail('ONE_MEMBERSHIP', 'One Lite membership hat gayi aur delivery fee wapas aa gayi.');
+          }
+        }
+        if (!addressId || addressId !== String(address.id)) fail('ADDRESS', `Delivery address Swiggy cart par confirm nahi hua (bill ${address.id}, Swiggy ${addressId || 'missing'}).`);
+        if (exactPaise(liveTotal) === null) fail('AMOUNT_MISSING', 'Swiggy ne payable amount nahi diya.');
+        else if (exactPaise(liveTotal) !== exactPaise(expected)) {
+          fail('AMOUNT', `Bill ka amount badal gaya — aapne ₹${expected} dekh kar Pay dabaya, Swiggy ab ₹${liveTotal} keh raha hai.`);
+        }
+        if (coupon !== approvedCoupon) {
+          fail('COUPON', `Coupon badal gaya — bill me "${approvedCoupon || 'koi coupon nahi'}", Swiggy par "${coupon || 'koi coupon nahi'}".`);
+        }
+        if (!cartId) fail('CART_ID', 'Swiggy ne cart id nahi di (order place karne ke liye zaroori hai).');
+        return { data, meta, parsed, liveTotal, rawTotal, addressId, cartId, coupon, problems };
+      };
+      let view = inspect(liveCart);
+      // Benefits can lapse between bill and Pay. Re-lock the SAME approved
+      // coupon/subscription once without flushing the cart, then verify again.
+      // Never place on a changed bill and never silently substitute a coupon.
+      const relockBlocked = new Set(['CART_FETCH', 'CART_PARSE', 'CART_ITEMS', 'RESTAURANT', 'CART_ID', 'ADDRESS']);
+      const canRelock = view.parsed && !view.problems.some(p => relockBlocked.has(p.code));
+      if (canRelock && view.problems.length) {
+        try {
+          const updated = await swiggyCartUpdate(account, {
+            restaurantId: cart.restaurantId,
+            address_id: String(address.id),
+            couponCode: approvedCoupon,
+            cartItems: buildSwiggyCartItemsPayload(cart.items),
+            mealItems: [],
+            subscriptionItems: approvedSubs,
+            ...(cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: actualAddress }) : {})
+          }, { lat, lng, flushFirst: false, timeoutMs: 6000 });
+          liveCart = successCode(updated?.json?.statusCode) && updated?.json?.data
+            ? updated
+            : await swiggyCartGet(account, { lat, lng, timeoutMs: 5000 });
+          if (approvedCoupon) {
+            const afterUpdate = inspect(liveCart);
+            if (afterUpdate.coupon !== approvedCoupon || money(afterUpdate.parsed?.discountAmount) + 0.005 < money(approvedQuote.couponSaving ?? approvedQuote.discount)) {
+              const applied = await applySwiggyCartCoupon(account, { couponCode: approvedCoupon, addressId: String(address.id), lat, lng, timeoutMs: 2500 }).catch(() => null);
+              liveCart = successCode(applied?.json?.statusCode) && applied?.json?.data
+                ? applied
+                : await swiggyCartGet(account, { lat, lng, timeoutMs: 4000 });
+            }
+          }
+          view = inspect(liveCart);
+        } catch {
+          view = inspect(liveCart);
         }
       }
-      if (!addressId || addressId !== String(address.id)) fail('ADDRESS', `Delivery address Swiggy cart par confirm nahi hua (bill ${address.id}, Swiggy ${addressId || 'missing'}).`);
-      if (exactPaise(liveTotal) === null) fail('AMOUNT_MISSING', 'Swiggy ne payable amount nahi diya.');
-      else if (exactPaise(liveTotal) !== exactPaise(expected)) {
-        fail('AMOUNT', `Bill ka amount badal gaya — aapne ₹${expected} dekh kar Pay dabaya, Swiggy ab ₹${liveTotal} keh raha hai.`);
-      }
-      if (coupon !== approvedCoupon) {
-        fail('COUPON', `Coupon badal gaya — bill me "${approvedCoupon || 'koi coupon nahi'}", Swiggy par "${coupon || 'koi coupon nahi'}".`);
-      }
-      if (!cartId) fail('CART_ID', 'Swiggy ne cart id nahi di (order place karne ke liye zaroori hai).');
-      if (problems.length) {
+      if (view.problems.length) {
+        const problems = view.problems;
         const err = unavailable(`${problems.map((p, i) => `${i + 1}. ${p.message}`).join(' ')} Order place nahi hua — naya bill dekh kar dobara Pay dabaiye.`);
         err.diag = { code: problems[0].code, problems, placementAttempted: false };
-        // Recoverable: bill/coupon badla hai par items/address wahi hain. Tab
-        // naya bill bhej dete hain taaki app use dikha kar dobara confirm kare
-        // (dead-end loop nahi).
         const hardStop = problems.some(p => ['CART_FETCH', 'CART_PARSE', 'CART_ID', 'CART_ITEMS', 'RESTAURANT', 'ADDRESS'].includes(p.code));
-        // Code hamesha set — app isi se decide karta hai ki retry safe hai ya
-        // nahi (aur "outcome unknown" ka darr dikhana hai ya nahi).
         err.code = hardStop ? problems[0].code : 'BILL_CHANGED';
-        if (!hardStop && parsed) {
+        if (!hardStop && view.parsed) {
+          const parsed = view.parsed;
           err.diag.freshBill = {
             itemTotal: parsed.itemTotal, deliveryFee: parsed.deliveryFee, deliverySaved: parsed.freeDeliveryDiscount,
             packingCharges: parsed.packingCharges, taxes: parsed.taxesAndCharges,
             discount: parsed.discountAmount, coupon: String(parsed.couponCode || ''), couponCode: String(parsed.couponCode || ''),
-            freeCash: parsed.swiggyMoneyApplied, tradeDiscount: parsed.tradeDiscountTotal,
+            couponSaving: parsed.discountAmount,
+            freeCash: Math.max(0, money(parsed.campaignFreeCash) + Math.max(money(parsed.swiggyMoneyApplied), money(parsed.walletSplitPayAmount))),
+            tradeDiscount: Math.max(0, money(parsed.tradeDiscountTotal) - Math.min(money(parsed.campaignFreeCash), money(parsed.tradeDiscountTotal))),
             oneMembershipFee: parsed.swiggyOneMembershipFee, oneApplied: parsed.swiggyOneApplied === true,
-            totalSavings: parsed.totalSavings, total: liveTotal
+            subscriptionItems: approvedSubs, walletSplitPayAmount: parsed.walletSplitPayAmount,
+            totalSavings: parsed.totalSavings, total: view.liveTotal
           };
         }
         throw err;
       }
+      const { meta, parsed, liveTotal, rawTotal, addressId, cartId } = view;
+      const splitPayAmount = money(parsed.swiggyMoneyApplied) > 0 ? 0 : money(parsed.walletSplitPayAmount);
+      const cartOrderTotal = exactPaise(rawTotal) !== null ? rawTotal : liveTotal;
       const recipient = cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: actualAddress }) : {};
       const body = {
         address_id: addressId, lat, lng, payment_cod_method: 'UPIIntent',
         ...recipient,
-        order_total: liveTotal, bill_total: liveTotal, cart_total: liveTotal,
-        cart_total_shown_to_coupon: meta.cart_total_shown_to_coupon ?? liveTotal,
-        total_without_coupon_discount: meta.total_without_coupon_discount ?? liveTotal,
-        original_order_total: meta.original_order_total ?? liveTotal,
-        transaction_amount: liveTotal, updated_amount: liveTotal, amount: liveTotal,
+        order_total: cartOrderTotal, bill_total: cartOrderTotal, cart_total: cartOrderTotal,
+        cart_total_shown_to_coupon: meta.cart_total_shown_to_coupon ?? cartOrderTotal,
+        total_without_coupon_discount: meta.total_without_coupon_discount ?? cartOrderTotal,
+        original_order_total: meta.original_order_total ?? cartOrderTotal,
+        transaction_amount: cartOrderTotal, updated_amount: cartOrderTotal, amount: cartOrderTotal,
         cartId, cart_id: cartId, originalCartId: cartId,
+        ...(splitPayAmount > 0 ? { swiggy_pay_amount: String(splitPayAmount) } : {}),
         upi_transaction_info: { intent_app: 'com.google.android.apps.nbu.paisa.user', intent_app_display_name: 'Google Pay' }
       };
       const headers = buildSwiggyAndroidClientHeaders(account, {
         tid: liveCart?.json?.tid || auth.jwtTid, token: auth.token, sid: auth.sid,
         deviceId: auth.deviceId, userId: auth.userId, lat, lng,
-        extraHeaders: { paymentamount: String(liveTotal), cartid: cartId, cartaddressid: addressId, addressid: addressId }
+        extraHeaders: { paymentamount: String(cartOrderTotal), cartid: cartId, cartaddressid: addressId, addressid: addressId }
       });
+      if (options.isCancelled?.()) {
+        const err = badRequest('Checkout cancel ho chuka hai. Order place nahi hua.');
+        err.code = 'CHECKOUT_CANCELLED';
+        err.diag = { code: err.code, placementAttempted: false };
+        throw err;
+      }
       const result = await executeSingleSwiggyPlacement(placementKey, async () => {
         const response = await fetch('https://chkout.swiggy.com/api/v2/order/place', {
           method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(12000)
