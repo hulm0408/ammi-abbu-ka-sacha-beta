@@ -344,8 +344,8 @@ test('DOM: coupon page — applied ribbon, APPLY se asli sync, REMOVE se coupon 
     const call = app.calls.find(c => c.url.endsWith('/cart/sync'));
     assert.equal(call.body.coupon, 'TRYNEW');
     assert.equal(call.body.confirmReplaceSwiggyCart, true);
-    await waitFor(() => app.document.querySelector('[data-action="coupon-remove"]'), 'remove button');
-    app.document.querySelector('[data-action="coupon-remove"]').click();
+    await waitFor(() => { const b = app.document.querySelector('.coupon-sheet [data-action="coupon-remove"]'); return b && !b.disabled; }, 'remove button enabled');
+    app.document.querySelector('.coupon-sheet [data-action="coupon-remove"]').click();
     await waitFor(() => app.calls.filter(c => c.url.endsWith('/cart/sync')).length >= 2, 'remove call');
     assert.equal(app.calls.filter(c => c.url.endsWith('/cart/sync')).at(-1).body.coupon, '');
     await new Promise(r => setTimeout(r, 30));

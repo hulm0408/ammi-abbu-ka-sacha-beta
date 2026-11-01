@@ -2,7 +2,7 @@ import {
   buildSwiggyAndroidClientHeaders, buildSwiggyCartItemsPayload, buildOfoCartFields,
   dapiFetch, fetchAccountAddresses, fetchSwiggyAndroidProfile, getSwiggySessionAuth, isValidIndianDeliveryCoordinates,
   parseDapiCartPayload, resolveSharedOfoAddress, saveAddressToAccount,
-  swiggyCartGet, swiggyCartUpdate, verifySwiggySessionLive, withSwiggyAccountLock,
+  swiggyCartGet, swiggyCartUpdate, applySwiggyCartCoupon, verifySwiggySessionLive, withSwiggyAccountLock,
   checkRealSwiggyPaymentAndExtractTracking, detectOfoFromPlaceResponse, normalizeSwiggyOrderId,
   extractSwiggyProvidedTrackingUrl, extractSwiggyDeliveryOtp, isZeroSmsTestSandboxActive,
   extractDeepLinkFromReferrerOrUrl, fetchLiveGroupCart, resolveSwiggyLink, callSwiggyFoodMcpTool,
@@ -669,6 +669,7 @@ export const proProvider = {
     const { lat, lng } = coords(address);
     if (!address.name || !normalizeIndianMobileNumber(address.mobile)) throw badRequest('Confirm the receiver name and 10-digit mobile number first.');
     const requestedCoupon = String(coupon || '').trim().toUpperCase();
+    const autoCoupon = options.autoCoupon !== false && cart.autoCoupon !== false;
     // Round 33 (boss): "BILL CALCULATE HONE ME BAHUT TIME LAG RAHA HAI".
     // Ab bill do kadam me aata hai:
     //   phase 'fast' → sirf asli bill (address + cart + readback) — 4 calls.
@@ -684,8 +685,8 @@ export const proProvider = {
     const quickBill = cart.quickBill === true && !requestedCoupon;
     const budget = {
       // Boss ko speed chahiye par offers bhi — dono: discovery 2.5s, trials 9s.
-      trialBudgetMs: Math.max(3_000, Math.min(Number(process.env.PRO_COUPON_BUDGET_MS) || 9_000, 20_000)),
-      maxTrials: Math.max(1, Math.min(Number(process.env.PRO_COUPON_TRIALS) || 6, 12))
+      trialBudgetMs: Math.max(2_000, Math.min(Number(process.env.PRO_COUPON_BUDGET_MS) || 7_000, 15_000)),
+      maxTrials: Math.max(1, Math.min(Number(process.env.PRO_COUPON_TRIALS) || 6, 10))
     };
     return withSwiggyAccountLock(checkoutLockKey(account), async () => {
       // ── Round 34 (boss): "MAKE THE CHECK OUT FASTER" ──────────────────────
@@ -730,52 +731,17 @@ export const proProvider = {
       const engine = { offersClaimed: 0, offersNote: '', oneLite: 'not_tried', couponTrials: [], couponsSeen: 0, notes: [] };
       let lastReadback = null;
       let unconfirmedCartWrite = false;
-      // Fast phase me har call par timeout — bill 2 minute tak latka na rahe.
-      const pushTimeout = fast ? Math.max(4_000, Math.min(Number(process.env.PRO_FAST_BILL_TIMEOUT_MS) || 7_000, 20_000)) : 9_000;
-      const push = async ({ couponCode = '', subscriptionItems = [], timeoutMs = pushTimeout } = {}) => {
-        // A timeout can occur after Swiggy changed the cart. Do not reuse an
-        // earlier quote until a final successful write and readback settle it.
-        unconfirmedCartWrite = true;
-        const out = await swiggyCartUpdate(account, {
-          restaurantId: cart.restaurantId,
-          address_id: addressId,
-          couponCode,
-          cartItems: itemsPayload,
-          mealItems: [],
-          subscriptionItems,
-          ...ofoFields
-        }, { lat, lng, flushFirst: true, timeoutMs });
+      let cartInitialized = false;
+      const pushTimeout = fast ? Math.max(4_000, Math.min(Number(process.env.PRO_FAST_BILL_TIMEOUT_MS) || 6_000, 15_000)) : 7_000;
+      const acceptCart = (out) => {
         if (!successCode(out?.json?.statusCode)) {
           const msg = String(out?.json?.statusMessage || '').slice(0, 120) || `HTTP ${out?.status || '?'}`;
           throw unavailable(`Swiggy ne cart update reject kiya (${msg}).`);
         }
-        // Round 34: cart update ka apna jawab aksar poora cart hi hota hai
-        // (cartMeta + order_total). Us halat me alag GET ki zaroorat nahi —
-        // ek Swiggy round trip bachta hai, bill turant aata hai. Jawab adhoora
-        // ho to hi GET karte hain (jhooth nahi: wahi validation dono par).
-        const pushData = out?.json?.data;
-        const pushMeta = pushData?.cartMeta || pushData;
-        const pushParsed = pushData ? parseDapiCartPayload(pushData) : null;
-        const pushUsable = Boolean(
-          successCode(out?.json?.statusCode) && pushParsed && pushMeta &&
-          Array.isArray(pushParsed.items) && pushParsed.items.length &&
-          exactPaise(Number(pushMeta.order_total)) !== null
-        );
-        let readback;
-        let data;
-        let meta;
-        let parsed;
-        if (pushUsable) {
-          readback = out; data = pushData; meta = pushMeta; parsed = pushParsed;
-        } else {
-          readback = await swiggyCartGet(account, { lat, lng, timeoutMs: 8000 });
-          data = readback?.json?.data;
-          meta = data?.cartMeta || data;
-          parsed = data && parseDapiCartPayload(data);
-        }
-        if (!successCode(readback?.json?.statusCode) || !parsed || !meta || !Array.isArray(parsed.items)) {
-          throw unavailable('Swiggy did not confirm the cart. Refresh in Swiggy before trying again.');
-        }
+        const data = out?.json?.data;
+        const meta = data?.cartMeta || data;
+        const parsed = data ? parseDapiCartPayload(data) : null;
+        if (!parsed || !meta || !Array.isArray(parsed.items)) throw unavailable('Swiggy did not confirm the cart. Refresh in Swiggy before trying again.');
         const boundAddress = String(meta.address_id || meta.delivery_address?.id || data.address_id || data.delivery_address?.id || '');
         if (!sameCartItems(cart.items, parsed.items) || boundAddress !== addressId) {
           throw unavailable('Swiggy returned different items or address. No bill is being shown; check the Swiggy cart.');
@@ -785,10 +751,64 @@ export const proProvider = {
         lastReadback = {
           parsed, meta, total,
           coupon: String(parsed?.couponCode || '').toUpperCase(),
+          couponReason: String(out?.json?.statusMessage || parsed?.couponReason || '').slice(0, 140),
           originalTotal: Number(parsed?.itemTotal || meta.item_total || 0) + Number(parsed?.packingCharges || 0) + Number(parsed?.taxesAndCharges || 0)
         };
-        unconfirmedCartWrite = false;
         return lastReadback;
+      };
+      const readCart = async (timeoutMs = 5000) => acceptCart(await swiggyCartGet(account, { lat, lng, timeoutMs }));
+      const couponSettled = (snapshot, code) => code
+        ? snapshot.coupon === code && Number(snapshot.parsed?.discountAmount || 0) > 0
+        : !snapshot.coupon;
+      const push = async ({ couponCode = '', subscriptionItems = [], timeoutMs = pushTimeout, clearCoupon = false } = {}) => {
+        // Only the first write replaces the cart. Coupon/free-cash retries keep
+        // the same cart, so they do not flush the reward that just landed.
+        unconfirmedCartWrite = true;
+        const code = String(couponCode || '').trim().toUpperCase();
+        const out = await swiggyCartUpdate(account, {
+          restaurantId: cart.restaurantId,
+          address_id: addressId,
+          couponCode: code,
+          cartItems: itemsPayload,
+          mealItems: [],
+          subscriptionItems,
+          ...ofoFields
+        }, { lat, lng, flushFirst: !cartInitialized, timeoutMs });
+        cartInitialized = true;
+        if (!successCode(out?.json?.statusCode)) {
+          const msg = String(out?.json?.statusMessage || '').slice(0, 120) || `HTTP ${out?.status || '?'}`;
+          throw unavailable(`Swiggy ne cart update reject kiya (${msg}).`);
+        }
+        const data = out?.json?.data;
+        const meta = data?.cartMeta || data;
+        const parsed = data ? parseDapiCartPayload(data) : null;
+        const usable = Boolean(successCode(out?.json?.statusCode) && parsed && meta &&
+          Array.isArray(parsed.items) && parsed.items.length && exactPaise(Number(meta.order_total)) !== null);
+        let snapshot = usable ? acceptCart(out) : await readCart(Math.min(timeoutMs, 6000));
+        const needsApply = code && !couponSettled(snapshot, code);
+        const needsRemove = !code && (clearCoupon || (!requestedCoupon && !autoCoupon)) && snapshot.coupon;
+        if (needsApply || needsRemove) {
+          // The bulk cart endpoint sometimes ignores couponCode. Use Swiggy's
+          // dedicated apply/remove endpoint, then verify the resulting cart.
+          let applied = null;
+          try {
+            applied = await applySwiggyCartCoupon(account, { couponCode: code, addressId, lat, lng, timeoutMs: Math.min(2500, timeoutMs) });
+          } catch { applied = null; }
+          if (successCode(applied?.json?.statusCode) && applied?.json?.data) {
+            try { snapshot = acceptCart(applied); } catch { snapshot = await readCart(4000); }
+          } else {
+            snapshot = await readCart(4000);
+          }
+          if (code && !couponSettled(snapshot, code) && code === requestedCoupon) {
+            const mcp = await callSwiggyFoodMcpTool(account, 'apply_food_coupon', { couponCode: code, addressId }, 2000).catch(() => null);
+            if (mcp?.ok) snapshot = await readCart(4000);
+          }
+          if (needsApply && !couponSettled(snapshot, code)) {
+            snapshot.couponReason = String(applied?.json?.statusMessage || snapshot.couponReason || 'Swiggy ne is cart par ye coupon accept nahi kiya.').slice(0, 140);
+          }
+        }
+        unconfirmedCartWrite = false;
+        return snapshot;
       };
 
       // ── Step 0: ₹50-off / free-cash / night offers claim (bot ka same call) ─
@@ -797,28 +817,36 @@ export const proProvider = {
       // cash nahi aata tha. Ab full bill = pehla bill, aur usme claim ka jawab
       // PEHLE liya jata hai (bounded), taaki free cash/night cash usi bill me ho.
       // Claim fail ho to bill phir bhi aata hai — bas sach likha jata hai.
-      const claimEnabled = !(quickBill || fast || cart.skipOfferClaim === true);
-      const claimPromise = claimEnabled ? Promise.race([
-        activateAllEventOffers(account).catch(err => ({ success: false, reason: String(err?.message || err).slice(0, 120) })),
-        new Promise(resolve => { const t = setTimeout(() => resolve(null), 12_000); if (typeof t.unref === 'function') t.unref(); })
-      ]) : Promise.resolve(null);
+      const claimEnabled = !(quickBill || fast || cart.skipOfferClaim === true || options.skipOfferClaim === true);
+      // Bill ko sirf Night + Breakfast free cash chahiye. Fixed/event ladders
+      // yahan nahi chalate — woh Tools/Claim ka kaam hai. Isse bill fast hai.
+      const claimPromise = claimEnabled ? activateAllEventOffers(account, {
+        offerKeys: ['lateNight', 'breakfast'],
+        requestTimeoutMs: 1500,
+        maxRetries: 0,
+        deadlineAt: Date.now() + 6500,
+        parallelOffers: true,
+        currentWindowOnly: true
+      }).catch(err => ({ success: false, reason: String(err?.message || err).slice(0, 120) })) : Promise.resolve(null);
 
       // ── Step 1: plain cart + One Lite (delivery free) ─────────────────────
       let subscriptionItems = Array.isArray(cart.activeSubscriptionItems) ? cart.activeSubscriptionItems : [];
       // Claim ka jawab pehle — free cash/night cash tabhi bill me aata hai.
       const claimResult = claimEnabled ? await claimPromise : null;
+      const claimSummary = claimResult?.summary || {};
+      const activeClaims = Number(claimSummary.claimed || 0) + Number(claimSummary.alreadyActive || 0);
       const claimNote = (() => {
-        if (!claimEnabled) return 'Offer claim is baar nahi chala (fast bill).';
-        if (!claimResult) return 'Offer claim 12 second me jawab nahi de paya — bill bina extra free cash ka hai.';
-        if (claimResult.success === false) return `Offer claim fail: ${String(claimResult.reason || 'Swiggy ne reason nahi diya').slice(0, 120)}`;
-        const sum = claimResult.summary || {};
-        if (Number(sum.preLocked || 0) > 0 && Number(sum.claimed || 0) === 0) {
-          return 'Swiggy ke hisaab se ye ID ye offer pehle le chuki hai (PRE_LOCKED) — free cash dobara nahi milega.';
-        }
-        return Number(sum.claimed || 0) > 0
-          ? `${Number(sum.claimed)} offer claim hua (${Number(sum.alreadyActive || 0)} pehle se active).`
-          : 'Offers pehle se active hain — bill me wahi discount dikhega jo Swiggy deta hai.';
+        if (!claimEnabled) return '';
+        if (!claimResult) return 'Free Cash check pending.';
+        if (claimResult.success === false) return 'Free Cash claim nahi hua.';
+        if (activeClaims > 0) return `${activeClaims} Free Cash claim active.`;
+        if (Number(claimSummary.preLocked || 0) > 0) return 'Free Cash pre-booked.';
+        return 'Free Cash is bill par active nahi hua.';
       })();
+      const offerTracks = ['lateNight', 'breakfast'].map(key => {
+        const rec = claimResult?.offers?.[key];
+        return { key, label: key === 'lateNight' ? 'Night' : 'Breakfast', status: String(rec?.status || ''), verified: rec?.verified === true, alreadyActive: rec?.alreadyActive === true };
+      });
       let base = await push({ couponCode: requestedCoupon, subscriptionItems });
       const deliveryFee = Number(base.parsed?.deliveryFee || 0);
       if (!quickBill && !fast && cart.autoOneLite !== false && deliveryFee > 1 && Number(base.parsed?.swiggyOneMembershipFee || 0) === 0) {
@@ -875,11 +903,11 @@ export const proProvider = {
       if (base.parsed?.suggestedCouponCode) add(base.parsed.suggestedCouponCode, base.parsed.suggestedCouponCode, 'Swiggy ka best suggested', 3);
 
       const estCartVal = Math.round(Number(base.parsed?.itemTotal || 250));
-      const [mcpCoupons, mcpCart, offersPay, offersRest] = (quickBill || fast) ? [null, null, null, null] : await Promise.all([
-        callSwiggyFoodMcpTool(account, 'fetch_food_coupons', { restaurantId: String(cart.restaurantId), addressId }, 2500).catch(() => null),
-        callSwiggyFoodMcpTool(account, 'get_food_cart', { addressId }, 2000).catch(() => null),
-        dapiFetch(account, `offers/payment?lat=${lat}&lng=${lng}&restaurantId=${cart.restaurantId}&cart_value=${estCartVal}&restaurant_id=${cart.restaurantId}&sourcePage=cart&source_page=cart&page_type=PAYMENT_OFFERS_PAGE`, { lat, lng, timeoutMs: 2500 }).catch(() => null),
-        dapiFetch(account, `offers/restaurant?lat=${lat}&lng=${lng}&restaurantId=${cart.restaurantId}`, { lat, lng, timeoutMs: 2200 }).catch(() => null)
+      const [mcpCoupons, mcpCart, offersPay, offersRest] = (quickBill || fast || (!autoCoupon && !requestedCoupon)) ? [null, null, null, null] : await Promise.all([
+        callSwiggyFoodMcpTool(account, 'fetch_food_coupons', { restaurantId: String(cart.restaurantId), addressId }, 1800).catch(() => null),
+        callSwiggyFoodMcpTool(account, 'get_food_cart', { addressId }, 1600).catch(() => null),
+        dapiFetch(account, `offers/payment?lat=${lat}&lng=${lng}&restaurantId=${cart.restaurantId}&cart_value=${estCartVal}&restaurant_id=${cart.restaurantId}&sourcePage=cart&source_page=cart&page_type=PAYMENT_OFFERS_PAGE`, { lat, lng, timeoutMs: 1800 }).catch(() => null),
+        dapiFetch(account, `offers/restaurant?lat=${lat}&lng=${lng}&restaurantId=${cart.restaurantId}`, { lat, lng, timeoutMs: 1600 }).catch(() => null)
       ]);
       const ineligible = new Set();
       for (const cp of (Array.isArray(mcpCoupons?.structured?.coupons) ? mcpCoupons.structured.coupons : [])) {
@@ -896,7 +924,7 @@ export const proProvider = {
       }
       const mcpSuggested = mcpCart?.structured?.offers?.coupon_applied || mcpCart?.structured?.coupon_code || mcpCart?.structured?.data?.coupon_code || '';
       if (mcpSuggested) add(mcpSuggested, mcpSuggested, 'Swiggy auto-suggested', 3);
-      if (!quickBill) {
+      if (!quickBill && autoCoupon) {
         for (const code of ['SNACKIT', 'TRYNEW', 'STEALDEAL', 'SWIGGYIT', 'WELCOME50', 'FLAT150', 'MEALDEAL', 'DELULU4FOOD']) {
           add(code, code, 'Swiggy promo code', 35);
         }
@@ -906,12 +934,16 @@ export const proProvider = {
         engine.notes.push('Quick bill: extra offers and One Lite were not checked.');
       }
       engine.couponsSeen = found.size;
+      engine.couponOptions = [...found.values()].sort((a, b) => a.priority - b.priority).slice(0, 24).map(c => ({
+        code: c.code, title: c.title || c.code, description: c.description || '', applicable: c.applicable !== false,
+        reason: c.applicable === false ? 'Is cart par eligible nahi.' : '', source: 'swiggy'
+      }));
 
       // ── Step 3: har coupon ka asli bill — sabse kam total jeetta hai ──────
       let best = base;
       // User ne khud koi code chuna ho to wahi chalta hai — auto use nahi
       // badalta (user ka faisla upar hai). Auto mode me hi sabse kam bill dhoondte hain.
-      const candidates = (requestedCoupon || quickBill || fast ? [] : [...found.values()])
+      const candidates = (requestedCoupon || !autoCoupon || quickBill || fast ? [] : [...found.values()])
         .filter(c => c.applicable !== false || c.code === base.coupon)
         .filter(c => !ineligible.has(c.code) || c.code === base.coupon)
         .filter(c => c.code !== base.coupon)
@@ -922,7 +954,7 @@ export const proProvider = {
         if (Date.now() - startedAt > budget.trialBudgetMs) { engine.notes.push('coupon trial budget khatam'); break; }
         let attempt = null;
         try {
-          attempt = await push({ couponCode: cand.code, subscriptionItems, timeoutMs: 7000 });
+          attempt = await push({ couponCode: cand.code, subscriptionItems, timeoutMs: Math.max(1500, Math.min(5000, budget.trialBudgetMs - (Date.now() - startedAt))) });
         } catch (err) {
           engine.couponTrials.push({ code: cand.code, ok: false, reason: String(err?.message || err).slice(0, 100) });
           continue;
@@ -931,27 +963,25 @@ export const proProvider = {
         engine.couponTrials.push({
           code: cand.code, ok: applied,
           discount: applied ? Number(attempt.parsed.discountAmount) : 0,
-          total: attempt.total
+          total: attempt.total,
+          reason: applied ? '' : (attempt.couponReason || 'Swiggy ne discount nahi diya.')
         });
         if (attempt.total < best.total - 0.005) best = attempt;
       }
 
       // ── Step 4: claim ka sach + free cash bill me aaya ya nahi ───────────
-      const claimAnswer = await claimPromise.catch(() => null);
-      if (claimAnswer) {
-        engine.offersClaimed = Number(claimAnswer.claimed || 0);
-        engine.offersNote = claimAnswer.success === false
-          ? String(claimAnswer.reason || 'offer claim nahi hua').slice(0, 160)
-          : `${engine.offersClaimed} offer claim hua, ${Number(claimAnswer.already || 0)} pehle se active`;
-        // Free cash late credit hota hai — ek hi baar cart dobara push karke
-        // poochhte hain (bot bhi yahi karta hai).
-        if (!fast && Number(best.parsed?.freeCashApplied || 0) === 0 && (engine.offersClaimed > 0 || Number(claimAnswer.already || 0) > 0)) {
-          try {
-            const again = await push({ couponCode: best.coupon, subscriptionItems });
-            if (Number(again.parsed?.freeCashApplied || 0) > 0 && again.total <= best.total + 0.005) best = again;
-            else if (Number(again.parsed?.freeCashApplied || 0) > 0) best = again.total < best.total ? again : best;
-          } catch {}
-        }
+      engine.offersClaimed = Number(claimSummary.claimed || 0);
+      engine.offersNote = claimNote;
+      engine.offerTracks = offerTracks;
+      // Reward credit can arrive just after the claim read-back. Re-price once
+      // without flushing; available wallet balance is not an applied reward.
+      const rewardAlready = Number(best.parsed?.campaignFreeCash || 0) + Number(best.parsed?.swiggyMoneyApplied || 0);
+      if (!fast && !quickBill && rewardAlready <= 0 && activeClaims > 0) {
+        try {
+          const again = await push({ couponCode: best.coupon, subscriptionItems, timeoutMs: 5000 });
+          const rewardNow = Number(again.parsed?.campaignFreeCash || 0) + Number(again.parsed?.swiggyMoneyApplied || 0);
+          if (rewardNow > 0 && again.total <= best.total + 0.005) best = again;
+        } catch {}
       }
 
       // Trials may leave a different coupon/subscription in the real cart, or
@@ -959,7 +989,7 @@ export const proProvider = {
       // latest readback; if that fails, return no bill rather than an old one.
       if (unconfirmedCartWrite || lastReadback !== best) {
         const chosen = best;
-        best = await push({ couponCode: chosen.coupon, subscriptionItems });
+        best = await push({ couponCode: chosen.coupon, subscriptionItems, clearCoupon: !chosen.coupon });
         if (Math.abs(best.total - chosen.total) > 0.005 || best.coupon !== chosen.coupon) {
           engine.notes.push('Swiggy returned a different final bill; latest readback shown.');
         }
@@ -985,15 +1015,17 @@ export const proProvider = {
       // Campaign free cash do jagah se aata hai — kabhi trade discount ke andar
       // (trade_discount_total me juda hua), kabhi sirf reward field me. Ek hi
       // baar ginenge, warna bill dobara kam lagta hai.
-      const campaignInsideTrade = campaignCash > 0 && tradeTotal >= campaignCash - 0.005;
-      const freeCashShown = (campaignInsideTrade ? 0 : campaignCash) + walletReallyDeducted;
+      // Split the trade discount: campaign Free Cash gets its own visible line,
+      // merchant discount gets the remainder. Count the reward exactly once.
+      const merchantDiscount = Math.max(0, tradeTotal - Math.min(campaignCash, tradeTotal));
+      const freeCashShown = campaignCash + walletReallyDeducted;
       engine.freeCash = walletReallyDeducted;
-      engine.campaignFreeCash = campaignInsideTrade ? 0 : campaignCash;
+      engine.campaignFreeCash = campaignCash;
       engine.freeCashAvailable = Math.max(0, Number(parsed?.freeCashBalance || 0));
       engine.deliveryFee = Number(parsed?.deliveryFee || 0);
       engine.phase = phase;
       engine.addressReused = engineAddressReused;
-      engine.offerClaim = claimResult ? (claimResult.summary || {}) : null;
+      engine.offerClaim = claimResult ? (claimSummary || {}) : null;
       engine.offerNote = claimNote;
       return {
         address: confirmedAddress,
@@ -1015,6 +1047,7 @@ export const proProvider = {
           taxes: returnedNumber(parsed?.taxesAndCharges, meta.taxesAndCharges, meta.total_tax),
           discount: parsed?.couponCode ? returnedNumber(parsed.discountAmount, meta.coupon_discount_total, meta.coupon_discount_effective) : null,
           coupon: String(parsed?.couponCode || ''),
+          couponCode: String(parsed?.couponCode || ''),
           autoCoupon: Boolean(best.coupon) && !requestedCoupon,
           couponTried: engine.couponTrials.map(t => t.code).slice(0, 12),
           // Ek hi baar: campaign free cash (agar trade discount me nahi hai) +
@@ -1024,13 +1057,15 @@ export const proProvider = {
           freeCashAvailable: Math.max(0, Number(parsed?.freeCashBalance || 0)),
           // Poora trade discount (restaurant + campaign free cash) — ye Swiggy
           // ke order_total ke andar pehle se hai, isliye ek hi line me.
-          tradeDiscount: tradeTotal > 0 ? tradeTotal : null,
+          tradeDiscount: merchantDiscount > 0 ? merchantDiscount : null,
           oneMembershipFee: parsed?.swiggyOneMembershipFee ?? null,
           oneApplied: parsed?.swiggyOneApplied === true,
           totalSavings: parsed?.totalSavings ?? null,
           subscriptionItems,
           engine,
           offerNote: claimNote,
+          offerTracks,
+          couponReason: requestedCoupon && best.coupon !== requestedCoupon ? (best.couponReason || 'Swiggy ne ye coupon accept nahi kiya.') : '',
           total
         },
         // Sending OFO fields is not proof that Swiggy accepted OFO placement.
@@ -1118,7 +1153,7 @@ export const proProvider = {
           err.diag.freshBill = {
             itemTotal: parsed.itemTotal, deliveryFee: parsed.deliveryFee, deliverySaved: parsed.freeDeliveryDiscount,
             packingCharges: parsed.packingCharges, taxes: parsed.taxesAndCharges,
-            discount: parsed.discountAmount, coupon: String(parsed.couponCode || ''),
+            discount: parsed.discountAmount, coupon: String(parsed.couponCode || ''), couponCode: String(parsed.couponCode || ''),
             freeCash: parsed.swiggyMoneyApplied, tradeDiscount: parsed.tradeDiscountTotal,
             oneMembershipFee: parsed.swiggyOneMembershipFee, oneApplied: parsed.swiggyOneApplied === true,
             totalSavings: parsed.totalSavings, total: liveTotal

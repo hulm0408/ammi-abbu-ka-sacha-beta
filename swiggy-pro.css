@@ -1594,3 +1594,37 @@ body.is-loading { cursor: progress; }
   color: #146b41; font-size: 11px; font-weight: 700; line-height: 1.35;
 }
 .bill-offer-note .icon { width: 13px; height: 13px; flex: 0 0 auto; }
+
+/* Curved circular loader (Play Store download style) + coupon/bill polish. */
+.play-loader { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; flex: 0 0 auto; vertical-align: middle; }
+.play-loader svg { width: 100%; height: 100%; animation: play-loader-spin .9s linear infinite; transform-origin: 50% 50%; }
+.play-loader-track { fill: none; stroke: var(--line); stroke-width: 4; }
+.play-loader-arc { fill: none; stroke: var(--blue); stroke-width: 4; stroke-linecap: round; stroke-dasharray: 88 38; }
+.play-loader.small { width: 24px; height: 24px; }
+.play-loader.tiny { width: 14px; height: 14px; }
+.play-loader.tiny .play-loader-track, .play-loader.tiny .play-loader-arc { stroke-width: 5; }
+.play-loader.large { width: 56px; height: 56px; }
+@keyframes play-loader-spin { to { transform: rotate(360deg); } }
+.bill-loading-card { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 28px 18px; text-align: center; }
+.bill-loading-card strong { font-size: 15px; color: var(--text); }
+.bill-loading-retry { min-height: 40px; }
+.pay-left { display: flex; align-items: center; justify-content: flex-end; min-width: 56px; min-height: 32px; }
+.coupon-loading { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 24px 12px; color: var(--muted); font-size: 13px; }
+.coupon-empty { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 13px; padding: 8px 0; }
+.coupon-code { display: inline-block; max-width: 100%; padding: 4px 8px; border: 1px dashed var(--blue); border-radius: 8px; background: var(--blue-light); color: var(--blue); font-size: 12px; font-weight: 800; letter-spacing: .06em; overflow-wrap: anywhere; }
+.coupon-ribbon { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; text-align: center; }
+.coupon-ribbon b { font-size: 14px; line-height: 1.15; }
+.coupon-ribbon small { font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.coupon-inline-ribbon { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 6px 4px; }
+.coupon-inline-ribbon b { font-size: 12px; }
+.coupon-inline-ribbon small { font-size: 8px; font-weight: 800; }
+.coupon-tile.ineligible { opacity: .62; }
+.coupon-result { margin: 8px 0 0; font-size: 12px; font-weight: 600; }
+.coupon-result.ok { color: var(--green); }
+.coupon-result.no { color: var(--red); }
+.coupon-cta .play-loader { margin-right: 4px; }
+@media (prefers-reduced-motion: reduce) {
+  .play-loader svg { animation: none; }
+  .play-loader-arc { stroke-dasharray: 88 38; }
+}
+.ac-filter { min-height: 44px; }

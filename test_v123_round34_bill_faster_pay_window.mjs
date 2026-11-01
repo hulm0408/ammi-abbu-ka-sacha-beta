@@ -72,7 +72,7 @@ test('idle: PAID aur unknown bill ke baad bhi kabhi expire nahi', () => {
   }
 });
 
-// ── 2. Dash animation gayi, receipt loader aayi ───────────────────────────
+// ── 2. Dash/receipt animation gayi, curved circular loader aaya ───────────────────────────
 test('loader: patli dashed/sweeping loadbar puri tarah hat gayi', () => {
   assert.equal(/loadbar/.test(html), false, 'HTML me loadbar nahi');
   assert.equal(/loadbar-run/.test(css), false, 'CSS me loadbar keyframe nahi');
@@ -80,25 +80,23 @@ test('loader: patli dashed/sweeping loadbar puri tarah hat gayi', () => {
   assert.equal(/getElementById\('loadbar'\)/.test(appSource), false);
 });
 
-test('loader: bill ke liye creative receipt-print loader hai (spinner/dash nahi)', () => {
+test('loader: bill ke liye curved circular Play-Store-style loader hai', () => {
   assert.match(appSource, /function renderBillLoading\(/);
-  assert.match(appSource, /Bill ban raha hai/);
-  assert.match(appSource, /renderBill\(q\)\}\$\{renderBillLoading\(q, cart\)\}/);
-  // Receipt ki lines print hoti hain — koi ghoomta spinner nahi.
-  assert.match(css, /\.bill-loading \.bill-paper i/);
-  assert.match(css, /@keyframes bill-print/);
-  assert.equal(/\.bill-loading[^}]*\.spinner/.test(css), false);
-  // "bill ke bina bill card nahi" rule bacha rahe: loader alag class hai.
+  assert.match(appSource, /Bill calculate ho raha hai/);
+  assert.match(appSource, /playLoader\(/);
+  assert.match(css, /\.play-loader-arc/);
+  assert.match(css, /@keyframes play-loader-spin/);
+  assert.equal(/bill-paper/.test(appSource), false);
   assert.equal(/bill-loading[^`]*class="card bill-card/.test(appSource), false);
 });
 
-test('loader: reduced-motion me receipt lines chup ho jati hain', () => {
+test('loader: reduced-motion me circular loader ruk jata hai', () => {
   const blocks = css.match(/@media \(prefers-reduced-motion: reduce\)/g) || [];
   assert.ok(blocks.length > 0);
-  assert.match(css, /\.bill-loading \.bill-paper i \{ animation: none !important; \}/);
+  assert.match(css, /\.play-loader svg \{ animation: none; \}/);
 });
 
-// ── 3. Pay Now ke bagal: live clock + chhoti note ─────────────────────────
+// ── 3. Pay Now ke bagal koi dash/clock nahi ─────────────────────────
 const appBase = (over = {}) => ({
   ok: true, user: { name: 'T', isBoss: false },
   accounts: [{ key: 'mine', name: 'Mine', phone: '9123456789', active: true, isLoggedIn: true }],
@@ -127,31 +125,29 @@ async function mount(state) {
   return { window, waitFor };
 }
 
-test('cart: Pay Now ke bagal live clock + chhoti note dikhti hai', async () => {
+test('cart: Pay Now ke bagal sirf amount hai — dash/clock/note nahi', async () => {
   const { window, waitFor } = await mount(appBase());
   try {
     const bar = await waitFor(() => window.document.querySelector('.pay-bar'), 'pay bar');
-    const chip = bar.querySelector('.idle-chip');
-    assert.ok(chip, 'clock chip Pay bar me hai');
-    assert.match(chip.textContent.trim(), /^\d:\d{2}$/, 'm:ss format');
-    const left = bar.querySelector('.pay-left');
-    assert.ok(left.contains(chip), 'clock Pay Now ke bagal (pay-left) me');
-    assert.ok(bar.querySelector('.pay-now'), 'Pay Now bhi wahi bar me');
-    const note = window.document.querySelector('.idle-note');
-    assert.match(note.textContent, /2 minute tak koi activity nahi/i);
-    assert.equal(bar.querySelector('.idle-note'), null, 'pay bar ke andar lambi copy nahi (round 33)');
+    assert.equal(bar.querySelector('.idle-chip'), null);
+    assert.equal(window.document.querySelector('.idle-note'), null);
+    assert.match(bar.querySelector('.pay-left strong').textContent, /₹402/);
+    assert.equal(bar.textContent.includes('—'), false);
+    assert.ok(bar.querySelector('.pay-now'));
   } finally { window.close(); }
 });
 
-test('cart: bill ke bina bill-card nahi, receipt loader dikhta hai', async () => {
+test('cart: bill ke bina bill-card nahi, circular loader dikhta hai', async () => {
   const state = appBase();
   state.cart = cart({ quote: null });
   const { window, waitFor } = await mount(state);
   try {
-    const loader = await waitFor(() => window.document.querySelector('.bill-loading'), 'bill loader');
-    assert.match(loader.textContent, /Bill ban raha hai/);
+    const loader = await waitFor(() => window.document.querySelector('.bill-loading-card'), 'bill loader');
+    assert.match(loader.textContent, /Bill calculate ho raha hai/);
+    assert.ok(loader.querySelector('.play-loader'));
     assert.equal(window.document.querySelector('.bill-card'), null, 'koi andaaza bill nahi');
-    assert.match(window.document.querySelector('.idle-note').textContent, /2 minute/);
+    assert.ok(window.document.querySelector('.pay-left .play-loader'));
+    assert.equal(window.document.querySelector('.pay-bar').textContent.includes('—'), false);
     // Round 27 ka rule bacha hua: bill ke bina bhi Pay Now dabta hai — dabane
     // par pehle asli bill aata hai, phir payment (koi andaaza nahi).
     assert.match(window.document.querySelector('.pay-bar .pay-now').textContent, /Pay Now/);
@@ -165,8 +161,8 @@ test('fast bill: address confirm cache + cart update ke jawab se readback', () =
   assert.match(providerSource, /cart\.confirmedAddress/);
   assert.match(providerSource, /engine\.addressReused = engineAddressReused/);
   // Cart write ka jawab poora ho to alag GET nahi — ek Swiggy call kam.
-  assert.match(providerSource, /const pushUsable = Boolean\(/);
-  assert.match(providerSource, /if \(pushUsable\) \{/);
+  assert.match(providerSource, /const usable = Boolean\(/);
+  assert.match(providerSource, /let snapshot = usable \? acceptCart\(out\)/);
   // Fast phase me timeout chhota, par kam se kam 4 second (adhoora jawab nahi).
   assert.match(providerSource, /const pushTimeout = fast \? Math\.max\(4_000/);
 });

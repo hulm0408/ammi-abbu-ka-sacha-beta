@@ -292,7 +292,8 @@ const META_TTL_MS = 15 * 60 * 1000;
 export async function discoverOfferMeta({ force = false, fetchImpl = globalThis.fetch, timeoutMs = 6000 } = {}) {
   if (!force && _metaCache && Date.now() - _metaAt < META_TTL_MS) return _metaCache;
   const meta = {};
-  for (const offer of EVENT_OFFERS) {
+  // Read independent pages together, not five sequential network timeouts.
+  await Promise.all(EVENT_OFFERS.map(async offer => {
     let info = { prefix: offer.prefixHint || '', fixedCampaignId: '', boundaries: [], source: offer.prefixHint ? 'HINT' : 'NONE', error: '' };
     try {
       const res = await fetchImpl(offer.url, { signal: AbortSignal.timeout(timeoutMs) });
@@ -306,7 +307,7 @@ export async function discoverOfferMeta({ force = false, fetchImpl = globalThis.
       if (offer.prefixHint) info.prefix = info.prefix || offer.prefixHint;
     }
     meta[offer.key] = info;
-  }
+  }));
   _metaCache = meta;
   _metaAt = Date.now();
   return meta;
@@ -725,6 +726,7 @@ export async function ensureCampaignClaim(account, {
   fetchImpl = globalThis.fetch,
   force = false,
   maxRetries = 1,
+  timeoutMs = 5500,
   windowOpen = null
 } = {}) {
   if (!campaignId) {
@@ -754,8 +756,8 @@ export async function ensureCampaignClaim(account, {
   }
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 4000));
-    const before = await readCampaignState(campaignId, { headers: hdr, fetchImpl });
+    if (attempt > 0) await new Promise((r) => setTimeout(r, Math.min(4000, timeoutMs)));
+    const before = await readCampaignState(campaignId, { headers: hdr, fetchImpl, timeoutMs });
     if (before.httpStatus === 401) {
       return { campaignId, state: 'AUTH_FAILED', writes: 0, verified: false, httpStatus: 401, reason: 'session se mana (401) — re-login' };
     }
@@ -783,7 +785,7 @@ export async function ensureCampaignClaim(account, {
         method,
         headers: { ...hdr, ...(referer ? { Referer: referer } : {}) },
         body: JSON.stringify({ campaign: campaignId, value }),
-        signal: AbortSignal.timeout(6500)
+        signal: AbortSignal.timeout(timeoutMs)
       });
       writeJson = await writeRes.json().catch(() => ({}));
       if ([403, 429].includes(Number(writeRes.status))) {
@@ -805,7 +807,7 @@ export async function ensureCampaignClaim(account, {
       return { campaignId, state: 'WRITE_FAILED', writes: 0, verified: false, reason: String(err?.message || err).slice(0, 120) };
     }
 
-    let after = await readCampaignState(campaignId, { headers: hdr, fetchImpl });
+    let after = await readCampaignState(campaignId, { headers: hdr, fetchImpl, timeoutMs });
     let claimedAny = after.ok && after.shouldNotify === true;
     let ok = claimedAny && after.value === value;
 
@@ -821,10 +823,10 @@ export async function ensureCampaignClaim(account, {
           method: 'PATCH',
           headers: { ...hdr, ...(referer ? { Referer: referer } : {}) },
           body: JSON.stringify({ campaign: campaignId, value }),
-          signal: AbortSignal.timeout(6500)
+          signal: AbortSignal.timeout(timeoutMs)
         });
       } catch { /* read-back hi sach batayega */ }
-      after = await readCampaignState(campaignId, { headers: hdr, fetchImpl });
+      after = await readCampaignState(campaignId, { headers: hdr, fetchImpl, timeoutMs });
       claimedAny = after.ok && after.shouldNotify === true;
       ok = claimedAny && after.value === value;
     }
@@ -882,10 +884,15 @@ export async function activateAllEventOffers(account, {
   nowMs = Date.now(),
   meta = null,
   offerKeys = EVENT_OFFER_KEYS,
-  skipIfRunInFlight = false
+  skipIfRunInFlight = false,
+  requestTimeoutMs = 5500,
+  maxRetries = 1,
+  deadlineAt = Infinity,
+  parallelOffers = false,
+  currentWindowOnly = false
 } = {}) {
   const accSig = accountSignature(account);
-  const runKey = `${accSig}:v${offerValue}`;
+  const runKey = `${accSig}:v${offerValue}:${[...offerKeys].sort().join(',')}`;
   const inflight = accountRuns.get(runKey);
   if (inflight) {
     if (skipIfRunInFlight) return { ...(await inflight), sharedRun: true };
@@ -893,7 +900,8 @@ export async function activateAllEventOffers(account, {
   }
 
   const run = (async () => {
-    const resolvedMeta = meta || await discoverOfferMeta({ fetchImpl });
+    const remaining = () => Math.max(0, deadlineAt - Date.now());
+    const resolvedMeta = meta || (remaining() > 0 ? await discoverOfferMeta({ fetchImpl, timeoutMs: Math.min(2500, requestTimeoutMs, remaining()) }) : {});
     const auth = resolveEventOfferAuth(account);
     const headers = buildHeaders(auth);
     const offers = {};
@@ -902,10 +910,12 @@ export async function activateAllEventOffers(account, {
     let failed = 0;
     let preLocked = 0;
 
-    for (const offerKey of offerKeys) {
+    const processOffer = async offerKey => {
+      if (remaining() <= 0) return;
       const offer = getEventOffer(offerKey);
-      if (!offer) continue;
+      if (!offer) return;
       let { ids, source } = campaignIdsForOffer(offerKey, resolvedMeta, nowMs);
+      if (currentWindowOnly && offer.windowed) ids = ids.slice(0, 1);
       let ladderFailure = null;
 
       // Fixed offers (Extra ₹50 / Weekend): inke page par campaign id nahi hoti,
@@ -942,7 +952,7 @@ export async function activateAllEventOffers(account, {
             tried: ladder.tried,
             cachedTried: ladder.cachedTried || []
           };
-          continue;
+          return;
         }
 
         if (ladderState === 'RATE_LIMITED' || ladderState === 'AUTH_FAILED') {
@@ -966,7 +976,7 @@ export async function activateAllEventOffers(account, {
             results: ladder.results,
             tried: ladder.tried
           };
-          continue;
+          return;
         }
 
         if (ladderState === 'WRONG_REWARD' && ladder.campaignId) {
@@ -991,7 +1001,7 @@ export async function activateAllEventOffers(account, {
             results: ladder.results,
             tried: ladder.tried
           };
-          continue;
+          return;
         }
         ladderFailure = ladder;
         source = ladder.metaSource;
@@ -1016,10 +1026,11 @@ export async function activateAllEventOffers(account, {
           tried: ladderFailure?.tried || []
         };
         failed += 1;
-        continue;
+        return;
       }
       const results = [];
       for (const campaignId of ids) {
+        if (remaining() <= 0) break;
         const out = await ensureCampaignClaim(account, {
           campaignId,
           offerKey,
@@ -1029,10 +1040,13 @@ export async function activateAllEventOffers(account, {
           auth,
           fetchImpl,
           force,
+          maxRetries,
+          timeoutMs: Math.min(requestTimeoutMs, remaining()),
           windowOpen: isWindowOpenNow(campaignId, resolvedMeta?.[offerKey], nowMs)
         });
         results.push(out);
       }
+      if (!results.length) return;
       const primary = results[0];
       const anyClaimed = results.some((r) => r.state === 'CLAIMED' || r.verified);
       const allVerified = results.every((r) => r.verified);
@@ -1071,7 +1085,9 @@ export async function activateAllEventOffers(account, {
         message: primary?.reason || '',
         results
       };
-    }
+        };
+    if (parallelOffers) await Promise.all(offerKeys.map(processOffer));
+    else for (const offerKey of offerKeys) { if (remaining() <= 0) break; await processOffer(offerKey); }
 
     const total = Object.keys(offers).length;
     return {

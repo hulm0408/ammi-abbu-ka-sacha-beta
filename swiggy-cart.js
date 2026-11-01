@@ -951,6 +951,17 @@ export async function swiggyCartUpdate(accountOrCookies, cartPayload, { lat = ''
   return aRes || { status: 0, json: null };
 }
 
+/** Apply/remove through Swiggy's coupon endpoint without flushing the cart.
+ * The raw response lets the caller verify the exact items, address and bill.
+ */
+export async function applySwiggyCartCoupon(account, { couponCode = '', addressId, lat, lng, timeoutMs = 3000 } = {}) {
+  const code = String(couponCode || '').trim().toUpperCase();
+  return androidCheckoutCartCall(account, code ? 'client/applycoupon' : 'client/removecoupon', {
+    method: 'POST', lat, lng, timeoutMs,
+    body: code ? { coupon_code: code, couponCode: code, address_id: String(addressId), addressId: String(addressId) } : {}
+  });
+}
+
 export async function swiggyCartFlush(accountOrCookies, { lat = '26.8658609', lng = '80.9307755', timeoutMs = 8000 } = {}) {
   const aRes = await androidCheckoutCartCall(accountOrCookies, 'client/flush', { method: 'DELETE', lat, lng, timeoutMs }).catch(() => null);
   if (aRes?.json?.statusCode === 0) return aRes;
@@ -3745,10 +3756,14 @@ export function parseDapiCartPayload(data) {
   // IMPORTANT: When Swiggy returns `cm.coupon_code` WITH `is_coupon_valid === 0` / `coupon_discount_total === 0`,
   // that code is Swiggy's AUTO-SUGGESTED best coupon (NOT applied yet!) — expose it via `suggestedCouponCode` so our Max-Coupon engine applies it!
   const rawCartCoupon = cm.coupon_code ? String(cm.coupon_code).trim().toUpperCase() : null;
-  const isCouponValid = Boolean(cm.is_coupon_valid === 1 || Number(cm.coupon_discount_total) > 0);
+  const couponTotal = Math.max(0, Number(cm.coupon_discount_total) || 0);
+  const couponEffective = Math.max(0, Number(cm.coupon_discount_effective) || 0);
+  const validFlag = cm.is_coupon_valid === true || cm.is_coupon_valid === 1 || cm.is_coupon_valid === '1';
+  const isCouponValid = validFlag || couponTotal > 0 || couponEffective > 0;
   const couponCode = isCouponValid && rawCartCoupon ? rawCartCoupon : null;
   const suggestedCouponCode = !isCouponValid && rawCartCoupon ? rawCartCoupon : null;
-  const couponDiscount = isCouponValid ? Number(cm.coupon_discount_total ?? cm.coupon_discount_effective ?? 0) : 0;
+  // A zero total must not hide a positive effective discount (?? is not ||).
+  const couponDiscount = isCouponValid ? (couponEffective > 0 ? couponEffective : couponTotal) : 0;
 
   const tradeDiscountTotal = Number(cm.trade_discount_total ?? items.reduce((s, i) => s + (i.tradeDiscount || 0), 0));
   const renderPacking = parseRenderNum(renderByKey.get('restaurant_packaging_charges')?.value ?? renderByKey.get('packaging_charges')?.value);
