@@ -378,8 +378,17 @@ export function chargeServiceFee(db, order, userId, {
 } = {}) {
   const fee = feePaise === null ? serviceFeePaiseFor(db) : Math.round(Number(feePaise) || 0);
   if (!order) return { ok: false, code: 'NO_ORDER' };
-  if (Number(order.feeChargedPaise || 0) > 0) {
-    return { ok: true, code: 'ALREADY_CHARGED', feePaise: Number(order.feeChargedPaise), balancePaise: walletBalancePaise(db, userId) };
+  const netCharged = Math.max(0, Number(order.feeChargedPaise || 0) - Number(order.feeRefundedPaise || 0));
+  if (netCharged > 0) {
+    if (order.feeWalletUserId && String(order.feeWalletUserId) !== String(userId)) {
+      return { ok: false, code: 'FEE_OWNER_MISMATCH' };
+    }
+    return { ok: true, code: 'ALREADY_CHARGED', feePaise: netCharged, balancePaise: walletBalancePaise(db, userId) };
+  }
+  if (fee <= 0) {
+    order.feeWaived = true;
+    order.feeWaivedAt = nowIso(at);
+    return { ok: true, code: 'FREE_BY_CONFIG', feePaise: 0, balancePaise: walletBalancePaise(db, userId) };
   }
   const w = ensureWallet(db, userId, { at });
   if (!w) return { ok: false, code: 'NO_USER' };
@@ -387,11 +396,6 @@ export function chargeServiceFee(db, order, userId, {
     order.feeWaived = true;
     order.feeWaivedAt = nowIso(at);
     return { ok: true, code: 'WAIVED', feePaise: 0, balancePaise: Number(w.balancePaise || 0) };
-  }
-  if (fee <= 0) {
-    order.feeWaived = true;
-    order.feeWaivedAt = nowIso(at);
-    return { ok: true, code: 'FREE_BY_CONFIG', feePaise: 0, balancePaise: Number(w.balancePaise || 0) };
   }
   const res = debitWallet(db, userId, fee, {
     reason: `order #${order.id} service fee`,
@@ -407,6 +411,9 @@ export function chargeServiceFee(db, order, userId, {
   order.feeWalletUserId = String(userId);
   delete order.feeRefundedAt;
   delete order.feeRefundedPaise;
+  delete order.feeRefundReason;
+  delete order.feeWaived;
+  delete order.feeWaivedAt;
   return { ok: true, code: 'CHARGED', feePaise: fee, balancePaise: res.balancePaise };
 }
 
@@ -426,7 +433,11 @@ export function refundServiceFee(db, order, userId, {
   if (isOrderPlaced(order)) {
     return { ok: false, code: 'ORDER_PLACED_NO_REFUND', chargedPaise: charged };
   }
-  const res = creditWallet(db, userId, charged, {
+  if (order.feeWalletUserId && String(order.feeWalletUserId) !== String(userId)) {
+    return { ok: false, code: 'FEE_OWNER_MISMATCH' };
+  }
+  const remaining = charged - Number(order.feeRefundedPaise || 0);
+  const res = creditWallet(db, userId, remaining, {
     reason: `refund: ${String(reason).slice(0, 80)} (order #${order.id})`,
     actor,
     at,
@@ -434,10 +445,10 @@ export function refundServiceFee(db, order, userId, {
     meta: { orderId: String(order.id) }
   });
   if (!res.ok) return { ok: false, code: 'CREDIT_FAILED', reason: res.reason };
-  order.feeRefundedPaise = (Number(order.feeRefundedPaise || 0)) + charged;
+  order.feeRefundedPaise = (Number(order.feeRefundedPaise || 0)) + remaining;
   order.feeRefundedAt = nowIso(at);
   order.feeRefundReason = String(reason).slice(0, 120);
-  return { ok: true, code: 'REFUNDED', refundedPaise: charged, balancePaise: res.balancePaise };
+  return { ok: true, code: 'REFUNDED', refundedPaise: remaining, balancePaise: res.balancePaise };
 }
 
 // ── UTR / top-up requests ───────────────────────────────────────────────────
@@ -556,9 +567,23 @@ export function settleDeferredFee(db, order, userId, { at = Date.now(), actor = 
  * User ne UTR daala → request banao. Duplicate UTR (kisi bhi user ka) reject.
  * Provider configured ho to usi waqt verify; warna PENDING (boss approve karega).
  */
-export async function submitTopupRequest(db, {
+export async function submitTopupRequest(db, options = {}) {
+  const checked = validateUtr(options.utr);
+  let lookupResult = null;
+  if (checked.ok && options.autoVerify !== false) {
+    lookupResult = await fetchUtrPaymentDetails(checked.utr, {
+      fetchImpl: options.fetchImpl || globalThis.fetch, userId: options.userId
+    }).catch((err) => ({ configured: false, found: false, reason: String(err?.message || err), tried: [] }));
+  }
+  return submitTopupRequestWithLookup(db, { ...options, lookupResult });
+}
+
+// Apply a completed lookup synchronously. Production callers read a fresh DB
+// after the network lookup, then apply + save without yielding: another order
+// fee or UTR claim cannot overwrite an intervening wallet mutation.
+export function submitTopupRequestWithLookup(db, {
   userId, utr, amountPaise, name = '', username = '', note = '', at = Date.now(),
-  fetchImpl = globalThis.fetch, autoVerify = true, minPaise = null, autoMaxPaise = 0
+  autoVerify = true, minPaise = null, autoMaxPaise = 0, lookupResult = null
 } = {}) {
   const checked = validateUtr(utr);
   if (!checked.ok) return { ok: false, code: 'INVALID_UTR', reason: checked.reason };
@@ -623,8 +648,7 @@ export async function submitTopupRequest(db, {
     // Round 23 (boss): "UTR SE PAYMENT DETAILS ... THAT WILL BE FETCHED AND
     // ADDED". Provider se poori payment detail fetch hoti hai (amount, payee,
     // status) — credit usi asli amount par, claim par nahi.
-    const lookup = await fetchUtrPaymentDetails(checked.utr, { fetchImpl, userId })
-      .catch((err) => ({ configured: false, found: false, reason: String(err?.message || err), tried: [] }));
+    const lookup = lookupResult || { configured: false, found: false, reason: 'Payment details unavailable', tried: [] };
     req.providerConfigured = lookup.configured === true;
     req.lookup = {
       configured: lookup.configured === true,
@@ -649,6 +673,7 @@ export async function submitTopupRequest(db, {
       payment,
       usedUtrs: {}, // duplicate pehle hi upar check ho chuka (+ ledger mark ho chuki hai)
       autoMaxPaise: Math.max(0, Math.round(Number(autoMaxPaise) || 0)),
+      allowedPayeeVpas: [walletUpiId(db)],
       at
     });
     req.paymentEvidence = payment ? { source: payment.source || '', amountPaise: Number(payment.amountPaise) || 0, payee: payment.payeeName || payment.payeeVpa || '', ref: payment.ref || '' } : null;
@@ -657,7 +682,7 @@ export async function submitTopupRequest(db, {
     // kaun bheja, status, kya kya chahiye).
     const truth = describeUtrPayment({
       utr: checked.utr, payment, lookup, intent: { amountPaise: amount, createdAt: Date.parse(req.at || '') || at },
-      claimedPaise: amount, now: at, autoMaxPaise
+      claimedPaise: amount, now: at, autoMaxPaise, allowedPayeeVpas: [walletUpiId(db)]
     });
     req.utrTruth = {
       amountPaise: truth.amountPaise, amountLine: truth.amountLine,
@@ -722,6 +747,13 @@ export function approveTopupRequest(db, requestId, { actor = 'boss', approvedPai
     return { ok: false, code: 'ALREADY_APPROVED', request: req };
   }
   if (req.status === TOPUP_STATUS.REJECTED) return { ok: false, code: 'REJECTED_EARLIER', request: req };
+  const used = findUsedUtr(db, req.utr);
+  const otherSettled = Object.values(cfg(db).topupRequests).some((other) =>
+    other?.id !== req.id && normalizeUtr(other?.utr) === normalizeUtr(req.utr) &&
+    [TOPUP_STATUS.APPROVED, TOPUP_STATUS.AUTO_VERIFIED].includes(other?.status)
+  );
+  if (otherSettled || String(used?.status || '').toUpperCase() === 'CREDITED') return { ok: false, code: 'UTR_ALREADY_CREDITED', request: req };
+  if (used?.userId && String(used.userId) !== String(req.userId)) return { ok: false, code: 'UTR_OWNER_MISMATCH', request: req };
   const amount = Math.round(Number(approvedPaise ?? req.claimedPaise) || 0);
   if (!(amount > 0)) return { ok: false, code: 'BAD_AMOUNT' };
   const credit = creditWallet(db, req.userId, amount, {
@@ -736,6 +768,8 @@ export function approveTopupRequest(db, requestId, { actor = 'boss', approvedPai
   req.reviewedAt = nowIso(at);
   req.reviewedBy = String(actor || 'boss');
   req.reason = String(note || 'boss approved').slice(0, 140);
+  const ledger = used || markUtrUsed(db, req.utr, { userId: req.userId, amountPaise: amount, status: 'CREDITED', source: 'approval', at });
+  if (ledger) { ledger.status = 'CREDITED'; ledger.amountPaise = amount; ledger.topupId = req.id; }
   return { ok: true, code: 'APPROVED', request: req, balancePaise: credit.balancePaise };
 }
 

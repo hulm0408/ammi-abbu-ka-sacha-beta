@@ -52,7 +52,7 @@ const { getDb, saveDb } = await import('./store.js');
 const { buildMoneySnapshot, needsMoneyRestore, mergeMoneySnapshot, snapshotHasData } = await import('./money-snapshot.js');
 const { backupMoneyNow, restoreMoneyOnBoot, durabilityStatus, _resetDurabilityState } = await import('./db-durability.js');
 const { handleSwiggyProHttp } = await import('./swiggy-pro-api.js');
-const { walletBalancePaise } = await import('./user-wallet.js');
+const { walletBalancePaise, creditWallet, debitWallet } = await import('./user-wallet.js');
 
 const db = getDb();
 db.config.accounts = {}; db.config.bossIds = ['9000'];
@@ -70,15 +70,23 @@ test('snapshot: paisa + UTR ka sach banta hai, khaali nahi', () => {
   assert.equal(needsMoneyRestore({ config: {} }, snap), true);
 });
 
-test('merge: paisa KABHI kam nahi hota (local zyada ho to local jeetta hai)', () => {
-  const snap = { sections: { wallets: { '7001': { balancePaise: 500 } }, usedUtrs: {} }, config: {} };
-  const fresh = { config: { wallets: { '7001': { userId: '7001', balancePaise: 2000 } } } };
-  const out = mergeMoneySnapshot(fresh, snap);
-  assert.equal(fresh.config.wallets['7001'].balancePaise, 2000);
-  assert.equal(out.changed, false);
-  const low = { config: { wallets: { '7001': { balancePaise: 100 } } } };
-  mergeMoneySnapshot(low, snap);
-  assert.equal(low.config.wallets['7001'].balancePaise, 500, 'snapshot zyada tha to snapshot aaya');
+test('merge: ledger order wins, not a larger balance; ambiguous histories block', () => {
+  const db = { config: {} };
+  creditWallet(db, '7001', 1500, { at: 1_700_000_000_000 });
+  const older = buildMoneySnapshot(db);
+  const oldCopy = structuredClone(db);
+  debitWallet(db, '7001', 1500, { at: 1_700_000_001_000 });
+  const newer = buildMoneySnapshot(db);
+  const keep = mergeMoneySnapshot(db, older);
+  assert.equal(keep.conflicts.length, 0);
+  assert.equal(walletBalancePaise(db, '7001'), 0, 'old higher balance does not resurrect spent money');
+  const restore = mergeMoneySnapshot(oldCopy, newer);
+  assert.equal(restore.conflicts.length, 0);
+  assert.equal(walletBalancePaise(oldCopy, '7001'), 0, 'newer debit is restored');
+  const ambiguous = { config: { wallets: { '7001': { balancePaise: 100 } } } };
+  const result = mergeMoneySnapshot(ambiguous, { sections: { wallets: { '7001': { balancePaise: 500 } } } });
+  assert.equal(ambiguous.config.wallets['7001'].balancePaise, 100);
+  assert.equal(result.conflicts.length, 1);
 });
 
 test('merge: UTR ledger union — deploy ke baad wahi UTR dobara nahi chalta', () => {

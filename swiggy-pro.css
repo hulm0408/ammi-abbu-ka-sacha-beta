@@ -432,21 +432,13 @@ body.dark .pay-steps li:before { background: #5b4524; color: #ffd996; }
 .bill-card .title-sub { display: block; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0; text-transform: none; }
 .coupon-open-link { font-size: 12px; font-weight: 700; color: #0f8a4a; margin-left: auto; }
 
-/* Round 11: wallet ₹15 gate + UPI top-up + neat bill text */
+/* Plain bill text */
 .bill-plain {
   margin: 10px 0 0; padding: 12px 14px; border-radius: 12px; background: #f4f8fb;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.65;
   white-space: pre-wrap; word-break: break-word; color: #22384a;
 }
 body.dark .bill-plain { background: #1b2b36; color: #dbe8f0; }
-.wallet-card .wallet-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
-.wallet-card .wallet-actions .button { flex: 1 1 30%; justify-content: center; }
-.wallet-card .wallet-claim { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
-.wallet-card .field-row { display: flex; gap: 10px; }
-.wallet-card .field-row label { flex: 1; }
-.wallet-card .wallet-topup { margin: 10px 0 4px; text-align: center; }
-.wallet-card .wallet-topup .payment-qr { margin: 8px auto; }
-.wallet-card .wallet-usi { margin-top: 8px; }
 
 /* ══════════════════════════════════════════════════════════════════════════
    Round 27 (boss 31-10-2026): "ANIMATION AND FONT AND STRATEGY ... LOOKS
@@ -1050,3 +1042,6 @@ main { padding-top: 18px; }
 .share-card .share-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .share-card .share-actions .button { flex: 1 1 140px; }
 .share-note { color: #0f8a4a; font-weight: 700; }
+
+/* Keep the Mini App still; loading states remain visible without animation. */
+*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

@@ -36,8 +36,9 @@ function text(value) {
 function money(value) {
   if (value === null || value === undefined || value === '') return null;
   if (typeof value === 'string') {
-    const cleaned = value.replace(/[^0-9.]/g, '');
-    if (!cleaned) return null;
+    // A debit/negative value must never become a positive credit after cleanup.
+    const cleaned = value.trim().replace(/[₹,\s]/g, '');
+    if (!/^\d+(?:\.\d{1,2})?$/.test(cleaned)) return null;
     const n = Number(cleaned);
     return Number.isFinite(n) ? n : null;
   }
@@ -74,7 +75,9 @@ export function parseUtrLookup(json, { expectUtr = '', source = 'lookup' } = {})
   let best = null;
   for (const node of candidates(json)) {
     const utr = text(node.utr || node.UTR || node.rrn || node.refNo || node.reference || node.bankRRN || node.txnId || node.transactionId).toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (expect && utr && utr !== expect) continue;
+    // A lookup must return the requested reference; do not attach a generic
+    // amount/status response to a UTR merely because we asked about it.
+    if (expect && (!utr || utr !== expect)) continue;
     const rawAmount = node.amountPaise ?? node.amount_paise ?? node.amountInPaise ?? node.amount
       ?? node.amountRupees ?? node.transferredAmount ?? node.txnAmount ?? node.paidAmount;
     const amountNumber = money(rawAmount);
@@ -82,17 +85,17 @@ export function parseUtrLookup(json, { expectUtr = '', source = 'lookup' } = {})
     let amountPaise = null;
     if (amountNumber !== null && amountNumber > 0) {
       // "1500" with amountPaise = ₹15; "15" with amount/amountRupees = ₹15.
-      const rupees = paidInPaise ? amountNumber / 100 : amountNumber;
-      amountPaise = Math.round(rupees * 100);
+      const paise = paidInPaise ? amountNumber : amountNumber * 100;
+      if (Number.isSafeInteger(Math.round(paise)) && Math.abs(paise - Math.round(paise)) < 1e-7) amountPaise = Math.round(paise);
     }
     const statusRaw = text(node.paymentStatus || node.txnStatus || node.transactionStatus || node.status || node.state);
-    const verifiedFlag = node.verified ?? node.success ?? node.isSuccess ?? node.paid;
+    const paymentFlag = node.success ?? node.isSuccess ?? node.paid;
     let status = '';
-    if (typeof verifiedFlag === 'boolean') status = verifiedFlag ? 'SUCCESS' : 'FAILED';
+    if (FAILED_RE.test(statusRaw.trim())) status = statusRaw.trim().toUpperCase();
     else if (SUCCESS_RE.test(statusRaw.trim())) status = 'SUCCESS';
-    else if (FAILED_RE.test(statusRaw.trim())) status = statusRaw.trim().toUpperCase();
-    else if (SUCCESS_RE.test(statusRaw.trim())) status = 'SUCCESS';
-    if (!status && amountPaise && (utr === expect || !expect)) status = 'SUCCESS';
+    else if (!statusRaw.trim() && typeof paymentFlag === 'boolean') status = paymentFlag ? 'SUCCESS' : 'FAILED';
+    // Amount alone is not proof that the transaction succeeded. A provider
+    // without a clear status must stay pending for admin review.
     const payeeName = text(node.payeeName || node.payee_name || node.payee || node.beneficiary || node.beneficiaryName || node.receiverName || node.creditedTo || node.to);
     const payeeVpa = text(node.payeeVpa || node.payee_vpa || node.vpa || node.toVpa || node.creditedVpa || node.beneficiaryVpa);
     const payerName = text(node.payerName || node.payer || node.remitterName || node.senderName || node.from);

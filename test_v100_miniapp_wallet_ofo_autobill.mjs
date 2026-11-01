@@ -271,7 +271,8 @@ test('wallet: balance kam par order nahi jaata — asli wajah + kitna add karna 
   assert.equal(out.status, 409);
   assert.equal(out.body.code, 'WALLET_LOW_BALANCE');
   assert.match(out.body.error, /₹15/);
-  assert.equal(out.body.wallet.shortfall, '15');
+  assert.match(out.body.error, /bot.*wallet/i, 'top-up is directed to the bot');
+  assert.equal(out.body.wallet, undefined, 'no Mini App wallet card');
   assert.equal(called, 0, 'provider tak baat nahi gayi');
 });
 test('wallet: balance poora par fee katti hai; order place na ho to refund', async () => {
@@ -356,21 +357,15 @@ test('DOM: bill summary bilkul Swiggy jaisi lines me + organized plain text', as
     ]) assert.ok(text.includes(line), `missing: ${line}`);
   } finally { app.close(); }
 });
-test('DOM: wallet kam balance par saaf bolta hai + paisa bhej diya ka form + UPI mius@ybl', async () => {
+test('DOM: wallet and recharge controls live in the bot, not the Mini App', async () => {
   const app = harness(() => response(appState()));
   try {
     await waitFor(() => app.document.querySelector('[data-tab="cart"]:not([disabled])'), 'nav');
     app.document.querySelector('[data-tab="cart"]').click();
-    await waitFor(() => app.document.querySelector('.wallet-card'), 'wallet card');
-    const card = app.document.querySelector('.wallet-card');
-    assert.match(card.textContent, /Low balance/);
-    assert.match(card.textContent, /₹15 add karein/);
-    assert.ok(card.querySelector('form[data-form="wallet-claim"]'), 'paisa bhej diya form');
-    // Round 23 (boss): "SEND HOW MUCH MONEY YOU WANT" — amount box + UTR dono.
-    assert.ok(card.querySelector('input[name="amount"]'), 'amount input');
-    assert.ok(card.querySelector('input[name="utr"]'), 'UTR input');
-    assert.match(card.textContent, /Kitna paisa bhejna hai/i);
-    assert.match(card.textContent, /mius@ybl/);
+    await waitFor(() => app.document.querySelector('.bill-plain'), 'bill text');
+    assert.equal(app.document.querySelector('.wallet-card'), null);
+    assert.equal(app.document.querySelector('form[data-form="wallet-claim"]'), null);
+    assert.equal(app.document.querySelector('[data-action="wallet-topup"]'), null);
   } finally { app.close(); }
 });
 test('DOM: cart khulte hi bill automatic aata hai (Pay dabane ka intezaar nahi)', async () => {

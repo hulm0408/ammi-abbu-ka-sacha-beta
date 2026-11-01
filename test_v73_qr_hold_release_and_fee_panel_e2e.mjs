@@ -17,7 +17,7 @@
  *   4. Fee settle → wahi held QR release hota hai (dobara Swiggy call nahi).
  *   5. Boss "Wallet & Fee" panel: fee change (db), summary, per-user hisaab,
  *      user ko message.
- *   6. Customer ke paas wallet/fee ka button nahi — sirf "Admin se baat".
+ *   6. Customer ke paas Wallet aur Admin buttons hain.
  */
 import fs from 'node:fs';
 
@@ -133,7 +133,7 @@ check('user card: refund dikhta hai', u2.refundedPaise === 1500 && u2.netPaise =
 check('user card: awaiting 1', u2.awaiting === 1, String(u2.awaiting));
 
 console.log('\n7) Wiring — silent QR, hold/release, admin option, boss panel');
-check('QR pehle generate hota hai (gate baad me)', indexSrc.indexOf('executeRealQrGenerationForOrder({') < indexSrc.indexOf("code: 'SERVICE_FEE_DUE'"));
+check('wallet gate runs in chat worker before placement', /reserveChatOrderFee/.test(fs.readFileSync('./forwarded-order-flow.js', 'utf8')) && /assertChatOrderFeeStillReserved/.test(fs.readFileSync('./swiggy-cart.js', 'utf8')));
 check('QR fail par QR_GENERATION_FAILED', /QR_GENERATION_FAILED/.test(indexSrc));
 check('QR fail card bhejta hai', /sendQrGenerationFailedCard/.test(indexSrc));
 check('cardStage QR_RETRY', /QR_RETRY/.test(indexSrc));
@@ -149,7 +149,7 @@ check('boss user ko message', /boss_wallet_msg_/.test(indexSrc) && /waiting_boss
 check('boss fee history', /boss_wallet_feehistory_/.test(indexSrc));
 check('simple chat VERIFY stage', /QR_HELD/.test(chatSrc) && /AWAITING_FEE/.test(chatSrc));
 check('simple chat retry stage', /QR_RETRY/.test(chatSrc));
-check('simple chat me wallet button nahi', !/wallet_home/.test(chatSrc));
+check('simple chat me wallet button hai', /wallet_home/.test(chatSrc));
 check('simple chat me admin button', /support_contact_admin/.test(chatSrc));
 check('boss panel me fee button', /boss_fee_panel/.test(bossPanelSrc));
 check('user-wallet me hold/release', /export function holdOrderQr/.test(fs.readFileSync('./user-wallet.js', 'utf8')) && /export function releaseOrderQr/.test(fs.readFileSync('./user-wallet.js', 'utf8')));

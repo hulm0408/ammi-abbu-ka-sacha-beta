@@ -15,6 +15,9 @@ process.env.ACCOUNTS_JSON_FILE = path.join(tmp, 'accounts.json');
 process.env.BOT_TOKEN = '123456:offline-test-bot-token';
 process.env.PRO_VAULT_KEY = 'offline-random-test-key-only';
 delete process.env.PRO_ENABLE_CHECKOUT;
+// This suite injects a fake provider; it tests both checkout availability and
+// preflight behavior even when the parent shell blocks real placement.
+delete process.env.SWIGGY_BLOCK_LIVE_ORDER_PLACE;
 process.env.BOSS_ID = '7000';
 process.env.DB_ASYNC_WRITE = '0';
 

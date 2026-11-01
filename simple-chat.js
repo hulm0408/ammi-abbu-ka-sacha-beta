@@ -157,10 +157,8 @@ export function buildSimpleHomeScreen(draft = {}) {
   if (!hasAddress) missing.push('📍 Address link');
 
   const hint = addressUnresolved
-    ? 'Address link khul nahi paya — ↻ Retry karein, ya seedha address type kar dein.'
-    : (missing.length
-        ? `Ab ${missing.join(' + ')} bhejein — bas paste karna hai, kuch type nahi karna.`
-        : 'Dono links mil gaye — bill check shuru…');
+    ? 'Address link khul nahi paya — retry karein.'
+    : (missing.length ? `${missing.join(' + ')} bhejein.` : 'Bill dekhein.');
 
   const text =
     '🍽 <b>Swiggy order</b>\n\n' +
@@ -174,11 +172,7 @@ export function buildSimpleHomeScreen(draft = {}) {
     // ⚠️ Boss (29-10-2026): "JSON user ke phone me login nahi ho raha". Sach: JSON
     // server ka session hai — koi button kisi phone me login nahi kar sakta.
     // Isliye yahan jhootha dawa nahi; bill ka raasta saaf.
-    const loginText =
-      '✅ <b>Cart + Address mil gaya</b>\n\n' +
-      `🛒 ${cartValue}\n` +
-      `📍 ${addressValue}\n\n` +
-      '<i>Neeche button dabaiye — bill + QR turant aayega.</i>';
+    const loginText = `🛒 ${cartValue}\n📍 ${addressValue}`;
     return {
       text: loginText,
       // Boss (30-10-2026): "unable to inject — remove it". JSON kisi phone me
@@ -186,7 +180,8 @@ export function buildSimpleHomeScreen(draft = {}) {
       keyboard: {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '✅ Aage badhein — bill dekhein', callback_data: SIMPLE_CHAT_CALLBACKS.loginReady, style: 'success' }]
+            [{ text: '✅ Bill dekhein', callback_data: SIMPLE_CHAT_CALLBACKS.loginReady, style: 'success' }],
+            [{ text: '👛 Wallet', callback_data: 'wallet_home', style: 'primary' }]
           ]
         }
       }
@@ -194,8 +189,9 @@ export function buildSimpleHomeScreen(draft = {}) {
   }
 
   const rows = [
-    [{ text: '📋 Cart + Address link paste karein', callback_data: SIMPLE_CHAT_CALLBACKS.pasteLinks, style: 'success' }],
-    [{ text: '👤 Order for Someone Else', callback_data: SIMPLE_CHAT_CALLBACKS.orderForOthers, style: 'primary' }]
+    [{ text: '📋 Cart + Address', callback_data: SIMPLE_CHAT_CALLBACKS.pasteLinks, style: 'success' }],
+    [{ text: '👤 Someone else', callback_data: SIMPLE_CHAT_CALLBACKS.orderForOthers, style: 'primary' },
+     { text: '👛 Wallet', callback_data: 'wallet_home', style: 'primary' }]
   ];
   if (addressUnresolved) {
     // Fix it right here — the customer should never have to press Continue only
@@ -317,11 +313,19 @@ export function buildSimpleOrderCard(order) {
   // 🔐 QR READY / VERIFICATION / RETRY — QR pehle banta hai, phir chhoti refundable
   // verification, phir QR release. Fail hone par sirf "try again".
   const heldStage = String(order?.cardStage || '').toUpperCase();
+  if (heldStage === 'AWAITING_WALLET') {
+    rows.push([{ text: '👛 Wallet', callback_data: 'wallet_home', style: 'success' }]);
+    rows.push([{ text: '🔄 Retry order', callback_data: `user_retry_qr_${order.id}` }]);
+    return { text: 'Wallet balance kam hai. Add money, phir retry karein.', keyboard: { reply_markup: { inline_keyboard: rows } } };
+  }
+  if (heldStage === 'PLACEMENT_UNKNOWN') {
+    return { text: 'Order Swiggy par ho sakta hai. My Orders check karein; dobara order na karein.', keyboard: { reply_markup: { inline_keyboard: [[{ text: '🆘 Admin', callback_data: 'support_contact_admin' }]] } } };
+  }
   if (heldStage === 'QR_RETRY') {
     const text =
       '⚠️ <b>QR ban nahi paya</b>\n\n' +
       `▤ <b>${rest}</b>\n\n` +
-      '<i>Swiggy ki taraf se payment QR nahi aaya. Koi paisa nahi kata. Dobara try karein.</i>';
+      '<i>Payment QR nahi aaya. Dobara try karein.</i>';
     rows.push([{ text: '🔄 Dobara try karein', callback_data: `user_retry_qr_${order.id}`, style: 'success' }]);
     rows.push([
       { text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' },
@@ -352,9 +356,9 @@ export function buildSimpleOrderCard(order) {
       `▤ <b>${rest}</b>\n` +
       (amount > 0 ? `₹ <b>To Pay:</b> ₹${rupees(amount)}\n` : '') +
       (phoneMode
-        ? `\n<i>Swiggy app me login karke Cart kholo — ₹50 cash + offers usi ID par lage hain. Order place karte hi tracking yahin aa jayega.</i>` +
+        ? `\n<i>Swiggy app me cart check karein.</i>` +
           (dlTruthPay ? `\n${dlTruthPay.icon} <i>${esc(dlTruthPay.label)}</i>` : '')
-        : '\n<i>QR upar bheja gaya hai — scan karke pay karein. Payment ke baad tracking link yahin milega.</i>');
+        : '\n<i>Swiggy QR se pay karein; payment status check karein.</i>');
     if (paymentUrl && !generic) {
       rows.push([{ text: '💳 Pay on Swiggy', url: paymentUrl, style: 'success' }]);
     }
@@ -381,9 +385,8 @@ export function buildSimpleOrderCard(order) {
       addr ? `📍 ${esc(addr)}` : '',
       '',
       amount > 0 ? `₹ <b>To Pay: ₹${rupees(amount)}</b>${savings > 0 ? `  <i>(saved ₹${rupees(savings)})</i>` : ''}` : '₹ <b>Best price lag raha hai…</b>',
-      // Boss (30-10-2026): yahan koi login/OTP/status option nahi — bill bas bill.
       '',
-      '<i>“QR banao” dabate hi payment QR yahin aayega — uske baad tracking link.</i>'
+      '<i>Order fee (agar lage) wallet se kategi; Swiggy bill alag hai.</i>'
     ].filter((line) => line !== null && line !== undefined);
     // ✅ Boss (30-10-2026): bill ke baad SIRF ek option — QR banao.
     // (Login pehle hi ho chuka hai, isliye yahan koi login/OTP/extra button nahi.)

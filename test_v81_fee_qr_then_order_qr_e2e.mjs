@@ -1,16 +1,7 @@
 // test_v81_fee_qr_then_order_qr_e2e.mjs
-// Boss (30-10-2026), naya plan:
-//   "when user click qr after seeing bill and the qr generate fail then user will
-//    see something went wrong try again from beginning; if qr generate success the
-//    user wont receive the qr but after they pay the fee amount on given qr and utr
-//    will auto verify and then show them qr"
-//   + "i think you are unable to inject the so remove it"
-//
-// Yahan asli Telegram handler chalaye jate hain:
-//   1) QR fail → "KUCH GALAT HO GAYA" + "shuru se dobara try" (koi fee nahi).
-//   2) QR success → customer ko SIRF fee ka QR (₹15) jata hai, order QR NAHI.
-//   3) Fee verify (webhook / "pay kar diya" / auto) → tab ORDER QR jata hai.
-//   4) Phone-injection (JSON ko phone me daalne ka dawa) hata diya gaya hai.
+// Offline Telegram handlers: new orders require wallet funds before placement;
+// preflight failure refunds, while pre-existing held QR data stays recoverable.
+// Phone-injection claims remain absent. No real Swiggy order is sent.
 
 process.env.TEST_MODE = '1';
 process.env.BOT_TOKEN = '123456:TEST-TOKEN-FOR-OFFLINE-E2E';
@@ -83,6 +74,7 @@ console.log('\n=== 1. QR generate FAIL → "kuch galat ho gaya, shuru se dobara"
     d.config.bossIds = [BOSS];
     d.config.bossUpiId = 'ammi.family@okaxis';
     d.config.accounts = {};
+    w.creditWallet(d, U, 1500, { reason: 'offline test' });
     d.orders = { V81FAIL: mkOrder('V81FAIL') }; // Swiggy ka koi payment data nahi
     d.drafts = {};
   });
@@ -95,7 +87,7 @@ console.log('\n=== 1. QR generate FAIL → "kuch galat ho gaya, shuru se dobara"
   check('restart button mila', /simple_restart_order_V81FAIL/.test(JSON.stringify(calls.map((c) => c.payload))));
   check('koi QR photo customer ko nahi gayi', photosOf(calls).every((c) => String(c.payload.chat_id) !== String(U)));
   check('order QR_RETRY me hai', order.cardStage === 'QR_RETRY', String(order.cardStage));
-  check('koi fee nahi kati', !order.feeChargedPaise && !order.feeDuePaise);
+  check('preflight fail par fee wapas', Number(order.feeChargedPaise || 0) === Number(order.feeRefundedPaise || 0) && w.walletBalancePaise(getDb(), U) === 1500);
 }
 
 console.log('\n=== 2. Restart button = shuru se (draft saaf, cancel, fresh card) ===');
@@ -108,30 +100,32 @@ console.log('\n=== 2. Restart button = shuru se (draft saaf, cancel, fresh card)
   check('draft saaf hua', !(getDb().drafts?.[String(U)]?.cart), JSON.stringify(getDb().drafts?.[String(U)] || {}).slice(0, 80));
 }
 
-console.log('\n=== 3. QR success → customer ko SIRF fee ka QR, order QR NAHI ===');
+console.log('\n=== 3. Low balance blocks new QR before placement ===');
 {
   mutateDb((d) => {
     d.config.bossIds = [BOSS];
     d.config.bossUpiId = 'ammi.family@okaxis';
-    d.orders = {
-      V81OK: mkOrder('V81OK', { pendingSwiggyUpiUri: 'upi://pay?pa=upiswiggy@icici&pn=SWIGGY&am=249&cu=INR&tr=V81TXN' })
-    };
+    w.debitWallet(d, U, w.walletBalancePaise(d, U), { reason: 'offline low-balance test' });
+    d.orders = { V81OK: mkOrder('V81OK') };
     d.drafts = {};
   });
   const calls = await tap('simple_confirm_order_V81OK');
   const text = textOf(calls);
   const order = getDb().orders.V81OK;
-  const photos = photosOf(calls).filter((c) => String(c.payload.chat_id) === String(U));
-  check('customer ko ek QR photo mili', photos.length === 1, String(photos.length));
-  check('wahi QR fee ka hai (₹15)', /₹15/.test(String(photos[0]?.payload?.caption || '')), String(photos[0]?.payload?.caption || ''));
-  check('caption saaf: "order ka payment nahi"', /order ka payment nahi/i.test(String(photos[0]?.payload?.caption || '')));
-  check('card "ORDER QR TAIYAR HAI par bheja nahi"', /QR TAIYAR HAI/i.test(text) && /nahi bheja gaya/i.test(text));
-  check('order QR (₹249) customer ko NAHI gaya', !/Pay ₹249/.test(text) && !/Payment QR · Order/i.test(text));
-  check('"Maine pay kar diya" button', /wallet_fee_paid_V81OK/.test(JSON.stringify(calls.map((c) => c.payload))));
-  check('order par QR held hai', order.qrHeld === true && order.cardStage === 'AWAITING_FEE', `${order.qrHeld}/${order.cardStage}`);
-  check('fee due ₹15 recorded', Number(order.feeDuePaise) === 1500, String(order.feeDuePaise));
-  check('held URI = Swiggy ka URI (boss ki UPI nahi)', String(order.qrHeldUri).includes('upiswiggy@icici'), String(order.qrHeldUri));
-  check('boss ko bataya gaya "customer ko nahi bheja"', /customer ko nahi bheja/i.test(text));
+  check('low balance bataya', /wallet|balance/i.test(text), text.slice(0, 150));
+  check('wallet button mila', /wallet_home/.test(JSON.stringify(calls.map(c => c.payload))));
+  check('order QR nahi bheja', photosOf(calls).every(c => String(c.payload.chat_id) !== String(U)));
+  check('order awaiting wallet', order.cardStage === 'AWAITING_WALLET', order.cardStage);
+  check('fee debit nahi hui', !Number(order.feeChargedPaise || 0));
+
+  // Existing pre-change held QRs remain recoverable after the new policy.
+  mutateDb((d) => {
+    const legacy = d.orders.V81OK;
+    legacy.pendingSwiggyUpiUri = 'upi://pay?pa=upiswiggy@icici&pn=SWIGGY&am=249&cu=INR&tr=V81TXN';
+    w.holdOrderQr(legacy, { upiUri: legacy.pendingSwiggyUpiUri });
+    legacy.cardStage = 'AWAITING_FEE';
+    legacy.feeDuePaise = 1500;
+  });
 }
 
 console.log('\n=== 4. Fee verify hone par ORDER QR release + send ===');
@@ -154,7 +148,7 @@ console.log('\n=== 5. Held QR ko webhook/auto-verify release karta hai (source) 
   check('release helper maujood', /async function releaseHeldQrToCustomer\(/.test(indexSrc));
   check('fee QR helper maujood', /async function sendFeeQrForHeldOrder\(/.test(indexSrc));
   check('approve flow defer-auto-release nahi karta (naya plan)', !/recordDeferredFee\(liveOrder, feeDue, \{ reason: 'auto-verify set nahi — fee baad me' \}\)/.test(indexSrc));
-  check('wallet balance ho to seedha QR (fee pehle hi kata)', /chargeServiceFee\(feeDb, liveOrder, feeOwnerId/.test(indexSrc));
+  check('new wallet gate is before placement', /reserveChatOrderFee/.test(fs.readFileSync('./forwarded-order-flow.js', 'utf8')));
   check('auto-verify off par 3 min safety release', /scheduleDeferredQrRelease\(/.test(indexSrc) && /3 \* 60 \* 1000/.test(indexSrc));
 }
 

@@ -396,14 +396,28 @@ export function proWorkspaceVaultPath(fileName) {
 }
 
 /** Best-effort backup of one encrypted workspace blob. Never throws. */
-export async function pushVaultTextFile(relativePath, text, message = 'chore(vault): mini app workspace backup') {
+export async function pushVaultTextFile(relativePath, text, message = 'chore(vault): mini app workspace backup', { expectedRemote = null } = {}) {
   const token = resolveVaultToken();
   if (!token || process.env.PRO_VAULT_CLOUD_BACKUP === '0') return { ok: false, reason: 'NO_TOKEN' };
   try {
     await ensureOrphanVaultBranchExists(token);
     const url = vaultContentsUrl(relativePath, false);
     const existing = await fetch(url, { headers: ghHeaders(token), signal: AbortSignal.timeout(8000) }).catch(() => null);
-    const existingJson = existing?.ok ? await existing.json().catch(() => null) : null;
+    if (!existing || (!existing.ok && existing.status !== 404)) return { ok: false, reason: 'REMOTE_READ_FAILED' };
+    const existingJson = existing.ok ? await existing.json().catch(() => null) : null;
+    if (existing.ok && !existingJson) return { ok: false, reason: 'REMOTE_READ_FAILED' };
+    if (expectedRemote) {
+      const exists = existing.ok;
+      let unchanged = exists === Boolean(expectedRemote.present);
+      if (unchanged && exists) {
+        if (expectedRemote.sha && existingJson?.sha) unchanged = expectedRemote.sha === existingJson.sha;
+        else if (existingJson?.content) {
+          const current = Buffer.from(String(existingJson.content).replace(/\s+/g, ''), 'base64').toString('utf8');
+          unchanged = current === String(expectedRemote.text || '');
+        } else unchanged = false;
+      }
+      if (!unchanged) return { ok: false, reason: 'REMOTE_CHANGED' };
+    }
     if (existingJson?.content) {
       const current = Buffer.from(String(existingJson.content).replace(/\s+/g, ''), 'base64').toString('utf8');
       if (current === text) return { ok: true, unchanged: true };
@@ -463,7 +477,7 @@ export async function pullVaultTextFileDetailed(relativePath) {
     const meta = await res.json().catch(() => null);
     if (meta?.content && meta.encoding !== 'none') {
       const text = Buffer.from(String(meta.content).replace(/\s+/g, ''), 'base64').toString('utf8');
-      return { text, reason: '', status: 200, via: 'contents', size: meta.size };
+      return { text, reason: '', status: 200, via: 'contents', size: meta.size, sha: String(meta.sha || '') };
     }
     // 1 MB se bada file: contents API content nahi deta.
     if (meta?.sha) {
@@ -474,7 +488,7 @@ export async function pullVaultTextFileDetailed(relativePath) {
         const blob = await blobRes.json().catch(() => null);
         if (blob?.content) {
           const text = Buffer.from(String(blob.content).replace(/\s+/g, ''), 'base64').toString('utf8');
-          return { text, reason: '', status: 200, via: 'blob', size: meta.size };
+          return { text, reason: '', status: 200, via: 'blob', size: meta.size, sha: String(meta.sha || '') };
         }
       }
     }
@@ -482,11 +496,11 @@ export async function pullVaultTextFileDetailed(relativePath) {
       const dl = await fetch(meta.download_url, { headers: ghHeaders(token), signal: AbortSignal.timeout(15000) }).catch(() => null);
       if (dl?.ok) {
         const text = await dl.text();
-        if (text && text.length > 20) return { text, reason: '', status: 200, via: 'download_url', size: meta.size };
+        if (text && text.length > 20) return { text, reason: '', status: 200, via: 'download_url', size: meta.size, sha: String(meta.sha || '') };
       }
     }
     const fromRaw = await readRaw();
-    if (fromRaw) return { text: fromRaw, reason: '', status: 200, via: 'raw', size: meta?.size };
+    if (fromRaw) return { text: fromRaw, reason: '', status: 200, via: 'raw', size: meta?.size, sha: String(meta?.sha || '') };
     return { text: '', reason: `file mili (${Number(meta?.size || 0)} bytes) par padhi nahi ja saki`, status: 200, size: meta?.size };
   } catch (err) {
     return { text: '', reason: String(err?.message || err).slice(0, 160), status: 0 };

@@ -72,17 +72,13 @@ test('idle: plan — paid / unknown / in-flight placement kabhi band nahi', () =
   }
   const submitting = { ...base, checkout: { status: 'SUBMITTING' } };
   assert.equal(planIdleExpiry({ ws: submitting, placementInFlight: true }).expire, false);
-  assert.equal(planIdleExpiry({ ws: submitting, placementInFlight: false }).expire, true);
+  assert.equal(planIdleExpiry({ ws: submitting, placementInFlight: false }).expire, false, 'restart cannot prove that a submission was never sent');
 });
-test('idle: plan — placed-unpaid par fee wapas nahi, order ID record me', () => {
+test('idle: placed-unpaid order is kept for payment/status checks and cannot be retried', () => {
   const ws = { cart: { items }, checkout: { status: 'PAYMENT_PENDING', orderId: '252421961135322', createdAt: new Date(Date.now() - 10 * MIN).toISOString() } };
   const plan = planIdleExpiry({ ws });
-  assert.equal(plan.expire, true);
-  assert.equal(plan.kind, 'PLACED_UNPAID');
-  assert.equal(plan.refundFee, false);
-  assert.equal(plan.keepRecord, true);
-  assert.equal(plan.orderId, '252421961135322');
-  assert.match(describeIdleClosure({ kind: 'PLACED_UNPAID', orderId: '252421961135322', idleMs: 3 * MIN }), /Fee wapas nahi/i);
+  assert.equal(plan.expire, false);
+  assert.equal(classifyCheckout(ws.checkout), 'PLACED_UNPAID');
 });
 test('idle: last activity cart/bill/checkout me se sabse nayi hoti hai', () => {
   const now = Date.now();
@@ -138,24 +134,26 @@ function seed(userId, extra = {}) {
   });
 }
 
-test('API: 3 minute idle draft bootstrap par band — cart/checkout saaf, fee wapas, message ek baar', async () => {
-  // Wallet khaali se shuru — refund se hi ₹15 aana chahiye.
+test('API: stale SUBMITTING checkout remains blocked and is not refunded as a draft', async () => {
   seed(9961, {
     lastActivityAt: new Date(Date.now() - 3 * MIN).toISOString(),
     checkout: { id: '0', accountKey: 'mine', status: 'SUBMITTING', amount: 29, createdAt: new Date(Date.now() - 3 * MIN).toISOString(), feeChargedPaise: 1500, feeChargedAt: new Date().toISOString() }
   });
   const first = await req(9961, 'bootstrap');
   assert.equal(first.status, 200);
-  assert.equal(first.body.cart, null, 'cart band');
-  assert.equal(first.body.checkout, null, 'checkout band');
-  assert.ok(first.body.idle?.closed, 'idle closure mili');
-  assert.match(first.body.idle.closed.message, /2 minute|minute tak/);
-  assert.equal(walletBalancePaise(getDb(), '9961'), 1500, 'fee wapas aa gayi');
-  const second = await req(9961, 'bootstrap');
-  assert.equal(second.body.idle?.closed, null, 'message dobara nahi');
-  const ws = readProWorkspace('9961');
-  assert.equal(ws.abandoned.length, 1);
-  assert.equal(ws.lastActivityAt !== undefined, true, 'activity touch hui');
+  assert.ok(first.body.cart);
+  assert.ok(first.body.checkout, 'uncertain checkout kept');
+  assert.equal(first.body.idle?.closed, null);
+  assert.equal(walletBalancePaise(getDb(), '9961'), 0, 'uncertain submission is not automatically refunded');
+  assert.equal(readProWorkspace('9961').checkoutGeneration, 0, 'duplicate-order barrier remains');
+});
+
+test('API: a stale draft with no checkout still expires normally', async () => {
+  seed(9967, { lastActivityAt: new Date(Date.now() - 3 * MIN).toISOString() });
+  const out = await req(9967, 'bootstrap');
+  assert.equal(out.body.cart, null);
+  assert.equal(out.body.checkout, null);
+  assert.equal(out.body.idle?.closed?.kind, 'DRAFT');
 });
 
 test('API: 30 second pehle activity hui ho to draft band nahi hota', async () => {
@@ -166,19 +164,18 @@ test('API: 30 second pehle activity hui ho to draft band nahi hota', async () =>
   assert.equal(readProWorkspace('9962').abandoned ?? null, null);
 });
 
-test('API: placed-unpaid order bhi 2 min idle par band hota hai — fee wapas nahi, order ID record me', async () => {
+test('API: placed-unpaid order remains visible after idle without refund or retry', async () => {
   seed(9963, {
     lastActivityAt: new Date(Date.now() - 4 * MIN).toISOString(),
     checkout: { id: '0', accountKey: 'mine', status: 'PAYMENT_PENDING', orderId: '252421961135322', amount: 70, createdAt: new Date(Date.now() - 4 * MIN).toISOString(), feeChargedPaise: 1500 }
   });
   const out = await req(9963, 'bootstrap');
-  assert.equal(out.body.checkout, null, 'UI se band');
-  assert.equal(out.body.cart, null);
-  assert.equal(out.body.idle.closed.kind, 'PLACED_UNPAID');
-  assert.equal(out.body.idle.closed.orderId, '252421961135322');
+  assert.equal(out.body.checkout?.orderId, '252421961135322');
+  assert.equal(out.body.checkout?.status, 'PAYMENT_PENDING');
+  assert.ok(out.body.cart);
+  assert.equal(out.body.idle?.closed, null);
   assert.equal(walletBalancePaise(getDb(), '9963'), 0, 'placed order ki fee wapas nahi');
-  const ws = readProWorkspace('9963');
-  assert.equal(ws.checkoutGeneration, 1, 'naya order possible (duplicate nahi)');
+  assert.equal(readProWorkspace('9963').checkoutGeneration, 0, 'no automatic retry of an existing order');
 });
 
 test('API: paid order aur outcome-unknown kabhi idle se band nahi hote', async () => {

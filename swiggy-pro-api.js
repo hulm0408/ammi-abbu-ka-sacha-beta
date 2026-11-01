@@ -13,10 +13,11 @@ import { summarizeIdentity } from './identity-snapshot.js';
 import { planQrGeneration, isRenderableQrImage, describeQrPlan } from './qr-generation-plan.js';
 import { exactPaise } from './swiggy-cart-integrity.js';
 import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder, isZeroSmsTestSandboxActive } from './swiggy-cart.js';
-import { deleteAccount, getDb, isBoss, saveDb, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
+import { deleteAccount, getDb, isBoss, saveDb, saveDbDurable, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
+import { notifyPendingTopup, retryPendingWalletUtrs } from './wallet-topup-service.js';
 import {
   buildTopupUpiIntent, chargeServiceFee, creditWallet, ensureWallet, findUsedUtr, getWallet, minTopupPaise,
-  refundServiceFee, rupees, serviceFeePaiseFor, setWalletUpiId, submitTopupRequest, validateUtr,
+  refundServiceFee, rupees, serviceFeePaiseFor, setWalletUpiId, submitTopupRequestWithLookup, validateUtr,
   TOPUP_PRESETS_PAISE, walletBalancePaise, walletHistory, walletUpiId
 } from './user-wallet.js';
 import { requestSwiggyDeleteOtpViaBridge, requestSwiggyOtpViaBridge, verifyAndDeleteSwiggyAccountViaBridge, verifySwiggyOtpViaBridge } from './swiggy-bridge.js';
@@ -488,7 +489,7 @@ function walletView(user, { history = false } = {}) {
   const wallet = getWallet(db, user.id);
   const balancePaise = walletBalancePaise(db, user.id);
   const feePaise = serviceFeePaiseFor(db);
-  const exempt = Boolean(wallet?.feeExempt);
+  const exempt = isBoss(user.id) || Boolean(wallet?.feeExempt);
   const shortfallPaise = exempt || feePaise <= 0 ? 0 : Math.max(0, feePaise - balancePaise);
   return {
     balancePaise, balance: rupees(balancePaise),
@@ -643,7 +644,7 @@ async function utrTruthForBoss(user, body = {}) {
   const claim = Object.values(db.config?.topupRequests || {})
     .find((row) => String(row?.utr || '').toUpperCase() === utr) || null;
   const truth = describeUtrPayment({
-    utr, payment, lookup, usedUtr, claimedPaise: Number(body?.amountPaise || 0), now: Date.now()
+    utr, payment, lookup, usedUtr, claimedPaise: Number(body?.amountPaise || 0), now: Date.now(), allowedPayeeVpas: [walletUpiId(db)]
   });
   if (wantsLive) {
     rememberUtrLookup(db, {
@@ -668,7 +669,7 @@ async function utrTruthForBoss(user, body = {}) {
 }
 
 async function claimWalletTopup(user, body) {
-  const db = getDb();
+  let db = getDb();
   ensureWallet(db, user.id, { name: user.firstName || '' });
   // Boss (31-10-2026, round 16):
   //   "DUSRE KA UTR BHI AGAR KOI DAAL RAHA TO USSE PAYMENT LE LE RHA"
@@ -753,12 +754,24 @@ async function claimWalletTopup(user, body) {
       const raw = Number(process.env.WALLET_AUTO_CREDIT_MAX_PAISE);
       return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 1500;
     })();
-    const submitted = await submitTopupRequest(db, {
+    const lookupResult = await fetchUtrPaymentDetails(utr, { userId: user.id })
+      .catch(err => ({ configured: false, found: false, reason: String(err?.message || err), tried: [] }));
+    // Do not write a pre-lookup snapshot over wallet changes made while the
+    // provider was slow. Recheck both the intent and UTR against the latest DB.
+    db = getDb();
+    intent = resolveTopupIntent(db, user.id, intent.id);
+    if (!intent) {
+      const e = error(409, 'Top-up intent expired or already used.');
+      e.code = 'NO_TOPUP_INTENT';
+      throw e;
+    }
+    const submitted = submitTopupRequestWithLookup(db, {
       userId: user.id, utr, amountPaise: claimedPaise, name: user.firstName || '',
       note: `Mini App claim ₹${rupees(claimedPaise)}`,
-      autoVerify: true, minPaise: 100, autoMaxPaise
+      autoVerify: true, minPaise: 100, autoMaxPaise, lookupResult
     });
     if (!submitted.ok) {
+      if (submitted.request && !saveDbDurable(db)) throw error(503, 'Recharge record save nahi hua. Admin se baat karein.');
       const code = String(submitted.code || '');
       const status = code === 'DUPLICATE_UTR' || code === 'UTR_ALREADY_USED' ? 409 : 400;
       const e = error(status, submitted.reason || 'UTR accept nahi hua.');
@@ -776,13 +789,12 @@ async function claimWalletTopup(user, body) {
   const pending = String(request?.status || '').toUpperCase() === 'PENDING';
   if (pending) creditPaise = 0; // jhooth nahi — abhi kuch jama nahi hua
   if (request) db.config.topupClaims[request.id] = { ...request, creditedPaise: creditPaise, utr };
-  saveDb(db);
-  const wallet = walletView(user, { history: true });
   const utrTruth = request?.utrTruth || null;
-  // Boss (round 25): "UTR SE SAB DETAILS" — har lookup yaad rehta hai, taaki
-  // baad me bhi poochha ja sake ki kab/kisko/kitna aaya tha.
   rememberUtrLookup(db, { utr, userId: user.id, name: user.firstName || '', truth: utrTruth, request });
+  if (!saveDbDurable(db)) throw error(503, 'Recharge record save nahi hua. Admin se baat karein.');
+  const wallet = walletView(user, { history: true });
   return {
+    requestId: String(request?.id || ''),
     wallet,
     verified,
     creditedPaise: creditPaise,
@@ -867,6 +879,7 @@ function publicState(user, ws) {
   autoSelectAccount(user, ws);
   return {
     user: { name: user.firstName || 'Friend', isBoss: isBoss(user.id) },
+    orderFee: { paise: serviceFeePaiseFor(getDb()), exempt: isBoss(user.id) || Boolean(getWallet(getDb(), user.id)?.feeExempt) },
     accounts: listAccounts(user, ws), activeAccount: activeAccountForClient(user, ws),
     selectedAddress: ws.selectedAddress, cart: ws.cart,
     checkout: publicCheckout(ws.checkout, { restricted: Boolean(ws.checkout) && isSharedAccountFor(user, ws, ws.checkout.accountKey) }),
@@ -995,7 +1008,7 @@ function storeAccount(user, ws, incoming) {
   if (!unresolved) invalidateAccountDependentState(ws);
 }
 
-export async function handleSwiggyProHttp(req, res, { provider = proProvider, otp = defaultOtp, authorizeUser = null, claim = activateAllEventOffers, deleteOtp = defaultDeleteOtp } = {}) {
+export async function handleSwiggyProHttp(req, res, { provider = proProvider, otp = defaultOtp, authorizeUser = null, claim = activateAllEventOffers, deleteOtp = defaultDeleteOtp, telegram = null } = {}) {
   const url = new URL(req.url || '/', 'http://local');
   const route = url.pathname;
   if (route !== '/pro' && !route.startsWith('/pro/')) return false;
@@ -1059,7 +1072,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const idleClosed = ws.lastClosed ? { ...ws.lastClosed } : null;
         if (ws.lastClosed) { delete ws.lastClosed; writeProWorkspace(user.id, ws); }
         json(res, 200, {
-          ok: true, ...publicState(user, ws), wallet: walletView(user), backup: userBackupView(user),
+          ok: true, ...publicState(user, ws), backup: userBackupView(user),
           idle: { timeoutMs: idle.timeoutMs, closed: idleClosed, abandoned: Array.isArray(ws.abandoned) ? ws.abandoned.slice(-3) : [] },
           // Round 17: har user ka apna quota — kaun si cheez kitni baar ho chuki.
           rateLimits: rateLimitSnapshot(user.id),
@@ -1884,12 +1897,11 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         enforceRateLimit(user, 'walletClaim');
         const out = await claimWalletTopup(user, await bodyJson(req));
         backupMoneyNow().catch(() => {});
-        // Claim pending raha to baaki pending claims bhi ek baar fetch karke
-        // dekho — provider me paisa aa gaya ho to khud jud jayega.
+        // Keep this legacy route for users who already paid using an older
+        // client; pending claims get the same admin review as bot recharges.
         if (out?.pending) {
-          retryPendingUtrs(getDb(), { limit: 5 })
-            .then((retry) => { if (retry?.settled?.some((s) => s.action === 'CREDIT')) saveDb(getDb()); })
-            .catch(() => {});
+          await notifyPendingTopup(telegram, out.requestId);
+          retryPendingWalletUtrs({ telegram }).catch(() => {});
         }
         json(res, 200, { ok: true, ...out });
         return;
@@ -1925,29 +1937,40 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
             exactPaise(body.expectedTotal) === null || exactPaise(body.expectedTotal) !== exactPaise(total)) {
           throw error(400, 'Review a fresh Swiggy bill and explicitly confirm its exact amount before placing an order.');
         }
-        // Boss (31-10-2026, round 11): "WALLET MUST REACH A BALANCE OF 15
-        // OTHERWISE IT WILL SAY YOUR BALANCE IS LOW." Bill dekhne par kuch nahi
-        // rukta — sirf order place karne se pehle fee ka balance chahiye.
+        // Recover an existing journal before considering a new fee. If the
+        // workspace was lost, the original account is unknown: never present a
+        // newly-selected account as the one that sent the earlier request.
+        const generation = ws.checkoutGeneration ?? 0;
+        if (!Number.isSafeInteger(generation) || generation < 0) throw error(503, 'Checkout state is invalid; contact the operator.');
+        const checkoutId = String(generation);
+        const placementKey = `pro:${user.id}:${checkoutId}`;
+        const previousPlacement = readSwiggyPlacement(placementKey);
+        if (previousPlacement) {
+          ws.checkout = {
+            id: checkoutId, status: 'OUTCOME_UNKNOWN', accountKey: '', accountPhone: '',
+            createdAt: String(previousPlacement.createdAt || ''),
+            orderId: normalizeSwiggyOrderId(previousPlacement.orderId || ''),
+            message: 'Order Swiggy par ho sakta hai. Original account me My Orders check karein; dobara order na karein.'
+          };
+          writeProWorkspace(user.id, ws);
+          json(res, 200, { ok: true, checkout: publicCheckout(ws.checkout) });
+          return;
+        }
+        // Bill dekhne par kuch nahi rukta — placement se pehle fee chahiye.
         const walletDb = getDb();
         const feePaise = serviceFeePaiseFor(walletDb);
         const walletRecord = getWallet(walletDb, user.id);
-        const feeExempt = Boolean(walletRecord?.feeExempt);
+        const feeExempt = isBoss(user.id) || Boolean(walletRecord?.feeExempt);
         const balancePaise = walletBalancePaise(walletDb, user.id);
         if (!feeExempt && feePaise > 0 && balancePaise < feePaise) {
-          const wallet = walletView(user);
-          const e = error(409, `Wallet balance ₹${rupees(balancePaise)} hai — order place karne ke liye ₹${rupees(feePaise)} chahiye. ₹${rupees(wallet.shortfallPaise)} add karein (UPI: ${wallet.upiId}).`);
+          const e = error(409, `Wallet ₹${rupees(balancePaise)} · fee ₹${rupees(feePaise)}. Bot me Wallet se add karein.`);
           e.code = 'WALLET_LOW_BALANCE';
-          e.wallet = wallet;
           throw e;
         }
         // One durable barrier per user and checkout generation, regardless of
         // account, quote refresh or concurrent stale workspace reads. Advance the
         // generation ONLY after this order is verified paid and explicitly closed.
         // Workspace/cart mutation still requires one app instance (see setup).
-        const generation = ws.checkoutGeneration ?? 0;
-        if (!Number.isSafeInteger(generation) || generation < 0) throw error(503, 'Checkout state is invalid; contact the operator.');
-        const checkoutId = String(generation);
-        const placementKey = `pro:${user.id}:${checkoutId}`;
         ws.checkout = {
           id: checkoutId, accountKey: ws.activeAccountKey, accountPhone: String(account.phone || ''), status: 'SUBMITTING',
           accountCustomerId: customerId,
@@ -1959,25 +1982,55 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           receiverName: String(ws.selectedAddress?.name || '').slice(0, 60),
           forSomeoneElse: ws.cart?.forSomeoneElse === true
         };
-        // Fee bhi isi waqt kati jaati hai (QR/order stage) — order place na ho
-        // to neeche refund ho jaati hai. Idempotent: ek order par ek hi fee.
-        const feeCharge = chargeServiceFee(walletDb, ws.checkout, user.id);
-        saveDb(walletDb);
-        if (!feeCharge.ok && feeCharge.code === 'INSUFFICIENT_BALANCE') {
+        // Check the journal and rate limit before touching the wallet. Persist
+        // the logical checkout first, so a crash between debit and provider POST
+        // cannot create a second debit/placement for the same checkout.
+        enforceRateLimit(user, 'checkout');
+        writeProWorkspace(user.id, ws);
+        const feeCharge = isBoss(user.id)
+          ? { ok: true, code: 'ADMIN_EXEMPT' }
+          : chargeServiceFee(walletDb, ws.checkout, user.id);
+        if (!feeCharge.ok) {
           ws.checkout = null;
           writeProWorkspace(user.id, ws);
-          const wallet = walletView(user);
-          const e = error(409, `Wallet balance ₹${wallet.balance} hai — ₹${rupees(feeCharge.feePaise || feePaise)} chahiye. ₹${wallet.shortfall} add karein (UPI: ${wallet.upiId}).`);
-          e.code = 'WALLET_LOW_BALANCE';
-          e.wallet = wallet;
+          const e = error(feeCharge.code === 'INSUFFICIENT_BALANCE' ? 409 : 503,
+            feeCharge.code === 'INSUFFICIENT_BALANCE' ? 'Wallet balance kam hai. Bot me Wallet se add karein.' : 'Wallet check nahi hua. Admin se baat karein.');
+          e.code = feeCharge.code === 'INSUFFICIENT_BALANCE' ? 'WALLET_LOW_BALANCE' : feeCharge.code;
           throw e;
         }
-        // Boss (31-10-2026, round 17): rate limit sirf ASLI placement par lagti
-        // hai — validation fail hone par nahi. Warna user galat bill theek karte
-        // karte hi block ho jata.
-        enforceRateLimit(user, 'checkout');
-        // Persist the logical ID before the provider can send a placement POST.
-        writeProWorkspace(user.id, ws);
+        if (!isBoss(user.id) && !saveDbDurable(walletDb)) {
+          // Keep SUBMITTING blocked for review; no provider call has occurred.
+          const e = error(503, 'Wallet record save nahi hua. Order place nahi hua; admin se baat karein.');
+          e.code = 'WALLET_SAVE_FAILED';
+          throw e;
+        }
+        try {
+          writeProWorkspace(user.id, ws);
+        } catch (err) {
+          // There has been no provider call. Refund from a fresh wallet and
+          // leave the first workspace barrier in place if it cannot be cleared.
+          const fresh = getDb();
+          const refund = refundServiceFee(fresh, ws.checkout, user.id, { reason: 'checkout state save nahi hua' });
+          const feeWasCharged = ['CHARGED', 'ALREADY_CHARGED'].includes(feeCharge.code);
+          const refundSaved = !feeWasCharged || (refund.ok && saveDbDurable(fresh));
+          if (refundSaved) {
+            ws.checkout = null;
+            try { writeProWorkspace(user.id, ws); } catch {}
+            if (refund.ok) backupMoneyNow().catch(() => {});
+          } else {
+            // The first SUBMITTING barrier is already durable; never clear it
+            // while the fee refund may not have reached stable storage.
+            ws.checkout.status = 'OUTCOME_UNKNOWN';
+            ws.checkout.message = 'Order place nahi hua; wallet refund check ke liye admin se baat karein.';
+            try { writeProWorkspace(user.id, ws); } catch {}
+          }
+          const e = error(503, refundSaved
+            ? 'Checkout save nahi hua. Order place nahi hua; admin se baat karein.'
+            : 'Wallet refund confirm nahi hua. Order place nahi hua; admin se baat karein.');
+          e.code = refundSaved ? 'CHECKOUT_SAVE_FAILED' : 'WALLET_SAVE_FAILED';
+          throw e;
+        }
+        if (feeCharge.code === 'CHARGED') backupMoneyNow().catch(() => {});
         let providerReturned = false;
         let result;
         try {
@@ -2047,8 +2100,19 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           // Order place nahi hua — fee wapas (boss ka rule: QR stage par
           // cancel/nakami = refund; place ho jaye to nahi).
           if (ws.checkout) {
-            refundServiceFee(walletDb, ws.checkout, user.id, { reason: 'order place nahi hua' });
-            saveDb(walletDb);
+            const freshWalletDb = getDb();
+            const refund = refundServiceFee(freshWalletDb, ws.checkout, user.id, { reason: 'order place nahi hua' });
+            const feeWasCharged = ['CHARGED', 'ALREADY_CHARGED'].includes(feeCharge.code);
+            if (feeWasCharged && (!refund.ok || !saveDbDurable(freshWalletDb))) {
+              // Keep checkout blocked if refund persistence is uncertain.
+              ws.checkout.status = 'OUTCOME_UNKNOWN';
+              ws.checkout.message = 'Order place nahi hua, lekin wallet refund save nahi hua. Admin se baat karein.';
+              writeProWorkspace(user.id, ws);
+              const failure = error(503, ws.checkout.message);
+              failure.code = 'WALLET_SAVE_FAILED';
+              throw failure;
+            }
+            if (refund.ok) backupMoneyNow().catch(() => {});
           }
           ws.checkout = null;
           // Bill/coupon badal gaya par items+address wahi hain: Swiggy ka naya

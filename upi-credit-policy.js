@@ -55,10 +55,15 @@ export function configuredPayeeVpas() {
  * Payee Misbahul Islam hai ya nahi.
  * Naam ke tokens match karo (spelling ka farq chalta hai), ya VPA exact ho.
  */
-export function isBossPayee({ name = '', vpa = '' } = {}) {
+export function isBossPayee({ name = '', vpa = '', allowedVpas = [] } = {}) {
   const vpaNorm = String(vpa || '').trim().toLowerCase();
-  if (vpaNorm && configuredPayeeVpas().includes(vpaNorm)) {
-    return { ok: true, by: 'vpa', reason: `payment boss ke UPI (${vpaNorm}) par aayi` };
+  const allowed = [...configuredPayeeVpas(), ...allowedVpas.map(value => String(value || '').trim().toLowerCase())];
+  if (vpaNorm) {
+    // A supplied VPA is stronger evidence than a display name. Never let a
+    // matching name override a contradictory recipient VPA.
+    return allowed.includes(vpaNorm)
+      ? { ok: true, by: 'vpa', reason: `payment boss ke UPI (${vpaNorm}) par aayi` }
+      : { ok: false, by: '', reason: `payment kisi aur UPI (${vpaNorm}) par gayi` };
   }
   const normalized = normalizePersonName(name);
   if (!normalized) return { ok: false, by: '', reason: 'payment me payee ka naam nahi mila' };
@@ -87,8 +92,8 @@ export function paymentStatusOk(status) {
   if (!s) return { ok: false, reason: 'payment ka status nahi mila' };
   if (FAILED_WORDS.has(s)) return { ok: false, reason: `payment ka status ${s} hai` };
   if (SUCCESS_WORDS.has(s)) return { ok: true, reason: '' };
-  // "SUCCESS" jaisa kuch bhi jisme success likha ho.
-  if (/SUCCESS|CREDITED|COMPLETED|RECEIVED/.test(s)) return { ok: true, reason: '' };
+  // Do not treat e.g. UNSUCCESSFUL as success just because it contains SUCCESS.
+  if (['TXNSUCCESS', 'TRANSACTIONSUCCESS', 'PAYMENTSUCCESS'].includes(s)) return { ok: true, reason: '' };
   return { ok: false, reason: `payment ka status ${s} samajh nahi aaya` };
 }
 
@@ -115,7 +120,7 @@ function toPaise(value) {
  * @returns {{action:'CREDIT'|'PENDING'|'REJECT', code:string, creditedPaise:number, reason:string, reasons:string[], verifiedBy:string, payment:object|null}}
  */
 export function evaluateUtrCredit({
-  claim = {}, intent = null, payment = null, usedUtrs = {}, autoMaxPaise = 0, now = Date.now()
+  claim = {}, intent = null, payment = null, usedUtrs = {}, autoMaxPaise = 0, now = Date.now(), allowedPayeeVpas = []
 } = {}) {
   const reasons = [];
   const utr = normalizeUtr(claim.utr);
@@ -146,7 +151,8 @@ export function evaluateUtrCredit({
   }
 
   const paymentUtr = normalizeUtr(payment.utr);
-  if (paymentUtr && paymentUtr !== utr) {
+  if (!paymentUtr) return hold('UTR_NOT_RETURNED', 'payment ka UTR nahi mila — admin check karega');
+  if (paymentUtr !== utr) {
     return deny('UTR_MISMATCH', 'statement ka UTR aapke UTR se match nahi karta');
   }
 
@@ -154,11 +160,20 @@ export function evaluateUtrCredit({
   const status = paymentStatusOk(payment.status);
   if (!status.ok) {
     reasons.push(status.reason);
+    const statusWord = String(payment.status || '').trim().toUpperCase().replace(/[^A-Z]/g, '');
+    if (!statusWord || statusWord === 'PENDING' || !FAILED_WORDS.has(statusWord)) {
+      return hold('PAYMENT_STATUS_UNAVAILABLE', status.reason);
+    }
     return deny('PAYMENT_NOT_SUCCESSFUL', status.reason);
   }
 
-  // 4. Paisa boss (Misbahul Islam) ke paas aaya hona chahiye.
-  const payee = isBossPayee({ name: payment.payeeName || payment.name || '', vpa: payment.payeeVpa || payment.vpa || '' });
+  // Missing details are not proof of a bad payment: send them for review.
+  const payeeName = payment.payeeName || payment.name || '';
+  const payeeVpa = payment.payeeVpa || payment.vpa || '';
+  if (!String(payeeName).trim() && !String(payeeVpa).trim()) {
+    return hold('PAYEE_NOT_RETURNED', 'payment ka payee nahi mila — admin check karega');
+  }
+  const payee = isBossPayee({ name: payeeName, vpa: payeeVpa, allowedVpas: allowedPayeeVpas });
   if (!payee.ok) {
     reasons.push(payee.reason);
     return deny('PAYEE_MISMATCH', payee.reason);
@@ -167,7 +182,7 @@ export function evaluateUtrCredit({
   // 5. Amount sach me kitna aaya — wahi judega.
   const receivedPaise = toPaise(payment.amountPaise ?? payment.amountReceivedPaise ?? payment.amount);
   if (!receivedPaise) {
-    return deny('AMOUNT_NOT_RETURNED', 'payment me amount nahi mila — bina amount ke credit nahi hota');
+    return hold('AMOUNT_NOT_RETURNED', 'payment me amount nahi mila — admin check karega');
   }
   if (receivedPaise < 100) {
     return deny('AMOUNT_TOO_LOW', `sirf ₹${(receivedPaise / 100).toFixed(2)} aaye hain — ₹1 se kam credit nahi hota`);
