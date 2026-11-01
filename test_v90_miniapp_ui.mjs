@@ -45,7 +45,7 @@ function harness({ initData = 'signed-offline-data', responder } = {}) {
 test('preview and missing vault do not show a fake empty account list; retry connects after setup', async () => {
   const preview = harness({ initData: '' });
   try {
-    assert.match(preview.document.body.textContent, /Browser preview only/);
+    assert.match(preview.document.body.textContent, /Open in Telegram/);
     assert.equal(preview.calls.length, 0);
     assert.equal(preview.document.querySelector('form[data-form="send-otp"]'), null);
   } finally { preview.close(); }
@@ -56,7 +56,7 @@ test('preview and missing vault do not show a fake empty account list; retry con
     : response({ ok: false, error: 'unexpected' }, 500) });
   try {
     await waitFor(() => app.document.querySelector('[data-action="retry-auth"]'), 'vault setup screen');
-    assert.match(app.document.body.textContent, /not a problem with your phone number/i);
+    assert.match(app.document.body.textContent, /server storage needs setup.*phone number is not the problem/i);
     assert.equal(app.document.querySelector('form[data-form="send-otp"]'), null);
     assert.equal(app.calls.filter(c => c.url.includes('send-otp')).length, 0);
     ready = true;
@@ -184,12 +184,58 @@ test('uncertain checkout offers in-app original-account history without clearing
     await waitFor(() => app.document.querySelector('[data-action="checkout-orders"]'), 'original-account history button');
     app.document.querySelector('[data-action="checkout-orders"]').click();
     await waitFor(() => app.document.querySelector('[data-action="order-detail"]'), 'original-account orders');
-    assert.match(app.document.body.textContent, /empty or delayed list does not prove the order failed/i);
+    assert.match(app.document.body.textContent, /empty or delayed list does not prove failure/i);
     assert(app.calls.some(c => c.url.endsWith('/orders?scope=checkout')));
     app.document.querySelector('[data-action="order-detail"]').click();
     app.document.querySelector('[data-action="order-tracking"]').click();
     await waitFor(() => !app.document.body.textContent.includes('Swiggy has not returned tracking details yet.'), 'tracking response');
     assert(app.calls.some(c => c.url.includes('/orders/tracking?') && c.url.includes('scope=checkout')));
     assert.deepEqual(app.external, []);
+  } finally { app.close(); }
+});
+
+test('compact navigation keeps all six actions, cart dock and labelled link forms', async () => {
+  const app = harness({ responder: call => {
+    if (call.url.endsWith('/bootstrap')) return response(normalState());
+    if (call.url.endsWith('/addresses')) return response({ ok: true, addresses: [], note: 'No saved addresses returned.' });
+    return response({ ok: false, error: 'unexpected' }, 500);
+  } });
+  try {
+    await waitFor(() => app.document.querySelector('#bottom-nav button:not([disabled])'));
+    const tabs = [...app.document.querySelectorAll('#bottom-nav button')];
+    assert.deepEqual(tabs.map(button => button.textContent.trim()), ['Accounts', 'Address', 'Search', 'Cart', 'Orders', 'Offers']);
+    assert.equal(app.document.body.classList.contains('has-cart-dock'), true);
+    app.document.querySelector('[data-tab="address"]').click();
+    await waitFor(() => app.document.querySelector('form[data-form="address-link"]'));
+    const input = app.document.querySelector('form[data-form="address-link"] input');
+    assert.equal(app.document.querySelector(`label[for="${input.id}"]`).textContent, 'Address link');
+    assert.equal(input.type, 'url');
+    await waitFor(() => app.document.body.textContent.includes('No saved addresses returned.'));
+    app.document.querySelector('[data-tab="cart"]').click();
+    await waitFor(() => app.document.querySelector('form[data-form="group-cart"]'));
+    assert.equal(app.document.body.classList.contains('has-cart-dock'), false);
+    assert.equal(app.document.querySelector('form[data-form="group-cart"] label').textContent, 'Cart link');
+    assert.match(app.document.body.textContent, /Sync replaces the account’s Swiggy cart/i);
+    assert.match(app.document.body.textContent, /OFO acceptance is unconfirmed/i);
+  } finally { app.close(); }
+});
+
+test('a reported payment hides the QR even if stale QR data is returned', async () => {
+  const state = normalState();
+  state.checkout = {
+    status: 'PAYMENT_PENDING', paymentVerified: true, amount: 150.25,
+    qrDataUrl: 'data:image/png;base64,ZmFrZQ==', upiIntentUrl: 'upi://pay?pa=example%40upi&am=150.25',
+    message: 'The order still needs confirmation.'
+  };
+  const app = harness({ responder: call => call.url.endsWith('/bootstrap') ? response(state) : response({ ok: false }, 500) });
+  try {
+    await waitFor(() => app.document.querySelector('[data-tab="cart"]:not([disabled])'));
+    app.document.querySelector('[data-tab="cart"]').click();
+    await waitFor(() => app.document.querySelector('[data-action="checkout-status"]'));
+    assert.match(app.document.body.textContent, /do not pay again/i);
+    assert.equal(app.document.querySelector('.payment-qr'), null);
+    assert.equal(app.document.querySelector('a[href^="upi:"]'), null);
+    assert.equal(app.document.querySelector('form[data-form="group-cart"] input').disabled, true);
+    assert.equal(app.document.querySelector('[data-action="checkout-start"]'), null);
   } finally { app.close(); }
 });

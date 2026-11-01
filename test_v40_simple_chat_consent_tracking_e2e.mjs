@@ -18,7 +18,7 @@ process.env.SIMPLE_CHAT_MODE = '1';
 
 import fs from 'fs';
 
-const DB_PATH = 'data/db.json';
+const DB_PATH = process.env.DB_FILE || 'data/db.json';
 const dbSnapshot = fs.existsSync(DB_PATH) ? fs.readFileSync(DB_PATH, 'utf8') : null;
 process.on('exit', () => {
   if (dbSnapshot !== null) { try { fs.writeFileSync(DB_PATH, dbSnapshot); } catch {} }
@@ -54,7 +54,8 @@ const {
   buildSimpleHomeScreen,
   buildSimpleOrderCard,
   buildSimpleTrackingMessage,
-  getSimpleStage
+  getSimpleStage,
+  SIMPLE_CHAT_CALLBACKS
 } = await import('./simple-chat.js');
 const { getDb, mutateDb, updateDraft, clearDraft } = await import('./store.js');
 
@@ -207,10 +208,12 @@ const ORDER_ID = 'SIMPLE9001';
   const buttons = card.keyboard.reply_markup.inline_keyboard.flat();
   const consent = buttons.find((b) => b.callback_data === `simple_confirm_order_${ORDER_ID}`);
   check('bill card has the consent button', Boolean(consent));
-  // v76: button ka label ab "QR banao — ₹487" (boss: bill ke baad sirf QR option).
-  check('consent button shows the exact payable amount', /QR banao — ₹487/.test(consent?.text || ''));
+  check('consent button shows the exact payable amount', consent?.text === 'Confirm ₹487');
   check('bill card shows restaurant, items and address',
     /Pizza Hut/.test(card.text) && /Margherita/.test(card.text) && /Lucknow/.test(card.text));
+  const realCustomerCard = customerOrderCard(order);
+  check('configured service fee is disclosed separately before consent', /Service fee:<\/b> ₹15 · separate/.test(realCustomerCard.text));
+  check('fee-exempt customer is not shown a charge', !/Service fee:/.test(buildSimpleOrderCard(order, { serviceFeePaise: 1500, feeExempt: true }).text));
   check('bill card has no web app link', buttons.every((b) => !b.url));
 
   resetLog();
@@ -286,13 +289,15 @@ console.log('\n--- Scenario 5: tracking link arrives once, as a tappable button 
   const second = await sendSimpleTrackingOnce(getDb().orders[ORDER_ID]);
   check('tracking bubble is sent the first time', first === true);
   check('tracking bubble is never duplicated', second === false);
-  const trackMsg = calls('sendMessage').map((c) => c.payload).find((m) => /Tracking link aa gaya/i.test(m.text || ''));
-  check('tracking bubble carries the real Swiggy link', Boolean(trackMsg) && String(trackMsg.text).includes(TRACK_URL));
-  check('tracking bubble button opens Swiggy (not a bot web page)',
+  const trackMsg = calls('sendMessage').map((c) => c.payload).find((m) => /Tracking ready/i.test(m.text || ''));
+  check('tracking bubble carries the real Swiggy order ID', Boolean(trackMsg) && String(trackMsg.text).includes('251999888777666'));
+  check('tracking bubble button opens the exact Swiggy link (not a bot web page)',
     (trackMsg?.reply_markup?.inline_keyboard || []).flat().some((b) => b.url === TRACK_URL));
 
-  const msg = buildSimpleTrackingMessage(getDb().orders[ORDER_ID]);
-  check('tracking message has no fabricated link', msg.text.includes('swiggy.com'));
+  const invalid = { ...getDb().orders[ORDER_ID], trackingLink: 'https://example.invalid/fake' };
+  const msg = buildSimpleTrackingMessage(invalid);
+  check('tracking message has no fabricated link', !msg.keyboard.reply_markup.inline_keyboard.flat().some(b => b.url));
+
 }
 
 // ---------------------------------------------------------------------------
@@ -302,9 +307,14 @@ console.log('\n--- Scenario 6: focus order + sources stay chat-only ---');
   check('the customer card follows their live order, not a blank draft', focus?.id === ORDER_ID);
 
   const indexSrc = fs.readFileSync('index.js', 'utf8');
-  const simpleSrc = fs.readFileSync('simple-chat.js', 'utf8');
-  check('optional Mini App is separate from the existing simple-chat cards',
-    /bot\.command\('pro'/.test(indexSrc) && /PRO_MINIAPP_URL/.test(indexSrc) && !/web_app\s*:/.test(simpleSrc));
+  const handoff = buildSimpleHomeScreen(
+    { cart: 'https://swig.gy/gc/example', address: 'A shared address' },
+    { miniAppUrl: 'https://example.test/pro' }
+  ).keyboard.reply_markup.inline_keyboard.flat();
+  check('optional Mini App handoff keeps the existing chat action and contains no draft links',
+    /bot\.command\('pro'/.test(indexSrc) && /PRO_MINIAPP_URL/.test(indexSrc) &&
+    handoff.some(b => b.web_app?.url === 'https://example.test/pro?from=chat') &&
+    handoff.some(b => b.callback_data === SIMPLE_CHAT_CALLBACKS.loginReady));
   const urlButtons = [
     ...buildSimpleOrderCard(getDb().orders[ORDER_ID]).keyboard.reply_markup.inline_keyboard.flat(),
     ...buildSimpleHomeScreen({}).keyboard.reply_markup.inline_keyboard.flat()
@@ -312,7 +322,7 @@ console.log('\n--- Scenario 6: focus order + sources stay chat-only ---');
   check('customer screens only open Swiggy (never a bot-hosted web page)',
     urlButtons.every((b) => /^https?:\/\/([a-z0-9-]+\.)*swiggy\.com\//i.test(b.url)));
   check('simple mode is enabled for this deployment', isSimpleChatEnabled() === true);
-  check('simple order card is used for customer orders', customerOrderCard(getDb().orders[ORDER_ID])?.text?.includes('Order confirmed') === true);
+  check('simple order card is used for customer orders', customerOrderCard(getDb().orders[ORDER_ID])?.text?.includes('Out for delivery') === true);
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +371,33 @@ console.log('\n--- Scenario 7: two pasted links create the order with ZERO typin
   check('no mobile-number typing prompt is sent (simple mode)', !sentPayloads.some((p2) =>
     p2?.reply_markup?.force_reply || /mobile number.*bhejein/i.test(String(p2?.text || ''))));
   check('no web app button is offered during intake', !JSON.stringify(sentPayloads).includes('web_app'));
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n--- Scenario 7B: a Mini App handoff blocks the same chat draft ---');
+{
+  const { startSimpleOrderFromDraft } = await import('./index.js');
+  const { getDraft } = await import('./store.js');
+  const { claimChatHandoff, chatDraftFingerprint, releaseChatHandoff } = await import('./swiggy-pro-handoff.js');
+  const user = 4040403;
+  clearDraft(user);
+  updateDraft(user, { cart: 'https://swig.gy/gc/hold123', address: 'Own street, Lucknow', cartDetails: { items: [{ name: 'Meal', qty: 1, price: 100 }], subtotal: 100 }, addressDetails: { address: 'Own street, Lucknow', mobile: '9876500011' } });
+  claimChatHandoff(user, chatDraftFingerprint(getDraft(user)));
+  const ctx = { from: { id: user, first_name: 'Family' }, chat: { id: user, type: 'private' }, telegram: bot.telegram, reply: async (text, extra = {}) => bot.telegram.sendMessage(user, text, extra), answerCbQuery: async () => true };
+  resetLog();
+  const started = await startSimpleOrderFromDraft(ctx, user);
+  check('chat cannot create an order while the Mini App owns this draft', started === false && !Object.values(getDb().orders).some(o => Number(o.userId) === user));
+  check('the user is told how to return to chat', calls('sendMessage').some(c => /Mini App mein open/i.test(c.payload.text || '')));
+  for (const [idx, action] of ['simple_clear_draft', 'simple_new_order', 'simple_type_address'].entries()) {
+    resetLog();
+    await bot.handleUpdate({ update_id: 4020 + idx, callback_query: {
+      id: `cb-owned-${idx}`, from: { id: user, is_bot: false, first_name: 'Family' }, chat_instance: 'ci', data: action,
+      message: { message_id: 782, date: Math.floor(Date.now() / 1000), chat: { id: user, type: 'private' }, text: 'draft' }
+    } });
+    await sleep(120); // handleUpdate queues work rather than awaiting the handler
+    check(`${action} cannot erase the Mini App-owned draft`, getDraft(user).cart === 'https://swig.gy/gc/hold123' && calls('answerCallbackQuery').some(c => c.payload.show_alert));
+  }
+  releaseChatHandoff(user);
 }
 
 // ---------------------------------------------------------------------------
@@ -461,8 +498,43 @@ console.log('\n--- Scenario 9: "Finish" really clears the finished card ---');
   check('the finished order is dismissed after Finish', readDb().orders[FINISH_ID]?.simpleCardDismissed === true);
   check('the customer lands on the empty link screen again', !getSimpleFocusOrder(FINISH_USER));
   const card = calls('sendMessage').map((c) => c.payload).find((m) =>
-    Number(m.chat_id) === FINISH_USER && /Cart link/i.test(String(m.text || '')));
+    Number(m.chat_id) === FINISH_USER && /<b>Cart:<\/b>/i.test(String(m.text || '')));
   check('a fresh order card is posted after Finish', Boolean(card));
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n--- Scenario 10: uncertain placement cannot be restarted or cancelled ---');
+{
+  const user = 4040410;
+  const orderId = 'UNKNOWN_RESTART';
+  const { executeSingleSwiggyPlacement } = await import('./swiggy-placement-journal.js');
+  mutateDb(d => {
+    d.orders[orderId] = { id: orderId, userId: user, status: 'PAYMENT_PENDING', cardStage: 'QR_RETRY', simpleChat: true };
+  });
+  updateDraft(user, { cart: 'https://swig.gy/gc/keep', address: 'Keep this address' });
+  try { await executeSingleSwiggyPlacement(`chat:${orderId}`, async () => { throw new Error('simulated timeout after send'); }); } catch {}
+  const uncertainCard = customerOrderCard(getDb().orders[orderId]);
+  check('uncertain order card warns and does not offer QR retry', /may exist.*do not retry/i.test(uncertainCard.text) && !uncertainCard.keyboard.reply_markup.inline_keyboard.flat().some(b => /user_retry_qr/.test(b.callback_data || '')));
+  resetLog();
+  await bot.handleUpdate({
+    update_id: 4011,
+    callback_query: { id: 'cb-unknown-restart', from: { id: user, is_bot: false, first_name: 'Family' }, chat_instance: 'ci', data: `simple_restart_order_${orderId}`,
+      message: { message_id: 780, date: Math.floor(Date.now() / 1000), chat: { id: user, type: 'private' }, text: 'QR unavailable' } }
+  });
+  await sleep(120);
+  check('uncertain order remains open rather than being marked cancelled', getDb().orders[orderId].status === 'PAYMENT_PENDING');
+  check('uncertain order keeps its draft', getDb().drafts[String(user)].cart === 'https://swig.gy/gc/keep');
+  check('restart warns against a second order', calls('answerCallbackQuery').some(c => /may exist.*do not start again/i.test(c.payload.text || '')));
+  resetLog();
+  await bot.handleUpdate({
+    update_id: 4012,
+    callback_query: { id: 'cb-foreign-restart', from: { id: user + 1, is_bot: false, first_name: 'Other' }, chat_instance: 'ci', data: `simple_restart_order_${orderId}`,
+      message: { message_id: 781, date: Math.floor(Date.now() / 1000), chat: { id: user + 1, type: 'private' }, text: 'QR unavailable' } }
+  });
+  await sleep(120);
+  check('another user cannot restart the order', getDb().orders[orderId].status === 'PAYMENT_PENDING' && calls('answerCallbackQuery').some(c => /unavailable/i.test(c.payload.text || '')));
+  const unpaid = buildSimpleOrderCard({ id: 'waiting', status: 'PAYMENT_PENDING', billApprovedByUser: true, finalPayable: 100 });
+  check('pending payment details do not claim a QR was already sent', /Payment details pending/i.test(unpaid.text));
 }
 
 console.log('\n================================================================');

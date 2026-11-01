@@ -20,6 +20,8 @@
  * Yeh module pure hai (koi network/Telegram nahi) — test offline chalti hai.
  */
 
+import { proAccountReservedForOther } from './swiggy-pro-reservations.js';
+
 /** Safety TTL: koi order 6 ghante se zyada ek ID ko na roke. */
 export const ACCOUNT_LOCK_TTL_MS = 6 * 60 * 60 * 1000;
 export const TERMINAL_ORDER_STATUSES = ['COMPLETED', 'CANCELLED', 'REJECTED'];
@@ -64,6 +66,9 @@ export function lockAccountToOrder(db, accKey, order, { at = Date.now(), phone =
   if (!db.config.accounts) return null;
   const acc = db.config.accounts[accKey];
   if (!acc) return null;
+  // Mini App reservations are independent of chat orders and never expire
+  // merely because a chat order is stale or missing.
+  if (proAccountReservedForOther(accKey)) return { conflict: true, accountKey: accKey, reason: 'reserved by Mini App', lock: { orderId: 'Mini App', holder: 'Mini App' } };
 
   const orderId = String(order.id);
   // Ek order = ek ID: isi order ki purani lock hata do (ID switch case).
@@ -119,6 +124,7 @@ export function releaseAccountLock(db, accKey, { orderId = '', reason = '', at =
 
 /** Kya yeh ID kisi DOOSRE order ke naam par locked hai? (sach, koi andaza nahi) */
 export function isAccountLockedForOtherOrder(db, accKey, orderId = '', { nowMs = Date.now() } = {}) {
+  if (proAccountReservedForOther(accKey)) return { locked: true, reason: 'reserved by Mini App', orderId: 'Mini App', lock: { orderId: 'Mini App', holder: 'Mini App' } };
   const acc = db?.config?.accounts?.[accKey];
   const lock = accountLockOf(acc);
   if (!lock) return { locked: false };

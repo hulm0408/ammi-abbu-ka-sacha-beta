@@ -6,7 +6,7 @@
  *
  * Yeh test proves (offline):
  *   1. Har offer ki line me ₹50 likha hai + apna status (✅ / ⏳ / ❌ / ⚪).
- *   2. Account card (boss) me chaaron numbered lines + score (2/4 · ₹100/₹200).
+ *   2. Account card (boss) me chaaron numbered lines + score (2/5 claimed, without assumed savings).
  *   3. JSON import summary me per-account chaaron ka ✓/⏳/✕ + (n/4).
  *   4. Offer Doctor card ke top par chaaron ka status pehle dikhta hai.
  *   5. "Claim ₹50 Offers" button chaaron claim karta hai (ek engine) aur
@@ -20,8 +20,8 @@ process.env.TEST_MODE = '1';
 process.env.BOT_TOKEN = '123456:TEST-TOKEN-FOR-OFFLINE-E2E';
 process.env.NODE_ENV = 'test';
 
-const DB_PATH = 'data/db.json';
-const MIRROR = 'accounts.json';
+const DB_PATH = process.env.DB_FILE || 'data/db.json';
+const MIRROR = process.env.ACCOUNTS_JSON_FILE || 'accounts.json';
 const dbSnapshot = fs.existsSync(DB_PATH) ? fs.readFileSync(DB_PATH, 'utf8') : null;
 const mirrorSnapshot = fs.existsSync(MIRROR) ? fs.readFileSync(MIRROR, 'utf8') : null;
 
@@ -68,16 +68,16 @@ console.log('\n=== 1. Chaar line, har line par ₹50 + asli status ===');
   check('har line me ₹50 likha hai', lines.every((l) => /₹50/.test(l)), JSON.stringify(lines));
   check('chaaron ka naam (Morning/Night/Extra ₹50/Weekend)', /Morning Link/.test(lines[0]) && /Night Link/.test(lines[1]) && /Extra ₹50/.test(lines[2]) && /Weekend/.test(lines[3]));
   check('CLAIMED par ✅', /✅/.test(lines[0]) && /✅/.test(lines[1]));
-  check('PRE_LOCKED par ⏳ + "slot khulte hi"', /⏳/.test(lines[2]) && /slot khulte hi/.test(lines[2]), lines[2]);
+  check('PRE_LOCKED and ₹50 target shown without promising availability', /⏳/.test(lines[2]) && /₹50 target/.test(lines[2]), lines[2]);
   check('FAILED par ❌ + asli reason', /❌/.test(lines[3]) && /campaign id nahi mili/.test(lines[3]), lines[3]);
   check('koi jhootha ✅ nahi (2 hi claimed)', lines.filter((l) => /✅/.test(l)).length === 2);
 
   const score = views.fourOfferScoreLine(ACC_PARTIAL);
-  check('score: 2/5 · ₹100 pakka / ₹250 possible', /2\/5 claimed/.test(score) && /₹100 pakka/.test(score) && /₹250 possible/.test(score), score);
+  check('score reports claims without assuming savings', /2\/5 claimed/.test(score) && !/pakka|possible|₹/.test(score), score);
   check('pre-locked score me gina', /1 pre-locked/.test(score), score);
 
   const allScore = views.fourOfferScoreLine(ACC_ALL);
-  check('sab lage to 5/5 · ₹250', /5\/5 claimed/.test(allScore) && /₹250 pakka/.test(allScore), allScore);
+  check('all claimed score remains honest', /5\/5 claimed/.test(allScore) && !/pakka|possible|₹/.test(allScore), allScore);
 }
 
 console.log('\n=== 2. Boss account card me chaaron + score ===');
@@ -141,9 +141,9 @@ console.log('\n=== 5. "Claim ₹50 Offers" button = chaaron claim + chaaron stat
 console.log('\n=== 6. USER ko bhi wahi status (dono panel) ===');
 {
   const fwd = fs.readFileSync('./forwarded-order-flow.js', 'utf8');
-  check('user card saare offer render karta hai', /Saare \$\{OFFER_TRACKS\.length\} offer — har ek ₹50/.test(fwd));
+  check('user card shows target offers', /Offers · ₹50 target/.test(fwd));
   check('user card me OFFER_TRACKS se numbered lines + ₹50', /OFFER_TRACKS\s*\n?\.map\(\(t, i\) =>/.test(fwd));
-  check('user card me score (n/total + ₹ pakka)', /claimedCount \* 50\} pakka/.test(fwd));
+  check('user card does not promise calculated savings', !/claimedCount \* 50\} pakka/.test(fwd));
 
   const cart = fs.readFileSync('./swiggy-cart.js', 'utf8');
   check('cart summary me fourOffer banta hai', /function fourOfferSummaryFor\(account, claim\)/.test(cart));
@@ -178,16 +178,16 @@ console.log('\n=== 7. Forwarded order card me user ko live status dikhta hai ===
     createdAt: new Date().toISOString(),
     eventsClaimSummary: {
       offerLabel: '₹50 Free Cash (>₹199)',
-      fourOffer: { lateNight: 'CLAIMED', breakfast: 'CLAIMED', extra50: 'PRE_LOCKED', weekend: 'FAILED', karwaChauth: 'FAILED', claimedCount: 2, total: 5, score: '2/5' }
+      fourOffer: { lateNight: 'CLAIMED', breakfast: 'CLAIMED', extra50: 'PRE_LOCKED', weekend: 'WRONG_REWARD', karwaChauth: 'FAILED', claimedCount: 2, total: 5, score: '2/5' }
     }
   };
   const db = { config: { accounts: { acc_all: ACC_ALL } }, orders: { ord_v66: order }, drafts: {} };
   const view = flow.buildForwardedOrderCardView(order, db, () => 'BODY');
   const text = typeof view === 'string' ? view : String(view?.text || '');
-  check('user card me saare offer block aaya', /Saare 5 offer — har ek ₹50/.test(text), text.slice(0, 300));
+  check('user card me offer target block aaya', /Offers · ₹50 target/.test(text), text.slice(0, 300));
   check('user card me har offer line + ₹50', /Morning Link/.test(text) && /Night Link/.test(text) && /Extra ₹50/.test(text) && /Weekend/.test(text) && (text.match(/₹50/g) || []).length >= 5);
-  check('user card me 2/5 + ₹100/₹250', /2\/5 claimed/.test(text) && /₹100 pakka/.test(text) && /₹250 possible/.test(text));
-  check('user card me pre-lock ⏳ aur fail ❌', /⏳/.test(text) && /❌/.test(text));
+  check('user card has claim count without assumed savings', /2\/5 claimed/.test(text) && !/₹100 pakka|₹250 possible/.test(text));
+  check('user card distinguishes pre-lock, wrong reward and failure', /⏳ Pre-locked/.test(text) && /🟡 Wrong reward/.test(text) && /❌ Failed/.test(text));
 }
 
 function restoreState() {

@@ -89,8 +89,8 @@ console.log('\n=== 1. QR generate FAIL → "kuch galat ho gaya, shuru se dobara"
   const calls = await tap('simple_confirm_order_V81FAIL');
   const text = textOf(calls);
   const order = getDb().orders.V81FAIL;
-  check('customer ko "KUCH GALAT HO GAYA" mila', /KUCH GALAT HO GAYA/i.test(text), text.slice(0, 120));
-  check('"shuru se dobara" kaha gaya', /shuru se dobara/i.test(text));
+  check('customer ko QR unavailable mila', /payment QR unavailable/i.test(text), text.slice(0, 120));
+  check('order check karne ko kaha gaya', /check the order before starting again/i.test(text));
   check('koi fee / ₹15 ka zikr nahi', !/₹15/.test(text) && !/verification/i.test(text));
   check('restart button mila', /simple_restart_order_V81FAIL/.test(JSON.stringify(calls.map((c) => c.payload))));
   check('koi QR photo customer ko nahi gayi', photosOf(calls).every((c) => String(c.payload.chat_id) !== String(U)));
@@ -124,8 +124,8 @@ console.log('\n=== 3. QR success → customer ko SIRF fee ka QR, order QR NAHI =
   const photos = photosOf(calls).filter((c) => String(c.payload.chat_id) === String(U));
   check('customer ko ek QR photo mili', photos.length === 1, String(photos.length));
   check('wahi QR fee ka hai (₹15)', /₹15/.test(String(photos[0]?.payload?.caption || '')), String(photos[0]?.payload?.caption || ''));
-  check('caption saaf: "order ka payment nahi"', /order ka payment nahi/i.test(String(photos[0]?.payload?.caption || '')));
-  check('card "ORDER QR TAIYAR HAI par bheja nahi"', /QR TAIYAR HAI/i.test(text) && /nahi bheja gaya/i.test(text));
+  check('caption distinguishes fee from order payment', /separate from the Swiggy order payment/i.test(String(photos[0]?.payload?.caption || '')));
+  check('fee card includes the order and fee', /service fee/i.test(text) && /V81OK/.test(text) && /₹15/.test(text));
   check('order QR (₹249) customer ko NAHI gaya', !/Pay ₹249/.test(text) && !/Payment QR · Order/i.test(text));
   check('"Maine pay kar diya" button', /wallet_fee_paid_V81OK/.test(JSON.stringify(calls.map((c) => c.payload))));
   check('order par QR held hai', order.qrHeld === true && order.cardStage === 'AWAITING_FEE', `${order.qrHeld}/${order.cardStage}`);

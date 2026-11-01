@@ -24,8 +24,8 @@ process.env.TEST_MODE = '1';
 process.env.BOT_TOKEN = '123456:TEST-TOKEN-FOR-OFFLINE-E2E';
 process.env.NODE_ENV = 'test';
 
-const DB_PATH = 'data/db.json';
-const MIRROR = 'accounts.json';
+const DB_PATH = process.env.DB_FILE || 'data/db.json';
+const MIRROR = process.env.ACCOUNTS_JSON_FILE || 'accounts.json';
 const dbSnapshot = fs.existsSync(DB_PATH) ? fs.readFileSync(DB_PATH, 'utf8') : null;
 const mirrorSnapshot = fs.existsSync(MIRROR) ? fs.readFileSync(MIRROR, 'utf8') : null;
 
@@ -238,7 +238,7 @@ console.log('\n=== 6. Bill ready par lock + wahi ID Ammi ke phone par ===');
   const compact = views.compactAccountLine(db.config.accounts[AMMI], AMMI, { index: 1 });
   check('account list line me 🔒 + order id', /🔒/.test(compact) && /ord_ammi/.test(compact), compact);
   const detail = views.accountDetailText({ acc: db.config.accounts[AMMI], key: AMMI });
-  check('account detail me Locked to order + TTL sach', /Locked<\/b> to order/.test(detail.text) && /max 6h/.test(detail.text));
+  check('account detail me lock dikhe bina fixed expiry promise ke', /Locked<\/b> to order/.test(detail.text) && !/max 6h/.test(detail.text));
   check('free account par lock line nahi', !/Locked<\/b> to order/.test(views.accountDetailText({ acc: db.config.accounts[ABBU], key: ABBU }).text));
 }
 

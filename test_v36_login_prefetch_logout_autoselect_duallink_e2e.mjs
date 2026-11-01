@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   getDb,
+  getDbFile,
   saveDb,
   updateAccount,
   permanentLogoutAccount,
@@ -180,15 +181,13 @@ try {
   const billButtons = (billReadyView.keyboard?.reply_markup?.inline_keyboard || billReadyView.keyboard?.inline_keyboard || []).flat().map(b => b.text);
   ok(billButtons.some(t => /Change Auto Selection/i.test(t)), 'BILL_READY exposes Change Auto Selection button');
 
-  console.log('\n--- 5. Topic Slider & Horizontal Navigation Bar ---');
-
+  console.log('\n--- 5. Compact topic navigation ---');
   const navRows = buildTopicNavKeyboardRows(2, 'ORD_9988');
-  ok(navRows.length === 3, 'Nav rows includes tabs + slide controls');
-  const slideRow = navRows[2];
-  ok(slideRow.length === 3, 'Slide row has Prev, Indicator, and Next buttons');
-  ok(slideRow[0].text.includes('Previous'), 'Slide row has Previous navigation button');
-  ok(slideRow[1].text.includes('Topic 2 of 4'), 'Slide row indicates current topic index');
-  ok(slideRow[2].text.includes('Next'), 'Slide row has Next navigation button');
+  ok(navRows.length === 1 && navRows[0].length === 4, 'Four steps fit in one direct-navigation row');
+  ok(navRows[0].map(b => b.callback_data).join(',') === [1, 2, 3, 4].map(i => `topic_nav_${i}_ORD_9988`).join(','), 'Every step retains its callback');
+  ok(navRows[0][0].text.includes('✓'), 'Previous step is marked complete');
+  ok(navRows[0][1].text.includes('▶'), 'Current step is marked active');
+  ok(navRows[0][2].text.includes('🔒') && navRows[0][3].text.includes('🔒'), 'Future steps remain visibly locked');
 
   console.log('\n================================================================');
   console.log(`🏆 ALL ${passed} CHECKS PASSED SUCCESSFULLY!`);
@@ -196,11 +195,11 @@ try {
 
 } finally {
   try {
-    const curDb = JSON.parse(fs.readFileSync('./data/db.json', 'utf8'));
+    const curDb = JSON.parse(fs.readFileSync(getDbFile(), 'utf8'));
     delete curDb.config?.accounts?.['acc_9876500999'];
     delete curDb.sessionVault?.['acc_9876500999'];
     delete curDb.config?.deletedAccounts?.['acc_9876500999'];
     delete curDb.config?.deletedAccounts?.['9876500999'];
-    fs.writeFileSync('./data/db.json', JSON.stringify(curDb, null, 2), 'utf8');
+    fs.writeFileSync(getDbFile(), JSON.stringify(curDb, null, 2), 'utf8');
   } catch {}
 }

@@ -25,8 +25,8 @@ process.env.TEST_MODE = '1';
 process.env.BOT_TOKEN = '123456:TEST-TOKEN-FOR-OFFLINE-E2E';
 process.env.NODE_ENV = 'test';
 
-const DB_PATH = 'data/db.json';
-const MIRROR = 'accounts.json';
+const DB_PATH = process.env.DB_FILE || 'data/db.json';
+const MIRROR = process.env.ACCOUNTS_JSON_FILE || 'accounts.json';
 const dbSnapshot = fs.existsSync(DB_PATH) ? fs.readFileSync(DB_PATH, 'utf8') : null;
 const mirrorSnapshot = fs.existsSync(MIRROR) ? fs.readFileSync(MIRROR, 'utf8') : null;
 

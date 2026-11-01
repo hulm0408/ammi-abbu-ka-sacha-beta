@@ -12,7 +12,7 @@
 //   3. Payment QR arrives in the same chat.
 //   4. Swiggy tracking link arrives in the same chat as a button.
 //
-// Everything stays inside Telegram chat — there is no mini-app / web app.
+// The existing chat flow remains available alongside an optional Telegram Mini App.
 // ============================================================================
 
 import { getStoredSwiggyTrackingUrl } from './swiggy-cart.js';
@@ -57,22 +57,13 @@ function rupees(value) {
   return Number.isInteger(n) ? String(n) : n.toFixed(2);
 }
 
-function shortText(text, max = 58) {
-  const clean = String(text || '').replace(/\s+/g, ' ').trim();
-  if (clean.length <= max) return clean;
-  return `${clean.slice(0, max - 1)}…`;
-}
-
-function itemLines(order, limit = 4) {
+function itemLines(order) {
   const items = Array.isArray(order?.items) ? order.items : [];
-  if (!items.length) return [];
-  const lines = items.slice(0, limit).map((item) => {
+  return items.map((item) => {
     const qty = Number(item?.qty || item?.quantity || 1) || 1;
     const name = item?.name || item?.item_name || 'Item';
-    return `• ${esc(shortText(name, 34))} × ${qty}`;
+    return `• ${esc(name)} × ${qty}`;
   });
-  if (items.length > limit) lines.push(`• +${items.length - limit} more`);
-  return lines;
 }
 
 function addressLine(order) {
@@ -80,11 +71,7 @@ function addressLine(order) {
   const text = ad.address || order?.address || '';
   const area = ad.city || ad.area || '';
   const clean = String(text || '').startsWith('http') ? area : (text || area);
-  const mobile = String(ad.mobile || '').replace(/\D/g, '').slice(-10);
-  const parts = [];
-  if (clean) parts.push(shortText(clean, 60));
-  if (mobile) parts.push(`📞 ${mobile}`);
-  return parts.join(' · ');
+  return clean ? String(clean).replace(/\s+/g, ' ').trim() : '';
 }
 
 function restaurantName(order) {
@@ -128,87 +115,49 @@ export function getSimpleStage(order) {
 // ---------------------------------------------------------------------------
 // 1) HOME — the only screen a customer needs before the two links.
 // ---------------------------------------------------------------------------
-export function buildSimpleHomeScreen(draft = {}) {
+export function buildSimpleHomeScreen(draft = {}, { miniAppUrl = '' } = {}) {
   const hasCart = Boolean(draft?.cart);
   const hasAddress = Boolean(draft?.address);
+  let handoffUrl = '';
+  if (hasCart && hasAddress && miniAppUrl) {
+    try {
+      const url = new URL(miniAppUrl);
+      if (url.protocol === 'https:' && !url.username && !url.password) {
+        url.searchParams.set('from', 'chat');
+        handoffUrl = url.toString();
+      }
+    } catch {}
+  }
   const cartDetails = draft?.cartDetails || {};
   const addressDetails = draft?.addressDetails || {};
-
   const cartItems = Array.isArray(cartDetails.items) ? cartDetails.items : [];
   const cartTotal = Number(cartDetails.subtotal || cartDetails.itemsTotal || 0);
-
   const cartValue = hasCart
-    ? `${esc(shortText(cartDetails.restaurantName || 'Cart link added', 28))}${cartTotal > 0 ? ` · ₹${rupees(cartTotal)}` : ''}` +
-      (cartItems.length ? ` (${cartItems.length} item${cartItems.length === 1 ? '' : 's'})` : '')
+    ? `${esc(cartDetails.restaurantName || 'Link added')}${cartTotal > 0 ? ` · ₹${rupees(cartTotal)}` : ''}${cartItems.length ? ` · ${cartItems.length} item${cartItems.length === 1 ? '' : 's'}` : ''}`
     : '—';
-
-  // A stored LINK is not a fetched ADDRESS. If Swiggy never opened it, the card
-  // must say so — otherwise the customer reads a green address and is then asked
-  // to "retry" when the order starts, which looks like the bot contradicting itself.
   const addressUnresolved = Boolean(hasAddress && addressDetails.unresolvableShortLink);
-  const addressValue = hasAddress
-    ? (addressUnresolved
-        ? '⚠️ link added — Swiggy se khul nahi paya'
-        : esc(shortText(addressDetails.address || addressDetails.city || 'Address link added', 34)))
-    : '—';
-
-  const missing = [];
-  if (!hasCart) missing.push('🛒 Cart link');
-  if (!hasAddress) missing.push('📍 Address link');
-
-  const hint = addressUnresolved
-    ? 'Address link khul nahi paya — ↻ Retry karein, ya seedha address type kar dein.'
-    : (missing.length
-        ? `Ab ${missing.join(' + ')} bhejein — bas paste karna hai, kuch type nahi karna.`
-        : 'Dono links mil gaye — bill check shuru…');
-
-  const text =
-    '🍽 <b>Swiggy order</b>\n\n' +
-    `🛒 <b>Cart:</b> ${cartValue}\n` +
-    `📍 <b>Address:</b> ${addressValue}\n\n` +
-    `<i>${hint}</i>`;
-
-  // ✅ Boss (30-10-2026): links paste hone ke baad ek hi seedha button — bill.
-  // Koi Continue/price/extra option nahi (user confuse nahi hota).
+  const addressValue = !hasAddress ? '—' : addressUnresolved
+    ? '⚠️ Link could not be opened'
+    : esc(addressDetails.address || addressDetails.city || 'Link added');
+  const text = `🍽 <b>Swiggy order</b>\n<b>Cart:</b> ${cartValue}\n<b>Address:</b> ${addressValue}`;
   if (hasCart && hasAddress && !addressUnresolved) {
-    // ⚠️ Boss (29-10-2026): "JSON user ke phone me login nahi ho raha". Sach: JSON
-    // server ka session hai — koi button kisi phone me login nahi kar sakta.
-    // Isliye yahan jhootha dawa nahi; bill ka raasta saaf.
-    const loginText =
-      '✅ <b>Cart + Address mil gaya</b>\n\n' +
-      `🛒 ${cartValue}\n` +
-      `📍 ${addressValue}\n\n` +
-      '<i>Neeche button dabaiye — bill + QR turant aayega.</i>';
-    return {
-      text: loginText,
-      // Boss (30-10-2026): "unable to inject — remove it". JSON kisi phone me
-      // inject nahi hota, isliye yahan sirf ek seedha button: bill dekho.
-      keyboard: {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '✅ Aage badhein — bill dekhein', callback_data: SIMPLE_CHAT_CALLBACKS.loginReady, style: 'success' }]
-          ]
-        }
-      }
-    };
+    const buttons = [];
+    if (handoffUrl) buttons.push({ text: 'Open Mini App', web_app: { url: handoffUrl } });
+    buttons.push({ text: 'Continue in chat', callback_data: SIMPLE_CHAT_CALLBACKS.loginReady });
+    return { text, keyboard: { reply_markup: { inline_keyboard: [buttons] } } };
   }
-
-  const rows = [
-    [{ text: '📋 Cart + Address link paste karein', callback_data: SIMPLE_CHAT_CALLBACKS.pasteLinks, style: 'success' }],
-    [{ text: '👤 Order for Someone Else', callback_data: SIMPLE_CHAT_CALLBACKS.orderForOthers, style: 'primary' }]
-  ];
+  const rows = [];
   if (addressUnresolved) {
-    // Fix it right here — the customer should never have to press Continue only
-    // to be bounced back with the same retry card.
-    rows.unshift([
-      { text: '↻ Retry address', callback_data: 'simple_retry_address', style: 'primary' },
-      { text: '✍️ Address type karein', callback_data: 'simple_type_address', style: 'primary' }
+    rows.push([
+      { text: 'Retry address', callback_data: 'simple_retry_address' },
+      { text: 'Type address', callback_data: 'simple_type_address' }
     ]);
   }
-  if (hasCart || hasAddress) {
-    rows.push([{ text: '✖ Clear', callback_data: SIMPLE_CHAT_CALLBACKS.clearDraft, style: 'danger' }]);
-  }
-
+  rows.push([
+    { text: 'Send links', callback_data: SIMPLE_CHAT_CALLBACKS.pasteLinks },
+    { text: 'For someone else', callback_data: SIMPLE_CHAT_CALLBACKS.orderForOthers }
+  ]);
+  if (hasCart || hasAddress) rows.push([{ text: 'Clear', callback_data: SIMPLE_CHAT_CALLBACKS.clearDraft }]);
   return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
 }
 
@@ -221,22 +170,17 @@ export function buildSimpleLoginHelpCard(order) {
   const truth = order?.deviceLogin ? deviceLoginTruth(order) : null;
   const phone = String(order?.deviceLogin?.phone || order?.orderAccount || '').trim();
   const text =
-    '❓ <b>PHONE ME LOGIN — SACH</b>\n\n' +
-    (truth ? `${truth.icon} <i>${esc(truth.label)}</i>\n\n` : '') +
-    '<i>Bot kisi phone me login nahi kar sakta. JSON/cookie = bot ke server ka session; aapke phone me login tabhi hoga jab usi phone par OTP daala jaye.</i>\n\n' +
-    (phone ? `Swiggy number: <code>${esc(phone)}</code>\n` : '') +
-    '1️⃣ Swiggy app kholo → purani ID ho to <b>Logout</b>\n' +
-    '2️⃣ Usi number se login → OTP us number wale phone par aayega\n' +
-    '3️⃣ App me <b>cart dikhe = login ho gaya</b>\n\n' +
-    '<i>Bot phone ko dekh nahi sakta — isliye jhootha “login ho gaya” kabhi nahi bolega.</i>';
+    '📱 <b>Swiggy login</b>\n' +
+    (truth ? `${truth.icon} ${esc(truth.label)}\n` : '') +
+    (phone ? `<b>Number:</b> <code>${esc(phone)}</code>\n` : '') +
+    'Server session phone mein login nahi karta. Phone login ke liye Swiggy mein OTP chahiye.';
   return {
     text,
     keyboard: {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '✅ Cart dikh raha hai — login ho gaya', callback_data: dlCb.cartYes, style: 'success' }],
-          [{ text: '❌ Cart nahi dikha', callback_data: dlCb.cartNo, style: 'danger' }],
-          [{ text: '🙅 OTP nahi — bot kare', callback_data: dlCb.botPlaces, style: 'primary' }]
+          [{ text: 'Cart dikh raha hai', callback_data: dlCb.cartYes }, { text: 'Cart nahi dikha', callback_data: dlCb.cartNo }],
+          [{ text: 'Bot se order', callback_data: dlCb.botPlaces }]
         ]
       }
     }
@@ -246,169 +190,110 @@ export function buildSimpleLoginHelpCard(order) {
 // ---------------------------------------------------------------------------
 // 2) ORDER CARD — bill + the single consent button, then payment, then tracking.
 // ---------------------------------------------------------------------------
-export function buildSimpleOrderCard(order) {
+export function buildSimpleOrderCard(order, { serviceFeePaise = null, feeExempt = false, placementPossible = false } = {}) {
   const stage = getSimpleStage(order);
-  const rest = esc(shortText(restaurantName(order), 42));
+  const rest = esc(restaurantName(order));
   const addr = addressLine(order);
   const amount = amountOf(order);
   const savings = Number(order?.totalSavings || 0);
   const rows = [];
+  const recipientName = String(order?.recipientName || order?.addressDetails?.name || '').trim();
+  const recipientMobile = String(order?.recipientMobile || order?.addressDetails?.mobile || '').replace(/\D/g, '').slice(-10);
+  const recipient = [recipientName, recipientMobile].filter(Boolean).map(esc).join(' · ');
 
   if (stage === 'CLOSED') {
-    const text =
-      '✖ <b>Order cancelled</b>\n\n' +
-      `<i>${esc(order?.cancellationReason || order?.liveOrderStatus || 'Yeh order band ho gaya.')}</i>\n\n` +
-      'Naya order shuru karne ke liye neeche dabayein.';
-    rows.push([{ text: '🛒 Naya order', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder, style: 'success' }]);
-    return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
+    const reason = esc(order?.cancellationReason || order?.liveOrderStatus || 'Order band hai.');
+    rows.push([{ text: 'New order', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder }]);
+    return { text: `✖ <b>Order cancelled</b>\n${reason}`, keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 
   if (stage === 'TRACKING') {
     const trackingUrl = simpleTrackingUrl(order);
-    const swiggyId = String(order?.swiggyOrderId || order?.pendingSwiggyOrderId || order?.id || '').trim();
+    const swiggyId = String(order?.swiggyOrderId || order?.pendingSwiggyOrderId || '').trim();
     const otp = String(order?.deliveryOtp || '').trim();
     const partnerName = String(order?.deliveryBoyName || '').trim();
     const partnerPhone = String(order?.deliveryBoyMobile || '').trim();
     const swiggyPhone = String(order?.orderAccount || order?.selectedAccountPhone || order?.injectedSession?.phone || '').trim();
     const eta = String(order?.etaMinutes || '').trim();
     const isDelivered = /delivered/i.test(String(order?.liveOrderStatus || ''));
-    const statusText = String(order?.liveOrderStatus || (isDelivered ? 'Delivered' : 'Order Confirmed')).trim();
-    const recipientName = String(order?.recipientName || order?.addressDetails?.name || '').trim();
-    const recipientMobile = String(order?.recipientMobile || order?.addressDetails?.mobile || '').replace(/\D/g, '').slice(-10);
-
-    // ✅ Boss (30-10-2026): "...and then hogaya sab no other option" — yahi aakhri
-    // screen hai: ek line + tracking button.
+    const statusText = String(order?.liveOrderStatus || (order?.status === 'COMPLETED' ? 'Completed' : order?.status === 'ACCEPTED' ? 'Accepted' : 'Update pending')).trim();
+    const partner = [partnerName, partnerPhone].filter(Boolean).map(esc).join(' · ');
     const lines = [
-      isDelivered ? '🍽 <b>SAB HO GAYA</b> — Order Delivered! 🎉' : '✅ <b>SAB HO GAYA</b> — Order confirmed, tracking ready',
-      '',
-      `▤ <b>${rest}</b>`,
-      recipientName ? `👤 <b>Order for:</b> ${esc(shortText(recipientName, 40))}${recipientMobile ? ` · 📞 ${esc(recipientMobile)}` : ''}` : '',
-      swiggyId ? `◉ <b>Swiggy ID:</b> <code>${esc(swiggyId)}</code>` : '',
-      `◉ <b>Status:</b> <b>${esc(shortText(statusText, 45))}</b>`,
-      partnerName ? `🛵 <b>Delivery Partner:</b> ${esc(partnerName)}` : '',
-      partnerPhone ? `📞 <b>Call Partner:</b> <code>${esc(partnerPhone)}</code>` : '',
-      swiggyPhone ? `📱 <b>Swiggy Account:</b> <code>${esc(swiggyPhone)}</code>` : '',
-      otp ? `🔢 <b>Delivery OTP:</b> <code>${esc(otp)}</code>` : '',
-      eta && !isDelivered ? `⏱ <b>Estimated Time:</b> ${esc(eta)} mins` : '',
-      order?.injectedSessionStatus === 'DELIVERED_RELEASED'
-        ? '🔒 <b>Session:</b> <i>Auto-logged out & returned to vault</i>'
-        : (order?.injectedSession ? '⚡ <b>Session:</b> <i>Injected & live tracking</i>' : ''),
-      '',
-      isDelivered
-        ? '<i>Order deliver ho gaya hai. Swiggy session automatically logout hokar vault me export ho chuka hai.</i>'
-        : (trackingUrl
-            ? '<i>Swiggy live tracking link neeche hai 👇</i>'
-            : '<i>Swiggy link publish hote hi yahan aa jayega. Live updates yahan aate rahenge.</i>')
-    ].filter((line) => line !== null && line !== undefined && line !== '');
-
-    if (trackingUrl) {
-      rows.push([{ text: '🛵 Track on Swiggy', url: trackingUrl, style: 'success' }]);
-    } else {
-      // Link abhi publish nahi hua — ek hi button (khud laayega), koi menu nahi.
-      rows.push([{ text: '🔗 Link lao', callback_data: `track_now_${order.id}`, style: 'success' }]);
-    }
-    if (partnerPhone) {
-      rows.push([{ text: `📞 Delivery partner: ${partnerPhone}`, callback_data: `user_call_partner_${order.id}`, style: 'primary' }]);
-    }
-    rows.push([{ text: '🏁 Ho gaya', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder, style: 'primary' }]);
+      isDelivered ? '✅ <b>Order delivered</b>' : '🛵 <b>Order status</b>',
+      `<b>${rest}</b>`,
+      recipient ? `<b>For:</b> ${recipient}` : '',
+      swiggyId ? `<b>Swiggy ID:</b> <code>${esc(swiggyId)}</code>` : `<b>Order ref:</b> <code>${esc(order?.id || '')}</code>`,
+      `<b>Status:</b> ${esc(statusText)}`,
+      partner ? `<b>Partner:</b> ${partner}` : '',
+      swiggyPhone ? `<b>Swiggy account:</b> <code>${esc(swiggyPhone)}</code>` : '',
+      otp ? `<b>Delivery OTP:</b> <code>${esc(otp)}</code>` : '',
+      eta && !isDelivered ? `<b>ETA:</b> ${esc(eta)} min` : '',
+      !trackingUrl && !isDelivered ? 'Tracking link not available yet.' : ''
+    ].filter(Boolean);
+    if (trackingUrl) rows.push([{ text: 'Track on Swiggy', url: trackingUrl }]);
+    else rows.push([{ text: 'Get tracking', callback_data: `track_now_${order.id}` }]);
+    const lastRow = [];
+    if (partnerPhone) lastRow.push({ text: 'Call partner', callback_data: `user_call_partner_${order.id}` });
+    lastRow.push({ text: 'Done', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder });
+    rows.push(lastRow);
     return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 
-  // 🔐 QR READY / VERIFICATION / RETRY — QR pehle banta hai, phir chhoti refundable
-  // verification, phir QR release. Fail hone par sirf "try again".
   const heldStage = String(order?.cardStage || '').toUpperCase();
   if (heldStage === 'QR_RETRY') {
-    const text =
-      '⚠️ <b>QR ban nahi paya</b>\n\n' +
-      `▤ <b>${rest}</b>\n\n` +
-      '<i>Swiggy ki taraf se payment QR nahi aaya. Koi paisa nahi kata. Dobara try karein.</i>';
-    rows.push([{ text: '🔄 Dobara try karein', callback_data: `user_retry_qr_${order.id}`, style: 'success' }]);
-    rows.push([
-      { text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' },
-      { text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
-    ]);
+    const text = `⚠️ <b>QR unavailable</b>\n${rest}\n${placementPossible ? 'Order may exist. Check the original account; do not retry.' : 'Check the order before retrying.'}`;
+    if (!placementPossible) rows.push([{ text: 'Retry QR', callback_data: `user_retry_qr_${order.id}` }]);
+    rows.push(placementPossible
+      ? [{ text: 'Support', callback_data: 'support_contact_admin' }]
+      : [{ text: 'Support', callback_data: 'support_contact_admin' }, { text: 'Cancel', callback_data: `action_cancel_order_confirm_${order.id}` }]);
     return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
   if (heldStage === 'AWAITING_FEE' || heldStage === 'QR_HELD') {
-    const text =
-      '🔐 <b>Order QR ready hai</b>\n\n' +
-      `▤ <b>${rest}</b>\n` +
-      (amount > 0 ? `₹ <b>To Pay:</b> ₹${rupees(amount)}\n` : '') +
-      '\n<i>Aapka payment QR taiyar hai aur safe rakha hua hai.</i>\n' +
-      '<i>Bas ek chhoti refundable verification ke baad QR khul jayega — order ke bill me ye nahi judti.</i>';
-    rows.push([{ text: '🔐 Verification karein', callback_data: 'wallet_verify_pay', style: 'success' }]);
-    rows.push([{ text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }]);
+    const fee = Number(order?.feeDuePaise || 0) / 100;
+    const text = `🔐 <b>Service fee required</b>\n${rest}${fee > 0 ? `\n<b>Fee:</b> ₹${rupees(fee)}` : ''}${amount > 0 ? `\n<b>Order payment:</b> ₹${rupees(amount)}` : ''}\nFee and order payment are separate.`;
+    rows.push([{ text: 'View fee', callback_data: 'wallet_verify_pay' }, { text: 'Support', callback_data: 'support_contact_admin' }]);
     return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 
   if (stage === 'PAY') {
     const paymentUrl = String(order?.swiggyPaymentUrl || '').trim();
     const generic = /^https?:\/\/(www\.)?swiggy\.com\/(checkout|payments)\/?$/i.test(paymentUrl);
-    // 📱 Phone placement: bot place nahi karta — Swiggy app se order hota hai.
     const phoneMode = isCustomerPhonePlacement(order);
-    const dlTruthPay = order?.deviceLogin ? deviceLoginTruth(order) : null;
-    const text =
-      (phoneMode ? '📱 <b>Order aapke phone se</b>\n\n' : '💳 <b>Payment</b>\n\n') +
-      `▤ <b>${rest}</b>\n` +
-      (amount > 0 ? `₹ <b>To Pay:</b> ₹${rupees(amount)}\n` : '') +
-      (phoneMode
-        ? `\n<i>Swiggy app me login karke Cart kholo — ₹50 cash + offers usi ID par lage hain. Order place karte hi tracking yahin aa jayega.</i>` +
-          (dlTruthPay ? `\n${dlTruthPay.icon} <i>${esc(dlTruthPay.label)}</i>` : '')
-        : '\n<i>QR upar bheja gaya hai — scan karke pay karein. Payment ke baad tracking link yahin milega.</i>');
-    if (paymentUrl && !generic) {
-      rows.push([{ text: '💳 Pay on Swiggy', url: paymentUrl, style: 'success' }]);
-    }
-    rows.push([{ text: '✓ I have paid — tracking', callback_data: `user_paid_status_${order.id}`, style: 'success' }]);
-    rows.push([{ text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }]);
+    const dlTruth = order?.deviceLogin ? deviceLoginTruth(order) : null;
+    const paymentSent = Boolean(order?.paymentSentToUser || order?.customerPaymentMessageId);
+    const paymentHint = paymentSent
+      ? 'Use the payment details and check payment status.'
+      : paymentUrl && !generic ? 'Open payment and check its status.' : 'Payment details pending.';
+    const text = [
+      phoneMode ? '📱 <b>Order on your phone</b>' : '💳 <b>Payment</b>',
+      `<b>${rest}</b>`,
+      amount > 0 ? `<b>To pay:</b> ₹${rupees(amount)}` : '',
+      phoneMode ? 'Place the order in Swiggy on your phone.' : paymentHint,
+      phoneMode && dlTruth ? `${dlTruth.icon} ${esc(dlTruth.label)}` : ''
+    ].filter(Boolean).join('\n');
+    if (paymentUrl && !generic) rows.push([{ text: 'Pay on Swiggy', url: paymentUrl }]);
+    rows.push([{ text: 'Check payment', callback_data: `user_paid_status_${order.id}` }, { text: 'Support', callback_data: 'support_contact_admin' }]);
     return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 
   if (stage === 'BILL') {
-    const items = itemLines(order);
-    // 📱 Customer ke phone se order (boss 29-10-2026) — sach wahi jo proof se mila.
     const dlTruth = order?.deviceLogin ? deviceLoginTruth(order) : null;
-    const dlCb = deviceLoginCallbacks(order.id); // login help card me use hota hai (buildSimpleLoginHelpCard)
-    // Bill par koi fee/verification line NAHI — customer ko lagta tha ki usse
-    // order par paisa liya ja raha hai (boss 30-10-2026).
-    const recipientName = String(order?.recipientName || order?.addressDetails?.name || '').trim();
-    const recipientMobile = String(order?.recipientMobile || order?.addressDetails?.mobile || '').replace(/\D/g, '').slice(-10);
     const lines = [
       '🧾 <b>Confirm your order</b>',
-      '',
-      `▤ <b>${rest}</b>`,
-      recipientName ? `👤 <b>Order for:</b> ${esc(shortText(recipientName, 40))}${recipientMobile ? ` · 📞 ${esc(recipientMobile)}` : ''}` : '',
-      ...items,
-      addr ? `📍 ${esc(addr)}` : '',
-      '',
-      amount > 0 ? `₹ <b>To Pay: ₹${rupees(amount)}</b>${savings > 0 ? `  <i>(saved ₹${rupees(savings)})</i>` : ''}` : '₹ <b>Best price lag raha hai…</b>',
-      // Boss (30-10-2026): yahan koi login/OTP/status option nahi — bill bas bill.
-      '',
-      '<i>“QR banao” dabate hi payment QR yahin aayega — uske baad tracking link.</i>'
-    ].filter((line) => line !== null && line !== undefined);
-    // ✅ Boss (30-10-2026): bill ke baad SIRF ek option — QR banao.
-    // (Login pehle hi ho chuka hai, isliye yahan koi login/OTP/extra button nahi.)
-    rows.push([{
-      text: amount > 0 ? `✅ QR banao — ₹${rupees(amount)}` : '✅ QR banao',
-      callback_data: `simple_confirm_order_${order.id}`,
-      style: 'success'
-    }]);
-    // Sirf asli FAILURE par madad ka option (happy path me kuch bhi nahi).
-    if (dlTruth && dlTruth.status === 'FAILED') {
-      rows.push([{ text: '❓ Login me dikkat', callback_data: `simple_login_help_${order.id}`, style: 'primary' }]);
-    }
+      `<b>${rest}</b>`,
+      recipient ? `<b>For:</b> ${recipient}` : '',
+      ...itemLines(order),
+      addr ? `<b>Address:</b> ${esc(addr)}` : '',
+      amount > 0 ? `<b>Order payment: ₹${rupees(amount)}</b>${savings > 0 ? ` · saved ₹${rupees(savings)}` : ''}` : '<b>Checking bill…</b>',
+      !feeExempt && Number(serviceFeePaise) > 0 ? `<b>Service fee:</b> ₹${rupees(Number(serviceFeePaise) / 100)} · separate` : ''
+    ].filter(Boolean);
+    rows.push([{ text: amount > 0 ? `Confirm ₹${rupees(amount)}` : 'Confirm', callback_data: `simple_confirm_order_${order.id}` }]);
+    if (dlTruth && dlTruth.status === 'FAILED') rows.push([{ text: 'Login help', callback_data: `simple_login_help_${order.id}` }]);
     return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
   }
 
-  // CHECKING — offer scan running
-  const text =
-    '◷ <b>Best price check…</b>\n\n' +
-    `▤ <b>${rest}</b>\n` +
-    (addr ? `📍 ${esc(addr)}\n` : '') +
-    '\n<i>Coupon + free cash lagake final bill nikal raha hoon. 10–20 second.</i>';
-  rows.push([
-    { text: '🔄 Refresh', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
-    { text: '✖ Cancel', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
-  ]);
+  const text = `◷ <b>Checking bill…</b>\n${rest}${addr ? `\n<b>Address:</b> ${esc(addr)}` : ''}`;
+  rows.push([{ text: 'Refresh', callback_data: `user_refresh_status_${order.id}` }, { text: 'Cancel', callback_data: `action_cancel_order_confirm_${order.id}` }]);
   return { text, keyboard: { reply_markup: { inline_keyboard: rows } } };
 }
 
@@ -418,57 +303,39 @@ export function buildSimpleOrderCard(order) {
 // ---------------------------------------------------------------------------
 export function buildSimpleTrackingMessage(order, { milestoneUpdate = false } = {}) {
   const trackingUrl = simpleTrackingUrl(order);
-  const rest = esc(shortText(restaurantName(order), 42));
-  const swiggyId = String(order?.swiggyOrderId || order?.pendingSwiggyOrderId || order?.id || '').trim();
+  const rest = esc(restaurantName(order));
+  const swiggyId = String(order?.swiggyOrderId || order?.pendingSwiggyOrderId || '').trim();
   const otp = String(order?.deliveryOtp || '').trim();
   const partnerName = String(order?.deliveryBoyName || '').trim();
   const partnerPhone = String(order?.deliveryBoyMobile || '').trim();
   const swiggyPhone = String(order?.orderAccount || order?.selectedAccountPhone || order?.injectedSession?.phone || '').trim();
   const eta = String(order?.etaMinutes || '').trim();
   const isDelivered = /delivered/i.test(String(order?.liveOrderStatus || ''));
-  const statusText = String(order?.liveOrderStatus || (isDelivered ? 'Delivered' : 'Order Confirmed')).trim();
+  const statusText = String(order?.liveOrderStatus || (order?.status === 'COMPLETED' ? 'Completed' : order?.status === 'ACCEPTED' ? 'Accepted' : 'Update pending')).trim();
   const recipientName = String(order?.recipientName || order?.addressDetails?.name || '').trim();
   const recipientMobile = String(order?.recipientMobile || order?.addressDetails?.mobile || '').replace(/\D/g, '').slice(-10);
-
-  // ✅ Boss (30-10-2026): "...then hogaya sab" — yahi aakhri message hai.
-  let title = '✅ <b>SAB HO GAYA</b> · tracking link aa gaya';
-  if (isDelivered) {
-    title = '🍽 <b>Order Delivered Successfully! 🎉</b>';
-  } else if (milestoneUpdate) {
-    title = '🛵 <b>Live Delivery Update</b>';
-  }
-
+  const recipient = [recipientName, recipientMobile].filter(Boolean).map(esc).join(' · ');
+  const partner = [partnerName, partnerPhone].filter(Boolean).map(esc).join(' · ');
+  const title = isDelivered ? '✅ <b>Order delivered</b>' : milestoneUpdate || !trackingUrl ? '🛵 <b>Order update</b>' : '🛵 <b>Tracking ready</b>';
   const lines = [
     title,
-    '',
-    `▤ <b>${rest}</b>`,
-    recipientName ? `👤 <b>Order for:</b> ${esc(shortText(recipientName, 40))}${recipientMobile ? ` · 📞 ${esc(recipientMobile)}` : ''}` : '',
-    swiggyId ? `◉ <b>Order:</b> <code>${esc(swiggyId)}</code>` : '',
-    `◉ <b>Status:</b> <b>${esc(shortText(statusText, 45))}</b>`,
-    partnerName ? `🛵 <b>Delivery Partner:</b> ${esc(partnerName)}` : '',
-    partnerPhone ? `📞 <b>Call Partner:</b> <code>${esc(partnerPhone)}</code>` : '',
-    swiggyPhone ? `📱 <b>Swiggy Account:</b> <code>${esc(swiggyPhone)}</code>` : '',
-    otp ? `🔢 <b>Delivery OTP:</b> <code>${esc(otp)}</code>` : '',
-    eta && !isDelivered ? `⏱ <b>Estimated Time:</b> ${esc(eta)} mins` : '',
-    order?.injectedSessionStatus === 'DELIVERED_RELEASED'
-      ? '🔒 <b>Session:</b> <i>Auto-logged out & returned to vault</i>'
-      : (order?.injectedSession ? '⚡ <b>Session:</b> <i>Injected session active</i>' : ''),
-    trackingUrl ? '\n<a href="' + esc(trackingUrl) + '">' + esc(trackingUrl) + '</a>' : ''
-  ].filter((line) => line !== null && line !== undefined && line !== '');
-
+    `<b>${rest}</b>`,
+    recipient ? `<b>For:</b> ${recipient}` : '',
+    swiggyId ? `<b>Swiggy ID:</b> <code>${esc(swiggyId)}</code>` : '',
+    `<b>Status:</b> ${esc(statusText)}`,
+    partner ? `<b>Partner:</b> ${partner}` : '',
+    swiggyPhone ? `<b>Swiggy account:</b> <code>${esc(swiggyPhone)}</code>` : '',
+    otp ? `<b>Delivery OTP:</b> <code>${esc(otp)}</code>` : '',
+    eta && !isDelivered ? `<b>ETA:</b> ${esc(eta)} min` : '',
+    !trackingUrl && order?.ofoPlaced === false ? 'OFO not confirmed; ask support.' : ''
+  ].filter(Boolean);
   const rows = [];
-  if (partnerPhone) {
-    rows.push([{ text: `📞 Call Partner: ${partnerPhone}`, callback_data: `user_call_partner_${order.id}` }]);
-  }
-  if (trackingUrl) rows.push([{ text: '🛵 Track on Swiggy', url: trackingUrl, style: 'success' }]);
-  // 📦 Boss (30-10-2026): "link kiu nahi aaraha kiuki order to ofo place nahi
-  // horaha" — jab order OFO hi nahi bana to link ka wada nahi. Sach + admin.
-  if (!trackingUrl && order?.ofoPlaced === false) {
-    lines.push('', '<i>Tracking link is order par Swiggy ne nahi banaya (OFO mode confirm nahi hua) —' +
-      ' pareshan na hon, order normal chal raha hai. Admin ko batayein.</i>');
-    rows.push([{ text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }]);
-  }
-  rows.push([{ text: '🏁 Ho gaya — naya order', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder, style: 'primary' }]);
+  if (trackingUrl) rows.push([{ text: 'Track on Swiggy', url: trackingUrl }]);
+  if (!trackingUrl && order?.ofoPlaced === false) rows.push([{ text: 'Support', callback_data: 'support_contact_admin' }]);
+  const lastRow = [];
+  if (partnerPhone) lastRow.push({ text: 'Call partner', callback_data: `user_call_partner_${order.id}` });
+  lastRow.push({ text: 'New order', callback_data: SIMPLE_CHAT_CALLBACKS.newOrder });
+  rows.push(lastRow);
   return { text: lines.join('\n'), keyboard: { reply_markup: { inline_keyboard: rows } } };
 }
 

@@ -27,6 +27,7 @@ import {
   getOrderCurrentTopic,
   buildTopicNavKeyboardRows,
   formatTopicProgressBarText,
+  handleTopicNavClick,
   resetOrderTopicsToStart
 } from './ammi-abbu-topic-flow.js';
 
@@ -36,6 +37,7 @@ const {
   bot,
   getUserScreen,
   formatUserOrderCard,
+  formatUserOrderCardText,
   approveUserOrderBillAction
 } = await import('./index.js');
 
@@ -110,18 +112,12 @@ console.log('\n--- 2. Topic Navigation Buttons & Level-by-Level Locks ---');
 
 console.log('\n--- 3. Progress Bar Text Visuals ---');
 {
-  const p1 = formatTopicProgressBarText(1);
-  check('Topic 1 header mentions Topic 1', p1.includes('Topic 1 of 4') && p1.includes('Submit Link'));
-  check('Topic 1 progress shows [🟢 1. Link]', p1.includes('🟢 1. Link') && p1.includes('🔒 2. Bill'));
+  for (const [step, title] of [[1, 'Submit Link'], [2, 'Bill & Confirm'], [3, 'Payment & QR'], [4, 'Live Tracking']]) {
+    const progress = formatTopicProgressBarText(step);
+    check(`Step ${step} shows its compact title`, progress.includes(`Step ${step}/4`) && progress.includes(title));
+  }
+  check('Out-of-range step is clamped', formatTopicProgressBarText(9).includes('Step 4/4'));
 
-  const p2 = formatTopicProgressBarText(2);
-  check('Topic 2 progress shows [✓ 1. Link] ➔ [🟢 2. Bill]', p2.includes('✓ 1. Link') && p2.includes('🟢 2. Bill'));
-
-  const p3 = formatTopicProgressBarText(3);
-  check('Topic 3 progress shows [✓ 2. Bill] ➔ [🟢 3. Pay]', p3.includes('✓ 2. Bill') && p3.includes('🟢 3. Pay'));
-
-  const p4 = formatTopicProgressBarText(4);
-  check('Topic 4 progress shows [✓ 3. Pay] ➔ [🟢 4. Track]', p4.includes('✓ 3. Pay') && p4.includes('🟢 4. Track'));
 }
 
 console.log('\n--- 4. Customer Card Renders & Topic Flow Integration ---');
@@ -130,7 +126,7 @@ console.log('\n--- 4. Customer Card Renders & Topic Flow Integration ---');
   clearDraft(AMMI_ID);
   const startScreen = getUserScreen(AMMI_ID, { id: AMMI_ID, first_name: 'Ammi' });
   const startButtons = startScreen.keyboard.reply_markup.inline_keyboard.flat();
-  check('Initial user screen announces Topic 1 in header', /Topic 1: Submit Link/i.test(startScreen.text));
+  check('Initial user screen shows the order heading', /Swiggy order/i.test(startScreen.text));
   check('Initial user screen exposes Topic 1 nav button', startButtons.some(b => b.callback_data === 'topic_nav_1_draft'));
   check('Initial user screen exposes locked Topic 2 button', startButtons.some(b => b.callback_data === 'topic_nav_2_draft' && b.text.includes('🔒')));
   check('Initial user screen exposes locked Topic 3 button', startButtons.some(b => b.callback_data === 'topic_nav_3_draft' && b.text.includes('🔒')));
@@ -148,7 +144,7 @@ console.log('\n--- 4. Customer Card Renders & Topic Flow Integration ---');
   };
   const cardT2 = formatUserOrderCard(orderT2);
   const btnsT2 = cardT2.keyboard.reply_markup.inline_keyboard.flat();
-  check('Topic 2 card shows Topic 2 progress header', cardT2.text.includes('Topic 2 of 4'));
+  check('Topic 2 card shows Topic 2 progress header', cardT2.text.includes('Step 2/4'));
   check('Topic 2 card has active Topic 2 button', btnsT2.some(b => b.callback_data === 'topic_nav_2_V35_ORD_2' && b.text.includes('▶')));
   check('Topic 2 card has locked Topic 3 button', btnsT2.some(b => b.callback_data === 'topic_nav_3_V35_ORD_2' && b.text.includes('🔒')));
   check('Topic 2 card has Approve bill button', btnsT2.some(b => b.callback_data === 'user_approve_bill_V35_ORD_2'));
@@ -166,7 +162,7 @@ console.log('\n--- 4. Customer Card Renders & Topic Flow Integration ---');
   };
   const cardT4 = formatUserOrderCard(orderT4);
   const btnsT4 = cardT4.keyboard.reply_markup.inline_keyboard.flat();
-  check('Topic 4 card shows Topic 4 progress header', cardT4.text.includes('Topic 4 of 4'));
+  check('Topic 4 card shows Topic 4 progress header', cardT4.text.includes('Step 4/4'));
   check('Topic 4 card has active Topic 4 button', btnsT4.some(b => b.callback_data === 'topic_nav_4_V35_ORD_4' && b.text.includes('▶')));
   check('Topic 4 card has Finish & Start New Order button', btnsT4.some(b => b.callback_data === 'topic_finish_and_start'));
 }
@@ -183,16 +179,38 @@ console.log('\n--- 5. Topic Finish & Reset to Start ---');
 
   check('Active order exists before finish', Boolean(getActiveUserOrder(AMMI_ID)));
 
-  // Finish topics
-  resetOrderTopicsToStart(AMMI_ID);
-
-  const remaining = getActiveUserOrder(AMMI_ID);
-  if (remaining) {
-    console.log('Remaining order details:', remaining.id, remaining.status, remaining.userId);
-  }
-  check('Active order is marked COMPLETED & cleared', remaining === null || remaining === undefined);
+  // A navigation action must never turn an unverified open order into COMPLETED.
+  check('Finish refuses an active order', resetOrderTopicsToStart(AMMI_ID) === false);
+  check('Active order retains its real status', getDb().orders['V35_FINISH'].status === 'ACCEPTED');
+  check('Active order remains available', Boolean(getActiveUserOrder(AMMI_ID)));
+  db.orders['V35_FINISH'].status = 'COMPLETED'; // Simulate a separately completed order.
+  saveDb(db);
+  check('Finish works after the order is already complete', resetOrderTopicsToStart(AMMI_ID) === true);
   const postScreen = getUserScreen(AMMI_ID, { id: AMMI_ID, first_name: 'Ammi' });
-  check('After finish, returns cleanly to Topic 1 (Submit Link)', /Topic 1: Submit Link/i.test(postScreen.text));
+  check('After finish, the draft screen is shown', /Swiggy order/i.test(postScreen.text));
+
+}
+
+console.log('\n--- 6. Navigation guards & safe text ---');
+{
+  const db = getDb();
+  db.orders['NAV_GUARD'] = { id: 'NAV_GUARD', userId: AMMI_ID, status: 'PENDING', cart: '<unsafe>', address: '123 & Main' };
+  saveDb(db);
+  const responses = [];
+  const fakeCtx = id => ({ from: { id }, answerCbQuery: async (text, opts) => responses.push({ text, opts }), reply: async text => responses.push({ reply: text }), editMessageText: async text => responses.push({ edit: text }) });
+  await handleTopicNavClick(fakeCtx(AMMI_ID), 3, 'NAV_GUARD');
+  check('A future step remains locked', /locked/i.test(responses.at(-1)?.text || '') && responses.at(-1)?.opts?.show_alert);
+  await handleTopicNavClick(fakeCtx(AMMI_ID + 1), 1, 'NAV_GUARD');
+  check('Another user cannot open this order', /unavailable/i.test(responses.at(-1)?.text || '') && !responses.at(-1)?.reply);
+  await handleTopicNavClick(fakeCtx(AMMI_ID), 1, 'NAV_GUARD');
+  const reply = responses.at(-1)?.reply || '';
+  check('Owner sees escaped cart and address without an invented verified status', reply.includes('&lt;unsafe&gt;') && reply.includes('123 &amp; Main') && !/verified/i.test(reply));
+  const receipt = formatUserOrderCardText({ subtotal: 100, freeDelivery: true, swiggyOneMembershipFee: 20, address: 'Demo road' });
+  check('Missing delivery fee is not presented as free', /Delivery Fee: Not confirmed/.test(receipt) && !/Delivery Fee: FREE/.test(receipt));
+  const paid = formatUserOrderCard({ id: 'PAID', status: 'COMPLETED', paymentStatus: 'PAID', swiggyPaymentUrl: 'https://www.swiggy.com/payments', address: 'Demo road' });
+  check('Completed orders do not offer an old payment link', !paid.text.includes('Open payment') && !paid.keyboard.reply_markup.inline_keyboard.flat().some(b => b.url === 'https://www.swiggy.com/payments'));
+  delete db.orders['NAV_GUARD'];
+  saveDb(db);
 }
 
 console.log('\n================================================================');

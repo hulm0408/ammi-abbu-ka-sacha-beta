@@ -4,12 +4,21 @@ import QRCode from 'qrcode';
 import { validateUpiIntentForQr } from './payment-qr-guard.js';
 import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { exactPaise } from './swiggy-cart-integrity.js';
-import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder } from './swiggy-cart.js';
-import { getDb, isBoss, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
+import { getReservationStats, isOfficialSwiggyTrackingUrl, isSwiggyAccountBusy, isValidIndianDeliveryCoordinates, normalizeSwiggyOrderId, validateTrackingUrlForOrder } from './swiggy-cart.js';
+import {
+  acquireProAccountReservation, proAccountReservedForOther, readProAccountReservation, releaseProAccountReservation,
+  reservationOwnedBy, setProAccountReservationState
+} from './swiggy-pro-reservations.js';
+import { getDb, isBoss, saveDb, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
+import {
+  accountAvailability, knownOrderCount, managedEntries, managedEntryFor, maskedManagedPhone,
+  poolEnabledFor, poolSettingsForBoss, recordedOffers, safeManagedLabel, setPoolAccount, setPoolUser
+} from './swiggy-pro-pool.js';
 import { requestSwiggyOtpViaBridge, verifySwiggyOtpViaBridge } from './swiggy-bridge.js';
 import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { proProvider } from './swiggy-pro-provider.js';
 import { readProWorkspace, writeProWorkspace, withProWorkspaceLock } from './swiggy-pro-store.js';
+import { chatDraftFingerprint, claimChatHandoff, getTransferableChatDraft, markChatHandoffPaid, readChatHandoff, releaseChatHandoff } from './swiggy-pro-handoff.js';
 
 const ASSETS = {
   '/pro': ['text/html; charset=utf-8', new URL('./swiggy-pro.html', import.meta.url)],
@@ -78,27 +87,107 @@ async function bodyJson(req) {
 }
 
 function accountMap(user, workspace) {
-  return isBoss(user.id) ? (getDb().config?.accounts || {}) : workspace.accounts;
+  if (isBoss(user.id)) return getDb().config?.accounts || {};
+  const map = Object.assign(Object.create(null), workspace.accounts || {});
+  for (const entry of managedEntries(user.id)) {
+    // Private keys are never overwritten by a managed-account reference.
+    if (!Object.prototype.hasOwnProperty.call(map, entry.ref)) map[entry.ref] = entry.account;
+  }
+  return map;
+}
+function isManagedAccount(user, key) {
+  return Boolean(!isBoss(user.id) && managedEntryFor(user.id, key));
+}
+function vaultKeyForAccount(user, workspace, key) {
+  const vault = getDb().config?.accounts || {};
+  if (isBoss(user.id) && Object.prototype.hasOwnProperty.call(vault, key)) return key;
+  const managed = managedEntryFor(user.id, key);
+  if (managed) return managed.key;
+  const account = workspace.accounts?.[key];
+  if (!account) return '';
+  const phone = normalizeIndianMobileNumber(account.phone || account.mobile || '');
+  const customer = String(account.customerId || account.userId || '').trim();
+  // Match the provider's account-lock identity, including a private session
+  // that is also present in the owner's shared vault.
+  return Object.entries(vault).find(([, candidate]) =>
+    (phone && normalizeIndianMobileNumber(candidate?.phone || candidate?.mobile || '') === phone) ||
+    (customer && String(candidate?.customerId || candidate?.userId || '').trim() === customer)
+  )?.[0] || '';
+}
+function chatAccountPossiblyBusy(key) {
+  if (!key) return false;
+  const db = getDb();
+  return Object.values(db.orders || {}).some(order => {
+    if (!order || (String(order.selectedAccount || '') !== String(key) && String(order.lockedAccount || '') !== String(key))) return false;
+    const status = String(order.status || '').toUpperCase();
+    if (!['COMPLETED', 'CANCELLED', 'REJECTED'].includes(status)) return true;
+    if (status === 'COMPLETED') return false;
+    // A local cancellation is not evidence of provider cancellation.
+    return Boolean(order.pendingSwiggyOrderId || order.pendingSwiggyUpiUri || order.realUpiIntentUri || order.swiggyPlacedUnpaid || (order.id && readSwiggyPlacement(`chat:${String(order.id).trim()}`)));
+  });
+}
+function reserveVaultAccount(user, ws, account) {
+  const key = vaultKeyForAccount(user, ws, ws.activeAccountKey);
+  if (!key) return '';
+  if (ws.proReservationKey && ws.proReservationKey !== key) throw error(409, 'Release your previous reserved ID first.');
+  const shared = getDb().config?.accounts?.[key];
+  if (shared?.orderLock?.orderId || chatAccountPossiblyBusy(key) || isSwiggyAccountBusy(key) || getReservationStats().rows.some(row => row.key === key)) {
+    throw error(409, 'This Swiggy ID is busy on another order. Choose another ID.');
+  }
+  const existing = readProAccountReservation(key);
+  if (reservationOwnedBy(existing, user.id) && existing.state !== 'PREPARING') {
+    throw error(409, 'An earlier order may exist on this ID. Ask the owner to verify it before starting another.');
+  }
+  acquireProAccountReservation(key, user.id);
+  ws.proReservationKey = key;
+  return key;
 }
 function listAccounts(user, workspace) {
   const map = accountMap(user, workspace);
-  return Object.entries(map).filter(([, a]) => a && a.isLoggedIn && !a.isLoggedOut).map(([key, a]) => ({
-    key, name: String(a.swiggyName || a.name || 'Swiggy account').slice(0, 80),
-    phone: normalizeIndianMobileNumber(a.phone || a.mobile || '') || '',
-    active: key === workspace.activeAccountKey,
-    ordersCount: Number.isInteger(a.totalOrdersCount) ? a.totalOrdersCount : null,
-    sessionExpired: Boolean(a.sessionExpired)
-  }));
+  const settings = poolSettingsForBoss(user.id);
+  return Object.entries(map).filter(([, a]) => a && typeof a === 'object').map(([key, a]) => {
+    const managed = isManagedAccount(user, key);
+    const insight = workspace.accountInsights?.[key] || null;
+    const vaultKey = vaultKeyForAccount(user, workspace, key);
+    const reservation = vaultKey ? readProAccountReservation(vaultKey) : null;
+    const ownReservation = reservationOwnedBy(reservation, user.id);
+    const availability = ownReservation && reservation.state === 'UNRESOLVED' && !workspace.checkout
+      ? 'OUTCOME_UNKNOWN'
+      : vaultKey && (proAccountReservedForOther(vaultKey, user.id) || chatAccountPossiblyBusy(vaultKey)) ? 'BUSY' : accountAvailability(a);
+    const phone = normalizeIndianMobileNumber(a.phone || a.mobile || '') || '';
+    return {
+      key, name: managed ? safeManagedLabel(a) : String(a.swiggyName || a.name || 'Swiggy account').slice(0, 80),
+      phone: managed ? '' : phone, phoneLabel: managed ? maskedManagedPhone(phone) : phone,
+      managed, shared: Boolean(settings?.accounts.includes(key)),
+      active: key === workspace.activeAccountKey,
+      reservedByMe: ownReservation, reservationCanRelease: ownReservation && reservation.state === 'PREPARING' && !workspace.checkout,
+      availability, sessionExpired: Boolean(a.sessionExpired),
+      ordersCount: insight?.ordersCount ?? knownOrderCount(a),
+      orderState: String(insight?.orderState || (knownOrderCount(a) === null ? 'UNKNOWN' : (knownOrderCount(a) === 0 ? 'ZERO_REPORTED' : 'USED'))),
+      checkedAt: String(insight?.checkedAt || a.orderTruthCheckedAt || ''),
+      sessionState: String(insight?.sessionState || 'NOT_CHECKED'),
+      walletBalance: typeof insight?.walletBalance === 'number' ? insight.walletBalance : null,
+      currentCoupon: String(insight?.currentCoupon || ''),
+      recordedOffers: recordedOffers(a)
+    };
+  });
 }
 function currentAccount(user, workspace) {
   const map = accountMap(user, workspace);
   const key = workspace.activeAccountKey;
-  if (!key || !Object.prototype.hasOwnProperty.call(map, key) || !map[key]?.isLoggedIn || map[key]?.isLoggedOut) {
-    throw error(400, 'First select a logged-in Swiggy account in Accounts.');
+  if (!key || !Object.prototype.hasOwnProperty.call(map, key)) {
+    throw error(400, 'First select a Swiggy account in Accounts.');
   }
-  // External provider helpers must never mutate the shared vault by matching
-  // this Mini App session's phone, even when it is a boss's own account.
-  return { ...map[key], __proPrivate: true };
+  const availability = accountAvailability(map[key]);
+  if (availability !== 'NOT_CHECKED') throw error(409, `This Swiggy account is ${availability.toLowerCase().replaceAll('_', ' ')}. Select another account or ask the owner.`);
+  const vaultKey = vaultKeyForAccount(user, workspace, key);
+  const hold = vaultKey ? readProAccountReservation(vaultKey) : null;
+  if (reservationOwnedBy(hold, user.id) && hold.state === 'UNRESOLVED' && !workspace.checkout) throw error(409, 'An earlier order may exist on this ID. Ask the owner to investigate before continuing.');
+  if (vaultKey && (proAccountReservedForOther(vaultKey, user.id) || chatAccountPossiblyBusy(vaultKey))) throw error(409, 'This Swiggy ID is reserved for another order.');
+  if (workspace.accountInsights?.[key]?.sessionState === 'IDENTITY_MISMATCH') throw error(409, 'Swiggy returned a different customer ID. Ask the owner to reconnect this account.');
+  // Provider helpers must never write this user's selected session back into
+  // the shared vault merely because it has the same phone number.
+  return { ...map[key], __proPrivate: true, __proManaged: isManagedAccount(user, key), __proReservationOwner: user.id };
 }
 function requireEditableCart(ws) {
   if (ws.checkout && ws.checkout.status !== 'PAID') {
@@ -124,6 +213,21 @@ function cleanAddress(a) {
 function activeAccountForClient(user, ws) {
   return listAccounts(user, ws).find(a => a.active) || null;
 }
+function selectInitialManagedAccount(user, ws) {
+  if (isBoss(user.id) || ws.checkout || ws.activeAccountKey || ws.cart || ws.selectedAddress || ws.pendingAddress) return false;
+  const accounts = listAccounts(user, ws);
+  const available = accounts.filter(a => a.managed && a.availability === 'NOT_CHECKED');
+  if (!available.length) return false;
+  // Prefer a recent provider-reported zero-order count, but never describe an
+  // unverified or stale count as proof of an unused account.
+  available.sort((a, b) => {
+    const recentZero = entry => entry.ordersCount === 0 && Date.parse(entry.checkedAt || '') > Date.now() - 24 * 60 * 60_000;
+    return Number(recentZero(b)) - Number(recentZero(a));
+  });
+  if (ws.activeAccountKey !== available[0].key) invalidateAccountDependentState(ws);
+  ws.activeAccountKey = available[0].key;
+  return true;
+}
 function safeTrackingUrl(value, orderId) {
   const link = String(value || '').trim();
   if (!/^https:\/\//i.test(link) || !isOfficialSwiggyTrackingUrl(link, { allowProviderShortLink: true }) ||
@@ -137,7 +241,7 @@ function publicCheckout(checkout) {
   if (!checkout) return null;
   const output = {
     status: String(checkout.status || 'UNKNOWN'), createdAt: String(checkout.createdAt || ''),
-    accountPhone: String(checkout.accountPhone || ''),
+    accountPhone: checkout.accountManaged ? maskedManagedPhone(checkout.accountPhone) : String(checkout.accountPhone || ''),
     orderId: String(checkout.orderId || ''), amount: Number(checkout.amount) || 0,
     restaurantName: String(checkout.restaurantName || ''),
     ofoConfirmed: checkout.ofoConfirmed === true,
@@ -152,9 +256,11 @@ function publicCheckout(checkout) {
 }
 function publicState(user, ws) {
   return {
-    user: { name: user.firstName || 'Friend', isBoss: isBoss(user.id) },
+    user: { name: user.firstName || 'Friend', isBoss: isBoss(user.id), managedAccess: poolEnabledFor(user.id) },
     accounts: listAccounts(user, ws), activeAccount: activeAccountForClient(user, ws),
-    selectedAddress: ws.selectedAddress, cart: ws.cart,
+    ...(isBoss(user.id) ? { poolManager: poolSettingsForBoss(user.id) } : {}),
+    selectedAddress: ws.selectedAddress, pendingAddress: ws.pendingAddress || null, cart: ws.cart,
+    chatHandoff: Boolean(readChatHandoff(user.id)),
     checkout: publicCheckout(ws.checkout),
     checkoutEnabled: process.env.PRO_ENABLE_CHECKOUT === '1'
   };
@@ -166,7 +272,7 @@ function checkoutAccount(user, ws) {
   if (!account?.isLoggedIn || account.isLoggedOut) throw error(409, 'The original Swiggy account is unavailable. Reconnect that account before checking this order.');
   const originalId = String(ws.checkout?.accountCustomerId || '').trim();
   if (originalId && String(account.customerId || '').trim() !== originalId) throw error(409, 'The saved account no longer matches the original checkout account. Check Swiggy My Orders.');
-  return { ...account, __proPrivate: true };
+  return { ...account, __proPrivate: true, __proManaged: isManagedAccount(user, key), __proReservationOwner: user.id };
 }
 function orderHistoryAccount(user, ws, scope) {
   if (scope === 'checkout') {
@@ -175,6 +281,23 @@ function orderHistoryAccount(user, ws, scope) {
   }
   if (scope !== 'active') throw error(400, 'Invalid order history scope.');
   return currentAccount(user, ws);
+}
+function ownManagedOrderIds(ws, accountKey) {
+  const saved = Array.isArray(ws.managedOrderIds?.[accountKey]) ? ws.managedOrderIds[accountKey] : [];
+  const checkoutId = ws.checkout?.accountKey === accountKey ? normalizeSwiggyOrderId(ws.checkout.orderId) : '';
+  return new Set([...saved, checkoutId].filter(Boolean).map(String));
+}
+function visibleOrders(account, ws, accountKey, orders) {
+  if (!account.__proManaged) return orders;
+  const owned = ownManagedOrderIds(ws, accountKey);
+  return orders.filter(order => owned.has(String(order?.id || '')));
+}
+function rememberManagedOrder(ws, id) {
+  const orderId = normalizeSwiggyOrderId(id);
+  if (!ws.checkout?.accountManaged || !orderId) return;
+  ws.managedOrderIds ||= {};
+  const key = ws.checkout.accountKey;
+  ws.managedOrderIds[key] = [...new Set([...(ws.managedOrderIds[key] || []), orderId])].slice(-50);
 }
 function requireOriginalReconnect(user, ws, key, incoming) {
   if (!ws.checkout || ws.checkout.status === 'PAID') return;
@@ -185,6 +308,10 @@ function requireOriginalReconnect(user, ws, key, incoming) {
   }
 }
 function storeAccount(user, ws, incoming) {
+  // A verified login is not a verified order count. Imported JSON or OTP
+  // metadata cannot assert past orders or offer eligibility.
+  incoming = { ...incoming };
+  for (const field of ['totalOrdersCount', 'cachedTotalOrdersCount', 'ordersVerifiedLive', 'isZeroOrderAccount', 'orderCountSource', 'orderTruthCheckedAt']) delete incoming[field];
   const phone = normalizeIndianMobileNumber(incoming.phone || incoming.mobile || '') || '';
   const unresolved = Boolean(ws.checkout && ws.checkout.status !== 'PAID');
   if (isBoss(user.id)) {
@@ -257,11 +384,90 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
     try {
       const ws = readProWorkspace(user.id);
       if (route === '/pro/api/bootstrap' && req.method === 'GET') {
+        let changed = selectInitialManagedAccount(user, ws);
         const quotedAt = Date.parse(ws.cart?.quote?.fetchedAt || '');
         if (ws.cart?.quote && (!Number.isFinite(quotedAt) || Date.now() - quotedAt > 5 * 60_000 || quotedAt > Date.now() + 30_000)) {
           ws.cart.quote = null;
+          changed = true;
+        }
+        if (changed) writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/chat-draft' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        if (ws.checkout) throw error(409, 'Finish or resolve the current checkout before opening a chat draft.');
+        const draft = getTransferableChatDraft(user.id);
+        const fingerprint = chatDraftFingerprint(draft);
+        if (ws.sourceChat?.fingerprint === fingerprint && ws.cart && readChatHandoff(user.id)?.fingerprint === fingerprint) {
+          json(res, 200, { ok: true, ...publicState(user, ws) });
+          return;
+        }
+        if ((ws.cart || ws.selectedAddress || ws.pendingAddress) && body.replace !== true) {
+          const conflict = error(409, 'Opening the chat draft will replace your current Mini App cart and address. Confirm first.');
+          conflict.code = 'PRO_DRAFT_REPLACEMENT_REQUIRED';
+          throw conflict;
+        }
+        const account = currentAccount(user, ws);
+        claimChatHandoff(user.id, fingerprint);
+        const addressLink = String(draft.addressLink || (!draft.addressTyped ? draft.address || '' : '')).trim();
+        const resolved = addressLink
+          ? await provider.resolveAddress(account, addressLink)
+          : draft.addressDetails;
+        const address = cleanAddress(resolved);
+        if (!address.address || !isValidIndianDeliveryCoordinates(address.lat, address.lng)) {
+          throw error(502, 'Swiggy did not return the full address and map location. Retry or send a new address link.');
+        }
+        const group = await provider.groupCart(account, address, String(draft.cart || ''));
+        if (!group?.restaurantId || !Array.isArray(group.items) || !group.items.length) {
+          throw error(502, 'Swiggy did not return the group-cart items.');
+        }
+        const currentDraft = getTransferableChatDraft(user.id);
+        if (chatDraftFingerprint(currentDraft) !== fingerprint) throw error(409, 'The chat draft changed while opening. Release it and try again.');
+        if (ws.proReservationKey) {
+          releaseProAccountReservation(ws.proReservationKey, user.id);
+          ws.proReservationKey = '';
+        }
+        ws.addressCandidates = [];
+        ws.pendingAddress = address.name && address.mobile ? null : address;
+        ws.selectedAddress = ws.pendingAddress ? null : address;
+        ws.cart = { ...group, items: group.items.map(item => ({ ...item, lineKey: crypto.randomUUID() })), forSomeoneElse: true, quote: null };
+        ws.sourceChat = { fingerprint, importedAt: new Date().toISOString() };
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/chat-draft/release' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        if (body.confirmRelease !== true) throw error(400, 'Confirm that you want to return this draft to chat.');
+        if (ws.checkout) throw error(409, 'An order may exist. Resolve the checkout before returning to chat.');
+        if (!readChatHandoff(user.id)) throw error(404, 'No chat draft is open in the Mini App.');
+        if (ws.sourceChat) {
+          if (ws.proReservationKey) {
+            releaseProAccountReservation(ws.proReservationKey, user.id);
+            ws.proReservationKey = '';
+          }
+          // Clear only an imported draft; a failed transfer must not erase a
+          // pre-existing Mini App cart that was never replaced.
+          ws.cart = null;
+          ws.selectedAddress = null;
+          ws.pendingAddress = null;
+          ws.sourceChat = null;
           writeProWorkspace(user.id, ws);
         }
+        releaseChatHandoff(user.id);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/pool/user' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        setPoolUser(user.id, body.userId, body.allowed);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/pool/account' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        setPoolAccount(user.id, body.key, body.allowed);
         json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
       }
@@ -331,16 +537,79 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
       }
+      if (route === '/pro/api/accounts/check' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const key = String(body.key || ws.activeAccountKey || '');
+        const map = accountMap(user, ws);
+        if (!Object.prototype.hasOwnProperty.call(map, key)) throw error(404, 'Account not found.');
+        if (typeof provider.inspectAccount !== 'function') throw error(501, 'Account status check is not available.');
+        const account = { ...map[key], __proPrivate: true, __proManaged: isManagedAccount(user, key), __proReservationOwner: user.id };
+        const result = await provider.inspectAccount(account, ws.selectedAddress);
+        const orderStates = ['UNKNOWN', 'USED', 'ZERO_REPORTED', 'NONE_RETURNED'];
+        const sessionStates = ['NOT_VERIFIED', 'VERIFIED', 'IDENTITY_MISMATCH'];
+        const count = result?.ordersCount;
+        const wallet = result?.walletBalance;
+        const insight = {
+          checkedAt: new Date().toISOString(),
+          orderState: orderStates.includes(result?.orderState) ? result.orderState : 'UNKNOWN',
+          sessionState: sessionStates.includes(result?.sessionState) ? result.sessionState : 'NOT_VERIFIED',
+          ordersCount: Number.isSafeInteger(count) && count >= 0 ? count : null,
+          walletBalance: typeof wallet === 'number' && Number.isFinite(wallet) && wallet >= 0 ? wallet : null,
+          currentCoupon: /^[a-zA-Z0-9_-]{1,40}$/.test(String(result?.currentCoupon || '')) ? String(result.currentCoupon) : ''
+        };
+        ws.accountInsights ||= {};
+        ws.accountInsights[key] = insight;
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
       if (route === '/pro/api/accounts/select' && req.method === 'POST') {
         const body = await bodyJson(req);
         const key = String(body.key || '');
         const map = accountMap(user, ws);
-        if (!Object.prototype.hasOwnProperty.call(map, key) || !map[key]?.isLoggedIn || map[key]?.isLoggedOut) throw error(404, 'Account not found.');
+        if (!Object.prototype.hasOwnProperty.call(map, key)) throw error(404, 'Account not found.');
+        const availability = accountAvailability(map[key]);
+        if (availability !== 'NOT_CHECKED') throw error(409, `This account is ${availability.toLowerCase().replaceAll('_', ' ')}; choose another or ask the owner.`);
+        if (ws.accountInsights?.[key]?.sessionState === 'IDENTITY_MISMATCH') throw error(409, 'Swiggy returned a different customer ID for this account.');
+        const targetVaultKey = vaultKeyForAccount(user, ws, key);
+        const targetHold = targetVaultKey ? readProAccountReservation(targetVaultKey) : null;
+        if (reservationOwnedBy(targetHold, user.id) && targetHold.state === 'UNRESOLVED' && !ws.checkout) throw error(409, 'An earlier order may exist on this ID. Ask the owner to investigate.');
+        if (targetVaultKey && (proAccountReservedForOther(targetVaultKey, user.id) || chatAccountPossiblyBusy(targetVaultKey))) throw error(409, 'This ID is reserved for another order.');
         if (ws.activeAccountKey !== key) {
           if (ws.checkout && ws.checkout.status !== 'PAID') throw error(409, 'Resolve the existing Swiggy checkout before switching accounts.');
+          if (!ws.sourceChat && (ws.selectedAddress || ws.pendingAddress) && body.confirmClearAddress !== true) {
+            const conflict = error(409, 'Changing accounts clears the previously selected account address. Confirm first.');
+            conflict.code = 'PRO_ACCOUNT_CHANGE_REQUIRES_CONFIRMATION';
+            throw conflict;
+          }
+          if (ws.proReservationKey) {
+            releaseProAccountReservation(ws.proReservationKey, user.id, { verifiedPaid: ws.checkout?.status === 'PAID' });
+            ws.proReservationKey = '';
+          }
+          // The customer's shared-link recipient belongs to the draft, not to
+          // the old Swiggy account. Retain it but drop any account-specific ID.
+          const chatAddress = ws.sourceChat && ws.selectedAddress ? { ...ws.selectedAddress, id: '' } : null;
+          const chatPending = ws.sourceChat && ws.pendingAddress ? { ...ws.pendingAddress, id: '' } : null;
           ws.activeAccountKey = key;
           invalidateAccountDependentState(ws);
+          if (chatAddress) ws.selectedAddress = chatAddress;
+          if (chatPending) ws.pendingAddress = chatPending;
         }
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/accounts/release' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        if (body.confirmRelease !== true) throw error(400, 'Confirm that you want to release this ID.');
+        if (ws.checkout && ws.checkout.status !== 'PAID') throw error(409, 'An order may exist; this ID cannot be released.');
+        // Recover an owner-only PREPARING reservation even if a crash happened
+        // immediately after exclusive creation but before workspace persistence.
+        const holdKey = ws.proReservationKey || vaultKeyForAccount(user, ws, ws.activeAccountKey);
+        if (!holdKey || !readProAccountReservation(holdKey)) throw error(404, 'No ID is reserved for this draft.');
+        releaseProAccountReservation(holdKey, user.id, { verifiedPaid: ws.checkout?.status === 'PAID' });
+        ws.proReservationKey = '';
+        if (ws.cart) ws.cart.quote = null;
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
@@ -350,9 +619,12 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const key = String(body.key || '');
         const map = accountMap(user, ws);
         if (!Object.prototype.hasOwnProperty.call(map, key)) throw error(404, 'Account not found.');
+        if (isManagedAccount(user, key)) throw error(403, 'Only the owner can manage a shared account.');
         if (ws.checkout && ws.checkout.accountKey === key && ws.checkout.status !== 'PAID') {
           throw error(409, 'This account has an unresolved checkout. Check it in Swiggy My Orders before removing the account.');
         }
+        const removeVaultKey = vaultKeyForAccount(user, ws, key);
+        if (removeVaultKey && readProAccountReservation(removeVaultKey)) throw error(409, 'Release the reserved ID before removing this account.');
         if (isBoss(user.id)) permanentLogoutAccount(key);
         else delete ws.accounts[key];
         if (ws.activeAccountKey === key) { ws.activeAccountKey = ''; invalidateAccountDependentState(ws); }
@@ -362,6 +634,12 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
       }
       if (route === '/pro/api/addresses' && req.method === 'GET') {
         const account = currentAccount(user, ws);
+        if (account.__proManaged) {
+          ws.addressCandidates = [];
+          writeProWorkspace(user.id, ws);
+          json(res, 200, { ok: true, addresses: [], note: 'Shared account addresses are private. Paste your own Swiggy address link.' });
+          return;
+        }
         const addresses = await provider.addresses(account);
         if (!Array.isArray(addresses)) throw error(502, 'Could not fetch addresses from Swiggy.');
         ws.addressCandidates = addresses.slice(0, 50).map(a => ({ ...cleanAddress(a), ref: crypto.randomUUID() }));
@@ -494,6 +772,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (!ws.cart?.items?.length || !ws.selectedAddress) throw error(400, 'Add items and select an address first.');
         const coupon = String(body.coupon || '').trim().toUpperCase();
         if (coupon && !/^[A-Z0-9_-]{3,28}$/.test(coupon)) throw error(400, 'Invalid coupon code.');
+        reserveVaultAccount(user, ws, account);
         ws.cart.forSomeoneElse = body.forSomeoneElse === true;
         ws.cart.quote = null;
         writeProWorkspace(user.id, ws);
@@ -501,20 +780,24 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         ws.selectedAddress = cleanAddress(quote.address);
         ws.cart.quote = { ...quote.bill, ofoConfirmed: quote.ofoConfirmed === true, fetchedAt: new Date().toISOString() };
         writeProWorkspace(user.id, ws);
-        json(res, 200, { ok: true, cart: ws.cart, selectedAddress: ws.selectedAddress });
+        json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
       }
       if (route === '/pro/api/orders' && req.method === 'GET') {
-        const account = orderHistoryAccount(user, ws, url.searchParams.get('scope') || 'active');
-        const orders = await provider.orders(account);
-        json(res, 200, { ok: true, orders });
+        const scope = url.searchParams.get('scope') || 'active';
+        const account = orderHistoryAccount(user, ws, scope);
+        const accountKey = scope === 'checkout' ? ws.checkout?.accountKey : ws.activeAccountKey;
+        const orders = visibleOrders(account, ws, accountKey, await provider.orders(account));
+        json(res, 200, { ok: true, orders, ...(account.__proManaged ? { note: 'Only your Mini App orders are shown for a shared account.' } : {}) });
         return;
       }
       if (route === '/pro/api/orders/tracking' && req.method === 'GET') {
         const id = normalizeSwiggyOrderId(url.searchParams.get('id'));
         if (!id) throw error(400, 'Invalid Swiggy order ID.');
-        const account = orderHistoryAccount(user, ws, url.searchParams.get('scope') || 'active');
-        const orders = await provider.orders(account);
+        const scope = url.searchParams.get('scope') || 'active';
+        const account = orderHistoryAccount(user, ws, scope);
+        const accountKey = scope === 'checkout' ? ws.checkout?.accountKey : ws.activeAccountKey;
+        const orders = visibleOrders(account, ws, accountKey, await provider.orders(account));
         if (!orders.some(o => String(o.id) === id)) throw error(404, 'Order was not returned for this Swiggy account.');
         const tracking = await provider.tracking(account, id);
         const link = String(tracking?.trackingUrl || '');
@@ -550,9 +833,18 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (!Number.isSafeInteger(generation) || generation < 0) throw error(503, 'Checkout state is invalid; contact the operator.');
         const checkoutId = String(generation);
         const placementKey = `pro:${user.id}:${checkoutId}`;
+        const checkoutVaultKey = vaultKeyForAccount(user, ws, ws.activeAccountKey);
+        if (checkoutVaultKey) {
+          const hold = readProAccountReservation(checkoutVaultKey);
+          if (ws.proReservationKey !== checkoutVaultKey || !reservationOwnedBy(hold, user.id) || hold.state !== 'PREPARING') {
+            throw error(409, 'Reserve this ID by syncing a fresh bill before checkout.');
+          }
+          // Fail closed across crashes before any provider placement attempt.
+          setProAccountReservationState(checkoutVaultKey, user.id, 'UNRESOLVED');
+        }
         ws.checkout = {
           id: checkoutId, accountKey: ws.activeAccountKey, accountPhone: String(account.phone || ''), status: 'SUBMITTING',
-          accountCustomerId: customerId,
+          accountManaged: account.__proManaged === true, accountCustomerId: customerId,
           createdAt: new Date().toISOString(), amount: total, restaurantName: String(ws.cart.restaurantName || '')
         };
         // Persist the logical ID before the provider can send a placement POST.
@@ -575,13 +867,15 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
             upiIntentUrl: uri, qrDataUrl, ofoConfirmed: result.ofoConfirmed === true,
             message: 'Swiggy returned payment details. Payment and restaurant acceptance are not yet verified.'
           });
+          rememberManagedOrder(ws, orderId);
           writeProWorkspace(user.id, ws);
         } catch (err) {
           const record = readSwiggyPlacement(placementKey);
           if (record || err?.diag?.placementAttempted === true || providerReturned) {
             ws.checkout.status = 'OUTCOME_UNKNOWN';
             ws.checkout.orderId = normalizeSwiggyOrderId(result?.orderId || err?.diag?.placedOrderId || record?.orderId || '');
-            ws.checkout.message = 'An order may exist on Swiggy. Open My Orders on the original account; do not retry or switch accounts.';
+            ws.checkout.message = 'An order may exist on Swiggy. Ask the owner to check the original account; do not retry or switch accounts.';
+            rememberManagedOrder(ws, ws.checkout.orderId);
             delete ws.checkout.upiIntentUrl;
             delete ws.checkout.qrDataUrl;
             writeProWorkspace(user.id, ws);
@@ -590,6 +884,9 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           }
           ws.checkout = null;
           if (ws.cart) ws.cart.quote = null;
+          // No provider POST was recorded or reported, so preparation can be
+          // resumed. If the durable update fails the account stays blocked.
+          if (checkoutVaultKey) setProAccountReservationState(checkoutVaultKey, user.id, 'PREPARING');
           writeProWorkspace(user.id, ws);
           throw error(Number(err?.statusCode) || 502, String(err?.message || 'Checkout could not be prepared. No order was placed.'));
         }
@@ -632,10 +929,18 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (body.confirmNewDraft !== true || ws.checkout?.status !== 'PAID') throw error(409, 'Only a verified paid order can be closed here.');
         const generation = ws.checkoutGeneration ?? 0;
         if (!Number.isSafeInteger(generation) || generation < 0 || generation >= Number.MAX_SAFE_INTEGER) throw error(503, 'Checkout state is invalid; contact the operator.');
+        if (ws.proReservationKey) {
+          releaseProAccountReservation(ws.proReservationKey, user.id, { verifiedPaid: true });
+          ws.proReservationKey = '';
+        }
+        const wasChatHandoff = Boolean(ws.sourceChat);
+        if (wasChatHandoff) markChatHandoffPaid(user.id);
         ws.checkoutGeneration = generation + 1;
         ws.checkout = null;
         ws.cart = null;
+        ws.sourceChat = null;
         writeProWorkspace(user.id, ws);
+        if (wasChatHandoff) releaseChatHandoff(user.id, { paid: true });
         json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
       }
@@ -643,7 +948,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
     } catch (err) {
       const status = Number(err?.statusCode) || 500;
       // Do not log inputs, tokens, addresses, or raw Swiggy errors.
-      const code = ['PRO_VAULT_NOT_CONFIGURED', 'PRO_VAULT_DECRYPT_FAILED'].includes(err?.code) ? err.code : undefined;
+      const code = ['PRO_VAULT_NOT_CONFIGURED', 'PRO_VAULT_DECRYPT_FAILED', 'PRO_DRAFT_REPLACEMENT_REQUIRED', 'PRO_ACCOUNT_CHANGE_REQUIRES_CONFIRMATION'].includes(err?.code) ? err.code : undefined;
       json(res, status, {
         ok: false,
         error: status >= 500 && status !== 501 && status !== 502 && status !== 503 ? 'Unable to complete this request. Please retry.' : String(err?.message || 'Request failed.'),

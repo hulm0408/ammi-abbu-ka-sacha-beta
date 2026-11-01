@@ -196,6 +196,11 @@ test('money, UPI and OFO guards reject fractional paise, wrong amount and mere O
 });
 
 test('checkout requires opt-in, explicit consent, fresh quote and exact approved amount', async () => {
+  // Earlier tests deliberately left active chat orders on vault accounts a/b.
+  // The following cases exercise private-only workspaces, not those chat IDs.
+  const db = getDb();
+  db.config.accounts = {};
+  saveDb(db);
   const quote = seed(8101);
   process.env.PRO_ENABLE_CHECKOUT = '0';
   assert.equal((await req(8101, 'checkout', confirmation(quote))).status, 503);

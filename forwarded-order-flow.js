@@ -25,6 +25,7 @@ import { readSwiggyPlacement, placementAlreadyAttemptedError } from './swiggy-pl
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { OFFER_TRACKS } from './account-views.js';
 import { lockAccountToOrder, releaseAccountLock } from './order-account-lock.js';
+import { proAccountReservedForOther } from './swiggy-pro-reservations.js';
 import { extractSharedUrls, stripSharedLinks, normalizeSharedUrl, collapseSharedLinks } from './link-utils.js';
 import { startOrderTrackingAuto, ensureOrderTracking, isTerminalDeliveryStatus } from './order-tracking.js';
 import {
@@ -1059,11 +1060,9 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
     const bodyHtml = formatOrderBodyFn(order, true);
     const offerNotes = [];
     if (order.selectedAccount) {
-      const accBadge = order.selectedAccountZeroOrders
-        ? `+ <b>0-Order Swiggy ID</b>`
-        : `● <b>Free Swiggy ID (0 Active Orders)</b>`;
+      const accBadge = order.selectedAccountZeroOrders ? ' · 0 orders reported' : '';
       offerNotes.push(
-        `◎ <b>Auto-Matched Account:</b> <code>${escapeHtml(String(order.orderAccount || order.selectedAccount))}</code> (${accBadge})`
+        `<b>Account:</b> <code>${escapeHtml(String(order.orderAccount || order.selectedAccount))}</code>${accBadge}`
       );
     }
     if (order.eventsClaimSummary) {
@@ -1074,18 +1073,20 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
       if (four) {
         const mark = (st) => {
           const v = String(st || '').toUpperCase();
-          if (v === 'CLAIMED' || v === 'ALREADY_CLAIMED') return '✅';
-          if (v === 'PRE_LOCKED') return '⏳';
-          return '❌';
+          if (v === 'CLAIMED' || v === 'ALREADY_CLAIMED') return '✅ Claimed';
+          if (v === 'PRE_LOCKED') return '⏳ Pre-locked';
+          if (v === 'WRONG_REWARD' || v === 'CLAIMED_OTHER_VALUE') return '🟡 Wrong reward';
+          if (v === 'FAILED' || v === 'NO_CAMPAIGN_ID') return '❌ Failed';
+          return '⚪ Not reported';
         };
         const trackRows = OFFER_TRACKS
-          .map((t, i) => `${i + 1}. ${t.emoji} ${t.bossLabel} — ${mark(four[t.key])} ₹50`)
+          .map((t, i) => `${i + 1}. ${t.emoji} ${t.bossLabel} · ${mark(four[t.key])} ₹50 target`)
           .join('\n');
         const claimedCount = Number(four.claimedCount || 0);
         offerNotes.push(
-          `🎁 <b>Saare ${OFFER_TRACKS.length} offer — har ek ₹50:</b>\n` +
+          `<b>Offers · ₹50 target</b>\n` +
           `${trackRows}\n` +
-          `📊 <b>${claimedCount}/${four.total || OFFER_TRACKS.length} claimed</b> · ₹${claimedCount * 50} pakka / ₹${(four.total || OFFER_TRACKS.length) * 50} possible`
+          `<b>${claimedCount}/${four.total || OFFER_TRACKS.length} claimed</b>`
         );
       }
       const bfMsg = sum.breakfastMsg;
@@ -3426,6 +3427,9 @@ export function registerForwardedOrderHandlers(bot, {
       target = { key: pick.key, phone: pick.phone, warning: pick.warning || '' };
     }
 
+    if (proAccountReservedForOther(target.key)) {
+      return { success: false, error: 'This ID is reserved for a Mini App order. Choose another ID.' };
+    }
     const prevKey = order.selectedAccount ? String(order.selectedAccount) : '';
     if (prevKey && prevKey !== target.key) {
       releaseSwiggyAccountReservation(prevKey, order.id);

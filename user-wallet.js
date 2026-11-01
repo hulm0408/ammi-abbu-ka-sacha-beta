@@ -692,27 +692,21 @@ export function formatFeePayCard({
 } = {}) {
   const short = Math.max(0, Number(feePaise) - Number(balancePaise));
   return [
-    '🧾 <b>ORDER FEE — ₹' + rupees(feePaise) + '</b>',
-    '',
-    `Balance: <b>₹${rupees(balancePaise)}</b>` + (short > 0 ? ` · chahiye <b>₹${rupees(short)}</b> aur` : ' ✓'),
-    '',
-    `<b>₹${rupees(feePaise)}</b> is UPI par bhejein: <code>${escapeHtml(upiId || '(Boss ne UPI set nahi kiya)')}</code>`,
-    note ? `<i>${escapeHtml(note)}</i>` : '',
-    '',
-    'Payment ke baad <b>UTR / reference number</b> daalna zaroori hai — usi se verify hota hai.',
-    '<i>Price check, cart, address aur bill bilkul free hain — sirf QR banane se pehle ye fee hai.</i>'
+    `<b>Service fee: ₹${rupees(feePaise)}</b>`,
+    orderId ? `Order <code>#${escapeHtml(String(orderId))}</code>` : '',
+    `<b>Balance:</b> ₹${rupees(balancePaise)}${short > 0 ? ` · ₹${rupees(short)} needed` : ''}`,
+    `<b>UPI:</b> <code>${escapeHtml(upiId || 'Not set; contact support')}</code>`,
+    note ? escapeHtml(note) : '',
+    'Submit the payment reference for verification. Order payment is separate.'
   ].filter(Boolean).join('\n');
 }
 
 export function formatTopupPayCard({ upiId = '', amountPaise = serviceFeePaise(), orderId = '' } = {}) {
   return [
-    `➕ <b>BALANCE TOP-UP — ₹${rupees(amountPaise)}</b>`,
-    '',
-    `Is UPI par <b>₹${rupees(amountPaise)}</b> bhejein: <code>${escapeHtml(upiId || '(UPI set nahi hai)')}</code>`,
-    orderId ? `<i>Order <code>#${escapeHtml(String(orderId))}</code> ke liye</i>` : '',
-    '',
-    'Payment ke baad <b>UTR</b> (UPI app ke history me "UTR / Ref No.") daalna — tabhi balance judega.',
-    '<i>Bot khud paisa nahi dekh sakta: UTR provider se ya Boss se verify hota hai — jhootha "verified" nahi milta.</i>'
+    `<b>Balance top-up: ₹${rupees(amountPaise)}</b>`,
+    orderId ? `Order <code>#${escapeHtml(String(orderId))}</code>` : '',
+    `<b>UPI:</b> <code>${escapeHtml(upiId || 'Not set; contact support')}</code>`,
+    'Submit the UTR after payment. Balance is added after verification.'
   ].filter(Boolean).join('\n');
 }
 
@@ -721,34 +715,15 @@ export function formatWalletCard({ wallet, feePaise = serviceFeePaise(), pending
   const balance = Number(w.balancePaise || 0);
   const canOrder = w.feeExempt || balance >= Number(feePaise);
   return [
-    `👛 <b>MY BALANCE — ₹${rupees(balance)}</b>`,
-    name ? `<i>${escapeHtml(name)}</i>` : '',
-    '',
-    w.feeExempt
-      ? '🎁 <b>Free user</b> — per-order fee nahi lagti.'
-      : `Per order fee: <b>₹${rupees(feePaise)}</b> · ${canOrder ? '✅ QR ban sakta hai' : `❌ ₹${rupees(Math.max(0, Number(feePaise) - balance))} aur chahiye`}`,
-    pending ? `⏳ <b>${pending} top-up</b> verify hone ka wait (UTR check chal raha hai)` : '',
-    '',
-    '<i>Price check / cart / address / bill — sab free. Fee sirf QR banate waqt, aur cancel (place hone se pehle) par wapas.</i>'
+    `<b>Balance: ₹${rupees(balance)}</b>${name ? ` · ${escapeHtml(name)}` : ''}`,
+    w.feeExempt ? 'Service fee: exempt' : `<b>Per-order fee:</b> ₹${rupees(feePaise)}${canOrder ? '' : ` · ₹${rupees(Math.max(0, Number(feePaise) - balance))} needed`}`,
+    pending ? `${escapeHtml(pending)} top-up(s) awaiting verification` : '',
+    'Order payment is separate.'
   ].filter(Boolean).join('\n');
 }
 
-/**
- * Customer ke liye soft card (koi "wallet/paisa le rahe" wali feeling nahi —
- * boss: "wallet ka option de rha to user ko lagta ki me paisa le rha").
- */
 export function formatOrderWalletCard({ wallet = null, feePaise = serviceFeePaise(), pending = null } = {}) {
-  const bal = Number(wallet?.balancePaise || 0);
-  const fee = Number(feePaise || 0);
-  return [
-    '🔐 <b>ORDER VERIFICATION</b>',
-    '',
-    `Ek order ka verification: <b>₹${rupees(fee)}</b> <i>(refundable)</i>`,
-    `Aapka jama hua: <b>₹${rupees(bal)}</b>` + (fee > 0 ? ` · ${bal >= fee ? 'ek order ke liye kaafi ✓' : `ek order ke liye ₹${rupees(Math.max(0, fee - bal))} aur`}` : ''),
-    pending ? `⏳ <b>${pending}</b> verification check ho raha hai` : '',
-    '',
-    '<i>Ye paisa order ke bill me nahi judta. Order cancel karenge to turant wapas milta hai.</i>'
-  ].filter(Boolean).join('\n');
+  return formatWalletCard({ wallet, feePaise, pending });
 }
 
 export function formatWalletHistory({ entries = [], limit = 8 } = {}) {
@@ -880,46 +855,28 @@ export function userFeeSummary(db, userId) {
   };
 }
 
-/**
- * Customer ko yahi card jata hai jab order ka QR ban chuka ho par verification
- * baaki hai. Bhasha jaan bujh kar "order ki fee" jaisi nahi — boss: "user ko feel
- * na ho ki wo order par fees de raha".
- */
+// Customer sees the service fee separately from the Swiggy order payment.
 export function formatOrderVerificationCard({
   orderId = '', restaurant = '', feePaise = serviceFeePaise(), upiId = '', refundable = true
 } = {}) {
   return [
-    '🧊 <b>AAPKA ORDER QR TAIYAR HAI</b>',
-    '',
-    `Order <code>#${escapeHtml(String(orderId))}</code>${restaurant ? ` · ${escapeHtml(String(restaurant).slice(0, 42))}` : ''}`,
-    'QR ban gaya hai — <b>abhi aapko nahi bheja gaya</b>, safe rakha hua hai.',
-    '',
-    `🔐 <b>Bas ₹${rupees(feePaise)} verification</b> — upar wala QR scan karke isi amount ka payment karein:`,
-    `UPI: <code>${escapeHtml(upiId || '(admin ne UPI set nahi kiya)')}</code>`,
-    '',
-    refundable
-      ? '<i>Ye order ke bill me nahi judta — order cancel karenge to turant wapas mil jayega.</i>'
-      : '<i>Ye order ke bill me nahi judta.</i>',
-    '',
-    '<b>Payment auto verify hota hai</b> — verify hote hi aapka ORDER QR yahin aa jayega (koi UTR type nahi karna).',
-    'Koi dikkat ho to neeche <b>Admin se baat</b> dabayein.'
+    '<b>Service fee</b>',
+    `Order <code>#${escapeHtml(String(orderId))}</code>${restaurant ? ` · ${escapeHtml(restaurant)}` : ''}`,
+    `<b>Fee:</b> ₹${rupees(feePaise)} · <b>UPI:</b> <code>${escapeHtml(upiId || 'Not set; contact support')}</code>`,
+    'This fee is separate from the Swiggy order payment.',
+    refundable ? 'If eligible, cancellation before placement returns the charged fee to your wallet.' : '',
+    'After verification, check for the order payment QR.'
   ].filter(Boolean).join('\n');
 }
 
-/** QR ban hi nahi paya — koi fee/shikayat nahi, sirf "try again". */
-export function formatQrFailedCard({ orderId = '', reason = '' } = {}) {
-  // Boss (30-10-2026): "qr generate fail then user will see something went
-  // wrong try again from beginning" — koi fee ka zikr nahi, seedha restart.
+export function formatQrFailedCard({ orderId = '', reason = '', possiblePlacement = false } = {}) {
   return [
-    '⚠️ <b>KUCH GALAT HO GAYA</b>',
-    '',
+    '<b>Payment QR unavailable</b>',
     orderId ? `Order <code>#${escapeHtml(String(orderId))}</code>` : '',
-    'Aapke order ka QR ban nahi paya (Swiggy ki taraf se jawab nahi aaya).',
-    '',
-    '<b>Koi ₹ nahi kata.</b> Neeche button dabaiye — <b>shuru se dobara</b> try karenge.',
-    reason ? `<i>${escapeHtml(String(reason).slice(0, 160))}</i>` : '',
-    '',
-    'Bar bar fail ho raha ho to <b>Admin se baat</b> karein.'
+    possiblePlacement
+      ? 'The order may exist. Check the original account; do not place or pay again.'
+      : 'Check the order before starting again.',
+    reason ? escapeHtml(String(reason).slice(0, 160)) : ''
   ].filter(Boolean).join('\n');
 }
 

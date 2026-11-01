@@ -103,3 +103,6 @@ extracted_mp4_frames/
 !test_v88_checkout_safety.mjs
 !test_v89_provider_faults.mjs
 !test_v90_miniapp_ui.mjs
+!test_v91_managed_pool_and_handoff.mjs
+
+!test_v92_compact_presentation.mjs

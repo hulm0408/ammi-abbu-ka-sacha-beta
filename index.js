@@ -12,6 +12,8 @@ import http from 'http';
 import net from 'node:net';
 import { Telegraf, Markup } from 'telegraf';
 import { handleSwiggyProHttp } from './swiggy-pro-api.js';
+import { withProWorkspaceLock } from './swiggy-pro-store.js';
+import { beginChatSubmission, chatDraftFingerprint, finishChatSubmission, readChatHandoff, readChatSubmissionGuard } from './swiggy-pro-handoff.js';
 import { readSwiggyPlacement } from './swiggy-placement-journal.js';
 import { logThrottled, startMemoryGuard, perfSnapshot } from './perf-guard.js';
 import { EVENT_OFFER_LINKS, activateAllEventOffers } from './event-offers.js';
@@ -928,7 +930,7 @@ export function formatUserOrderCardText(order, isBossView = false) {
 
   // ---------- 2. CART / RESTAURANT ----------
   if (restName) {
-    blocks.push(`<b>Your Cart</b>\n<b>${esc(restName)}</b>`);
+    blocks.push(`<b>Your Cart:</b> ${esc(restName)}`);
   }
 
   // ---------- 3. DELIVERY ADDRESS ----------
@@ -940,8 +942,7 @@ export function formatUserOrderCardText(order, isBossView = false) {
     if (ad.mobile) addrLines.push(esc(ad.mobile));
     if (ad.flat_no && ad.address && !ad.address.startsWith(ad.flat_no)) addrLines.push(esc(ad.flat_no));
     if (ad.address) addrLines.push(...ad.address.split('\n').map(line => esc(line)));
-    if (ad.lat) addrLines.push(`Latitude: ${esc(String(ad.lat))}`);
-    if (ad.lng) addrLines.push(`Longitude: ${esc(String(ad.lng))}`);
+    if (ad.lat || ad.lng) addrLines.push([ad.lat ? `Latitude: ${esc(String(ad.lat))}` : '', ad.lng ? `Longitude: ${esc(String(ad.lng))}` : ''].filter(Boolean).join(' · '));
     // NOTE: the card used to advertise a fake private mode and automatic
     // address wipe here. Neither feature exists: nothing purges db.orders on a
     // timer and saved addresses are never deleted, so those claims only scared
@@ -964,9 +965,7 @@ export function formatUserOrderCardText(order, isBossView = false) {
       const qty = Number(it.qty || it.quantity || 1);
       const price = Number(it.price || (it.lineTotal ? it.lineTotal / qty : 0)) || 0;
       const lineTotal = Number(it.lineTotal || Math.round(price * qty * 100) / 100) || 0;
-      itemLines.push(`<b>${esc(it.name || 'Item')}</b>`);
-      itemLines.push(`₹${price} × ${qty} = ₹${lineTotal}`);
-      itemLines.push('');
+      itemLines.push(`${esc(it.name || 'Item')} · ${qty} × ₹${price} = ₹${lineTotal}`);
     }
     const totalQty = items.reduce((sum, it) => sum + Number(it.qty || it.quantity || 1), 0);
     const itemsTotal = Number(order.itemTotal || order.subtotal || items.reduce((sum, it) => sum + (Number(it.lineTotal) || 0), 0));
@@ -1001,35 +1000,30 @@ export function formatUserOrderCardText(order, isBossView = false) {
     if (oneFee > 0) billLines.push(`Swiggy One Lite Membership: +₹${oneFee}`);
 
     const savedDel = Number(order.freeDeliveryDiscount || order.deliverySaved || 0);
-    const isFreeDel = Number(order.deliveryFee || 0) <= 0 &&
-      (order.swiggyOneApplied || savedDel > 0 || oneFee > 0 || order.freeDelivery);
-    if (isFreeDel) {
-      billLines.push('Free Delivery upto 7km');
+    const hasDeliveryFee = order.deliveryFee !== undefined && order.deliveryFee !== null && order.deliveryFee !== '' && Number.isFinite(Number(order.deliveryFee));
+    if (hasDeliveryFee && Number(order.deliveryFee) === 0) {
       billLines.push(`Delivery Fee: FREE${savedDel > 0 ? ` (₹${savedDel} saved)` : ''}`);
-    } else if (Number(order.deliveryFee || 0) > 0) {
+    } else if (hasDeliveryFee && Number(order.deliveryFee) > 0) {
       billLines.push(`Delivery Fee: ₹${Number(order.deliveryFee)}`);
     } else {
-      billLines.push('Delivery Fee: FREE');
+      billLines.push('Delivery Fee: Not confirmed');
     }
 
     if (order.packingCharges > 0) billLines.push(`Packing Charges: ₹${Number(order.packingCharges)}`);
     if (order.taxesAndCharges > 0) billLines.push(`GST & Other Charges: ₹${Number(order.taxesAndCharges)}`);
 
-    billLines.push('━━━━━━━━━━━━━━');
     if (Number(order.totalSavings || 0) > 0) {
       billLines.push(`Total Savings: ₹${Number(order.totalSavings)}`);
     }
     billLines.push(`<b>To Pay: ₹${Number(order.finalPayable || order.subtotal || 0)}</b>`);
-    // Card & other payment options (new)
-    billLines.push(`<i>Pay via UPI QR, Card, or Wallet on Swiggy</i>`);
     blocks.push(billLines.join('\n'));
   } else {
     blocks.push('<b>Bill Summary</b>\n<i>Calculating max coupon and final bill on Swiggy…</i>');
   }
 
   // ---------- 6. PAYMENT LINK ----------
-  if (order.swiggyPaymentUrl) {
-    blocks.push(`<b>Swiggy Payment:</b> <a href="${esc(order.swiggyPaymentUrl)}">Open official Swiggy payment (UPI / Card)</a>`);
+  if (order.swiggyPaymentUrl && order.status !== 'COMPLETED' && order.paymentStatus !== 'PAID') {
+    blocks.push(`<b>Swiggy payment:</b> <a href="${esc(order.swiggyPaymentUrl)}">Open payment</a>`);
   }
 
   return blocks.filter(Boolean).join('\n\n');
@@ -1044,9 +1038,7 @@ export function formatUserOrderCard(order) {
   const topicProgress = formatTopicProgressBarText(currentTopic);
 
   if (order.status === 'ACCEPTED' || order.status === 'COMPLETED') {
-    const trackingLine = officialTrackingUrl
-      ? `<b>Swiggy tracking:</b> <a href="${escapeHtml(officialTrackingUrl)}">Open tracking link</a>`
-      : '… Swiggy tracking link aate hi yahan bhej diya jayega.';
+    const trackingLine = officialTrackingUrl ? '' : 'Tracking link not available yet.';
     const otpLine = order.deliveryOtp
       ? `<b>Delivery OTP:</b> <code>${escapeHtml(String(order.deliveryOtp))}</code>`
       : '';
@@ -1060,31 +1052,24 @@ export function formatUserOrderCard(order) {
     const accountLine = swiggyPhone
       ? `<b>Swiggy Account:</b> <code>${escapeHtml(swiggyPhone)}</code>`
       : '';
-    const sessionLine = order.injectedSessionStatus === 'DELIVERED_RELEASED'
-      ? '<b>Session:</b> <i>Auto-logged out & returned to vault</i>'
-      : (order.injectedSession ? '<b>Session:</b> <i>Injected & live tracking</i>' : '');
-
-    text += `${heading(`Order #${order.id} — Confirmed`)}\n\n` +
-      formatUserOrderCardText(order, false) + '\n\n' +
+    text += `${heading(`Order #${order.id}`)}\n` +
+      formatUserOrderCardText(order, false) + '\n' +
       section('Order Status', [
-        `<b>${escapeHtml(order.liveOrderStatus || 'Processing')}</b>`,
+        `<b>${escapeHtml(order.liveOrderStatus || order.status)}</b>`,
         partnerLine,
         partnerPhoneLine,
         accountLine,
-        sessionLine,
         trackingLine,
         otpLine
-      ].filter(Boolean).join('\n')) +
-      `\n${field('Support', '@Its_life_001')}`;
-    if (order.deliveryBoyMobile) buttons.push([{ text: `📞 Call Partner: ${order.deliveryBoyMobile}`, callback_data: `user_call_partner_${order.id}` }]);
-    if (officialTrackingUrl) buttons.push([{ text: '📍 Open Swiggy Tracking', url: officialTrackingUrl, style: 'success' }]);
-    if (order.swiggyPaymentUrl) buttons.push([{ text: '💳 Pay via Swiggy', url: order.swiggyPaymentUrl, style: 'primary' }]);
+      ].filter(Boolean).join('\n'));
+    if (order.deliveryBoyMobile) buttons.push([{ text: 'Call partner', callback_data: `user_call_partner_${order.id}` }]);
+    if (officialTrackingUrl) buttons.push([{ text: 'Track on Swiggy', url: officialTrackingUrl }]);
+    if (order.swiggyPaymentUrl && order.status !== 'COMPLETED' && order.paymentStatus !== 'PAID') buttons.push([{ text: 'Pay on Swiggy', url: order.swiggyPaymentUrl }]);
     buttons.push([
-      { text: '↻ Refresh Status', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
-      { text: '✖ Cancel Order', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
+      { text: 'Refresh', callback_data: `user_refresh_status_${order.id}` },
+      { text: 'Cancel', callback_data: `action_cancel_order_confirm_${order.id}` }
     ]);
-    buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
-    buttons.push([{ text: '🛒 Naya Order Shuru Karein (Finish)', callback_data: 'topic_finish_and_start', style: 'success' }]);
+    buttons.push([Markup.button.url('Support', 'https://t.me/Its_life_001'), { text: 'New order', callback_data: 'topic_finish_and_start' }]);
     text = topicProgress + text;
     buttons.unshift(...buildTopicNavKeyboardRows(currentTopic, order.id));
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
@@ -1092,11 +1077,8 @@ export function formatUserOrderCard(order) {
 
   if (order.status === 'CANCELLED' || order.status === 'REJECTED') {
     const isCancelled = order.status === 'CANCELLED';
-    text += `${heading(`Order #${order.id} — ${isCancelled ? 'Cancelled' : 'Rejected'}`)}\n\n` +
-      `${sub(isCancelled ? 'Yeh order cancel kar diya gaya hai. Naya order shuru karne ke liye neeche dabayein:' : 'Yeh order cancel/reject ho gaya hai. Naya order karne ke liye neeche dabayein:')}\n\n` +
-      field('Support', '@Its_life_001');
-    buttons.push([{ text: '🛒 Naya Order Karein', callback_data: 'user_back_to_main', style: 'primary' }]);
-    buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
+    text += heading(`Order #${order.id} — ${isCancelled ? 'Cancelled' : 'Rejected'}`);
+    buttons.push([{ text: 'New order', callback_data: 'user_back_to_main' }, Markup.button.url('Support', 'https://t.me/Its_life_001')]);
     return { text, keyboard: Markup.inlineKeyboard(buttons) };
   }
 
@@ -1116,11 +1098,15 @@ export function formatUserOrderCard(order) {
       buttons.push([{ text: '↻ Resend Swiggy payment details', callback_data: `user_resend_approved_qr_${order.id}`, style: 'primary' }]);
     }
   } else if (order.status === 'APPROVAL_PENDING' && !order.billApprovedByUser) {
-    // The max-discount bill summary was sent; the QR is created only after approval.
-    text += `${heading(`Bill summary sent (#${order.id})`)}\n\n` +
-      formatUserOrderCardText(order, false) + '\n\n' +
-      section('Confirm', `${heading('Bill check karke Approve karein')}\n${sub('Approve karte hi Swiggy payment QR aayega.')}`) +
-      `\n${field('Support', '@Its_life_001')}`;
+    // Disclose a separate service fee before the customer approves the bill.
+    const feeDb = getDb();
+    const wallet = getWallet(feeDb, String(order.userId || order.userChatId || ''));
+    const feePaise = serviceFeePaiseFor(feeDb);
+    const feeLine = !wallet?.feeExempt && !order.feeWaived && feePaise > 0
+      ? `\n<b>Service fee:</b> ₹${walletRupees(feePaise)} · separate`
+      : '';
+    text += `${heading(`Confirm order #${order.id}`)}\n` +
+      formatUserOrderCardText(order, false) + feeLine;
     buttons.push([{ text: '✓ Approve bill', callback_data: `user_approve_bill_${order.id}`, style: 'success' }]);
     buttons.push([{ text: '! Something is wrong', callback_data: `user_bill_issue_${order.id}`, style: 'danger' }]);
   } else if (Number(order.finalPayable || 0) > 0 && (order.selectedAccount || order.autoOptimized)) {
@@ -1158,10 +1144,10 @@ export function formatUserOrderCard(order) {
   }
 
   buttons.push([
-    { text: '↻ Refresh status', callback_data: `user_refresh_status_${order.id}`, style: 'primary' },
-    { text: '✖ Cancel order', callback_data: `action_cancel_order_confirm_${order.id}`, style: 'danger' }
+    { text: 'Refresh', callback_data: `user_refresh_status_${order.id}` },
+    { text: 'Cancel', callback_data: `action_cancel_order_confirm_${order.id}` },
+    Markup.button.url('Support', 'https://t.me/Its_life_001')
   ]);
-  buttons.push([Markup.button.url('Contact support', 'https://t.me/Its_life_001')]);
 
   text = topicProgress + text;
   buttons.unshift(...buildTopicNavKeyboardRows(currentTopic, order.id));
@@ -1365,31 +1351,27 @@ function getUserScreen(userId, user) {
   const simpleMode = simpleChatForUser(userId);
   const activeOrder = simpleMode ? (getActiveUserOrder(userId) || getSimpleFocusOrder(userId)) : getActiveUserOrder(userId);
   if (activeOrder) {
-    return simpleMode ? buildSimpleOrderCard(activeOrder) : formatUserOrderCard(activeOrder);
+    return simpleMode ? simpleCustomerOrderCard(activeOrder) : formatUserOrderCard(activeOrder);
   }
 
   const draft = getDraft(userId);
-  if (simpleMode) return buildSimpleHomeScreen(draft);
+  if (simpleMode) return buildSimpleHomeScreen(draft, { miniAppUrl: configuredMiniAppUrl() });
   const hasCart = Boolean(draft.cart);
   const hasAddr = Boolean(draft.address);
   const bothReady = hasCart && hasAddr;
 
-  const cartBtn = hasCart
-    ? { text: '🟢 🛒 Cart ✓', callback_data: 'action_add_cart', style: 'success' }
-    : { text: '🟠 🛒 Cart Link', callback_data: 'action_add_cart', style: 'danger' };
-  const addressBtn = hasAddr
-    ? { text: '🟢 📍 Address ✓', callback_data: 'action_add_address', style: 'success' }
-    : { text: '🟠 📍 Address Link', callback_data: 'action_add_address', style: 'danger' };
+  const cartBtn = { text: hasCart ? 'Cart ✓' : 'Cart link', callback_data: 'action_add_cart' };
+  const addressBtn = { text: hasAddr ? 'Address ✓' : 'Address link', callback_data: 'action_add_address' };
 
   const inlineButtons = [
     ...buildTopicNavKeyboardRows(1, 'draft'),
     [cartBtn, addressBtn],
-    [{ text: '👤 Order for Someone Else', callback_data: 'action_order_for_others', style: 'primary' }],
-    [{ text: '🚀 Send to Beta', callback_data: 'action_send_to_boss', style: bothReady ? 'success' : 'primary' }],
-    [{ text: '🆘 Admin se baat karein', callback_data: 'support_contact_admin', style: 'primary' }],
+    [{ text: 'Order for someone else', callback_data: 'action_order_for_others' }],
+    [{ text: 'Send to Beta', callback_data: 'action_send_to_boss', ...(bothReady ? { style: 'success' } : {}) }],
     [
-      { text: '📦 Previous Order', callback_data: 'action_previous_order', style: 'primary' },
-      { text: '✖ Cancel', callback_data: 'action_cancel_order_confirm', style: 'danger' }
+      { text: 'Previous order', callback_data: 'action_previous_order' },
+      { text: 'Support', callback_data: 'support_contact_admin' },
+      { text: 'Cancel', callback_data: 'action_cancel_order_confirm', style: 'danger' }
     ]
   ];
 
@@ -1401,61 +1383,16 @@ function getUserScreen(userId, user) {
     itemRows.reduce((s, it) => s + Number(it.lineTotal || (Number(it.price || 0) * Number(it.qty || it.quantity || 1)) || 0), 0)
   );
 
-  const shortUrl = (u) => {
-    const clean = String(u || '').replace(/^https?:\/\/(?:www\.)?/i, '');
-    return clean.length > 44 ? `${clean.slice(0, 44)}…` : clean;
-  };
-
-  let cartLine = '🟠 <b>Cart:</b> Link bhejein';
-  if (hasCart) {
-    const restPart = cd.restaurantName
-      ? `<b>${esc(cd.restaurantName)}</b>${subVal > 0 ? ` (₹${subVal})` : ''} · `
-      : '';
-    cartLine = `✓ <b>Cart:</b> ${restPart}<code>${esc(shortUrl(draft.cart))}</code>`;
-    if (itemRows.length > 0) {
-      const previewItems = itemRows.slice(0, 4).map((it) => {
-        const q = Number(it.qty || it.quantity || 1);
-        return `  • ${esc(it.name || 'Item')} × ${q}`;
-      });
-      if (itemRows.length > 4) previewItems.push(`  • +${itemRows.length - 4} more`);
-      cartLine += `\n${previewItems.join('\n')}`;
-    }
-  }
-
-  let addrLine = '🟠 <b>Address:</b> Link bhejein';
-  if (hasAddr) {
-    const ad = draft.addressDetails || {};
-    if (ad.unresolvableShortLink) {
-      // Honest label: the link is saved, but Swiggy never opened it.
-      addrLine = '⚠️ <b>Address:</b> link added — Swiggy se khul nahi paya (↻ Retry karein)';
-    }
-    const addrUrl = draft.addressLink || (String(draft.address).startsWith('http') ? draft.address : '');
-    const humanAddr = ad.address && !String(ad.address).startsWith('http')
-      ? `${ad.address.slice(0, 45)}${ad.address.length > 45 ? '…' : ''}`
-      : (!String(draft.address).startsWith('http') ? `${String(draft.address).slice(0, 45)}${String(draft.address).length > 45 ? '…' : ''}` : '');
-    const parts = [];
-    if (humanAddr) parts.push(esc(humanAddr));
-    if (addrUrl) parts.push(`<code>${esc(shortUrl(addrUrl))}</code>`);
-    addrLine = `✓ <b>Address:</b> ${parts.join(' · ') || 'Added'}`;
-  }
-
-  let nextLine = '';
-  if (!hasCart && !hasAddr) {
-    nextLine = '👉 Seedha <b>Cart</b> aur <b>Address link</b> bhejein 👇';
-  } else if (hasCart && !hasAddr) {
-    nextLine = '🟠 Ab <b>Address link</b> bhejein 👇';
-  } else if (!hasCart && hasAddr) {
-    nextLine = '🟠 Ab <b>Cart link</b> bhejein 👇';
-  } else {
-    nextLine = '🟢 <b>Dono links verified!</b> Ab <b>Send to Beta</b> dabayein 👇';
-  }
-
-  if (draft.addressDetails?.unresolvableShortLink) {
-    nextLine += '\n⚠️ Naya <b>Address link</b> ya Location pin bhejein.';
-  }
-
-  const headerTitle = bothReady ? '🍽 <b>Topic 1: Order Ready!</b>' : '🍽 <b>Topic 1: Submit Link</b>';
-  const text = `${headerTitle}\n\n${cartLine}\n${addrLine}\n\n${nextLine}`;
+  const cartLine = hasCart
+    ? `${esc(cd.restaurantName || 'Link added')}${subVal > 0 ? ` · ₹${subVal}` : ''}`
+    : '—';
+  const ad = draft.addressDetails || {};
+  const addressLine = !hasAddr ? '—' : ad.unresolvableShortLink
+    ? 'Link could not be opened'
+    : esc(ad.address && !String(ad.address).startsWith('http')
+      ? ad.address
+      : (!String(draft.address).startsWith('http') ? draft.address : 'Link added'));
+  const text = `🍽 <b>Swiggy order</b>\n<b>Cart:</b> ${cartLine}\n<b>Address:</b> ${addressLine}`;
 
   return { text, keyboard: Markup.inlineKeyboard(inlineButtons) };
 }
@@ -1500,13 +1437,23 @@ function simpleChatForUser(userId) {
   return isSimpleChatEnabled() && !isBoss(Number(userId));
 }
 
+function simpleCustomerOrderCard(order) {
+  const db = getDb();
+  const wallet = getWallet(db, String(order?.userId || order?.userChatId || ''));
+  return buildSimpleOrderCard(order, {
+    serviceFeePaise: serviceFeePaiseFor(db),
+    feeExempt: Boolean(wallet?.feeExempt || order?.feeWaived),
+    placementPossible: hasPossibleSwiggyPlacement(order)
+  });
+}
+
 function customerOrderCard(order, chatId = null) {
   if (!order) return null;
   // Decide by the CHAT being rendered: a boss-forwarded order still shows the
   // simple card to the customer it is delivered to.
   const targetId = Number(chatId || order.userChatId || order.userId || 0);
   if (isSimpleChatEnabled() && (!targetId || !isBoss(targetId))) {
-    return buildSimpleOrderCard(order);
+    return simpleCustomerOrderCard(order);
   }
   return formatUserOrderCard(order);
 }
@@ -2549,6 +2496,12 @@ bot.command('pro', async (ctx) => {
     : 'In-app payment abhi available nahi hai.';
   return ctx.reply(`Mini App kholo. Chat bot pehle ki tarah available hai. ${checkoutNote}`,
     Markup.inlineKeyboard([[Markup.button.webApp('🍽 Open App', url)]]));
+});
+
+bot.command('myid', async (ctx) => {
+  // The user can send this numeric identifier privately to the bot owner for
+  // an explicit managed-account access grant; it is not a Swiggy credential.
+  return ctx.reply(`Aapka Telegram user ID: ${String(ctx.from.id)}\nSirf bot owner ko privately bhejein.`);
 });
 
 bot.command('waf', async (ctx) => {
@@ -3985,10 +3938,7 @@ bot.action(/^boss_retry_claim_(.+)$/, async (ctx) => {
 
   // Chaaron ka sach turant: kaunsa laga, kaunsa pre-locked, kaunsa fail + asli wajah.
   await ctx.reply(
-    `${fourOfferStatusBlock(acc, { escape: (v) => escapeHtml(String(v ?? '')) })}\n\n` +
-    `<i>${claimRes?.allFourClaimed
-      ? `Saare ${OFFER_TRACKS.length} offer me ₹50 lag gaya — ₹${OFFER_TRACKS.length * 50} tak free cash.`
-      : 'Jo nahi laga uska asli reason upar likha hai. “🔧 Fix ₹50 ab” dabaiye — read-back ke baad hi ✓ milta hai.'}</i>`,
+    fourOfferStatusBlock(acc, { escape: (v) => escapeHtml(String(v ?? '')) }),
     {
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
@@ -10920,6 +10870,7 @@ bot.on('text', async (ctx, next) => {
         {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
+            ...(configuredMiniAppUrl() ? [[{ text: '🍽 Open Mini App and complete your order', web_app: { url: `${configuredMiniAppUrl()}?from=chat` } }]] : []),
             [{ text: '↻ Retry address', callback_data: 'simple_retry_address', style: 'primary' }],
             [{ text: '✍️ Address type karein', callback_data: 'simple_type_address', style: 'primary' }]
           ])
@@ -11294,6 +11245,23 @@ async function resetCardAndAskForMissing(ctx, userId, missing) {
 
 async function handleSendToBoss(ctx) {
   const userId = ctx.from.id;
+  // Use the same per-user lock as the authenticated Mini App API. A chat
+  // draft cannot begin here while its Mini App copy is being claimed/imported.
+  return withProWorkspaceLock(userId, async () => {
+    if (readChatHandoff(userId)) {
+      await ctx.reply('Yeh draft Mini App mein open hai. Wahin complete karein, ya Mini App se “Return to chat” choose karein.');
+      return { blockedByMiniApp: true };
+    }
+    if (readChatSubmissionGuard(userId)) {
+      await ctx.reply('Pichhla chat order abhi check karna zaroori hai. Naya order bhejne se pehle owner se baat karein.');
+      return { blockedByMiniApp: true };
+    }
+    return handleSendToBossUnlocked(ctx);
+  });
+}
+
+async function handleSendToBossUnlocked(ctx) {
+  const userId = ctx.from.id;
 
   // 1. Check if user already has an active order
   const activeOrder = getActiveUserOrder(userId);
@@ -11606,9 +11574,27 @@ async function handleSendToBoss(ctx) {
     );
   }
 
-  db.orders[orderId] = newOrder;
-  saveDb(db);
-  clearDraft(userId);
+  // The draft may have changed while Swiggy was resolving links. Never consume
+  // a newer one, and persist a write-ahead guard before creating the chat order.
+  const fingerprint = chatDraftFingerprint(draft);
+  const latestDraft = getDb().drafts?.[String(userId)];
+  if (!latestDraft || chatDraftFingerprint(latestDraft) !== fingerprint) {
+    await ctx.reply('Links badal gaye hain. Naye draft ko check karke phir continue karein.');
+    return { blockedByMiniApp: true };
+  }
+  try {
+    beginChatSubmission(userId, fingerprint, orderId);
+    db.orders[orderId] = newOrder;
+    saveDb(db);
+    clearDraft(userId);
+    finishChatSubmission(userId, orderId);
+  } catch (err) {
+    // A partial/crashed save is not evidence that no order exists. The durable
+    // guard stays in place and no background Swiggy placement is started.
+    console.error('[ChatSubmission] could not durably record order:', err?.message || err);
+    await ctx.reply('Chat order ko safely save nahi kar paya. Dobara place na karein; owner ko check karne dein.');
+    return { blockedByMiniApp: true };
+  }
 
   // Track the same single card the customer has been using since the links.
   if (ctx.callbackQuery?.message?.message_id) {
@@ -11727,7 +11713,8 @@ async function startSimpleOrderFromDraft(ctx, userId) {
   const chatId = ctx.chat?.id || userId;
   const priorCardId = userCardState(userId).messageId;
   try {
-    await handleSendToBoss(ctx);
+    const sent = await handleSendToBoss(ctx);
+    if (sent?.blockedByMiniApp) return false;
     // A text paste has no callbackQuery, so the order card is posted fresh.
     // Remove the previous (link) card so the chat keeps ONE live card.
     const created = Object.values(getDb().orders || {})
@@ -11825,6 +11812,9 @@ bot.action(SIMPLE_CHAT_CALLBACKS.continueDraft, async (ctx) => {
 
 bot.action(SIMPLE_CHAT_CALLBACKS.clearDraft, async (ctx) => {
   const userId = ctx.from.id;
+  if (readChatHandoff(userId) || readChatSubmissionGuard(userId)) {
+    return ctx.answerCbQuery('Draft is open in Mini App or needs review.', { show_alert: true }).catch(() => {});
+  }
   delete userWaitState[userId];
   clearDraft(userId);
   await ctx.answerCbQuery('Cleared ✓').catch(() => {});
@@ -11833,6 +11823,9 @@ bot.action(SIMPLE_CHAT_CALLBACKS.clearDraft, async (ctx) => {
 
 bot.action(SIMPLE_CHAT_CALLBACKS.newOrder, async (ctx) => {
   const userId = ctx.from.id;
+  if (getActiveUserOrder(userId) || readChatHandoff(userId) || readChatSubmissionGuard(userId)) {
+    return ctx.answerCbQuery('Order or Mini App draft is still open. Check it first.', { show_alert: true }).catch(() => {});
+  }
   delete userWaitState[userId];
   // Dismiss the finished/failed card so the fresh screen really is empty.
   const focus = getSimpleFocusOrder(userId);
@@ -11856,6 +11849,9 @@ bot.action(SIMPLE_CHAT_CALLBACKS.newOrder, async (ctx) => {
 // link cannot be opened. Low input first, but never a dead end.
 bot.action('simple_type_address', async (ctx) => {
   const userId = ctx.from.id;
+  if (readChatHandoff(userId) || readChatSubmissionGuard(userId)) {
+    return ctx.answerCbQuery('Draft is open in Mini App or needs review.', { show_alert: true }).catch(() => {});
+  }
   await ctx.answerCbQuery().catch(() => {});
   userWaitState[userId] = { action: 'waiting_address' };
   // Clear the whole unusable address (link + the text that carried it), otherwise
@@ -11918,7 +11914,7 @@ function feePaiseNow() {
 
 /** Customer ke liye "Admin se baat" button (har jagah). */
 function supportRow() {
-  return [{ text: '🆘 Admin se baat karein', callback_data: 'support_contact_admin', style: 'primary' }];
+  return [{ text: 'Support', callback_data: 'support_contact_admin' }];
 }
 
 /**
@@ -11961,8 +11957,8 @@ async function sendFeeQrForHeldOrder(order, { feePaise: feeOverride = 0 } = {}) 
       const qrBuffer = await QRCode.toBuffer(feeUri, { type: 'png', width: 720, margin: 3, errorCorrectionLevel: 'M' });
       await bot.telegram.sendPhoto(chatId, { source: qrBuffer }, {
         caption: safeTelegramCaption(
-          `🔐 <b>₹${walletRupees(fee)} ka QR</b>\n` +
-          `<i>Ye order ka payment nahi — sirf verification. Pay karte hi order ka QR yahin aa jayega.</i>`,
+          `<b>Service fee: ₹${walletRupees(fee)}</b>\n` +
+          'This is separate from the Swiggy order payment.',
           900
         ),
         parse_mode: 'HTML'
@@ -12119,12 +12115,13 @@ async function sendOrderVerificationCard(order, { balancePaise = 0, neededPaise 
 async function sendQrGenerationFailedCard(order, { reason = '' } = {}) {
   const userId = walletOwnerId(order);
   if (!userId) return false;
-  const text = formatQrFailedCard({ orderId: order.id, reason });
+  const possiblePlacement = hasPossibleSwiggyPlacement(order);
+  const text = formatQrFailedCard({ orderId: order.id, reason, possiblePlacement });
   const chatId = order.userChatId || order.userId || userId;
   await bot.telegram.sendMessage(chatId, text, {
     parse_mode: 'HTML',
     ...Markup.inlineKeyboard([
-      [{ text: '🔄 Shuru se dobara try', callback_data: `simple_restart_order_${order.id}`, style: 'success' }],
+      ...(possiblePlacement ? [] : [[{ text: 'Start again', callback_data: `simple_restart_order_${order.id}` }]]),
       supportRow()
     ])
   }).catch(() => {});
@@ -12147,10 +12144,8 @@ async function sendWalletCard(ctx, { notice = '' } = {}) {
     pending
   });
   const kb = Markup.inlineKeyboard([
-    [{ text: '🔐 Verification baaki hai — UTR', callback_data: 'wallet_topup', style: 'success' }],
-    [{ text: '🧾 History', callback_data: 'wallet_history', style: 'primary' }],
-    supportRow(),
-    [{ text: '◀ Back', callback_data: 'wallet_back_home', style: 'primary' }]
+    [{ text: 'Add balance', callback_data: 'wallet_topup' }, { text: 'History', callback_data: 'wallet_history' }],
+    [...supportRow(), { text: 'Back', callback_data: 'wallet_back_home' }]
   ]);
   return ctx.reply(text, { parse_mode: 'HTML', ...kb }).catch(() => {});
 }
@@ -12166,9 +12161,7 @@ async function sendTopupAmounts(ctx) {
   }
   rows.push([{ text: '◀ Back', callback_data: 'wallet_home', style: 'primary' }]);
   return ctx.reply(
-    `➕ <b>VERIFICATION AMOUNT</b>\n\n` +
-    `<i>Ek order ka verification ₹${walletRupees(fee)} hai (refundable). Ek baar bharo (ek order) ya zyada (kai orders).</i>\n\n` +
-    `Kitna bhejna hai?`,
+    `<b>Add balance</b>\nPer-order service fee: ₹${walletRupees(fee)}. Choose a top-up amount.`,
     { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) }
   ).catch(() => {});
 }
@@ -12213,18 +12206,15 @@ bot.action(/^wallet_topup_amt_(\d+)$/, async (ctx) => {
 bot.action('wallet_verify_pay', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = String(ctx.from.id);
-  const fee = feePaiseNow();
-  const awaiting = findOrderAwaitingFee(getDb(), userId, { feePaise: fee });
+  const awaiting = findOrderAwaitingFee(getDb(), userId, { feePaise: feePaiseNow() });
+  const fee = Number(awaiting?.order?.feeDuePaise) || feePaiseNow();
   const upi = walletUpiId();
   const text = [
-    '🔐 <b>VERIFICATION</b>',
-    '',
-    awaiting?.order ? `Order <code>#${escapeHtml(String(awaiting.order.id))}</code> ka QR ready hai — bas ye chhota step.` : '',
-    '',
-    `<b>₹${walletRupees(fee)}</b> is UPI par bhejein: <code>${escapeHtml(upi || '(admin ne UPI set nahi kiya)')}</code>`,
-    '',
-    '<i>Ye order ke bill me nahi judta — cancel karne par turant wapas milta hai.</i>',
-    'Payment ke baad <b>UTR / Ref No.</b> bhejein.'
+    '<b>Service fee</b>',
+    awaiting?.order ? `Order <code>#${escapeHtml(String(awaiting.order.id))}</code>` : '',
+    `<b>Amount:</b> ₹${walletRupees(fee)} · <b>UPI:</b> <code>${escapeHtml(upi || 'Not set; contact support')}</code>`,
+    'Order payment is separate. Submit the UTR after paying.',
+    'If eligible, cancellation before placement returns the charged fee to your wallet.'
   ].filter(Boolean).join('\n');
   await ctx.reply(text, {
     parse_mode: 'HTML',
@@ -12330,9 +12320,15 @@ bot.action(/^wallet_fee_paid_([A-Za-z0-9_-]+)$/, async (ctx) => {
 bot.action(/^simple_restart_order(_([A-Za-z0-9_-]+))?$/, async (ctx) => {
   const userId = String(ctx.from.id);
   const orderId = String(ctx.match[2] || '');
-  await ctx.answerCbQuery('Shuru se dobara…').catch(() => {});
   const db = getDb();
-  const target = (orderId && db.orders?.[orderId]) || getActiveUserOrder(db, userId) || getSimpleFocusOrder(userId);
+  const target = orderId ? db.orders?.[orderId] : (getActiveUserOrder(userId) || getSimpleFocusOrder(userId));
+  if ((orderId && !target) || (target && String(target.userId) !== userId && !isBoss(ctx.from.id))) {
+    return ctx.answerCbQuery('Order unavailable.', { show_alert: true }).catch(() => {});
+  }
+  if (hasPossibleSwiggyPlacement(target) || readChatHandoff(userId) || readChatSubmissionGuard(userId)) {
+    return ctx.answerCbQuery('Order may exist. Check the original account; do not start again.', { show_alert: true }).catch(() => {});
+  }
+  await ctx.answerCbQuery('Starting again').catch(() => {});
   if (target && !['COMPLETED', 'DELIVERED'].includes(String(target.status || '').toUpperCase())) {
     const t = db.orders?.[target.id] || target;
     t.status = 'CANCELLED';
@@ -12990,7 +12986,7 @@ bot.action(SIMPLE_CHAT_CALLBACKS.loginReady, async (ctx) => {
   }
 
   // Bill ready? Seedha bill card (bill + "✅ QR banao") — koi extra screen nahi.
-  const card = buildSimpleOrderCard(getDb().orders?.[active.id] || active);
+  const card = simpleCustomerOrderCard(getDb().orders?.[active.id] || active);
   await ctx.reply(card.text, { parse_mode: 'HTML', ...card.keyboard }).catch(() => {});
 });
 
@@ -13095,9 +13091,11 @@ bot.action(/^topic_nav_(\d)_(.+)$/, async (ctx) => {
 
 bot.action('topic_finish_and_start', async (ctx) => {
   const userId = ctx.from.id;
-  resetOrderTopicsToStart(userId);
+  if (!resetOrderTopicsToStart(userId)) {
+    return ctx.answerCbQuery('Order or Mini App draft is still open. Check it first.', { show_alert: true }).catch(() => {});
+  }
   userChatCards.delete(String(userId));
-  await ctx.answerCbQuery('✓ Sab topics complete! Naya order shuru (Topic 1: Submit Link)').catch(() => {});
+  await ctx.answerCbQuery('New order').catch(() => {});
   const screen = getUserScreen(userId, ctx.from);
   try {
     await ctx.editMessageText(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
@@ -13108,7 +13106,9 @@ bot.action('topic_finish_and_start', async (ctx) => {
 
 bot.hears(['🛒 Start New Order', '🛒 New Order', 'Start New Order', 'New Order', 'Naya Order', '🛒 Naya Order', 'Naya Order Shuru Karein'], async (ctx) => {
   const userId = ctx.from.id;
-  resetOrderTopicsToStart(userId);
+  if (!resetOrderTopicsToStart(userId)) {
+    return ctx.reply('Order or Mini App draft is still open. Check it first.');
+  }
   userChatCards.delete(String(userId));
   const screen = getUserScreen(userId, ctx.from);
   await ctx.reply(screen.text, { parse_mode: 'HTML', ...screen.keyboard });
@@ -14520,7 +14520,9 @@ async function approveUserOrderBillActionInner(uidStr, orderId) {
       ok: false,
       code: 'QR_GENERATION_FAILED',
       orderId,
-      error: 'QR ban nahi paya — dobara try karein (koi charge nahi hua).'
+      error: hasPossibleSwiggyPlacement(updated)
+        ? 'Order result unknown. Check the original account; do not retry.'
+        : 'Payment details unavailable. Check the order before retrying.'
     };
   }
 

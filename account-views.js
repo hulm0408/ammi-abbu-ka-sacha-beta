@@ -120,10 +120,15 @@ export function portableSessionJsonText(acc, key = '', { pretty = true } = {}) {
 export function liveOrderTruth(acc) {
   const src = acc || {};
   const verified = src.ordersVerifiedLive === true;
-  const rawCount = Number(src.totalOrdersCount ?? src.cachedTotalOrdersCount);
-  const hasCount = verified && Number.isFinite(rawCount) && rawCount !== 999999;
+  const readCount = (value) => {
+    if (value === null || value === undefined || typeof value === 'boolean' || typeof value === 'object' || String(value).trim() === '') return null;
+    const count = Number(value);
+    return Number.isSafeInteger(count) && count >= 0 && count !== 999999 ? count : null;
+  };
+  const rawCount = readCount(src.totalOrdersCount) ?? readCount(src.cachedTotalOrdersCount);
+  const hasCount = verified && rawCount !== null;
   const totalOrders = hasCount ? rawCount : null;
-  const activeOrders = Number.isFinite(Number(src.liveActiveOrdersCount)) ? Number(src.liveActiveOrdersCount) : null;
+  const activeOrders = readCount(src.liveActiveOrdersCount);
   const claimsZero = src.isZeroOrderAccount === true;
   return {
     verified,
@@ -134,7 +139,7 @@ export function liveOrderTruth(acc) {
     fileClaimIgnored: !verified && (rawCount === 0 || claimsZero),
     label: hasCount
       ? (totalOrders === 0 ? '★ 0 orders (LIVE check)' : `● ${totalOrders} order${totalOrders === 1 ? '' : 's'} (LIVE check)`)
-      : '⚠️ Not checked live yet — tap “Live Check”'
+      : (verified ? '⚠️ Order count not returned' : '⚠️ Not checked live yet')
   };
 }
 
@@ -150,7 +155,16 @@ export function offerClaimTruth(acc) {
     if (!rec) {
       return { status: 'NEW', claimed: false, label: 'NEW — abhi claim nahi hua', at: '' };
     }
-    const state = String(rec.status || '').toUpperCase();
+    const state = String(rec.status || rec.state || '').toUpperCase();
+    const outcome = String(rec.state || '').toUpperCase();
+    if (state === 'WRONG_REWARD' || state === 'CLAIMED_OTHER_VALUE' || outcome === 'WRONG_REWARD' || outcome === 'CLAIMED_OTHER_VALUE') {
+      return {
+        status: 'WRONG_REWARD',
+        claimed: false,
+        label: `🟡 Offer save hui par ₹50 free cash nahi${rec.message ? ` — ${String(rec.message).slice(0, 70)}` : ''}`,
+        at: activation?.at || ''
+      };
+    }
     if (state === 'PRE_LOCKED' || rec.preLocked === true) {
       return {
         status: 'PRE_LOCKED',
@@ -162,21 +176,12 @@ export function offerClaimTruth(acc) {
     }
     const claimed = state === 'CLAIMED' || state === 'ALREADY_CLAIMED' || Boolean(rec.claimed === true);
     if (claimed) {
+      const reward = rec.discount ? ` (${rec.discount})` : '';
       return {
         status: 'CLAIMED',
         claimed: true,
-        label: rec.alreadyActive || rec.alreadyClaimed
-          ? `✓ Already claimed (${rec.discount || PREFERRED_OFFER_LABEL})`
-          : `✓ Claimed (${rec.discount || PREFERRED_OFFER_LABEL})`,
+        label: (rec.alreadyActive || rec.alreadyClaimed ? '✓ Already claimed' : '✓ Claimed') + reward,
         at: rec.claimedAt || activation?.at || ''
-      };
-    }
-    if (state === 'WRONG_REWARD' || state === 'CLAIMED_OTHER_VALUE') {
-      return {
-        status: 'WRONG_REWARD',
-        claimed: false,
-        label: `🟡 Offer save hui par ₹50 free cash nahi${rec.message ? ` — ${String(rec.message).slice(0, 70)}` : ''}`,
-        at: activation?.at || ''
       };
     }
     return {
@@ -236,29 +241,24 @@ export function fourOfferStatusLines(acc, { escape = (v) => String(v ?? ''), sho
     if (showReason && String(slot.status).toUpperCase() === 'FAILED' && slot.label) {
       reason = String(slot.label).replace(/^×\s*Not claimed\s*—?\s*/i, '').trim();
     }
-    const tail = view.label === 'PRE-LOCKED'
-      ? '₹50 — slot khulte hi lagega'
-      : view.label === 'WRONG REWARD'
-        ? '₹50 free cash nahi mila (Swiggy ne doosra reward rakha)'
-        : (view.label === 'NEW' ? '₹50 — claim pending' : '₹50');
-    return `${idx + 1}. ${track.emoji} <b>${escape(track.bossLabel)}</b> — ${view.icon} <b>${view.label}</b> · ${tail}` +
-      (reason ? `\n     <i>${escape(reason.slice(0, 90))}</i>` : '');
+    const tail = view.label === 'WRONG REWARD' ? '₹50 free cash nahi mila' : view.label === 'NEW' ? '₹50 target · claim pending' : '₹50 target';
+    return `${idx + 1}. ${track.emoji} <b>${escape(track.bossLabel)}</b> · ${view.icon} ${view.label} · ${tail}` +
+      (reason ? ` · ${escape(reason.slice(0, 90))}` : '');
   });
 }
 
-/** "2/5 claimed · ₹100 pakka / ₹250 possible" — jhooth nahi, sirf ginti. */
+/** Count reported offer states without adding up unverified savings. */
 export function fourOfferScoreLine(acc) {
   const truth = offerClaimTruth(acc || {});
-  const each = 50;
   const total = Number(truth.totalTracks || OFFER_TRACK_COUNT);
-  return `📊 Score: <b>${truth.claimedCount}/${total} claimed</b> · ₹${truth.claimedCount * each} pakka / ₹${total * each} possible` +
-    (truth.preLockedCount ? ` · ⏳ ${truth.preLockedCount} pre-locked` : '');
+  return `Score: <b>${truth.claimedCount}/${total} claimed</b>` +
+    (truth.preLockedCount ? ` · ${truth.preLockedCount} pre-locked` : '');
 }
 
 /** Poora chaar-offer status block (boss card, user card, import summary — sab jagah). */
 export function fourOfferStatusBlock(acc, { escape = (v) => String(v ?? ''), header = '' } = {}) {
   return [
-    header || `🎁 <b>SAARE ${OFFER_TRACK_COUNT} OFFER — har ek ₹50 (option 1: ₹50 off on ₹199)</b>`,
+    header || `<b>Offers · ₹50 target</b>`,
     ...fourOfferStatusLines(acc, { escape }),
     fourOfferScoreLine(acc)
   ].join('\n');
@@ -275,7 +275,7 @@ export function compactAccountLine(acc, key, { activeKey = '', index = 1 } = {})
       ? '⚠️'
       : (live ? (String(key) === String(activeKey) ? '★' : '🟢') : '⚪'));
   const truth = liveOrderTruth(src);
-  const orders = truth.verified
+  const orders = truth.totalOrders !== null
     ? (truth.totalOrders === 0 ? '0 ord' : `${truth.totalOrders} ord`)
     : 'ord ?';
   const claim = offerClaimTruth(src);
@@ -292,7 +292,7 @@ export function compactAccountLine(acc, key, { activeKey = '', index = 1 } = {})
   const lockBit = lock ? ` · 🔒 #${escapeLight(String(lock.orderId))}` : '';
   const expiredBit = src.sessionExpired ? ' · ⚠️ session expired' : '';
   const suspendBit = suspended ? ` · ⛔ suspended` : '';
-  return `${index}. ${icon} <code>${maskPhone(src.phone || src.mobile || key)}</code>${name ? ` ${escapeLight(name)}` : ''} · ${orders} · ${claimBit}${lockBit}${expiredBit}${suspendBit}`;
+  return `${index}. ${icon} <code>${escapeLight(maskPhone(src.phone || src.mobile || key))}</code>${name ? ` ${escapeLight(name)}` : ''} · ${orders} · ${claimBit}${lockBit}${expiredBit}${suspendBit}`;
 }
 
 export function compactAccountListText(accounts = {}, { activeKey = '', header = '' } = {}) {
@@ -302,11 +302,11 @@ export function compactAccountListText(accounts = {}, { activeKey = '', header =
   return {
     liveCount: live,
     totalCount: entries.length,
-    text: (header || '◉ <b>SWIGGY ACCOUNTS</b>') + `\n<i>${live} live / ${entries.length} total — tap any account to expand</i>` +
+    text: (header || '<b>Swiggy accounts</b>') + `\n${live}/${entries.length} sessions saved` +
       (entries.filter(([, a]) => isAccountSuspended(a)).length > 0
-        ? `\n⛔ <b>${entries.filter(([, a]) => isAccountSuspended(a)).length} suspended</b> — inpar order place nahi hoga (rotation inhe skip karti hai)`
+        ? ` · ${entries.filter(([, a]) => isAccountSuspended(a)).length} flagged`
         : '') +
-      (lines.length ? `\n\n${lines.join('\n')}` : '\n\n<i>Koi account nahi — JSON bhejein ya Number se login karein.</i>')
+      (lines.length ? `\n${lines.join('\n')}` : '\nNo accounts yet.')
   };
 }
 
@@ -323,26 +323,20 @@ export function accountDetailText({ acc, key, activeKey = '', orderLines = [] } 
   const suspendedNow = isAccountSuspended(src);
   const statusText = suspendedNow
     ? `⛔ Suspended — ${describeSuspendedAccount(src)}`
-    : (live
-      ? '● Logged In'
-      : (src.sessionExpired ? '⚠️ Session Expired' : '○ Logged Out'));
+    : (src.sessionExpired ? 'Session expired' : (live ? 'Session saved' : 'Logged out'));
   const lines = [
     `◉ <b>${escapeLight(src.name || key)}</b>${String(key) === String(activeKey) ? ' ★ <b>[ACTIVE]</b>' : ''}`,
-    `☎ <code>${String(src.phone || src.mobile || 'not set')}</code> · ◈ ${statusText}`,
+    `☎ <code>${escapeLight(src.phone || src.mobile || 'not set')}</code> · ${escapeLight(statusText)}`,
     // 🔒 Kis order par locked hai — deliver/cancel hone tak ID kisi aur ko nahi milegi.
     (src.orderLock && typeof src.orderLock === 'object' && src.orderLock.orderId)
       ? `🔒 <b>Locked</b> to order <code>#${escapeLight(String(src.orderLock.orderId))}</code>` +
         ` · ${escapeLight(String(src.orderLock.holder || 'Customer'))}` +
-        ` · ${escapeLight(String(src.orderLock.stage || ''))}` +
-        `\n   <i>Deliver ya cancel hone par apne aap free hogi (warna max 6h).</i>`
+        ` · ${escapeLight(String(src.orderLock.stage || ''))}`
       : '',
     '',
     `📦 <b>Orders:</b> ${truth.label}`,
-    truth.verified
-      ? `   ▪ Active orders: <b>${truth.activeOrders === null ? '—' : truth.activeOrders}</b>`
-      : '   ▪ <i>File me jo order count likha ho wo nahi maana jata — sirf live check.</i>',
-    '',
-    `🎁 <b>SAARE ${OFFER_TRACK_COUNT} OFFER (${escapeLight(claim.offerLabel)}) — har ek ₹50:</b>`,
+    truth.verified ? `Active orders: <b>${truth.activeOrders === null ? 'Not returned' : truth.activeOrders}</b>` : '',
+    `🎁 <b>Offers · ₹50 target</b>`,
     ...fourOfferStatusLines(src, { escape: escapeLight }),
     `   ▪ ${fourOfferScoreLine(src)}`,
     claim.autoActivatedAt ? `   ▪ Auto-activated: ${escapeLight(claim.autoActivatedAt.slice(0, 19).replace('T', ' '))}` : '',

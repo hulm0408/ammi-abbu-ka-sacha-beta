@@ -250,7 +250,7 @@ check('boss_utr_no reject', /boss_utr_no_/.test(indexSrc));
 check('boss_wallet_free toggle', /boss_wallet_free_/.test(indexSrc));
 check('approve ke baad auto resume', /resumeOrderAfterTopup/.test(indexSrc));
 check('customer home par admin button (wallet nahi)', /support_contact_admin/.test(chatSrc) && !/wallet_home/.test(chatSrc));
-check('bill card par koi fee line nahi', !/<b>Order fee:<\/b>/.test(chatSrc));
+check('bill card discloses a separate service fee before approval', /Service fee:<\/b>/.test(chatSrc) && /serviceFeePaiseFor\(db\)/.test(indexSrc));
 check('boss panel me fee panel row', /boss_fee_panel/.test(bossPanelSrc));
 check('boss panel me pending UTR row', /boss_utr_list/.test(bossPanelSrc));
 check('user-wallet.js me UTR duplicate guard', /DUPLICATE_UTR/.test(fs.readFileSync('./user-wallet.js', 'utf8')));

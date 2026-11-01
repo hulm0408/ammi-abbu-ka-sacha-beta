@@ -112,7 +112,7 @@ console.log('\n=== 4. Compact list line + expanded detail with Copy JSON at bott
     acc_9999999999: { name: 'Dost', phone: '9999999999', isLoggedIn: true, tid: JWT }
   };
   const list = views.compactAccountListText(accounts, { activeKey: 'acc_9580917901' });
-  check('header shows live/total', /2 live \/ 2 total/.test(list.text), list.text.split('\n')[1]);
+  check('header shows saved session count', /2\/2 sessions saved/.test(list.text), list.text.split('\n')[1]);
   const rows = list.text.split('\n').filter((l) => /^\d+\./.test(l));
   check('one compact row per account', rows.length === 2, String(rows.length));
   check('active account starred', /★/.test(rows[0]), rows[0]);
@@ -132,7 +132,7 @@ console.log('\n=== 4. Compact list line + expanded detail with Copy JSON at bott
   check('detail marks ACTIVE account', /\[ACTIVE\]/.test(detail.text));
 
   const unverDetail = views.accountDetailText({ acc: accounts.acc_9999999999, key: 'acc_9999999999' });
-  check('unverified detail says file count not trusted', /File me jo order count/.test(unverDetail.text), unverDetail.text);
+  check('unverified detail says order count not checked', /Not checked live yet/.test(unverDetail.text) && !/0 orders \(LIVE/.test(unverDetail.text), unverDetail.text);
   check('unverified detail me saare offer NEW (claim pending)', /0\/5 claimed/.test(unverDetail.text) && (unverDetail.text.match(/claim pending/g) || []).length === 5, unverDetail.text.split('\n').slice(4, 12).join(' | '));
 }
 

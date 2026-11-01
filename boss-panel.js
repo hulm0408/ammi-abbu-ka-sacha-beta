@@ -174,8 +174,6 @@ export function buildBossTrackerHome(db) {
     `<b>Swiggy IDs:</b> ${loggedIn} logged in${accounts.length > loggedIn ? ` · ${accounts.length - loggedIn} need login` : ''}`,
     `<b>Orders:</b> ${orders.length} · Pending ${pending} · In progress ${accepted} · Done ${completed}`,
     `<b>Tracking links:</b> ${tracked} live${doneOrders.length > tracked ? ` · ${doneOrders.length - tracked} pending` : ''}`,
-    '',
-    sub('Every order below shows its Swiggy order id, the phone that placed it, and its live tracking link.'),
   ].join('\n'));
 
   return { text, keyboard: Markup.inlineKeyboard([[Markup.button.callback('★ Boss Panel', 'boss_panel_home')]]) };
@@ -188,73 +186,56 @@ export function buildBossPanelHome(db) {
   const completed = orders.filter(o => o.status === 'COMPLETED').length;
   const accounts = db.config?.accounts || {};
 
-  let accBody = '';
-  let accCount = 0;
-  for (const [key, acc] of Object.entries(accounts)) {
-    accCount++;
-    const status = acc.isLoggedIn ? `● Logged In (${acc.phone || 'Ready'})` : '○ Not Logged In';
-    accBody += `<b>${esc(acc.name || key)}:</b> <b>${esc(status)}</b>\n`;
-  }
-
+  const allAccounts = Object.values(accounts);
+  const loggedIn = allAccounts.filter(acc => acc?.isLoggedIn).length;
   const isPaused = Boolean(db?.config?.servicePaused);
-  const serviceStatusLine = isPaused
-    ? '🔴 <b>Service Status: PAUSED (Offline for customers)</b>'
-    : '🟢 <b>Service Status: ACTIVE (Online for customers)</b>';
-
   const text = section('Boss Panel', [
-    serviceStatusLine,
-    section('Swiggy Accounts', accBody || sub('No accounts added yet. Tap Login to add.')),
-    section('Orders', [
-      `<b>Pending:</b> <b>${pending}</b>`,
-      `<b>In Progress:</b> <b>${accepted}</b>`,
-      `<b>Completed:</b> <b>${completed}</b>`,
-    ].join('\n')),
-    sub('Manage orders, accounts, and offers from here.'),
+    `<b>Service:</b> ${isPaused ? 'Paused' : 'Active'}`,
+    `<b>Accounts:</b> ${loggedIn}/${allAccounts.length} marked logged in`,
+    `<b>Orders:</b> ${pending} pending · ${accepted} in progress · ${completed} done`,
   ].join('\n'));
 
   // Complete Boss Panel — combines both telegram-slot-bot features & new ammi-abbu features
   const keyboard = Markup.inlineKeyboard([
     [
-      { text: isPaused ? '🟢 Resume Service (Turn ON)' : '🔴 Pause Service (Turn OFF)', callback_data: 'boss_toggle_service' },
-      { text: '📢 Broadcast to All', callback_data: 'boss_broadcast_prompt' }
+      { text: isPaused ? 'Resume Service' : 'Pause Service', callback_data: 'boss_toggle_service' },
+      { text: 'Broadcast', callback_data: 'boss_broadcast_prompt' }
     ],
     [
-      { text: '📊 Dashboard', callback_data: 'boss_dashboard' },
-      { text: '🔗 Extract Tracking', callback_data: 'boss_extract_tracking_prompt' }
+      { text: 'Dashboard', callback_data: 'boss_dashboard' },
+      { text: 'Extract Tracking', callback_data: 'boss_extract_tracking_prompt' }
     ],
     [
-      { text: '📦 Orders Done (All IDs)', callback_data: 'boss_view_orders_done' },
-      { text: '▣ Pending Orders', callback_data: 'boss_view_pending' }
+      { text: 'Orders Done', callback_data: 'boss_view_orders_done' },
+      { text: 'Pending Orders', callback_data: 'boss_view_pending' }
     ],
     [
-      { text: '☎ Login with Number', callback_data: 'boss_login_with_number' },
-      { text: '▤ Login with JSON', callback_data: 'boss_login_with_json' }
+      { text: 'Login with Number', callback_data: 'boss_login_with_number' },
+      { text: 'Login with JSON', callback_data: 'boss_login_with_json' }
     ],
     [
-      { text: '◉ Connected Accounts', callback_data: 'boss_view_accounts' },
-      { text: '📤 Export & Logout', callback_data: 'boss_export_logout_picker' }
+      { text: 'Connected Accounts', callback_data: 'boss_view_accounts' },
+      { text: 'Export & Logout', callback_data: 'boss_export_logout_picker' }
     ],
     [
-      { text: '▤ Order History', callback_data: 'boss_view_archive' },
-      { text: '× Cancelled Orders', callback_data: 'boss_view_cancelled_orders' }
+      { text: 'Order History', callback_data: 'boss_view_archive' },
+      { text: 'Cancelled Orders', callback_data: 'boss_view_cancelled_orders' }
     ],
     [
-      { text: '🧮 Wallet & Fee', callback_data: 'boss_fee_panel' },
-      { text: '💳 Payment UPI', callback_data: 'boss_upi_panel' }
+      { text: 'Wallet & Fee', callback_data: 'boss_fee_panel' },
+      { text: 'Payment UPI', callback_data: 'boss_upi_panel' }
     ],
     [
-      { text: '⏳ Pending UTR', callback_data: 'boss_utr_list' }
+      { text: 'Pending UTR', callback_data: 'boss_utr_list' },
+      { text: 'Claim Offers', callback_data: 'boss_claim_all_event_offers' }
     ],
     [
-      { text: '🎁 Claim Offers (All)', callback_data: 'boss_claim_all_event_offers' },
-      { text: '🔄 Audit Sessions', callback_data: 'boss_refresh_all_accounts' }
+      { text: 'Audit Sessions', callback_data: 'boss_refresh_all_accounts' },
+      { text: 'Maintenance', callback_data: 'boss_maintenance' }
     ],
     [
-      { text: '🩺 Maintenance', callback_data: 'boss_maintenance' },
-      { text: '↻ Refresh Panel', callback_data: 'boss_refresh' }
-    ],
-    [
-      { text: '× Close', callback_data: 'close_menu' }
+      { text: 'Refresh Panel', callback_data: 'boss_refresh' },
+      { text: 'Close', callback_data: 'close_menu' }
     ]
   ]);
 
@@ -395,10 +376,7 @@ export function buildBossOrderCard(order, db = getDb()) {
       : '';
 
   let text = `${heading(`[ ORDER #${order.id} ] · ${statusBadge}`)}\n\n`;
-  text += section('Ordered By', [
-    `<b>Name:</b> ${senderLink}`,
-    `<b>User ID:</b> ${idLink}`,
-  ].join('\n'));
+  text += section('Customer', `${senderLink} · ${idLink}`);
 
   // Order identity block — the real Swiggy id, the phone that placed it and the
   // live tracking link. Never a guessed or synthetic id.
@@ -437,10 +415,9 @@ export function buildBossOrderCard(order, db = getDb()) {
   const ad = order.addressDetails || {};
   if (ad.name || ad.mobile || ad.address) {
     const rLines = [];
-    if (ad.name) rLines.push(field('Name', ad.name));
-    if (ad.mobile) rLines.push(`<b>Phone:</b> <code>${esc(ad.mobile)}</code> · <i>delivery contact</i>`);
-    if (ad.address) rLines.push(field('Address', ad.address.length > 80 ? ad.address.slice(0, 80) + '…' : ad.address));
-    if (rLines.length) text += section('Deliver To (Recipient)', rLines.join('\n') + '\n' + sub('Order placed on recipient\'s name & phone — rider will call them, not you.'));
+    if (ad.name || ad.mobile) rLines.push([ad.name ? esc(ad.name) : '', ad.mobile ? `<code>${esc(ad.mobile)}</code>` : ''].filter(Boolean).join(' · '));
+    if (ad.address) rLines.push(esc(ad.address));
+    if (rLines.length) text += section('Recipient', rLines.join('\n'));
   }
   text += billSection(order);
   if (paymentNote) {

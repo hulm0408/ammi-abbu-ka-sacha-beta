@@ -1,6 +1,7 @@
 import { Markup } from 'telegraf';
-import { getDb, saveDb, getDraft, clearDraft, getActiveUserOrder } from './store.js';
-import { getStoredSwiggyTrackingUrl } from './swiggy-cart.js';
+import { getDb, clearDraft, getActiveUserOrder } from './store.js';
+import { esc } from './rich-text.js';
+import { readChatHandoff, readChatSubmissionGuard } from './swiggy-pro-handoff.js';
 
 /**
  * 4-Topic Progressive Progression System for Ammi & Abbu:
@@ -53,86 +54,37 @@ export function getOrderCurrentTopic(order) {
 }
 
 export function buildTopicNavKeyboardRows(currentTopic = 1, orderId = 'draft') {
-  const t = Math.max(1, Math.min(4, Number(currentTopic) || 1));
+  const t = Math.max(1, Math.min(4, Math.trunc(Number(currentTopic)) || 1));
   const safeId = String(orderId || 'draft').replace(/[^a-zA-Z0-9_-]/g, '_');
-
-  const btn1 = {
-    text: t === 1 ? '▶ 1. 🛒 Link' : '✓ 1. Link',
-    callback_data: `topic_nav_1_${safeId}`,
-    style: t === 1 ? 'success' : 'primary'
-  };
-
-  const btn2 = {
-    text: t < 2 ? '🔒 2. Bill' : (t === 2 ? '▶ 2. 🧾 Bill' : '✓ 2. Bill'),
-    callback_data: `topic_nav_2_${safeId}`,
-    style: t === 2 ? 'success' : 'primary'
-  };
-
-  const btn3 = {
-    text: t < 3 ? '🔒 3. Pay' : (t === 3 ? '▶ 3. 💳 Pay' : '✓ 3. Paid'),
-    callback_data: `topic_nav_3_${safeId}`,
-    style: t === 3 ? 'success' : 'primary'
-  };
-
-  const btn4 = {
-    text: t < 4 ? '🔒 4. Track' : '▶ 4. 🛵 Track',
-    callback_data: `topic_nav_4_${safeId}`,
-    style: t === 4 ? 'success' : 'primary'
-  };
-
-  const prevTopic = Math.max(1, t - 1);
-  const nextTopic = Math.min(4, t + 1);
-
-  const slidePrevBtn = {
-    text: t > 1 ? '◀ Previous' : '• Start',
-    callback_data: `topic_nav_${prevTopic}_${safeId}`,
-    style: 'primary'
-  };
-
-  const slideIndicatorBtn = {
-    text: `Topic ${t} of 4`,
-    callback_data: `topic_nav_${t}_${safeId}`,
-    style: 'primary'
-  };
-
-  const slideNextBtn = {
-    text: t < 4 ? (t < nextTopic && t >= currentTopic ? '🔒 Next ▶' : 'Next ▶') : '✓ Done',
-    callback_data: `topic_nav_${nextTopic}_${safeId}`,
-    style: 'primary'
-  };
-
-  return [
-    [btn1, btn2],
-    [btn3, btn4],
-    [slidePrevBtn, slideIndicatorBtn, slideNextBtn]
-  ];
+  const names = ['Link', 'Bill', 'Pay', 'Track'];
+  return [names.map((name, index) => {
+    const topic = index + 1;
+    const marker = topic === t ? '▶' : topic < t ? '✓' : '🔒';
+    return { text: `${marker} ${name}`, callback_data: `topic_nav_${topic}_${safeId}` };
+  })];
 }
 
 export function formatTopicProgressBarText(currentTopic = 1) {
-  const t = Math.max(1, Math.min(4, Number(currentTopic) || 1));
-  const meta = TOPIC_LEVELS[t] || TOPIC_LEVELS[1];
-
-  const s1 = t >= 1 ? (t === 1 ? '🟢' : '✓') : '🔒';
-  const s2 = t >= 2 ? (t === 2 ? '🟢' : '✓') : '🔒';
-  const s3 = t >= 3 ? (t === 3 ? '🟢' : '✓') : '🔒';
-  const s4 = t >= 4 ? '🟢' : '🔒';
-
-  return (
-    `📍 <b>Topic ${t} of 4: ${meta.icon} ${meta.name}</b>\n` +
-    `<code>[${s1} 1. Link] ➔ [${s2} 2. Bill] ➔ [${s3} 3. Pay] ➔ [${s4} 4. Track]</code>\n\n`
-  );
+  const t = Math.max(1, Math.min(4, Math.trunc(Number(currentTopic)) || 1));
+  return `<b>Step ${t}/4 · ${TOPIC_LEVELS[t].name}</b>\n`;
 }
 
 export async function handleTopicNavClick(ctx, targetTopicNum, orderIdArg, { getUserScreenFn, formatUserOrderCardFn } = {}) {
   const userId = ctx.from.id;
-  const targetTopic = parseInt(targetTopicNum, 10);
+  const targetTopic = Number(targetTopicNum);
+  if (!Number.isInteger(targetTopic) || targetTopic < 1 || targetTopic > 4) {
+    return ctx.answerCbQuery('Step unavailable.', { show_alert: true }).catch(() => {});
+  }
   const db = getDb();
 
   let order = null;
   if (orderIdArg && orderIdArg !== 'draft') {
     order = db.orders?.[orderIdArg] || Object.values(db.orders || {}).find(o => String(o.id) === String(orderIdArg));
-  }
-  if (!order) {
+    // A forwarded or stale keyboard must not expose another user's order.
+    if (!order || String(order.userId) !== String(userId)) {
+      return ctx.answerCbQuery('Order unavailable.', { show_alert: true }).catch(() => {});
+    }
+  } else {
     order = getActiveUserOrder(userId);
   }
 
@@ -156,10 +108,9 @@ export async function handleTopicNavClick(ctx, targetTopicNum, orderIdArg, { get
       try { await ctx.editMessageText(scr.text, { parse_mode: 'HTML', ...scr.keyboard }); } catch {}
     } else if (order) {
       await ctx.reply(
-        `✓ <b>Topic 1: Submitted Links (Order #${order.id})</b>\n\n` +
-        `• <b>Cart:</b> <code>${String(order.cart || '').slice(0, 48)}</code>\n` +
-        `• <b>Address:</b> ${order.address || 'Address attached'}\n` +
-        `• <b>Status:</b> Submitted and verified ✓`,
+        `<b>Order #${esc(order.id)}</b>\n` +
+        `<b>Cart:</b> ${esc(order.cart || 'Not available')}\n` +
+        `<b>Address:</b> ${esc(order.addressDetails?.address || order.address || 'Not available')}`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
     }
@@ -195,15 +146,9 @@ export async function handleTopicNavClick(ctx, targetTopicNum, orderIdArg, { get
 }
 
 export function resetOrderTopicsToStart(userId) {
+  // Navigating away is not proof that an order completed. Preserve an open
+  // order or transferred draft instead of erasing it or inventing a status.
+  if (getActiveUserOrder(userId) || readChatHandoff(userId) || readChatSubmissionGuard(userId)) return false;
   clearDraft(userId);
-  const db = getDb();
-  const idNum = Number(userId);
-  const userOrders = Object.values(db.orders || {}).filter(o => Number(o.userId) === idNum);
-  for (const o of userOrders) {
-    if (['PENDING', 'ACCEPTED'].includes(o.status)) {
-      o.status = 'COMPLETED';
-      o.topicsFinished = true;
-    }
-  }
-  saveDb(db);
+  return true;
 }

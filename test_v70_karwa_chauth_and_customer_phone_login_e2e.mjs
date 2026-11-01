@@ -24,8 +24,8 @@ process.env.TEST_MODE = '1';
 process.env.BOT_TOKEN = '123456:TEST-TOKEN-FOR-OFFLINE-E2E';
 process.env.NODE_ENV = 'test';
 
-const DB_PATH = 'data/db.json';
-const MIRROR = 'accounts.json';
+const DB_PATH = process.env.DB_FILE || 'data/db.json';
+const MIRROR = process.env.ACCOUNTS_JSON_FILE || 'accounts.json';
 const dbSnapshot = fs.existsSync(DB_PATH) ? fs.readFileSync(DB_PATH, 'utf8') : null;
 const mirrorSnapshot = fs.existsSync(MIRROR) ? fs.readFileSync(MIRROR, 'utf8') : null;
 
@@ -157,7 +157,7 @@ console.log('\n=== 2. Cards / doctor / dashboard me bhi Karwa Chauth ===');
   check('paanch lines (har offer ek)', lines.length === 5, JSON.stringify(lines));
   check('Karwa Chauth line 🪔 + ✅', /🪔/.test(lines[4]) && /✅/.test(lines[4]), lines[4]);
   const score = views.fourOfferScoreLine(acc);
-  check('score 4/5 (jhooth nahi)', /4\/5 claimed/.test(score) && /₹250 possible/.test(score), score);
+  check('score 4/5 without assumed savings', /4\/5 claimed/.test(score) && !/pakka|possible|₹/.test(score), score);
   const truth = views.offerClaimTruth(acc);
   check('truth me karwaChauth slot', truth.karwaChauth?.status === 'CLAIMED');
   check('truth.allFour sirf sab lage par', truth.allFour === false);
@@ -320,7 +320,10 @@ console.log('\n=== 6. Wiring: consent par handover, callbacks, import summary ==
   check('devlogin_help_ callback registered', /bot\.action\(\/\^devlogin_help_/.test(indexSrc));
   check('devlogin_bot_ callback registered (OTP skip)', /bot\.action\(\/\^devlogin_bot_/.test(indexSrc));
   check('OTP skip par bot khud order karta hai (message)', /OTP SKIP — BOT KHUD ORDER KAREGA/.test(indexSrc));
-  check('user card BILL me OTP-free button', /OTP nahi — bot kare/.test(chatSrc));
+  const simple = await import('./simple-chat.js');
+  const billCard = simple.buildSimpleOrderCard({ id: 'family_bill', status: 'APPROVAL_PENDING', finalPayable: 150 });
+  const billButtons = billCard.keyboard.reply_markup.inline_keyboard.flat();
+  check('family bill uses bot confirmation without asking for OTP', billButtons.some((b) => b.callback_data === 'simple_confirm_order_family_bill') && !billButtons.some((b) => String(b.callback_data || '').startsWith('devlogin_')));
   check('phone choose par boss ko bhi batata hai (dono ko)', /CUSTOMER PHONE PLACEMENT ON/.test(indexSrc));
   check('paid/tracking par order proof likha jata hai', /noteCustomerPlacedOrder\(order, order\.swiggyOrderId\)/.test(indexSrc));
   check('proof message customer + boss dono ko', /ORDER CUSTOMER KE PHONE SE PLACE HUA/.test(indexSrc));
@@ -331,7 +334,8 @@ console.log('\n=== 6. Wiring: consent par handover, callbacks, import summary ==
   check('simple user card par phone status + button',
     /dlCb\.cartYes/.test(chatSrc) && /dlCb\.cartNo/.test(chatSrc) && /deviceLoginTruth/.test(chatSrc));
   check('simple card me OTP-free rasta pehle', /dlCb\.botPlaces/.test(chatSrc));
-  check('PAY stage phone placement par QR note nahi', /Order aapke phone se<\/b>/.test(chatSrc));
+  const phoneCard = simple.buildSimpleOrderCard({ id: 'phone_bill', status: 'PAYMENT_PENDING', finalPayable: 150, placementMode: dl.PLACEMENT_MODE.CUSTOMER_PHONE });
+  check('PAY stage phone placement par QR note nahi', /Order on your phone/.test(phoneCard.text) && !/QR/i.test(phoneCard.text));
 
   const html = intake.formatBulkVaultImportSummaryHtml({
     filesCount: 1,

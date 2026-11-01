@@ -257,6 +257,43 @@ export const proProvider = {
     if (!id || id === '0' || id === '-1') return { valid: false };
     return { ...live, valid: true, customerId: id, name: profile.name || live.name || '', phone: profile.phone || live.phone || '' };
   },
+  async inspectAccount(account, address = null) {
+    // Read-only checks. A failed network/profile check is NOT a suspension,
+    // and an empty history page is NOT proof that the ID has never ordered.
+    return withSwiggyAccountLock(checkoutLockKey(account), async () => {
+      const location = isValidIndianDeliveryCoordinates(address?.lat, address?.lng)
+        ? { lat: String(address.lat), lng: String(address.lng) } : {};
+      const [profileResult, historyResult, cartResult] = await Promise.allSettled([
+        proProvider.verifySession(account),
+        dapiFetch(account, 'order/all', { timeoutMs: 10000 }),
+        swiggyCartGet(account, { ...location, timeoutMs: 8000 })
+      ]);
+      const profile = profileResult.status === 'fulfilled' ? profileResult.value : null;
+      let sessionState = profile?.valid ? 'VERIFIED' : 'NOT_VERIFIED';
+      const expectedCustomer = String(account.customerId || account.userId || '').trim();
+      if (profile?.valid && expectedCustomer && String(profile.customerId || '') !== expectedCustomer) sessionState = 'IDENTITY_MISMATCH';
+      const history = historyResult.status === 'fulfilled' ? historyResult.value : null;
+      const data = history?.status === 200 && successCode(history?.json?.statusCode) ? history.json.data : null;
+      const orders = Array.isArray(data?.orders) ? data.orders : null;
+      const rawTotal = data?.total_orders_count ?? data?.totalOrdersCount ?? data?.total_count;
+      const parsedTotal = rawTotal === undefined || rawTotal === null || rawTotal === '' ? null : Number(rawTotal);
+      let ordersCount = Number.isSafeInteger(parsedTotal) && parsedTotal >= 0 ? parsedTotal : null;
+      let orderState = 'UNKNOWN';
+      if (orders?.length) {
+        orderState = 'USED';
+        if (ordersCount === 0) ordersCount = null; // Contradictory provider fields are not proof of zero.
+      } else if (ordersCount !== null) orderState = ordersCount > 0 ? 'USED' : 'ZERO_REPORTED';
+      else if (orders) orderState = 'NONE_RETURNED';
+      const cart = cartResult.status === 'fulfilled' ? cartResult.value : null;
+      const meta = cart?.status === 200 && successCode(cart?.json?.statusCode)
+        ? (cart.json?.data?.cartMeta || cart.json?.data) : null;
+      const rawBalance = meta?.user_swiggy_money ?? meta?.swiggy_pay_eligible_balance;
+      const wallet = rawBalance === undefined || rawBalance === null || rawBalance === '' ? null : Number(rawBalance);
+      const walletBalance = Number.isFinite(wallet) && wallet >= 0 ? wallet : null;
+      const coupon = meta ? parseDapiCartPayload(cart.json.data)?.couponCode : '';
+      return { sessionState, orderState, ordersCount, walletBalance, currentCoupon: String(coupon || '') };
+    }, { proReservationOwner: account.__proReservationOwner || '' });
+  },
   addresses: fetchAccountAddresses,
   async resolveAddress(account, link) {
     const original = shareUrl(link);
@@ -376,12 +413,15 @@ export const proProvider = {
           packingCharges: returnedNumber(meta.total_packing_charges, meta.restaurant_packing_charges),
           taxes: returnedNumber(meta.taxesAndCharges, meta.total_tax),
           discount: parsed.couponCode ? returnedNumber(meta.coupon_discount_total, meta.coupon_discount_effective) : null,
+          // This is wallet balance reported for the current cart, not proof
+          // that a promotional Free Cash offer exists or was redeemed.
+          walletBalance: returnedNumber(meta.user_swiggy_money, meta.swiggy_pay_eligible_balance),
           coupon: String(parsed.couponCode || ''), total
         },
         // Sending OFO fields is not proof that Swiggy accepted OFO placement.
         ofoConfirmed: false
       };
-    });
+    }, { proReservationOwner: account.__proReservationOwner || '' });
   },
   async checkout(account, address, cart, placementKey) {
     const { lat, lng } = coords(address);
@@ -463,7 +503,7 @@ export const proProvider = {
         );
       }
       return { ...details, amount: expected, ofoConfirmed: detectOfoFromPlaceResponse(result.json).ofo === true };
-    });
+    }, { proReservationOwner: account.__proReservationOwner || '' });
   },
   async checkPayment(account, checkout) {
     return checkRealSwiggyPaymentAndExtractTracking({

@@ -36,11 +36,11 @@ export function bullet(text) {
   return `▪ ${esc(text)}`;
 }
 
-// Bordered section block (Telegram <blockquote> renders as a card with a left border).
-// `body` is trusted internal HTML already built with esc()/field()/table()/heading()/sub().
+// Plain, compact sections keep Telegram's native typography. `body` is trusted
+// internal HTML already built with esc()/field()/table()/heading()/sub().
 export function section(title, body) {
   const t = title ? `${heading(title)}\n` : '';
-  return `<blockquote>${t}${body}</blockquote>\n`;
+  return `${t}${String(body ?? '').trim()}\n`;
 }
 
 // Bordered card: title + multiple body lines joined by newline
@@ -87,7 +87,7 @@ export function table(rows) {
       if (totalIndex >= 0 && totalIndex !== priceIndex && row[totalIndex] !== undefined) {
         details.push(`${safeTableCell(headers[totalIndex])}: ${safeTableCell(row[totalIndex])}`);
       }
-      return `${itemNumber}. <b>${item}</b>${details.length ? `\n  ${details.join(' · ')}` : ''}`;
+      return `${itemNumber}. <b>${item}</b>${details.length ? ` · ${details.join(' · ')}` : ''}`;
     }).join('\n');
   }
 
@@ -100,8 +100,8 @@ export function table(rows) {
       const details = headers
         .map((header, idx) => ({ header, value: row[idx], idx }))
         .filter(({ header, value, idx }) => idx !== titleIndex && !/^#|no\.?$/i.test(header) && value !== undefined && value !== '')
-        .map(({ header, value }) => `  <b>${safeTableCell(header)}:</b> ${safeTableCell(value)}`);
-      return `${title ? `▪ ${titleMarkup}` : '▪'}${details.length ? `\n${details.join('\n')}` : ''}`;
+        .map(({ header, value }) => `<b>${safeTableCell(header)}:</b> ${safeTableCell(value)}`);
+      return `${title ? `▪ ${titleMarkup}` : '▪'}${details.length ? ` · ${details.join(' · ')}` : ''}`;
     }).join('\n');
   }
 
@@ -140,14 +140,11 @@ export function otpSentCard(phone, extraLines = []) {
 }
 
 // Clean OTP error / verification failed card — matches ORDER PLACER style
-export function otpErrorCard(phone, swiggyResponse, hint = 'Sahi 6-digit OTP dubara type karein ya neeche Re-enter OTP dabayein:') {
-  return section('× OTP Request Failed', [
-    `☎ <b>Number:</b> <code>${esc(phone)}</code>`,
-    '',
-    `! <b>Swiggy Response:</b>`,
-    `<blockquote>${esc(swiggyResponse)}</blockquote>`,
-    '',
-    `› <i>${esc(hint)}</i>`,
+export function otpErrorCard(phone, swiggyResponse, hint = 'Sahi 6-digit OTP dobara bhejein.') {
+  return section('OTP request failed', [
+    `<b>Number:</b> <code>${esc(phone)}</code>`,
+    `<b>Swiggy:</b> ${esc(swiggyResponse)}`,
+    esc(hint),
   ].join('\n'));
 }
 
