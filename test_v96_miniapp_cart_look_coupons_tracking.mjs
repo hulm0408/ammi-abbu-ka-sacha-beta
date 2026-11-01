@@ -208,7 +208,17 @@ test('API: customer_id khaali ho to bill sync use Swiggy se le kar save karta ha
   writeProWorkspace('9601', ws);
   const out = await req('cart/sync', { confirmReplaceSwiggyCart: true });
   assert.equal(out.status, 200);
-  assert.ok(readProWorkspace('9601').accounts.mine.customerId, 'customerId save ho gaya — checkout dead end nahi');
+  // The verified ID is now bound to a session fingerprint rather than written
+  // into the original saved account. Checkout must actually resolve it.
+  const saved = readProWorkspace('9601');
+  assert.equal(saved.accounts.mine.customerId, '');
+  assert.equal(saved.sessionBindings?.mine?.customerId, 'customer-9123456789');
+  assert.match(saved.sessionBindings?.mine?.fingerprint || '', /^[a-f0-9]{64}$/);
+  // Refuse placement deliberately; reaching bill-consent validation proves the
+  // bound identity was accepted without placing any order.
+  const checkout = await req('checkout', { confirmCheckout: false });
+  assert.equal(checkout.status, 400);
+  assert.match(checkout.body.error, /Review a fresh Swiggy bill/);
 });
 
 test('API: outlets me rating bhi aata hai (Swiggy sheet jaisa)', async () => {

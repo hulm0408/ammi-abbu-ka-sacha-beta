@@ -122,7 +122,7 @@ test('cart: address row reference jaisa (pin + DELIVERING TO + chevron)', async 
   } finally { window.close(); }
 });
 
-test('cart: payment tiles — UPI selected, card/COD faded, bill aane tak "Updating" pill', async () => {
+test('cart: UPI / QR payment and bill-updating state are shown without fake payment options', async () => {
   const pending = cartState();
   pending.cart.quote = null;
   const dom = boot(pending);
@@ -131,12 +131,10 @@ test('cart: payment tiles — UPI selected, card/COD faded, bill aane tak "Updat
     await waitFor(() => window.document.querySelector('[data-tab="cart"]:not([disabled])'), 'nav');
     window.document.querySelector('[data-tab="cart"]').click();
     const method = await waitFor(() => window.document.querySelector('.pay-method-card'), 'pay method');
-    assert.match(method.textContent, /Payment Method/);
-    assert.equal(method.querySelectorAll('.pay-option').length, 3);
-    assert.ok(method.querySelector('.pay-option.selected .pay-radio'), 'UPI par green radio');
-    assert.equal(method.querySelectorAll('.pay-option.disabled').length, 2);
-    assert.ok(method.querySelector('.updating-pill .spinner'), 'updating spinner');
-    assert.match(method.textContent, /Not available/);
+    assert.match(method.textContent, /Payment: UPI \/ QR/);
+    assert.match(method.textContent, /Bill updating/);
+    assert.equal(method.querySelectorAll('.pay-option').length, 0, 'unavailable payment methods are not presented as choices');
+    assert.ok(window.document.querySelector('.pay-bar .updating-pill .spinner'), 'updating spinner');
   } finally { window.close(); }
 });
 

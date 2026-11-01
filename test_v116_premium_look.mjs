@@ -15,11 +15,11 @@ const html = fs.readFileSync(new URL('./swiggy-pro.html', import.meta.url), 'utf
 const appSource = fs.readFileSync(new URL('./swiggy-pro-app.js', import.meta.url), 'utf8');
 
 // ── 1. CSS system ────────────────────────────────────────────────────────
-test('css: premium font stack — Manrope, fallback Inter/system', () => {
-  assert.match(css, /--font-ui:\s*"Manrope"/);
+test('css: readable system font without a remote font dependency', () => {
+  const currentFontToken = css.slice(css.lastIndexOf('--font-ui:'), css.indexOf(';', css.lastIndexOf('--font-ui:')));
+  assert.match(currentFontToken, /system-ui/);
   assert.match(css, /body, button, input, textarea, select \{ font-family: var\(--font-ui\)/);
-  assert.match(html, /fonts\.googleapis\.com\/css2\?family=Manrope/);
-  assert.match(html, /rel="preconnect"/);
+  assert.doesNotMatch(html, /fonts\.googleapis\.com/);
 });
 
 test('css: motion tokens + keyframes jo UI me sach me lagi hain', () => {

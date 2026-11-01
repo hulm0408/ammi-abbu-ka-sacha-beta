@@ -2,7 +2,7 @@
 // compare it". Screenshot harness ne jo asli bug pakde, unke liye guard.
 //
 //   1) emoji (✨) ki jagah SVG — emoji font na ho to tofu box banta hai
-//   2) wallet presets object ya number dono se "₹15" dikhe (pehle sirf "₹")
+//   2) wallet top-up Mini App me nahi — user ne bot me rakha hai
 //   3) address heading me naam (Skk), "Delivery address" nahi
 //   4) orders filter: This Account / Last 1 Hour — count sirf sach me pata ho
 //   5) order detail: sirf wahi bill line jo Swiggy ne di (kuch guess nahi)
@@ -72,20 +72,16 @@ test('savings banner me SVG spark hai, emoji nahi (emoji font na ho to tofu bant
   } finally { window.close(); }
 });
 
-test('wallet presets dono shape se sahi amount dikhate hain (₹15, sirf ₹ nahi)', async () => {
+test('wallet top-up controls stay out of the Mini App even when wallet data exists', async () => {
   const state = cartState({ wallet: { ...base().wallet, presets: [{ paise: 1500, rupees: '15' }, 5000, { paise: 10000, rupees: '100' }] } });
   const dom = await open(state, 'cart');
   const { window } = dom;
   try {
-    const buttons = await waitFor(() => {
-      const list = [...window.document.querySelectorAll('[data-action="wallet-topup"][data-paise]')];
-      return list.length >= 3 ? list : null;
-    }, 'preset buttons');
-    const labels = buttons.map(b => b.textContent.trim());
-    assert.ok(labels.includes('₹15'), labels.join(','));
-    assert.ok(labels.includes('₹50'), labels.join(','));
-    assert.ok(labels.includes('₹100'), labels.join(','));
-    assert.ok(buttons.every(b => b.getAttribute('data-paise') !== 'NaN'));
+    await waitFor(() => window.document.querySelector('.pay-bar'), 'cart');
+    assert.equal(window.document.querySelectorAll('[data-action="wallet-topup"]').length, 0);
+    window.document.querySelector('[data-action="nav"][data-tab="tools"]').click();
+    await waitFor(() => window.document.querySelector('#bottom-nav [data-tab="tools"][aria-current="page"]'), 'tools');
+    assert.equal(window.document.querySelectorAll('[data-action="wallet-topup"]').length, 0);
   } finally { window.close(); }
 });
 

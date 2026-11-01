@@ -265,11 +265,22 @@ test('server: apne account ka session milta hai aur wahi import me chalta hai', 
   assert.match(out.body.note, /share na karein/i);
 });
 
-test('server: shared/vault ID ka session non-boss ko 403 (aur token kabhi response me nahi)', async () => {
+test('server: ungranted ID is hidden and a granted vault session stays operator-only', async () => {
   const out = await call('accounts/session?key=vault_acc', '7001');
-  assert.equal(out.status, 403, JSON.stringify(out.body));
-  assert.match(out.body.error, /operator ke vault/i);
-  assert.equal(JSON.stringify(out.body).includes('vault-secret-sentinel'), false, 'token leak nahi');
+  assert.equal(out.status, 404, JSON.stringify(out.body));
+  assert.equal(JSON.stringify(out.body).includes('vault-secret-sentinel'), false, 'ungranted token leak nahi');
+
+  const current = getDb();
+  current.knownUsers ||= {};
+  current.knownUsers['7001'] = { id: '7001', firstName: 'Family', lastSeen: Date.now() };
+  saveDb(current);
+  const grant = await post('boss/account-access', { userId: '7001', accountKey: 'vault_acc', allow: true, confirm: true }, '7000');
+  assert.equal(grant.status, 200, JSON.stringify(grant.body));
+  const granted = await call('accounts/session?key=vault_acc', '7001');
+  assert.equal(granted.status, 403, JSON.stringify(granted.body));
+  assert.match(granted.body.error, /operator ke vault/i);
+  assert.equal(JSON.stringify(granted.body).includes('vault-secret-sentinel'), false, 'granted token leak nahi');
+
   // Boss khud apna vault ID export kar sakta hai (wahi ID jise wo manage karta hai).
   const bossView = await call('accounts/session?key=vault_acc', '7000');
   assert.equal(bossView.status, 200, JSON.stringify(bossView.body));
