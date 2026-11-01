@@ -184,12 +184,13 @@ test('DOM: QR na mile to card me heading block, asli wajah list, order chip aur 
     assert.equal(reasons.length, 1);
     assert.match(reasons[0], /₹58/);
     assert.ok(card.querySelector('.pay-order-chip b'), 'order chip');
-    assert.equal(card.querySelectorAll('.pay-steps li').length, 3, '3 agle kadam');
+    // Round 33: 3-step lecture hataya (boss: blah blah na rakhe), sach rahe.
+    assert.equal(card.querySelectorAll('.pay-steps li').length, 0, 'lecture steps nahi');
     assert.match(card.textContent, /Dobara order mat karein/);
   } finally { window.close(); }
 });
 
-test('DOM: QR aaye to QR image + UPI button dikhta hai (koi warning card nahi)', async () => {
+test('DOM: QR aaye to sirf QR + do button (Open UPI app hataya — boss round 33)', async () => {
   const { window, card } = await render({
     status: 'PAYMENT_PENDING', orderId: '252425287129113', amount: 68, paymentVerified: false,
     upiIntentUrl: 'upi://pay?pa=upiswiggy@icici&am=68.00&cu=INR',
@@ -197,7 +198,10 @@ test('DOM: QR aaye to QR image + UPI button dikhta hai (koi warning card nahi)',
   });
   try {
     assert.ok(card.querySelector('.payment-qr'), 'QR image');
-    assert.ok(card.querySelector('a[href^="upi://pay"]'), 'UPI app button');
+    // Boss: "PAYMENT PAGE SE OPEN UPI APP HATAYE" — bahar jane wala koi link nahi.
+    assert.equal(card.querySelector('a[href^="upi://pay"]'), null, 'Open UPI app hataya');
+    assert.ok(card.querySelector('[data-action="checkout-status"]'), 'I have paid');
+    assert.ok(card.querySelector('[data-action="checkout-cancel"]'), 'Cancel order');
     assert.equal(card.querySelector('.pay-hold'), null, 'hold card nahi');
     assert.match(card.textContent, /UPI se pay karein/);
   } finally { window.close(); }

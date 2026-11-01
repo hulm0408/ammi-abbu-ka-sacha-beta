@@ -21,6 +21,7 @@
     "test:round30": "node test_v119_visual_qa_fixes.mjs",
     "test:round31": "node test_v120_accounts_reference_and_copy_json.mjs",
     "test:round32": "node test_v121_five_minute_verify_and_share_link.mjs",
+    "test:round33": "node test_v122_round33_payment_actions_bill_speed_filters.mjs",
     "preview:miniapp": "node preview-miniapp.mjs",
     "shots:miniapp": "node tools/screenshot-miniapp.mjs",
     "test:miniapp-layout": "node tools/verify-miniapp-layout.mjs",

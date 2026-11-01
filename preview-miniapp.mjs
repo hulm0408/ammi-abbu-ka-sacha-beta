@@ -43,14 +43,14 @@ const demoState = {
   ok: true,
   user: { id: '9000', name: 'Demo', firstName: 'Demo', isBoss: true },
   accounts: [
-    { key: 'demo-account-1', name: 'Ammi', phoneMasked: '90••••0001', active: true, status: 'USED', selectable: true, isLoggedIn: true, owner: 'self', offerTracks: [
+    { key: 'demo-account-1', name: 'Ammi', phoneMasked: '90••••0001', active: true, status: 'USED', used: true, fresh: false, night: true, breakfast: true, selectable: true, isLoggedIn: true, owner: 'self', offerTracks: [
       { label: 'Late night (9PM–6AM)', emoji: '🌙', status: 'CLAIMED', verified: true },
       { label: 'Breakfast (7AM–11AM)', emoji: '☀️', status: 'ALREADY_CLAIMED', verified: true },
       { label: 'Extra ₹50 offer', emoji: '💸', status: 'FAILED', verified: false },
       { label: 'Weekend offer', emoji: '🎉', status: 'NOT_CLAIMED', verified: false },
       { label: 'Karwa Chauth', emoji: '🪔', status: 'NOT_CLAIMED', verified: false }
     ] },
-    { key: 'demo-account-2', name: 'Abbu', phoneMasked: '90••••0002', active: false, status: 'READY', selectable: true, isLoggedIn: true, owner: 'self', offerTracks: [] }
+    { key: 'demo-account-2', name: 'Abbu', phoneMasked: '90••••0002', active: false, status: 'READY', used: false, fresh: true, night: false, breakfast: false, selectable: true, isLoggedIn: true, owner: 'self', offerTracks: [] }
   ],
   activeAccount: { key: 'demo-account-1', name: 'Ammi', phoneMasked: '90••••0001' },
   selectedAddress: demoAddress,
@@ -99,6 +99,10 @@ function sceneState(scene) {
       qrDataUrl: DEMO_QR, upiIntentUrl: 'upi://pay?pa=preview@invalid&pn=Preview&am=448&cu=INR',
       paymentVerified: false, message: 'Demo payment screen — no payment can be made.', tracking: null, sms: null
     };
+  }
+  if (scene === 'share') {
+    // Swiggy ka asli share link jaisa — preview me sirf dikhane ke liye.
+    state.orders[0].trackingUrl = 'https://www.swiggy.com/ofo/track/DEMO-TOKEN-9F2A';
   }
   if (scene.startsWith('handoff-')) {
     const stage = scene.slice('handoff-'.length).toUpperCase();
@@ -206,7 +210,7 @@ function previewBoot(scene) {
       if (route === 'orders/tracking') {
         const id = url.searchParams.get('id') || '';
         const order = STATE.orders.find(o => o.id === id) || {};
-        return json({ ok: true, sms: null, tracking: { orderId: id, status: order.status || '', eta: '', trackingUrl: '', deliveryPartner: {}, note: 'Demo tracking status only.' } });
+        return json({ ok: true, sms: null, tracking: { orderId: id, status: order.status || '', eta: '', trackingUrl: order.trackingUrl || '', deliveryPartner: {}, note: 'Demo tracking status only.' } });
       }
       if (route === 'checkout/status') return json(STATE);
       if (route === 'boss/account-access') return json({ ok: true, access: { users: [{ id: 'demo-user', name: 'Demo family', allowed: ['demo-account-1'] }], accounts: STATE.accounts } });

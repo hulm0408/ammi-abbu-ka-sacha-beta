@@ -3757,8 +3757,13 @@ export function parseDapiCartPayload(data) {
   const rawOrderTotal = Number(cm.order_total ?? renderGrandTotal ?? 0);
   const renderTaxesAndCharges = parseRenderNum(renderByKey.get('taxes_and_charges')?.value);
   const pureTaxAndFees = Number(cm.total_tax || 0) + Number(cm.convenience_fees ?? cm.convenience_fee ?? cm.platform_fee ?? 0);
+  // Round 33 (boss: "BILL SAHI SE CALCULATE KARLE"): jab Swiggy ne Swiggy Money
+  // pehle hi kaat liya ho (`swiggy_money`), `order_total` us se kam hota hai —
+  // us halat me residual plug chhota (ya negative) nikalta tha aur GST line
+  // galat dikhti thi. Ab base me wahi kaata hua paisa wapas jodte hain.
+  const alreadyDeductedForResidual = Math.max(0, Number(cm.swiggy_money ?? 0));
   const residualGstAndFees = rawOrderTotal > 0
-    ? Math.max(0, Math.round((rawOrderTotal - (itemTotal - couponDiscount - tradeDiscountTotal + swiggyOneMembershipFee + deliveryFee + packingCharges)) * 100) / 100)
+    ? Math.max(0, Math.round((rawOrderTotal + alreadyDeductedForResidual - (itemTotal - couponDiscount - tradeDiscountTotal + swiggyOneMembershipFee + deliveryFee + packingCharges)) * 100) / 100)
     : pureTaxAndFees;
   const taxesAndCharges = cm.taxesAndCharges !== undefined
     ? Number(cm.taxesAndCharges)
@@ -3836,6 +3841,8 @@ export function parseDapiCartPayload(data) {
     discountAmount: Math.round(couponDiscount * 100) / 100,
     freeCashBalance: Math.round(freeCashBalance * 100) / 100,
     freeCashApplied: Math.round(freeCashApplied * 100) / 100,
+    // Sirf jo Swiggy ne SACH ME kaat diya (balance hona alag baat hai).
+    swiggyMoneyApplied: Math.round(alreadyDeductedWallet * 100) / 100,
     campaignFreeCash: Math.round(campaignFreeCash * 100) / 100,
     walletSplitPayAmount: Math.round(walletSplitPayAmount * 100) / 100,
     rawCartOrderTotal: Math.round(rawOrderTotal * 100) / 100,

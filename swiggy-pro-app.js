@@ -11,7 +11,7 @@
     menuLoading: false, menuQuery: '', orders: null, ordersScope: 'active', order: null, orderTracking: null, orderLinkLoading: false, ordersLoading: false, ordersDetailAllowed: true,
     cachedAccounts: [], busy: false, loading: 0, resultsLoading: false, deleteFlow: null, claimBusyKey: '', claimResult: null, couponOpen: false,
     outlets: null, outletsOpen: false, outletsLoading: false, backup: null, backupBusy: false,
-    coupons: null, couponsNote: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, ordersFilter: 'all', accountQuery: '', payWindow: null, payTicks: 0, payExpired: false, shareNote: '',
+    coupons: null, couponsNote: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, ordersFilter: 'all', accountQuery: '', accountFilters: [], payWindow: null, payTicks: 0, payExpired: false, shareNote: '',
     meal: null, mealFor: '', mealLoading: false, couponDraft: '', groupCartDraft: '', groupCartOn: true,
     track: null, trackData: null, trackError: '', trackBusy: false,
     orderFee: null, checkoutWarning: '',
@@ -556,10 +556,28 @@
     </div>`;
 
     const query = String(state.accountQuery || '').trim().toLowerCase();
-    const matches = (a) => !query
-      || String(a.name || '').toLowerCase().includes(query)
-      || String(a.phone || '').includes(query)
-      || String(a.phoneMasked || '').replace(/\D/g, '').includes(query.replace(/\D/g, '') || '~');
+    const activeFilters = Array.isArray(state.accountFilters) ? state.accountFilters : [];
+    // Boss (round 33): "USED FRESH NIGHT BREKFAST ... CLICK KARNE PAR WO SELECT
+    // HOJAYE JINME WO HO AND MULTIPLE FILTER LAGA SAKTA USER."
+    // Kaam: USED = live check me order mile; FRESH = live check me 0 order;
+    // NIGHT/BREAKFAST = is ID me wo offer maujood hai. Jahan Swiggy se check hi
+    // nahi hua, wahan USED/FRESH dono nahi — jhooth nahi.
+    const ACCOUNT_FILTERS = [
+      { id: 'used', label: 'USED', test: (a) => a.used === true },
+      { id: 'fresh', label: 'FRESH', test: (a) => a.fresh === true },
+      { id: 'night', label: 'NIGHT', test: (a) => a.night === true },
+      { id: 'breakfast', label: 'BREAKFAST', test: (a) => a.breakfast === true }
+    ];
+    const filterCounts = Object.fromEntries(ACCOUNT_FILTERS.map(f => [f.id, state.accounts.filter(f.test).length]));
+    const passesFilters = (a) => activeFilters.every(id => {
+      const f = ACCOUNT_FILTERS.find(x => x.id === id);
+      return f ? f.test(a) : true;
+    });
+    const matches = (a) => passesFilters(a)
+      && (!query
+        || String(a.name || '').toLowerCase().includes(query)
+        || String(a.phone || '').includes(query)
+        || String(a.phoneMasked || '').replace(/\D/g, '').includes(query.replace(/\D/g, '') || '~'));
     const visible = state.accounts.filter(matches);
     const rows = visible.length ? visible.map(a => {
       const blocked = a.selectable === false && a.needsConfirm !== true;
@@ -605,7 +623,17 @@
       ? `<div class="ac-search">${icon('search')}<input type="search" data-input="account-search" value="${esc(state.accountQuery || '')}" placeholder="Search Account..." aria-label="Search account"></div>`
       : '';
 
-    const saved = `${savedHead}${search}${noResultLive}${rememberedNote}${rows}`;
+    const filterBar = state.accounts.length
+      ? `<div class="ac-filters" role="group" aria-label="Accounts filter">${ACCOUNT_FILTERS.map(f => {
+          const on = activeFilters.includes(f.id);
+          const count = filterCounts[f.id] || 0;
+          return `<button class="ac-filter${on ? ' on' : ''}" type="button" data-action="account-filter" data-filter="${f.id}" aria-pressed="${on}">${f.label} <b>${count}</b></button>`;
+        }).join('')}${activeFilters.length ? `<button class="ac-filter clear" type="button" data-action="account-filter" data-filter="">Clear</button>` : ''}</div>`
+      : '';
+    const filterEmpty = state.accounts.length && !visible.length && !query
+      ? '<p class="hint ac-noresult">Is filter par koi ID nahi mili. Filter hata kar dekh lein.</p>'
+      : '';
+    const saved = `${savedHead}${search}${filterBar}${filterEmpty}${noResultLive}${rememberedNote}${rows}`;
     return `${head('YOUR SPACE', 'Accounts', '')}${lockedNotice}${addCard}${saved}${state.deleteFlow ? `<div class="card delete-card"><div class="card-title">${icon('trash')} Swiggy delete OTP<small>Swiggy ne ${esc(state.deleteFlow.phoneMasked || 'account phone')} par 6-digit delete OTP bheja hai. Ye account Swiggy se hamesha ke liye delete ho jayega.</small></div><form data-form="delete-otp">${field('Delete OTP', 'otp', '6-digit OTP', '', 'inputmode=\"numeric\" autocomplete=\"one-time-code\" maxlength=\"6\" required')}<button class="button danger block" type="submit">Swiggy se delete karein ${icon('trash')}</button><button class="text-button" type="button" data-action="delete-cancel">Cancel</button></form></div>` : ''}`;
   }
   function sameAddress(a, b) {
@@ -752,7 +780,7 @@
     const deliveryFree = deliveryKnown && num(q.deliveryFee) === 0;
     const savings = num(q.totalSavings) || (discount + freeCash + tradeDiscount + deliverySaved);
     const distance = q.deliveryDistance ? ` <small>${esc(q.deliveryDistance)}</small>` : '';
-    return `<div class="card bill-card" id="bill-details"><div class="card-title">${icon('receipt')} Bill Details <button class="icon-button right" type="button" data-action="bill-refresh" aria-label="Refresh bill">${icon('refresh')}</button></div><div class="divider"></div>${present(q.itemTotal) ? row('Items Total', money(q.itemTotal)) : ''}${discount > 0 ? row(`Coupon ${esc(q.coupon || '')}`, `−${money(discount)}`, 'saving') : ''}${freeCash > 0 ? row('Extra Discount (Free Cash)', `−${money(freeCash)}`, 'saving') : ''}${tradeDiscount > 0 ? row('Extra Discount (Restaurant)', `−${money(tradeDiscount)}`, 'saving') : ''}${oneFee > 0 ? row('Swiggy One Lite Membership', `+${money(oneFee)}`) : ''}${deliveryFree ? `<div class="bill-row free-delivery"><span>Free Delivery</span><strong>${deliverySaved > 0 ? `${money(deliverySaved)} saved` : 'Applied'}</strong></div>` : ''}${deliveryKnown ? row(`Delivery Fee${distance}`, deliveryFree ? `FREE${deliverySaved > 0 ? ` (${money(deliverySaved)} saved)` : ''}` : money(q.deliveryFee), deliveryFree ? 'saving' : '') : ''}${packing > 0 ? row('Packing Charges', money(packing)) : ''}${(taxes + other) > 0 ? row('GST &amp; Other Charges', money(taxes + other)) : ''}${offer > 0 ? row('Extra saving (bill me)', `−${money(offer)}`, 'saving') : ''}${savings > 0 ? `<div class="bill-row total-savings"><span>Total Savings</span><strong>${money(savings)}</strong></div>` : ''}<div class="bill-row total"><span>To Pay</span><span>${money(q.total)}</span></div></div>`;
+    return `<div class="card bill-card" id="bill-details"><div class="card-title">${icon('receipt')} Bill Details ${q.optimizePending === true ? '<span class="bill-chip">Best coupon check…</span>' : ''} <button class="icon-button right" type="button" data-action="bill-refresh" aria-label="Refresh bill">${icon('refresh')}</button></div><div class="divider"></div>${present(q.itemTotal) ? row('Items Total', money(q.itemTotal)) : ''}${discount > 0 ? row(`Coupon ${esc(q.coupon || '')}`, `−${money(discount)}`, 'saving') : ''}${freeCash > 0 ? row('Extra Discount (Free Cash)', `−${money(freeCash)}`, 'saving') : ''}${tradeDiscount > 0 ? row('Extra Discount (Restaurant)', `−${money(tradeDiscount)}`, 'saving') : ''}${oneFee > 0 ? row('Swiggy One Lite Membership', `+${money(oneFee)}`) : ''}${deliveryFree ? `<div class="bill-row free-delivery"><span>Free Delivery</span><strong>${deliverySaved > 0 ? `${money(deliverySaved)} saved` : 'Applied'}</strong></div>` : ''}${deliveryKnown ? row(`Delivery Fee${distance}`, deliveryFree ? `FREE${deliverySaved > 0 ? ` (${money(deliverySaved)} saved)` : ''}` : money(q.deliveryFee), deliveryFree ? 'saving' : '') : ''}${packing > 0 ? row('Packing Charges', money(packing)) : ''}${(taxes + other) > 0 ? row('GST &amp; Other Charges', money(taxes + other)) : ''}${offer > 0 ? row('Extra saving (bill me)', `−${money(offer)}`, 'saving') : ''}${savings > 0 ? `<div class="bill-row total-savings"><span>Total Savings</span><strong>${money(savings)}</strong></div>` : ''}<div class="bill-row total"><span>To Pay</span><span>${money(q.total)}</span></div></div>`;
   }
   /** Kitna bacha — sirf jo Swiggy ke bill me asli me dikha. */
   function savedAmount(q) {
@@ -895,36 +923,23 @@
   }
   /** Payment pending: QR screen Swiggy jaisa, phir track. */
   function renderPaymentScreen(c) {
-    const hasQr = Boolean(c.qrDataUrl && /^data:image\/png;base64,/.test(c.qrDataUrl) && c.upiIntentUrl && /^upi:\/\/pay\?/i.test(c.upiIntentUrl));
-    // Boss (31-10-2026, round 12): "QR NAHI AYA". Ab jab Swiggy order bana de
-    // par QR na de, app chhupata nahi — order ID, asli wajah, aur agla kadam.
-    // Boss (31-10-2026, round 15): "kitna ganda dikh raha hai ye text, bilkul
-    // style nahi kia". Purane card me heading ek flex item tha, isliye
-    // "UPI se pay karein" ek patlee column me toot kar 4 line ban raha tha.
-    // Ab poora block structure ke saath: heading + sach + agla kadam.
-    const reasons = Array.isArray(c.qrMissingReasons) ? c.qrMissingReasons.filter(Boolean).slice(0, 3) : [];
-    const qr = hasQr
-      ? `<img class="payment-qr" src="${esc(c.qrDataUrl)}" alt="Swiggy UPI payment QR"><a class="button green block" href="${esc(c.upiIntentUrl)}">Open UPI app</a>`
-      : `<div class="pay-hold">
-          <div class="pay-hold-head">${tile('alert')}<div class="title-copy"><strong>QR Swiggy ne nahi diya</strong><small>Order ban gaya hai — paisa abhi nahi kata.</small></div></div>
-          ${reasons.length ? `<ul class="pay-reasons">${reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : (c.qrMissingReason ? `<p class="pay-reason-line">${esc(c.qrMissingReason)}</p>` : '')}
-          <div class="pay-order-chip"><span>Order</span><b>#${esc(c.orderId || '—')}</b></div>
-          <ol class="pay-steps">
-            <li><b>Dobara order mat karein</b> — Swiggy par order pehle se bana hua hai.</li>
-            <li>Neeche <b>Payment check karein</b> dabaiye — status Swiggy se aata hai.</li>
-            <li>Swiggy unpaid order thodi der me khud cancel kar deta hai${c.orderId ? '' : ''}.</li>
-          </ol>
-        </div>${/^https:\/\//.test(String(c.paymentPageUrl || '')) ? `<a class="button soft block" href="${esc(c.paymentPageUrl)}">Swiggy ka payment page kholein</a>` : ''}`;
-    // Round 32: 5 minute ka live verify strip — user ko dikhta hai ki app
-    // kaam kar raha hai, aur time khatam hone par sach bolta hai.
+    // Boss (round 33): "PAYMENT PAGE SE OPEN UPI APP HATAYE AND CANCEL ORDER
+    // AND I HAVE PAID KA OPTION DE BAS FALTU KE ORDER TRACK KARE ORIGINAL
+    // ACCOUNT KE ORDER AUR UPI SE PAY KARE AUR BLAH BLAH NA RAKHE."
+    // Isliye yahan sirf: kitna dena hai, QR, aur do button.
+    const hasQr = Boolean(c.qrDataUrl && /^data:image\/png;base64,/.test(c.qrDataUrl));
     const verifying = c.status === 'PAYMENT_PENDING' && c.paymentVerified !== true;
     const remaining = payRemainingMs();
     const verifyStrip = verifying
       ? (state.payExpired || remaining <= 0
-        ? `<div class="verify-strip expired"><span class="verify-icon">${icon('alert')}</span><span class="verify-copy"><strong>5 minute poore ho gaye</strong><small>Auto-check band. Payment ho gaya to <b>Payment check karein</b> dabaiye — status Swiggy se aayega.</small></span></div>`
+        ? `<div class="verify-strip expired"><span class="verify-icon">${icon('alert')}</span><span class="verify-copy"><strong>5 minute poore ho gaye</strong><small>Auto-check band. Payment check karein — neeche <b>I have paid</b> dabaiye.</small></span></div>`
         : `<div class="verify-strip"><span class="verify-icon spinner"></span><span class="verify-copy"><strong>Payment verify ho rahi hai… <span class="pay-clock" data-pay-clock>${payClock(remaining)}</span></strong><small>Har 5 second me Swiggy se check — poore 5 minute tak. Aapko kuch nahi karna.</small></span><span class="verify-ticks">${state.payTicks || 0}×</span></div>`)
       : '';
-    return `${head('PAYMENT', `Pay ${money(c.amount)}`, c.orderId ? `Swiggy order #${esc(c.orderId)}` : 'Swiggy order bana hai')}<div class="card pay-screen"><div class="card-title">${tile(hasQr ? 'receipt' : 'orders')}<span class="title-copy"><strong>${hasQr ? 'UPI se pay karein' : 'Payment abhi ruka hua hai'}</strong><small>${esc(hasQr ? (c.message || 'QR Swiggy se aaya hai — scan karke pay karein.') : 'Swiggy ne order le liya, bas QR nahi diya.')}</small></span></div>${verifyStrip}${qr}<p class="hint">${hasQr ? 'Paisa sirf isi QR par dein — ek hi baar.' : ''} ${c.paymentVerified ? 'Payment report hui hai, order confirm hone ka intezaar hai — dobara na dein.' : ''}</p><button class="button primary block" type="button" data-action="checkout-status">${icon('refresh')} Payment check karein</button>${c.orderId ? `<button class="button soft block" type="button" data-action="track-open" data-id="${esc(c.orderId)}">Order track karein</button>` : ''}<button class="button soft block" type="button" data-action="checkout-orders">Original account ke orders</button></div>`;
+    const reasons = Array.isArray(c.qrMissingReasons) ? c.qrMissingReasons.filter(Boolean).slice(0, 3) : [];
+    const qr = hasQr
+      ? `<img class="payment-qr" src="${esc(c.qrDataUrl)}" alt="Swiggy UPI payment QR">`
+      : `<div class="pay-hold"><div class="pay-hold-head">${tile('alert')}<div class="title-copy"><strong>QR Swiggy ne nahi diya</strong><small>Order ban gaya hai — paisa abhi nahi kata.</small></div></div>${reasons.length ? `<ul class="pay-reasons">${reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : (c.qrMissingReason ? `<p class="pay-reason-line">${esc(c.qrMissingReason)}</p>` : '')}<div class="pay-order-chip"><span>Order</span><b>#${esc(c.orderId || '—')}</b></div></div>${/^https:\/\//.test(String(c.paymentPageUrl || '')) ? `<a class="button soft block" href="${esc(c.paymentPageUrl)}">Swiggy ka payment page</a>` : ''}`;
+    return `${head('PAYMENT', `Pay ${money(c.amount)}`, c.orderId ? `Order #${esc(c.orderId)}` : '')}<div class="card pay-screen"><div class="card-title">${tile('receipt')}<span class="title-copy"><strong>UPI se pay karein</strong><small>${hasQr ? 'QR scan karke pay karein — ek hi baar.' : 'Swiggy ne order le liya, bas QR nahi diya.'}</small></span></div>${verifyStrip}${qr}<div class="pay-actions"><button class="button green block" type="button" data-action="checkout-status">${icon('check')} I have paid</button><button class="button soft block danger-soft" type="button" data-action="checkout-cancel">Cancel order</button></div><p class="hint pay-foot">${hasQr ? 'Paisa sirf isi QR par dein — ek hi baar.' : 'Dobara order mat karein — Swiggy par order pehle se bana hua hai.'}</p></div>`;
   }
   function renderCart(behindCoupon = false) {
     // QR aaya to 5-minute verify शुरू (render ke andar se, kyunki yahi entry point hai).
@@ -1006,14 +1021,19 @@
     return /^https:\/\//i.test(String(t?.trackingUrl || '')) ? String(t.trackingUrl) : '';
   }
   function renderShareCard() {
+    // Boss (round 33): payment ke baad "share order jo link milega wo yahan
+    // show hoga aur ek copy ka button bhi hoga and go back ka option bhi".
     const link = orderShareLink();
     const busy = state.shareBusy === true;
     const note = state.shareNote ? `<p class="hint share-note">${esc(state.shareNote)}</p>` : '';
+    const back = `<button class="button soft block" type="button" data-action="back-to-cart">${icon('back')} Go back</button>`;
     if (!link) {
       const pending = state.orderLinkLoading || state.trackBusy;
-      return `<div class="card share-card"><div class="card-title">${icon('link')} Share link</div>${pending ? '' : '<p class="hint">Link unavailable</p>'}${note}</div>`;
+      return `<div class="card share-card"><div class="card-title">${icon('link')} Share link</div>${pending
+        ? '<p class="hint">Swiggy se link aa raha hai…</p>'
+        : '<p class="hint">Link unavailable — Swiggy ne is order ka share link nahi diya. Hum apna link nahi banate.</p>'}${note}${back}</div>`;
     }
-    return `<div class="card share-card"><div class="card-title">${icon('link')} Share link</div><div class="share-link-row"><input class="share-link-input" readonly value="${esc(link)}" aria-label="Order share link" data-share-input><button class="icon-button" type="button" data-action="share-copy" aria-label="Copy link">${icon('copy')}</button></div><div class="share-actions"><button class="button primary" type="button" data-action="share-send" ${busy ? 'disabled' : ''}>${icon('send')} Share</button><button class="button soft" type="button" data-action="share-copy">${icon('copy')} Copy link</button></div>${note}</div>`;
+    return `<div class="card share-card"><div class="card-title">${icon('link')} Share link</div><div class="share-link-row"><input class="share-link-input" readonly value="${esc(link)}" aria-label="Order share link" data-share-input><button class="icon-button" type="button" data-action="share-copy" aria-label="Copy link">${icon('copy')}</button></div><div class="share-actions"><button class="button primary" type="button" data-action="share-copy" ${busy ? 'disabled' : ''}>${icon('copy')} Copy</button><button class="button soft" type="button" data-action="share-send">${icon('send')} Share</button></div>${note}${back}</div>`;
   }
   function renderOrders() {
     const detailed = state.ordersDetailAllowed !== false;
@@ -1027,7 +1047,7 @@
       const hero = delivered
         ? `<div class="delivered-hero"><div class="delivered-check">${icon('check')}</div><h1>Order Delivered</h1><span class="pill green">${icon('orders')} ${esc(o.restaurant || 'Swiggy order')}</span><p>${esc(o.placedAt ? 'Delivered · placed ' + o.placedAt : 'Swiggy ne delivered bataya hai.')}</p></div>`
         : '';
-      return `<div class="order-top-actions"><button class="back-pill" data-action="orders-back">${icon('back')} Back to Orders</button></div>${hero}${head('ORDER DETAILS', o.restaurant || 'Swiggy order', 'Only information returned by Swiggy is shown.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div>${o.address ? `<div class="bill-row"><span>Address</span><strong>${esc(o.address)}</strong></div>` : ''}</div><div class="card"><div class="card-title">${icon('cart')} Ordered items</div>${o.items.length ? o.items.map(i => `<div class="bill-row"><span>${esc(i.name)}${i.price !== undefined ? '' : ''}</span><strong>${Number.isFinite(Number(i.price)) ? money(Number(i.price) * (Number(i.qty) || 1)) : ''} × ${Number(i.qty)}</strong></div>`).join('') : '<p class="hint">Swiggy did not return item details.</p>'}</div>${(() => {
+      return `<div class="order-top-actions"><button class="back-pill" data-action="orders-back">${icon('back')} Back to Orders</button>${state.shareWanted ? `<button class="back-pill" data-action="back-to-cart">${icon('cart')} Go back</button>` : ''}</div>${hero}${head('ORDER DETAILS', o.restaurant || 'Swiggy order', 'Only information returned by Swiggy is shown.')}<div class="card"><div class="card-title">${icon('orders')} ${esc(o.status)}</div><div class="divider"></div><div class="bill-row"><span>Order ID</span><strong>#${esc(o.id)}</strong></div><div class="bill-row"><span>Placed</span><strong>${esc(o.placedAt || 'Not returned')}</strong></div><div class="bill-row"><span>Amount</span><strong>${money(o.amount)}</strong></div>${o.address ? `<div class="bill-row"><span>Address</span><strong>${esc(o.address)}</strong></div>` : ''}</div><div class="card"><div class="card-title">${icon('cart')} Ordered items</div>${o.items.length ? o.items.map(i => `<div class="bill-row"><span>${esc(i.name)}${i.price !== undefined ? '' : ''}</span><strong>${Number.isFinite(Number(i.price)) ? money(Number(i.price) * (Number(i.qty) || 1)) : ''} × ${Number(i.qty)}</strong></div>`).join('') : '<p class="hint">Swiggy did not return item details.</p>'}</div>${(() => {
         const money_ = orderMoneyRows(o);
         const payMethod = String(o.paymentMethod || o.paymentMode || '').trim();
         const receiver = [o.receiverName || o.receiver, o.receiverPhone].filter(Boolean).join(' · ');
@@ -1103,7 +1123,28 @@
         } else if (state.tab === 'cart') render();
         else renderNav();
         if (out.cart?.quote) toast('Bill taiyar — Swiggy ka hisaab neeche hai.');
+        if (out.cart?.quote?.optimizePending) optimizeBill(signature);
       }).catch(e => { if (signature === billSyncSignature()) toast(e?.message || 'Swiggy ne bill nahi diya.'); });
+  }
+
+  /**
+   * Round 33: pehla bill turant (fast), phir yeh — offers + One Lite + best
+   * coupon. Bill sudhar jata hai par total phir bhi sirf Swiggy ka hota hai.
+   * Cart/address badal gaya to jawab chhod dete hain (purana bill na chipke).
+   */
+  function optimizeBill(signature) {
+    if (state.billOptimizing) return;
+    state.billOptimizing = true;
+    api('cart/optimize', 'POST', {})
+      .then(out => {
+        if (!out || (signature && signature !== billSyncSignature())) return;
+        merge(out);
+        if (state.tab === 'cart') render(); else renderNav();
+        const q = out.cart?.quote;
+        if (q && q.optimizePending === false && Number(q.discount || 0) > 0) toast(`Best coupon laga — ${money(q.total)}`, 'ok');
+      })
+      .catch(() => { /* chup-chaap: pehla bill pehle se dikh raha hai */ })
+      .finally(() => { state.billOptimizing = false; });
   }
 
   function renderAccountAccess() {
@@ -2054,6 +2095,14 @@
         .finally(() => { button.disabled = false; });
       return;
     }
+    if (action === 'account-filter') {
+      const id = String(button.dataset.filter || '');
+      const list = Array.isArray(state.accountFilters) ? state.accountFilters.slice() : [];
+      if (!id) state.accountFilters = [];
+      else state.accountFilters = list.includes(id) ? list.filter(x => x !== id) : [...list, id];
+      render();
+      return;
+    }
     if (action === 'orders-filter') {
       state.ordersFilter = button.dataset.filter === 'hour' ? 'hour' : 'all';
       render(); return;
@@ -2240,7 +2289,8 @@
         const signature = billSyncSignature();
         if (!await confirmWithTrigger({ title: 'Fresh bill check?', message: 'Swiggy par cart dobara sync hoga aur naya bill aayega.', confirmText: 'Check bill' })) return;
         if (signature !== billSyncSignature()) throw new Error('Cart or account changed. Review the bill again.');
-        const out = await api('cart/sync', 'POST', { confirmReplaceSwiggyCart: true, forSomeoneElse: state.cart?.forSomeoneElse === true, coupon: String(state.cart?.quote?.couponCode || state.cart?.quote?.coupon || ''), autoCoupon: true });
+        // Bill refresh = poora hisaab ek saath (offers + One Lite + coupon).
+        const out = await api('cart/sync', 'POST', { confirmReplaceSwiggyCart: true, forSomeoneElse: state.cart?.forSomeoneElse === true, coupon: String(state.cart?.quote?.couponCode || state.cart?.quote?.coupon || ''), autoCoupon: true, phase: 'full' });
         if (signature !== billSyncSignature()) return;
         merge(out); render(); toast('Bill update ho gaya.');
       }
@@ -2290,7 +2340,7 @@
           const syncSignature = billSyncSignature();
           if (!await confirmWithTrigger({ title: 'Swiggy cart sync karein?', message: 'Selected ID ka existing Swiggy cart replace hoga aur address save hoga.', confirmText: 'Sync cart' })) return;
           if (syncSignature !== billSyncSignature()) throw new Error('Cart or account changed. Review it again.');
-          const synced = await api('cart/sync', 'POST', { confirmReplaceSwiggyCart: true, forSomeoneElse: state.cart?.forSomeoneElse === true, coupon: String(state.cart?.quote?.couponCode || state.cart?.quote?.coupon || ''), autoCoupon: true });
+          const synced = await api('cart/sync', 'POST', { confirmReplaceSwiggyCart: true, forSomeoneElse: state.cart?.forSomeoneElse === true, coupon: String(state.cart?.quote?.couponCode || state.cart?.quote?.coupon || ''), autoCoupon: true, phase: 'full' });
           if (syncSignature !== billSyncSignature()) throw new Error('Cart or account changed. Review it again.');
           merge(synced); quote = state.cart?.quote; render();
           if (!quote) throw new Error('Swiggy ne bill nahi diya. Dobara Pay Now dabayein.');
@@ -2334,19 +2384,48 @@
         }
       }
       else if (action === 'checkout-status') {
-        // Manual check: 5-minute window chalta rehta hai, par user ne khud
-        // dabaya hai to seedha live tracking dikhate hain — wahan bhi wahi
-        // Swiggy share link milta hai.
+        // Boss (round 33): "I HAVE PAID" — ek hi button. Paisa de diya ho to
+        // seedha My Orders khulta hai, wahi order khulta hai, aur Swiggy ka
+        // share link + copy wahan milta hai.
         const out = await api('checkout/status', 'POST', {});
         merge(out); render();
         if (out.checkout?.status === 'PAID' && out.checkout.orderId) {
-          // Boss (31-10-2026): "WHEN WE PAY WE CAN TRACK THAT ORDER."
           stopPaymentPoll();
-          toast('Payment mil gayi — order track ho raha hai.');
-          startTracking(out.checkout.orderId, 'checkout');
+          state.payWindow = null;
+          state.payExpired = false;
+          toast('Payment mil gayi — My Orders me order khul gaya.', 'ok');
+          await openOrdersForOrder(out.checkout.orderId, { share: true });
           return;
         }
-        toast(out.checkout?.status === 'PAID' ? 'Swiggy ne paid order de diya.' : 'Status check ho gaya. Paisa de diya ho to dobara na dein.');
+        toast('Payment abhi confirm nahi hui. Thodi der me phir dabaiye — paisa dobara na dein.', 'bad');
+      }
+      else if (action === 'checkout-cancel') {
+        const ok = await confirmInApp({
+          title: 'Order cancel karein?',
+          message: 'Aapka checkout band ho jayega aur cart wapas khulega. Paisa nahi katega.\n\nSach: Swiggy par ye order bana hua hai to use hum cancel nahi kar sakte — Swiggy unpaid order khud cancel kar deta hai.',
+          confirmText: 'Haan, cancel', danger: true
+        });
+        if (!ok) return;
+        const out = await api('checkout/cancel', 'POST', { confirmCancel: true });
+        stopPaymentPoll();
+        state.payWindow = null; state.payExpired = false; state.payTicks = 0;
+        state.checkout = null;
+        state.cart = out.cart ?? state.cart;
+        state.tab = 'cart';
+        writeCache({ tab: 'cart' });
+        render(); window.scrollTo(0, 0);
+        toast(out.message || 'Checkout cancel ho gaya. Cart wapas khula hai.', 'ok');
+      }
+      else if (action === 'back-to-cart') {
+        // Payment ke baad share link dikh raha hota hai — "Go back" dabate hi
+        // wahi normal cart page khulta hai.
+        state.order = null;
+        state.orderTracking = null;
+        state.shareWanted = false;
+        state.shareNote = '';
+        state.tab = 'cart';
+        writeCache({ tab: 'cart' });
+        render(); window.scrollTo(0, 0);
       }
       else if (action === 'checkout-finish') {
         if (!await confirmWithTrigger({ title: 'Start a new draft?', message: 'The paid order remains in Swiggy order history.', confirmText: 'Start new draft' })) return;

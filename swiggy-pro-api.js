@@ -200,6 +200,15 @@ function maskAccountPhone(phone) {
  *   BUSY (kisi chalte order ki ID) / UNVERIFIED (live check nahi hua).
  * Jo verify nahi hua usko kabhi "used" nahi likhte.
  */
+/**
+ * "Is ID me ye offer hai?" — record hai aur FAILED nahi hai to haan.
+ * Koi record hi nahi = pata nahi = nahi (jhooth nahi bolte).
+ */
+function hasOfferTrack(account, key) {
+  const rec = account?.offerAutoActivation?.[key] || account?.offers?.[key] || null;
+  if (!rec) return false;
+  return String(rec.status || rec.state || '').toUpperCase() !== 'FAILED';
+}
 function listAccounts(user, workspace) {
   const map = accountMap(user, workspace);
   const boss = isBoss(user.id);
@@ -232,6 +241,14 @@ function listAccounts(user, workspace) {
         icons: truth.icons,
         freeCash: truth.freeCash,
         offers: truth.offers,
+        // Round 33 (boss): "USED / FRESH / NIGHT / BREAKFAST" filter ke liye.
+        // Sirf sach: `used`/`fresh` live check par based hain (status READY =
+        // live 0 order, USED = live orders mile). Jahan check nahi hua, wahan
+        // dono false — jhootha "fresh" nahi.
+        used: truth.status === 'USED',
+        fresh: truth.status === 'READY',
+        night: hasOfferTrack(a, 'lateNight'),
+        breakfast: hasOfferTrack(a, 'breakfast'),
         // Har track ka sach — Mini App me claim button isi par chalta hai.
         offerTracks: OFFER_TRACKS.map(track => {
           const rec = a.offerAutoActivation?.[track.key] || a.offers?.[track.key] || null;
@@ -468,6 +485,27 @@ function billBreakdown(bill, { expectedTotal = null, items = [] } = {}) {
   return out;
 }
 
+/**
+ * Round 33: quote ko workspace me likhna — sync aur optimize dono ek hi jagah.
+ * (Pehle sirf sync likhta tha; optimize aate hi duplicate code na ho.)
+ */
+function saveProviderQuote(ws, quote) {
+  if (Array.isArray(quote?.bill?.subscriptionItems)) ws.cart.activeSubscriptionItems = quote.bill.subscriptionItems;
+  ws.selectedAddress = cleanAddress(quote.address);
+  ws.cart.quote = {
+    ...billBreakdown(quote.bill, { items: ws.cart?.items || [] }),
+    // Asli coupon code (billBreakdown discount na hone par isse clear kar
+    // deta hai) — checkout isi se Swiggy ka live coupon match karta hai.
+    couponCode: String(quote.bill?.coupon || '').toUpperCase(),
+    autoCoupon: quote.bill?.autoCoupon === true,
+    couponTried: Array.isArray(quote.bill?.couponTried) ? quote.bill.couponTried.slice(0, 5) : [],
+    ofoConfirmed: quote.ofoConfirmed === true,
+    // Bill turant aaya, par offers/One Lite/coupon ka check bacha hai.
+    optimizePending: quote.optimizePending === true,
+    fetchedAt: new Date().toISOString()
+  };
+  return ws.cart.quote;
+}
 /**
  * Mini App me claim aur delete jaise write kaam ke liye ek hi jagah.
  * Boss ka account shared vault me, user ka uske apne workspace me.
@@ -2150,18 +2188,12 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         // One Lite (+₹1) subscription jo bill me laga, wo cart par bhi yaad
         // rakho — warna agla sync/place usse gira kar delivery fee wapas le aata.
         ws.cart.activeSubscriptionItems = Array.isArray(ws.cart.activeSubscriptionItems) ? ws.cart.activeSubscriptionItems : [];
-        const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon);
-        if (Array.isArray(quote?.bill?.subscriptionItems)) ws.cart.activeSubscriptionItems = quote.bill.subscriptionItems;
-        ws.selectedAddress = cleanAddress(quote.address);
-        ws.cart.quote = {
-          ...billBreakdown(quote.bill, { items: ws.cart?.items || [] }),
-          // Asli coupon code (billBreakdown discount na hone par isse clear kar
-          // deta hai) — checkout isi se Swiggy ka live coupon match karta hai.
-          couponCode: String(quote.bill?.coupon || '').toUpperCase(),
-          autoCoupon: quote.bill?.autoCoupon === true,
-          couponTried: Array.isArray(quote.bill?.couponTried) ? quote.bill.couponTried.slice(0, 5) : [],
-          ofoConfirmed: quote.ofoConfirmed === true, fetchedAt: new Date().toISOString()
-        };
+        // Round 33: pehle sirf asli bill (fast), phir peeche se best-coupon
+        // (cart/optimize). Boss ki shikayat: "bill calculate hone me bahut time
+        // lag raha hai". `body.phase === 'full'` par purana poora raasta chalta hai.
+        const phase = body.phase === 'full' ? 'full' : 'fast';
+        const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon, { phase });
+        saveProviderQuote(ws, quote);
         // Bill ke saath outlet ka sach bhi — header/outlet row ke liye.
         if (ws.menu?.restaurant && String(ws.menu.restaurant.id) === String(ws.cart.restaurantId)) {
           Object.assign(ws.cart, {
@@ -2173,6 +2205,57 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         }
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, cart: ws.cart, selectedAddress: ws.selectedAddress });
+        return;
+      }
+      if (route === '/pro/api/cart/optimize' && req.method === 'POST') {
+        // Pehla bill aa chuka hai; ab offers + One Lite + coupon trials chala
+        // kar bill sudhaarte hain. Total phir bhi sirf Swiggy ka.
+        enforceRateLimit(user, 'cartOptimize');
+        await bodyJson(req);
+        requireEditableCart(ws);
+        if (!ws.cart?.items?.length || !ws.selectedAddress) throw error(400, 'Pehle bill lein.');
+        const account = currentAccount(user, ws);
+        await ensureAccountCustomerId(provider, user, ws, account);
+        const coupon = String(ws.cart.quote?.couponCode || '').toUpperCase();
+        const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon, { phase: 'full' });
+        saveProviderQuote(ws, quote);
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, cart: ws.cart, selectedAddress: ws.selectedAddress });
+        return;
+      }
+      if (route === '/pro/api/checkout/cancel' && req.method === 'POST') {
+        // Boss (round 33): payment page par "Cancel order". Yahan hum jhooth
+        // nahi bolte: Swiggy ne jo order bana diya hai use hum cancel nahi kar
+        // sakte — apna checkout band karte hain, fee wapas karte hain (unpaid
+        // hai), aur cart wapas de dete hain.
+        const body = await bodyJson(req);
+        if (body.confirmCancel !== true) throw error(400, 'Cancel confirm karein.');
+        const checkout = ws.checkout;
+        if (!checkout) throw error(404, 'Koi checkout khula nahi hai.');
+        if (checkout.status === 'PAID') throw error(409, 'Paid order yahan cancel nahi hota — Swiggy app se cancel karein.');
+        let refundLine = '';
+        try {
+          const freshWalletDb = getDb();
+          const refund = refundServiceFee(freshWalletDb, checkout, user.id, { reason: 'user ne payment page par cancel kiya' });
+          if (refund?.ok) {
+            saveDbDurable(freshWalletDb);
+            backupMoneyNow().catch(() => {});
+            refundLine = ' Wallet fee wapas kar di.';
+          }
+        } catch { /* refund ka sach neeche message me */ }
+        const placedOnSwiggy = Boolean(normalizeSwiggyOrderId(checkout.orderId));
+        ws.lastClosed = {
+          at: new Date().toISOString(), orderId: String(checkout.orderId || ''), reason: 'USER_CANCELLED',
+          amount: Number(checkout.amount) || 0
+        };
+        ws.checkout = null;
+        writeProWorkspace(user.id, ws);
+        json(res, 200, {
+          ok: true, checkout: null, cart: ws.cart,
+          message: placedOnSwiggy
+            ? `Checkout band. Paisa nahi kata.${refundLine} Swiggy par ye unpaid order #${checkout.orderId} reh gaya hai — Swiggy usey khud cancel karta hai, hum use cancel nahi kar sakte.`
+            : `Checkout band. Paisa nahi kata.${refundLine} Cart wapas khula hai.`
+        });
         return;
       }
       if (route === '/pro/api/orders' && req.method === 'GET') {

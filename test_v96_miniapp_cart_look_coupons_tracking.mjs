@@ -357,6 +357,8 @@ test('DOM: pay ke baad order track hota hai (swiggy status, guess nahi)', async 
     if (call.url.includes('/menu?id=')) return menuStub;
     if (call.url.includes('/orders/tracking')) return { ok: true, tracking: { orderId: '777', status: 'Out for delivery', eta: '12 min', deliveryOtp: '4321', deliveryPartner: { name: 'Rider', phone: '9000000000' } } };
     if (call.url.endsWith('/checkout/status')) return { ok: true, checkout: { status: 'PAID', orderId: '777', amount: 335, tracking: { status: 'Out for delivery' } } };
+    // Round 33: payment ke baad My Orders khulta hai, isliye wahi order list me chahiye.
+    if (call.url.endsWith('/orders')) return { ok: true, orders: [{ id: '777', status: 'Out for delivery', restaurant: 'Pizza Junction', amount: 335, placedAt: '01/11/26, 9:40 pm', items: [] }], detailAllowed: true };
     if (call.url.endsWith('/checkout')) return { ok: true, checkout: { status: 'PAYMENT_PENDING', orderId: '777', amount: 335, qrDataUrl: 'data:image/png;base64,AAA', upiIntentUrl: 'upi://pay?pa=x@y&am=335', message: 'Swiggy order ban gaya' }, cart: null };
     return state({ checkout: { status: 'PAYMENT_PENDING', orderId: '777', amount: 335, qrDataUrl: '', upiIntentUrl: '', message: 'Swiggy order ban gaya' } });
   } });
@@ -366,15 +368,16 @@ test('DOM: pay ke baad order track hota hai (swiggy status, guess nahi)', async 
     await waitFor(() => app.document.querySelector('.pay-screen'), 'payment screen');
     assert.match(app.document.body.textContent, /Pay ₹335/);
     assert.ok(app.document.querySelector('[data-action="checkout-status"]'));
-    assert.ok(app.document.querySelector('[data-action="track-open"]'), 'track button payment screen par');
+    // Round 33 (boss): "FALTU KE ORDER TRACK KARE ... NA RAKHE" — payment page
+    // par track button jaan-boojh kar hata diya; tracking paid hone par khud aati hai.
+    assert.equal(app.document.querySelector('[data-action="track-open"]'), null, 'payment page par faltu track button nahi');
     app.document.querySelector('[data-action="checkout-status"]').click();
-    await waitFor(() => app.document.querySelector('.track-card'), 'tracking card');
+    // Round 33: "I have paid" → My Orders → wahi order khulta hai (share link ke saath).
+    await waitFor(() => app.document.querySelector('.share-card'), 'order detail + share card');
     await waitFor(() => app.calls.some(c => c.url.includes('/orders/tracking?id=777')), 'tracking call');
+    assert.equal(app.document.querySelector('.bottom-nav button.selected').dataset.tab, 'orders', 'My Orders');
     const text = app.document.body.textContent;
-    assert.match(text, /Out for delivery/);
-    assert.match(text, /Rider raaste me/);
-    assert.ok(app.document.querySelector('.track-steps'), 'timeline');
-    assert.match(text, /4321/, 'delivery OTP');
+    assert.match(text, /Out for delivery/, 'Swiggy ka asli status');
     await new Promise(r => setTimeout(r, 30));
   } finally { app.close(); }
 });

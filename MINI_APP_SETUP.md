@@ -991,3 +991,19 @@ band nahi hota. Koi match na ho to line dikhti hai.
   **89/89**, `npm test` **132/132**, `test:pro` **41/41**.
 * Preview me dekhne ke liye: `npm run preview:miniapp` → `?scene=paypending` (QR + verify
   strip) aur `?scene=share` (share card).
+
+## Round 33 — payment page, bill speed, filters
+
+* Payment page par sirf do button: **I have paid** (`checkout-status`) aur **Cancel order**
+  (`checkout/cancel`, confirm ke baad; wallet fee wapas, cart wapas). `Open UPI app` hata diya —
+  mini app se bahar navigation purane guard se bhi band hai.
+* Paid hone par seedha **My Orders → wahi order**, share link + **Copy** + **Go back** (Go back
+  se normal cart page).
+* Bill do kadam me: `cart/sync` ab **fast** phase (asli bill turant), phir `cart/optimize`
+  (offers + One Lite + best coupon). `bill-refresh`/`checkout-start` poora bill ek saath lete
+  hain (`phase: 'full'`). Default (provider) poora hi rehta hai — koi caller toota nahi.
+* Bill ka hisaab: available Swiggy Money discount nahi (sirf jo kata), campaign free cash ek
+  hi line, residual GST me kata hua wallet joda.
+* Accounts filter chips: `USED / FRESH / NIGHT / BREAKFAST` + count, multi-select + Clear.
+* Guard: `test_v122_round33_payment_actions_bill_speed_filters.mjs` **9 checks**.
+  `npm test` **132/132**, `test:pro` **93/93**.
