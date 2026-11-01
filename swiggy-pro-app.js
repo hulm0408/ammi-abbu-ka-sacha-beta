@@ -14,9 +14,7 @@
     coupons: null, couponsNote: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, billOpen: false, ordersFilter: 'all', accountQuery: '', payWindow: null, payTicks: 0, payExpired: false, shareNote: '',
     meal: null, mealFor: '', mealLoading: false, couponDraft: '', groupCartDraft: '', groupCartOn: true,
     track: null, trackData: null, trackError: '', trackBusy: false,
-    // Boss (31-10-2026, round 11): wallet ₹15 gate + UPI top-up.
-    wallet: null, walletTopup: null, walletSheet: false, walletClaimBusy: false, walletUpiEdit: false,
-    utrTrack: null, utrTrackBusy: false, walletClaimTruth: null,
+    orderFee: null, checkoutWarning: '',
     doctor: null, doctorBusy: false, doctorNote: '',
     // Boss (31-10-2026, round 13): 2 minute idle → draft order band.
     idle: null, idleClosed: null
@@ -67,7 +65,7 @@
   const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name] || ''}</svg>`;
   const tile = (name, green = false) => `<span class="icon-tile${green ? ' green' : ''}">${icon(name)}</span>`;
   const cartLocked = () => Boolean(state.checkout && state.checkout.status !== 'PAID');
-  const head = (eyebrow, title, sub, end = '') => `<div class="page-heading"><div><p class="eyebrow">${esc(eyebrow)}</p><h1>${esc(title)}</h1>${sub ? `<p>${esc(sub)}</p>` : ''}</div>${end}</div>`;
+  const head = (eyebrow, title, sub, end = '') => `<div class="page-heading"><div><h1>${esc(title)}</h1>${String(sub || '').startsWith('Swiggy order #') ? `<p>${esc(sub)}</p>` : ''}</div>${end}</div>`;
   const empty = (symbol, title, text) => `<div class="empty"><div class="large-icon">${icon(symbol)}</div><strong>${esc(title)}</strong>${esc(text)}</div>`;
   /**
    * Round 27 (boss): toast ab Swiggy jaisa — upar se drop, icon ke saath, aur
@@ -185,13 +183,12 @@
     if (!response.ok || !result.ok) {
       const e = new Error(result.error || 'Request failed. Please try again.');
       e.status = response.status; e.code = String(result.code || '');
-      if (result.wallet) e.wallet = result.wallet;
       throw e;
     }
     return result;
   }
   function merge(data) {
-    for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled','checkoutBlockReason','ordersDetailAllowed','adminContact','backup','wallet','statement','identities','liveOrder','durability']) if (Object.hasOwn(data, key)) state[key] = data[key];
+    for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled','checkoutBlockReason','ordersDetailAllowed','adminContact','backup','orderFee','identities','liveOrder','durability']) if (Object.hasOwn(data, key)) state[key] = data[key];
     if (data.idle) { state.idle = data.idle; if (data.idle.closed) state.idleClosed = data.idle.closed; }
     if (Array.isArray(data.accounts)) {
       state.cachedAccounts = data.accounts.map(a => ({ key: a.key, name: a.name, phoneMasked: a.phoneMasked || '', owner: a.owner || 'self' }));
@@ -574,40 +571,6 @@
     lines.push(`To Pay: ${r(q.total)}`);
     return lines.join('\n');
   }
-  /**
-   * Wallet card — boss (31-10-2026, round 11): "WALLET MUST REACH A BALANCE OF
-   * 15 OTHERWISE IT WILL SAY YOUR BALANCE IS LOW ADD AMOUNT ... DEFAULT UPI
-   * mius@ybl ... I CAN CHANGE IT ALSO ... IF USER PAY LESS AND SAY I HAVE PAID
-   * YOU HAVE TO ADD HOW MUCH THEY PAID."
-   */
-  function renderWalletCard() {
-    const w = state.wallet;
-    if (!w) return '';
-    const ready = w.ready === true;
-    const shortText = ready ? '' : `Balance ${money(w.balance)} hai — order ke liye ${money(w.fee)} chahiye. ${money(w.shortfall)} add karein.`;
-    // Server kabhi {paise,rupees} bhejta hai, kabhi seedha paisa (1500). Dono
-    // chalein — warna button par sirf "₹" dikhta tha (screenshot me pakda gaya).
-    const presets = (w.presets || []).map(p => (p && typeof p === 'object' ? { paise: Number(p.paise), rupees: p.rupees } : { paise: Number(p), rupees: String(Math.round(Number(p) / 100)) }))
-      .filter(p => Number.isFinite(p.paise) && p.paise > 0)
-      .slice(0, 3)
-      .map(p => `<button class="button mini outline" type="button" data-action="wallet-topup" data-paise="${p.paise}">₹${esc(p.rupees ?? Math.round(p.paise / 100))}</button>`).join('');
-    const topup = state.walletTopup
-      ? `<div class="wallet-topup"><p class="hint">${esc(state.walletTopup.note || '')}</p>${state.walletTopup.qrDataUrl ? `<img class="payment-qr" src="${esc(state.walletTopup.qrDataUrl)}" alt="Wallet top-up UPI QR">` : ''}<a class="button green block" href="${esc(state.walletTopup.upiUri || '#')}">UPI app me ₹${esc(state.walletTopup.amount)} bhejein</a><p class="hint">UPI id: <b>${esc(state.walletTopup.upiId || '')}</b></p></div>`
-      : '';
-    // Boss (31-10-2026, round 23): "BAS USER KO BOL SEND HOW MUCH MONEY YOU WANT
-    // THAT WILL BE FETCHED AND ADDED UPON SUBMITTING UTR" — user sirf itna
-    // likhta hai ki kitna paisa bhejna hai, phir UTR daalta hai. Server us UTR
-    // ki asli payment detail fetch karta hai aur jitna aaya utna hi judta hai.
-    const topupAmount = state.walletTopup?.amount || '';
-    const suggested = topupAmount || String(w.shortfall || w.fee || '15');
-    const claim = `<form data-form="wallet-claim" class="wallet-claim" novalidate><p class="section-title">Kitna paisa bhejna hai?</p><p class="hint">UPI <b>${esc(w.upiId || '')}</b> par bhejein, 12-digit <b>UTR</b> daaliye — jitna paisa sach me aaya utna hi judega.</p><div class="field-row">${field('Amount (₹)', 'amount', 'jaise 15', suggested)}${field('UTR (12 digit)', 'utr', '12 digits', '')}</div><button class="button primary block" type="submit" ${state.walletClaimBusy ? 'disabled' : ''}>${state.walletClaimBusy ? 'UTR se payment fetch ho rahi hai…' : 'UTR se payment fetch karke add karein'}</button>${state.walletClaimNote ? `<p class="hint">${esc(state.walletClaimNote)}</p>` : ''}</form>`;
-    const upiEditor = state.user?.isBoss
-      ? (state.walletUpiEdit
-        ? `<form data-form="wallet-upi" class="wallet-usi" novalidate>${field('Boss ka UPI id', 'upiId', 'name@bank', w.upiId || '')}<button class="button outline block" type="submit">UPI save karein</button></form>`
-        : `<button class="text-button" type="button" data-action="wallet-upi-edit">UPI badlein (${esc(w.upiId || '')})</button>`)
-      : '';
-    return `<div class="card wallet-card"><div class="card-title">${icon('coins')} Wallet <span class="pill ${ready ? 'green' : 'amber'} right">${ready ? 'Ready' : 'Low balance'}</span></div><div class="bill-row"><span>Aapka balance</span><strong>${money(w.balance)}</strong></div><div class="bill-row"><span>Order fee</span><strong>${w.exempt ? 'Free' : money(w.fee)}</strong></div>${ready ? '' : `<div class="warning">${esc(shortText)}</div>`}<div class="wallet-actions">${presets}${state.walletSheet ? '' : `<button class="button mini soft" type="button" data-action="wallet-topup">Add money</button>`}</div>${topup}${claim}${upiEditor}<p class="hint">UPI: <b>${esc(w.upiId || '')}</b>${w.exempt ? '' : ' · fee sirf order place hone par'}</p></div>`;
-  }
   function renderBill(q, cart) {
     if (!q) return `<div class="warning" id="bill-details">Bill abhi Swiggy se nahi aaya. Neeche <b>Pay Now</b> dabaiye — pehle asli bill aayega, phir payment.</div>`;
     const num = v => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? 0 : Number(v));
@@ -637,7 +600,7 @@
     const updating = !state.cart?.quote;
     // Round 28: reference jaisa — UPI/QR selected (green tick), card aur COD
     // faded, aur jaise tak bill nahi aata "Updating bill" pill chip.
-    return `<div class="card pay-method-card"><div class="card-title">${icon('receipt')}<span class="title-copy">Payment Method${updating ? '<small>Bill update ho raha hai…</small>' : ''}</span>${updating ? '<span class="updating-pill"><span class="spinner"></span>Updating</span>' : ''}</div><div class="divider"></div><div class="pay-option selected"><span class="icon-tile">${icon('wallet')}</span><span class="pay-copy"><strong>UPI / QR</strong><small>PhonePe, Paytm, CRED &amp; koi bhi UPI app</small></span><span class="pay-radio"></span></div><div class="pay-option disabled"><span class="icon-tile">${icon('receipt')}</span><span class="pay-copy"><strong>Credit / Debit Card</strong><small>Visa, Mastercard, RuPay · app se nahi</small></span><span class="pay-radio"></span></div><div class="pay-option disabled"><span class="icon-tile">${icon('coins')}</span><span class="pay-copy"><strong>Cash on Delivery</strong><small>Not available — UPI se pay karein</small></span><span class="pay-radio"></span></div></div>`;
+    return `<div class="card pay-method-card"><div class="card-title">${icon('receipt')} Payment: UPI / QR${updating ? ' · Bill updating…' : ''}</div></div>`;
   }
   /** Kitna bacha — sirf jo Swiggy ke bill me asli me dikha. */
   function savedAmount(q) {
@@ -865,7 +828,7 @@
     const eta = `<div class="eta-strip"><span class="eta-clock">${icon('orders')}</span><span class="eta-copy"><strong>${cart.restaurantTime ? `Delivery in ${esc(cart.restaurantTime)}` : 'Delivery time Swiggy se aayega'}</strong><small>${esc([cart.restaurantName, cart.restaurantArea].filter(Boolean).join(' · '))}</small></span></div>`;
     // Pay bar: Swiggy jaisa — bada amount + bill link left, green pay right.
     const payBar = `<div class="pay-bar"><button class="button green pay-now" type="button" data-action="checkout-start" ${locked || !state.checkoutEnabled ? 'disabled' : ''} ${!state.checkoutEnabled ? `title="${esc(state.checkoutBlockReason || '')}"` : ''}>${state.checkoutEnabled ? `Pay Now · Proceed to Pay ${icon('arrow')}` : 'Payment band'}</button><div class="pay-left"><strong>${q ? money(q.total) : '—'}</strong><span class="link-button" role="button" tabindex="0" data-action="bill-open">${state.billOpen ? 'Bill band karein' : 'View Detailed Bill'}</span><small>PAY USING UPI</small>${idleNote}</div>${q ? '' : '<span class="updating-pill"><span class="spinner"></span>Updating</span>'}</div>${state.checkoutEnabled ? '' : `<div class="warning pay-blocked">Payment abhi band hai — wahi asli wajah: ${esc(state.checkoutBlockReason || 'server ne reason nahi diya')}</div>`}`;
-    return `${head('CHECKOUT', 'Checkout', '')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${!q ? renderFindingCoupon() : ''}${renderSavingsCorner(q)}${renderBill(q, cart)}${renderPayment(cart)}${renderWalletCard()}${payBar}`;
+    return `${head('CHECKOUT', 'Checkout', '')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${!q ? renderFindingCoupon() : ''}${renderSavingsCorner(q)}${renderBill(q, cart)}${renderPayment(cart)}${state.checkoutWarning ? `<div class="warning" role="alert">${esc(state.checkoutWarning)}</div>` : ''}${payBar}`;
   }
   /**
    * Order detail ka bill/payment hissa (round 30). Rule: sirf wahi line jo
@@ -1051,48 +1014,6 @@
       <div class="bill-row"><span>SMS ka rasta</span><strong>${live.smsAllowed ? 'Swiggy (live)' : 'Swiggy (normal)'}</strong></div>
       ${live.blocked ? `<div class="warning">${esc(live.line)}</div>` : `<p class="hint">${esc(live.line)}</p>`}</div>`;
   }
-  function renderStatementCard() {
-    if (!state.user?.isBoss) return '';
-    const st = state.statement || null;
-    const money = (paise) => `₹${(Number(paise || 0) / 100).toFixed(2)}`;
-    const rows = st ? `<div class="bill-row"><span>Statement entries</span><strong>${Number(st.count || 0)}</strong></div>
-      <div class="bill-row"><span>Asli paisa dikha</span><strong>${money(st.totalPaise)}</strong></div>
-      <div class="bill-row"><span>Misbahul Islam ke naam</span><strong>${Number(st.bossPayeeCount || 0)}</strong></div>
-      <div class="bill-row"><span>Verify ka intezaar</span><strong>${Number(st.pendingClaims || 0)} claim${Number(st.pendingMatched || 0) ? ` (${Number(st.pendingMatched)} match)` : ''}</strong></div>` : '';
-    const recent = st?.recent?.length
-      ? st.recent.slice(0, 5).map(r => `<div class="bill-row"><span>${esc(r.utr)} · ${esc(new Date(r.at || Date.now()).toLocaleDateString('en-IN'))}</span><strong>${money(r.amountPaise)}</strong></div>`).join('')
-      : '<p class="hint">Abhi koi statement entry nahi — neeche paste karein.</p>';
-    return `<div class="card"><div class="card-title">${tile('receipt')}<span class="title-copy">UPI statement (asli paisa)<small>Customer khud UTR likh kar paisa nahi bana sakta.</small></span></div>
-      ${rows}${recent}
-      <form data-form="statement" novalidate><div class="input-wrap"><textarea name="text" rows="4" placeholder="UPI/bank statement ki lines paste karein — jaise: 31-10-2026 UPI/CR/123456789012/MISBAHUL ISLAM/₹15.00"></textarea></div><button class="button primary block" type="submit">Statement import karein ${icon('arrow')}</button></form>
-      <p class="hint">Jis UTR ka paisa Misbahul Islam ke account (mius@ybl) me aaya hai, sirf utna hi amount judega — chhota ya random UTR credit nahi hoga.</p></div>`;
-  }
-  /**
-   * Boss (31-10-2026, round 25): "UPI PAYMENT AGAR ME TRACK KARNA CHAHTA ...
-   * BAS USSE UTR LUNGA AUR UTR SE SAB DETAILS NIKAALUNGA — ABHI YA OLD, KISI
-   * AUR KO, AUR KITNA".
-   *
-   * Yahan boss koi bhi UTR daal kar poora sach dekhta hai: kitna aaya, kab
-   * aaya, kisko aaya, kaun bheja, status, pehle use hua ya nahi — aur credit
-   * ka faisla + kya kya chahiye.
-   */
-  function renderUtrTrackCard() {
-    if (!state.user?.isBoss) return '';
-    const t = state.utrTrack;
-    const verdictPill = t?.truth?.verdict?.action === 'CREDIT' ? 'green' : t?.truth?.verdict?.action === 'REJECT' ? 'red' : 'amber';
-    const verdictLabel = t?.truth?.verdict?.action === 'CREDIT' ? 'CREDIT HOGA' : t?.truth?.verdict?.action === 'REJECT' ? 'REJECT' : 'PENDING';
-    const rows = (t?.truth?.rows || []).map(r => `<div class="bill-row"><span>${esc(r.label)}</span><strong class="${r.ok ? 'free' : ''}">${esc(r.value)}</strong></div>`).join('');
-    const missing = (t?.truth?.missing || []).length
-      ? `<div class="warning">Chahiye: ${esc((t.truth.missing || []).map(m => m.line).join('; '))}</div>` : '';
-    return `<div class="card"><div class="card-title">${tile('receipt')}<span class="title-copy">UTR se payment track<small>Sirf UTR daalein — baaki sab server khud nikaalta hai.</small></span></div>
-      <form data-form="utr-track" novalidate><div class="input-wrap">${icon('search')}<input name="utr" inputmode="numeric" maxlength="12" placeholder="12 digit UTR" value="${esc(t?.utr || '')}" required></div><button class="button primary block" type="submit" ${state.utrTrackBusy ? 'disabled' : ''}>${state.utrTrackBusy ? 'Details nikaal rahe hain…' : 'UTR ki poori detail nikaalein'}</button></form>
-      ${t ? `<div class="divider"></div><div class="bill-row"><span>Faisla</span><strong><span class="pill ${verdictPill}">${esc(verdictLabel)}</span></strong></div>${rows}${missing}<p class="hint">${esc(t.bossLine || '')}</p>${t.claim ? `<p class="hint">Claim: ${esc(String(t.claim.status || ''))} · user ${esc(String(t.claim.userId || ''))} · ₹${(Number(t.claim.claimedPaise || 0) / 100).toFixed(2)}</p>` : ''}` : '<p class="hint">Koi bhi UTR daal kar dekhein: kitna aaya, kab aaya, kisko aaya, kaun bheja.</p>'}</div>`;
-  }
-  /**
-   * Boss (31-10-2026, round 26): "PHIR DEPLOY HOTE HI SAB ERASE HOGAYA".
-   * Yahan ek ek kadam ka asli jawab — token, branch, vault files, likhne ka
-   * test — aur ek button jo vault se turant restore karta hai.
-   */
   function renderDoctorCard() {
     if (!state.user?.isBoss) return '';
     const d = state.doctor;
@@ -1123,7 +1044,7 @@
       return `<div class="card"><div class="card-title">${tile('tools')}<span class="title-copy">${esc(a.name)}<small>${a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : 'Number not returned'} · ${a.owner === 'operator' ? 'Operator' : 'Aapka'}</small></span></div>${tracks}${claimButton}</div>`;
     }).join('');
     const result = state.claimResult ? `<div class="card"><div class="card-title">${icon('check')} Claim ka sach</div>${(state.claimResult.tracks || []).map(t => `<div class="offer-row"><span class="offer-emoji">${t.emoji || '🎁'}</span><span class="row-content"><strong>${esc(t.label)}</strong><p>${esc(t.message || '')}</p></span><span class="pill ${t.verified ? 'green' : 'amber'}">${esc(String(t.status || '').replace(/_/g, ' '))}</span></div>`).join('')}<p class="hint">Do baar claim nahi hota — pehle se laga ho to ALREADY ACTIVE dikhta hai.</p></div>` : '';
-    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${renderWalletCard()}${accounts}${renderIdentitiesCard()}${renderStatementCard()}${renderUtrTrackCard()}${renderLiveOrderCard()}${renderBackupCard()}${renderDoctorCard()}`;
+    return `${head('A LITTLE EXTRA', 'Offers & tools', 'Night, breakfast, extra ₹50 aur weekend — yahin se claim.')}${result}${accounts}${renderIdentitiesCard()}${renderLiveOrderCard()}${renderBackupCard()}${renderDoctorCard()}`;
   }
   function renderConnection() {
     if (!initData) return `${head('TELEGRAM MINI APP', 'Open in Telegram', 'Your private account space needs a Telegram session.')}<div class="card connection-card"><strong>Browser preview only</strong><p>Open this app from your bot using Open App or /pro. No account data is shown here.</p></div>`;
@@ -1564,46 +1485,6 @@
         const count = out.cart?.items?.reduce((n, i) => n + Number(i.qty || 0), 0) || 0;
         state.tab = 'cart'; writeCache({ tab: 'cart' }); render();
         toast(`Cart parse ho gaya — ${count} item${count === 1 ? '' : 's'}. Ab bill check karein.`);
-      } else if (type === 'wallet-claim') {
-        const utr = String(data.get('utr') || '').trim().replace(/\s+/g, '');
-        const amountRupees = Number(String(data.get('amount') || '').replace(/[^0-9.]/g, ''));
-        if (!/^\d{12}$/.test(utr)) { toast('UPI app se poora 12-digit UTR daaliye.', 'bad'); return; }
-        // QR khula hai to usi top-up par claim; warna jo amount user ne likha.
-        const payload = state.walletTopup?.topupId
-          ? { topupId: state.walletTopup.topupId, amountPaise: state.walletTopup.amountPaise, utr }
-          : { amountPaise: Math.round(amountRupees * 100), utr };
-        if (!state.walletTopup?.topupId && !(amountRupees >= 1)) { toast('Jitna paisa bhejna hai utna likhein (₹1 se zyada).'); return; }
-        state.walletClaimBusy = true; state.walletClaimNote = ''; render();
-        try {
-          const out = await api('wallet/claim', 'POST', payload);
-          merge(out); state.walletTopup = null; state.walletSheet = false;
-          // Round 25: user ko bhi poora sach — kitna aaya, kab, kisko.
-          state.walletClaimNote = out.utrTruth?.summaryLine || out.lookupLine || '';
-          toast(out.message || 'UTR ki payment fetch hui — jitna aaya utna juda.', out.pending ? 'info' : 'ok');
-        } finally { state.walletClaimBusy = false; render(); }
-      } else if (type === 'utr-track') {
-        const utr = String(data.get('utr') || '').trim().replace(/\s+/g, '');
-        if (!/^\d{12}$/.test(utr)) { toast('Poora 12-digit UTR daaliye.'); return; }
-        state.utrTrackBusy = true; render();
-        try {
-          const out = await api('boss/utr', 'POST', { utr });
-          state.utrTrack = out; render();
-          toast(out.truth?.summaryLine || 'UTR ki detail aa gayi.');
-        } finally { state.utrTrackBusy = false; render(); }
-      } else if (type === 'statement') {
-        const text = String(data.get('text') || '').trim();
-        if (text.length < 10) { toast('Statement ki lines paste karein (UTR + amount).'); return; }
-        const out = await api('boss/statement', 'POST', { text });
-        merge(out);
-        const settled = Array.isArray(out.settled) ? out.settled.filter(s => s.action === 'CREDIT') : [];
-        render();
-        toast(settled.length
-          ? `${settled.length} claim verify hua — asli amount juda.`
-          : `Statement import hua (${Number(out.imported?.accepted || 0)} credit line). Koi pending claim match nahi hua.`);
-      } else if (type === 'wallet-upi') {
-        const out = await api('wallet/upi', 'POST', { upiId: String(data.get('upiId') || '').trim() });
-        merge(out); state.walletUpiEdit = false; render();
-        toast(`UPI set: ${out.upiId}`);
       } else if (type === 'delete-otp') {
         const out = await api('accounts/remove/confirm', 'POST', { key: state.deleteFlow?.key, otp: data.get('otp') });
         merge(out); state.deleteFlow = null; state.addresses = []; state.orders = null; render(); toast('Account Swiggy se delete ho gaya.');
@@ -1906,13 +1787,6 @@
         }
         merge(out); render(); toast('Added to draft cart.');
       } else if (action === 'qty') { const out = await api('cart/quantity', 'POST', { lineKey: button.dataset.key, qty: Number(button.dataset.qty) }); merge(out); render(); }
-      else if (action === 'wallet-topup') {
-        const paise = Number(button.dataset.paise || 0) || (state.wallet?.shortfallPaise ?? 0) || 1500;
-        const out = await api('wallet/topup', 'POST', { amountPaise: paise });
-        state.walletTopup = out.topup; state.walletSheet = true; render();
-      }
-      else if (action === 'wallet-close') { state.walletTopup = null; state.walletSheet = false; render(); }
-      else if (action === 'wallet-upi-edit') { state.walletUpiEdit = true; render(); }
       else if (action === 'checkout-start') {
         if (!state.activeAccount) { state.tab = 'accounts'; writeCache({ tab: 'accounts' }); render(); toast('Pehle Swiggy ID chunein.'); return; }
         if (!state.cart?.items?.length) throw new Error('Cart khaali hai — pehle koi item add karein.');
@@ -1929,25 +1803,21 @@
         }
         if (!await confirmInApp({
           title: `Pay ${money(quote.total)} — order confirm?`,
-          message: `${state.cart.restaurantName || 'Restaurant'} · ${state.selectedAddress.name} · +91 ${state.selectedAddress.mobile}\n${state.selectedAddress.address}\n\nSwiggy par ek asli order request jayegi. Uske baad UPI QR se paisa dena hai. Agar response atak jaye to dobara order na karein — Orders tab me check karein.`,
+          message: `${state.cart.restaurantName || 'Restaurant'} · ${state.selectedAddress.name} · +91 ${state.selectedAddress.mobile}\n${state.selectedAddress.address}\n${state.orderFee?.exempt ? 'Order fee: free.' : `Order fee ${money(Number(state.orderFee?.paise || 0) / 100)} (bot wallet); Swiggy bill alag.`}\nSwiggy par order jayega. Result na aaye to dobara order na karein.`,
           confirmText: `Pay ${money(quote.total)}`
         })) return;
         try {
           const out = await api('checkout', 'POST', { confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt });
-          merge(out); render();
+          state.checkoutWarning = ''; merge(out); render();
           toast(out.checkout?.status === 'PAYMENT_PENDING' ? 'Payment details returned. Verify before paying.' : 'Check Swiggy My Orders; do not retry.');
         } catch (e) {
           // Boss (31-10-2026): "PAY PAR CLICK KARTA HU TO ... COULD NOT BE
           // CONFIRMED" — ab har wajah alag dikhti hai. Bill badla ho to naya
           // bill save ho chuka hai; order nahi gaya, dobara Pay dabaiye.
-          // Boss (31-10-2026, round 11): wallet kam hai to saaf batao aur
-          // wallet card ke paas le jao — generic error nahi.
           if (e.code === 'WALLET_LOW_BALANCE') {
-            state.wallet = e.wallet || state.wallet;
-            state.walletSheet = true;
-            try { merge(await api('bootstrap')); } catch {}
+            state.checkoutWarning = e.message || 'Balance kam hai. Bot me Wallet se add karein.';
             render();
-            toast(e.message || 'Wallet balance kam hai — pehle paise add karein.');
+            toast(state.checkoutWarning);
             return;
           }
           const prePlacement = ['BILL_CHANGED', 'CART_ITEMS', 'ADDRESS', 'OFO', 'CART_FETCH', 'CART_PARSE', 'COUPON', 'AMOUNT', 'AMOUNT_MISSING', 'CART_ID', 'RESTAURANT'].includes(String(e.code || ''));

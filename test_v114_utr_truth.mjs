@@ -324,52 +324,20 @@ const waitFor = async (fn, label, ms = 5000) => {
   throw new Error(`timeout: ${label}`);
 };
 
-test('DOM: boss ke Tools me "UTR se payment track" card + 12-digit UTR form', async () => {
+test('DOM: Boss Mini App se UTR form hata, other tools remain', async () => {
   const state = {
     ok: true, user: { name: 'Boss', isBoss: true },
     accounts: [{ key: 'op', name: 'Operator', phone: '9000011111', active: true, isLoggedIn: true, owner: 'operator', offerTracks: [] }],
     activeAccount: { key: 'op', name: 'Operator' }, selectedAddress: null, selectedAddresses: [],
-    checkoutEnabled: true, ordersDetailAllowed: true, cart: null,
-    wallet: { balancePaise: 0, balance: '0', feePaise: 1500, fee: '15', ready: false, shortfall: '15', upiId: 'mius@ybl', presets: [], history: [] },
-    statement: { count: 1, totalPaise: 1500, bossPayeeCount: 1, pendingClaims: 0, recent: [] }
+    checkoutEnabled: true, ordersDetailAllowed: true, cart: null
   };
   const dom = bootDom(state);
-  const { window } = dom;
-  await waitFor(() => window.document.querySelector('[data-tab="cart"]:not([disabled])'), 'nav');
-  window.document.querySelector('[data-tab="tools"]').click();
-  const form = await waitFor(() => window.document.querySelector('form[data-form="utr-track"]'), 'utr track form');
-  const input = form.querySelector('input[name="utr"]');
-  assert.ok(input, 'UTR input mila');
-  assert.equal(input.getAttribute('maxlength'), '12');
-  assert.match(form.textContent, /UTR/i);
-  assert.match(window.document.body.textContent, /UTR se payment track/i);
-  // Form submit karke asli flow test karo — button dabane par detail render hoti hai.
-  const trackOut = {
-    ok: true,
-    utr: '700700700702',
-    bossLine: 'UTR 700700700702 se ₹45 · paisa humein aaya · 10 min pehle · credit ₹45',
-    truth: {
-      verdict: { action: 'CREDIT' }, summaryLine: 'UTR 700700700702: ₹45 humein aaya',
-      rows: [
-        { key: 'amount', label: 'Kitna aaya', value: '₹45', ok: true },
-        { key: 'payee', label: 'Kisko aaya', value: 'paisa humein aaya', ok: true }
-      ],
-      missing: []
-    },
-    claim: null
-  };
-  const dom2 = bootDom(state, { 'boss/utr': trackOut });
-  const w2 = dom2.window;
-  await waitFor(() => w2.document.querySelector('[data-tab="cart"]:not([disabled])'), 'nav2');
-  w2.document.querySelector('[data-tab="tools"]').click();
-  const form2 = await waitFor(() => w2.document.querySelector('form[data-form="utr-track"]'), 'form2');
-  form2.querySelector('input[name="utr"]').value = '700700700702';
-  form2.dispatchEvent(new w2.Event('submit', { bubbles: true, cancelable: true }));
-  const text = await waitFor(() => {
-    const body = w2.document.body.textContent;
-    return body.includes('CREDIT HOGA') ? body : null;
-  }, 'verdict render');
-  assert.match(text, /Kitna aaya/);
-  assert.match(text, /₹45/);
-  dom.window.close(); dom2.window.close();
+  try {
+    const { window } = dom;
+    await waitFor(() => window.document.querySelector('[data-tab="tools"]:not([disabled])'), 'nav');
+    window.document.querySelector('[data-tab="tools"]').click();
+    assert.equal(window.document.querySelector('form[data-form="utr-track"]'), null);
+    assert.equal(window.document.querySelector('form[data-form="wallet-claim"]'), null);
+    assert.ok(window.document.querySelector('[data-action="claim-offers"]'), 'other tools retained');
+  } finally { dom.window.close(); }
 });

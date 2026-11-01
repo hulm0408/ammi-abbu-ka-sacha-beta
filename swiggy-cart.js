@@ -7,6 +7,7 @@ import QRCode from 'qrcode';
 import { getDb, saveDb, updateAccount, syncAccountsJsonMirror } from './store.js';
 import { shouldReusePendingQr, validateUpiIntentForQr } from './payment-qr-guard.js';
 import { executeSingleSwiggyPlacement, readSwiggyPlacement, placementAlreadyAttemptedError } from './swiggy-placement-journal.js';
+import { assertChatOrderFeeStillReserved } from './wallet-order-gate.js';
 import { sameCartItems, sameDeliveryRecipient, exactPaise } from './swiggy-cart-integrity.js';
 import { classifySwiggyAccountFailure, isAccountSuspended, markAccountSuspended, markAccountHealthy, noteAccountFailure, describeSuspendedAccount } from './account-health.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
@@ -9577,6 +9578,9 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     // Pick one endpoint before sending. After any POST, even a timeout or a
     // rejection is ambiguous; never try another endpoint, amount or account.
     const useWeb = desiredSplitPay > 0 && Number(cm.trade_discount_total || 0) === 0 && Number(cm.subscription_total || 0) === 0;
+    // A cancellation/refund may have happened while cart checks were running.
+    // Check again with no await before reserving the journal and sending POST.
+    assertChatOrderFeeStillReserved(order.id);
     const attemptOut = await executeSingleSwiggyPlacement(placementKey, () =>
       useWeb ? sendWebPaymentsPlaceOrder(desiredSplitPay) : sendNativeAndroidPlaceOrder(desiredSplitPay)
     );

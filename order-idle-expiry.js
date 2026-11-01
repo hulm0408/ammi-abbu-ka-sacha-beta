@@ -106,12 +106,11 @@ export function planIdleExpiry({ ws = null, now = Date.now(), timeoutMs = DEFAUL
 
   if (!checkout && !hasCart) return base;
   if (kind === 'PAID' || kind === 'UNKNOWN') return { ...base, kind, idledAt }; // kabhi nahi
-  // Placement POST ja chuki ho sakti hai (SUBMITTING) — journal record ho to ruko.
-  if (kind === 'SUBMITTING' && placementInFlight) return { ...base, kind, idledAt };
-
-  if (kind === 'PLACED_UNPAID') {
-    // Order Swiggy par bana hua hai → fee wapas nahi, par ID free + record rahe.
-    return { expire: true, kind, idleMs, idledAt, refundFee: false, keepRecord: true, orderId: String(checkout.orderId || '') };
+  // SUBMITTING may have crashed between saving the fee and creating the
+  // dispatch journal. A placed/unpaid order can still exist on Swiggy. Neither
+  // is safe to clear automatically or to unlock a second checkout.
+  if (kind === 'SUBMITTING' || kind === 'PLACED_UNPAID') {
+    return { ...base, kind, idledAt, orderId: String(checkout?.orderId || '') };
   }
   // Draft (cart/bill bana, order place nahi hua) — fee wapas, sab saaf.
   return { expire: true, kind: 'DRAFT', idleMs, idledAt, refundFee: Boolean(checkout && checkout.id), keepRecord: false, orderId: '' };

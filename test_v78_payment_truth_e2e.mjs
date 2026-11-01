@@ -69,7 +69,7 @@ console.log('\n=== 2. Auto-verify ka rasta asli hai (UTR type karne ka nahi) ===
     /order\.feeChargedVia = 'webhook-auto-verify'/.test(indexSrc) &&
     /releaseHeldQrToCustomer\(orderId, \{ reason: 'webhook auto-verify' \}\)/.test(indexSrc));
   check('webhook wallet top-up bhi khud approve karta hai',
-    /approveTopupRequest\(wDb, created\.request\.id, \{ actor: 'webhook'/.test(indexSrc));
+    /approveTopupRequest\(wDb, request\.id, \{ actor: 'webhook'/.test(indexSrc));
   check('auto-verify OFF ho to UTR card customer ko nahi jata',
     /if \(!autoVerifyConfigured\(\)\) \{/.test(indexSrc));
 }

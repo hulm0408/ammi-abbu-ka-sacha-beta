@@ -172,13 +172,13 @@ check('galat UTR reject', badUtr.ok === false && badUtr.code === 'INVALID_UTR', 
 
 // Fake provider: verified + payee Misbahul Islam + asli amount → auto credit.
 process.env.UPI_UTR_VERIFY_URL = 'https://provider.test/utr';
-const fakeFetch = async () => ({ ok: true, json: async () => ({ verified: true, ref: 'PR1', amountPaise: 1500, payeeName: 'MISBAHUL ISLAM', payeeVpa: 'mius@ybl', status: 'SUCCESS' }) });
+const fakeFetch = async () => ({ ok: true, json: async () => ({ utr: '987654321012', verified: true, ref: 'PR1', amountPaise: 1500, payeeName: 'MISBAHUL ISLAM', payeeVpa: 'mius@ybl', status: 'SUCCESS' }) });
 const auto = await w.submitTopupRequest(db, { userId: USER, utr: '987654321012', amountPaise: 1500, fetchImpl: fakeFetch });
 check('provider verified → AUTO_VERIFIED', auto.ok && auto.code === 'AUTO_VERIFIED', auto.code);
 check('provider verified par balance 1500 (asli amount)', w.walletBalancePaise(db, USER) === 1500, String(w.walletBalancePaise(db, USER)));
 
 // Provider ne ''verified'' bola par payee boss nahi → credit nahi.
-const fakeWrongPayee = async () => ({ ok: true, json: async () => ({ verified: true, ref: 'PR2', amountPaise: 1500, payeeName: 'RAHUL KUMAR', status: 'SUCCESS' }) });
+const fakeWrongPayee = async () => ({ ok: true, json: async () => ({ utr: '987654321013', verified: true, ref: 'PR2', amountPaise: 1500, payeeName: 'RAHUL KUMAR', status: 'SUCCESS' }) });
 const wrongPayee = await w.submitTopupRequest(db, { userId: USER, utr: '987654321013', amountPaise: 1500, fetchImpl: fakeWrongPayee });
 check('galat payee → credit nahi', wrongPayee.ok === false && wrongPayee.code === 'PAYEE_MISMATCH', String(wrongPayee.code));
 check('galat payee par balance wahi 1500', w.walletBalancePaise(db, USER) === 1500, String(w.walletBalancePaise(db, USER)));
@@ -255,7 +255,7 @@ check('pending utr list render', typeof w.formatPendingUtrs({ requests: w.listTo
 
 console.log('\n8) Wiring — QR gate, refund hooks, buttons dono taraf');
 check('wallet imports index.js me', /from '\.\/user-wallet\.js'/.test(indexSrc));
-check('approve bill me chargeServiceFee', /chargeServiceFee\(/.test(indexSrc));
+check('chat worker reserves fee before placement', /reserveChatOrderFee/.test(fs.readFileSync('./forwarded-order-flow.js', 'utf8')) && /chargeServiceFee\(/.test(fs.readFileSync('./wallet-order-gate.js', 'utf8')));
 check('SERVICE_FEE_DUE code use hua', /SERVICE_FEE_DUE/.test(indexSrc));
 check('fee fail par AWAITING_FEE cardStage', /AWAITING_FEE/.test(indexSrc));
 check('verification card bhejta hai', /sendOrderVerificationCard/.test(indexSrc));
@@ -271,7 +271,7 @@ check('boss_utr_ok approve', /boss_utr_ok_/.test(indexSrc));
 check('boss_utr_no reject', /boss_utr_no_/.test(indexSrc));
 check('boss_wallet_free toggle', /boss_wallet_free_/.test(indexSrc));
 check('approve ke baad auto resume', /resumeOrderAfterTopup/.test(indexSrc));
-check('customer home par admin button (wallet nahi)', /support_contact_admin/.test(chatSrc) && !/wallet_home/.test(chatSrc));
+check('customer home par wallet button', /wallet_home/.test(chatSrc));
 check('bill card par koi fee line nahi', !/<b>Order fee:<\/b>/.test(chatSrc));
 check('boss panel me fee panel row', /boss_fee_panel/.test(bossPanelSrc));
 check('boss panel me pending UTR row', /boss_utr_list/.test(bossPanelSrc));

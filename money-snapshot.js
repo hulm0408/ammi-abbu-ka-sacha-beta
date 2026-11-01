@@ -55,19 +55,91 @@ export function needsMoneyRestore(db, snapshot) {
   return fresh;
 }
 
-/**
- * Snapshot ko db me milao — **paisa kabhi kam nahi hota**.
- *  • wallet: jo balance zyada hai wahi rakha jata hai (local ya snapshot)
- *  • usedUtrs: union — ek UTR dobara chalu nahi ho sakta, bhale snapshot purana ho
- *  • topupRequests/Claims/Intents: union by id (local jeetta hai agar dono me ho)
- */
+// Ledger IDs are generated at mutation time; timestamps and larger balances do
+// not prove which copy is newer. The capped ledger may lose an old prefix, so
+// a later copy must contain a contiguous suffix of the older history.
+function ledgerEntryKey(entry) {
+  return JSON.stringify([
+    String(entry?.id || ''), String(entry?.at || ''), String(entry?.type || ''),
+    Number(entry?.amountPaise || 0), Number(entry?.balanceAfterPaise || 0),
+    String(entry?.meta?.utr || ''), String(entry?.meta?.topupId || ''), String(entry?.meta?.orderId || '')
+  ]);
+}
+function walletHistory(wallet) {
+  const ledger = Array.isArray(wallet?.ledger) ? wallet.ledger : [];
+  const balance = Number(wallet?.balancePaise || 0);
+  if (!Number.isSafeInteger(balance) || balance < 0) return null;
+  if (ledger.some((entry) => !entry?.id)) return null;
+  if (new Set(ledger.map((entry) => String(entry.id))).size !== ledger.length) return null;
+  if (ledger.length && Number(ledger[ledger.length - 1].balanceAfterPaise) !== balance) return null;
+  return { ledger, balance };
+}
+function isLedgerExtension(older, newer) {
+  if (!older.length || !newer.length) return false;
+  const lastId = String(older[older.length - 1].id);
+  const index = newer.findIndex((entry) => String(entry.id) === lastId);
+  if (index < 0 || index >= newer.length - 1 || index + 1 > older.length) return false;
+  const tail = older.slice(older.length - index - 1);
+  return tail.every((entry, i) => ledgerEntryKey(entry) === ledgerEntryKey(newer[i]));
+}
+function compareWalletHistory(local, snapshot) {
+  const l = walletHistory(local), s = walletHistory(snapshot);
+  if (!l || !s) return 'conflict';
+  if (!l.ledger.length && !s.ledger.length) {
+    return l.balance === s.balance && Boolean(local.feeExempt) === Boolean(snapshot.feeExempt) ? 'same' : 'conflict';
+  }
+  const lLast = l.ledger.at(-1), sLast = s.ledger.at(-1);
+  if (lLast && sLast && String(lLast.id) === String(sLast.id)) {
+    const overlap = Math.min(l.ledger.length, s.ledger.length);
+    const sameTail = l.ledger.slice(-overlap).every((entry, i) => ledgerEntryKey(entry) === ledgerEntryKey(s.ledger.slice(-overlap)[i]));
+    return sameTail && l.balance === s.balance &&
+      Boolean(local.feeExempt) === Boolean(snapshot.feeExempt) ? 'same' : 'conflict';
+  }
+  if (isLedgerExtension(s.ledger, l.ledger)) return 'local-newer';
+  if (isLedgerExtension(l.ledger, s.ledger)) return 'snapshot-newer';
+  return 'conflict';
+}
+
+/** Merge only histories that can be ordered. Divergence returns conflicts
+ * before ANY mutation so neither local nor remote money can be overwritten. */
 export function mergeMoneySnapshot(db, snapshot, { at = Date.now() } = {}) {
   const summary = { wallets: 0, walletsKeptHigher: 0, topupRequests: 0, topupClaims: 0, topupIntents: 0, usedUtrs: 0, config: 0 };
-  if (!snapshot || typeof snapshot !== 'object') return { changed: false, summary };
+  if (!snapshot || typeof snapshot !== 'object') return { changed: false, summary, conflicts: [] };
+  const localConfig = db?.config || {};
+  const snapSections = snapshot.sections || {};
+  const conflicts = [];
+  const walletOrder = new Map();
+  for (const [id, remote] of Object.entries(snapSections.wallets || {})) {
+    const local = localConfig.wallets?.[id];
+    if (!local || !remote || typeof remote !== 'object') continue;
+    const order = compareWalletHistory(local, remote);
+    walletOrder.set(id, order);
+    if (order === 'conflict') conflicts.push({ section: 'wallets', id });
+  }
+  for (const key of ['topupRequests', 'topupClaims', 'topupIntents', 'usedUtrs']) {
+    for (const [id, remote] of Object.entries(snapSections[key] || {})) {
+      const local = localConfig[key]?.[id];
+      if (!local || !remote || typeof remote !== 'object') continue;
+      const different = (field) => local[field] != null && local[field] !== '' && remote[field] != null && remote[field] !== '' && String(local[field]) !== String(remote[field]);
+      let conflict = different('userId') || different('utr');
+      if (key === 'usedUtrs' && String(local.status || '').toUpperCase() === 'CREDITED' &&
+          String(remote.status || '').toUpperCase() === 'CREDITED') conflict ||= different('amountPaise');
+      if (key === 'topupRequests' || key === 'topupClaims') {
+        conflict ||= different('claimedPaise');
+        const a = String(local.status || '').toUpperCase(), b = String(remote.status || '').toUpperCase();
+        const terminal = (value) => ['APPROVED', 'AUTO_VERIFIED', 'REJECTED'].includes(value);
+        if (terminal(a) && terminal(b)) {
+          const approved = (value) => value === 'APPROVED' || value === 'AUTO_VERIFIED';
+          conflict ||= approved(a) !== approved(b) || (approved(a) && different('approvedPaise'));
+        }
+      }
+      if (key === 'topupIntents' && local.usedAt && remote.usedAt) conflict ||= different('requestId');
+      if (conflict) conflicts.push({ section: key, id });
+    }
+  }
+  if (conflicts.length) return { changed: false, summary, conflicts };
   if (!db.config) db.config = {};
   let changed = false;
-
-  const snapSections = snapshot.sections || {};
 
   // config (paise wali settings) — local na ho to snapshot se.
   for (const [key, value] of Object.entries(snapshot.config || {})) {
@@ -81,7 +153,6 @@ export function mergeMoneySnapshot(db, snapshot, { at = Date.now() } = {}) {
     }
   }
 
-  // wallets — balance kabhi kam nahi.
   if (!db.config.wallets || typeof db.config.wallets !== 'object') db.config.wallets = {};
   for (const [userId, snapWallet] of Object.entries(snapSections.wallets || {})) {
     if (!snapWallet || typeof snapWallet !== 'object') continue;
@@ -92,16 +163,9 @@ export function mergeMoneySnapshot(db, snapshot, { at = Date.now() } = {}) {
       changed = true;
       continue;
     }
-    const localPaise = Math.round(Number(local.balancePaise) || 0);
-    const snapPaise = Math.round(Number(snapWallet.balancePaise) || 0);
-    if (snapPaise > localPaise) {
-      db.config.wallets[userId] = {
-        ...snapWallet,
-        ...local,
-        balancePaise: snapPaise,
-        history: Array.isArray(local.history) && local.history.length ? local.history : (snapWallet.history || [])
-      };
-      summary.walletsKeptHigher += 1;
+    if (walletOrder.get(userId) === 'snapshot-newer') {
+      db.config.wallets[userId] = { ...local, ...snapWallet };
+      summary.walletsKeptHigher += 1; // legacy field: newer snapshot, not a higher balance
       changed = true;
     }
   }
@@ -113,6 +177,17 @@ export function mergeMoneySnapshot(db, snapshot, { at = Date.now() } = {}) {
       if (!record || typeof record !== 'object') continue;
       if (!db.config[key][id]) {
         db.config[key][id] = { ...record };
+        summary[counter] += 1;
+        changed = true;
+      } else if (key === 'topupIntents' && !db.config[key][id].usedAt && record.usedAt) {
+        db.config[key][id] = { ...db.config[key][id], ...record };
+        summary[counter] += 1;
+        changed = true;
+      } else if ((key === 'topupRequests' || key === 'topupClaims') &&
+                 String(db.config[key][id].status || '').toUpperCase() === 'PENDING' &&
+                 ['APPROVED', 'AUTO_VERIFIED', 'REJECTED'].includes(String(record.status || '').toUpperCase())) {
+        // Do not resurrect a settled claim as pending and allow a second credit.
+        db.config[key][id] = { ...db.config[key][id], ...record };
         summary[counter] += 1;
         changed = true;
       }
@@ -129,11 +204,16 @@ export function mergeMoneySnapshot(db, snapshot, { at = Date.now() } = {}) {
       db.config.usedUtrs[utr] = { ...(record || {}) };
       summary.usedUtrs += 1;
       changed = true;
+    } else if (String(record?.status || '').toUpperCase() === 'CREDITED' &&
+               String(db.config.usedUtrs[utr]?.status || '').toUpperCase() !== 'CREDITED') {
+      db.config.usedUtrs[utr] = { ...db.config.usedUtrs[utr], ...record };
+      summary.usedUtrs += 1;
+      changed = true;
     }
   }
 
   if (changed) db.config.lastMoneyRestoreAt = new Date(at).toISOString();
-  return { changed, summary };
+  return { changed, summary, conflicts };
 }
 
 /** App/tools me dikhane ke liye ek line — sach, dhamki nahi. */

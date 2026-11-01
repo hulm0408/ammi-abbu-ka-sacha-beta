@@ -25,6 +25,7 @@ Object.assign(process.env, {
 
 // GitHub vault mock — PUT/GET memory me (file ka text jaisa hai waisa hi).
 const vaultFiles = new Map();
+let onMoneyGet = null;
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (raw, options = {}) => {
   const url = String(raw);
@@ -38,6 +39,7 @@ globalThis.fetch = async (raw, options = {}) => {
       vaultFiles.set(key, Buffer.from(body.content, 'base64').toString('utf8'));
       return json({ ok: true });
     }
+    if (key.includes('db-money-snapshot') && onMoneyGet) await onMoneyGet(key);
     if (vaultFiles.has(key)) return json({ content: Buffer.from(vaultFiles.get(key), 'utf8').toString('base64') });
     return json({ message: 'Not Found' }, 404);
   }
@@ -46,6 +48,7 @@ globalThis.fetch = async (raw, options = {}) => {
 };
 
 const { getDb, saveDb } = await import('./store.js');
+const { creditWallet, debitWallet } = await import('./user-wallet.js');
 const { assessPush, identityWeight, moneyWeight, describePushSafety, PUSH_BLOCK, PUSH_STATE } = await import('./vault-safety.js');
 const { buildIdentitySnapshot, mergeIdentitySnapshot } = await import('./identity-snapshot.js');
 const { buildMoneySnapshot } = await import('./money-snapshot.js');
@@ -239,6 +242,50 @@ test('backup: paisa — local wallet khaali ho to cloud ka balance bach jata hai
   const pushed = await decodeVault(vaultFiles.get(moneyKey()));
   assert.equal(pushed.sections.wallets.boss.balancePaise, 50000, 'cloud par kam paisa nahi gaya');
   assert.ok(pushed.sections.usedUtrs['utr-1'], 'UTR ledger bacha');
+});
+
+test('backup: ambiguous money histories preserve both copies and block the cloud write', async () => {
+  vaultFiles.clear(); reset(); wipeDb();
+  let db = getDb(); db.config.wallets = { u: { userId: 'u', balancePaise: 500 } }; saveDb(db);
+  assert.equal((await backupMoneyNow({ force: true })).ok, true);
+  const original = vaultFiles.get(moneyKey());
+  reset(); db = getDb(); db.config.wallets.u.balancePaise = 100; saveDb(db);
+  const blocked = await backupMoneyNow({ force: true });
+  assert.equal(blocked.blocked, PUSH_BLOCK.MONEY_CONFLICT);
+  assert.equal(getDb().config.wallets.u.balancePaise, 100);
+  assert.equal(vaultFiles.get(moneyKey()), original, 'remote copy was not overwritten');
+});
+
+test('backup: a debit during remote read is not overwritten by an older snapshot', async () => {
+  vaultFiles.clear(); reset(); wipeDb();
+  let db = getDb(); creditWallet(db, 'u', 1500, { at: 1700000000000 }); saveDb(db);
+  assert.equal((await backupMoneyNow({ force: true })).ok, true);
+  reset();
+  let release, entered;
+  const seen = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  onMoneyGet = async () => { onMoneyGet = null; entered(); await gate; };
+  const pending = backupMoneyNow({ force: true });
+  await seen;
+  db = getDb(); debitWallet(db, 'u', 1500, { at: 1700000001000 }); saveDb(db);
+  release();
+  const out = await pending;
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(getDb().config.wallets.u.balancePaise, 0);
+  assert.equal((await decodeVault(vaultFiles.get(moneyKey()))).sections.wallets.u.balancePaise, 0);
+});
+
+test('backup: remote changing after the read is not silently overwritten', async () => {
+  vaultFiles.clear(); reset(); wipeDb();
+  const db = getDb(); creditWallet(db, 'u', 1500, { at: 1700000000000 }); saveDb(db);
+  assert.equal((await backupMoneyNow({ force: true })).ok, true);
+  reset();
+  let gets = 0;
+  const external = '{"externallyChanged":true}';
+  onMoneyGet = async (key) => { if (++gets === 2) { vaultFiles.set(key, external); onMoneyGet = null; } };
+  const out = await backupMoneyNow({ force: true });
+  assert.equal(out.ok, false);
+  assert.equal(vaultFiles.get(moneyKey()), external, 'concurrent remote change survived');
 });
 
 test('restore: galat key par jhootha "restore hua" nahi — asli wajah + alert', async () => {

@@ -209,38 +209,31 @@ test('claim: pehle pending tha, ab provider me paisa aa gaya — khud set ho jat
 const html = fs.readFileSync(new URL('./swiggy-pro.html', import.meta.url), 'utf8').replace(/<script[^>]*src="[^"]*"[^>]*><\/script>/g, '');
 const appSource = fs.readFileSync(new URL('./swiggy-pro-app.js', import.meta.url), 'utf8');
 
-test('DOM: wallet form me amount + UTR, button chalu, boss ki bhasha', async () => {
+test('DOM: cart me wallet recharge form nahi, Swiggy checkout retained', async () => {
   const receiver = { id: 'addr-1', name: 'T', mobile: '7978459775', address: 'Kajala', lat: '20.2', lng: '84.7' };
   const state = {
-    ok: true, user: { name: 'T', isBoss: false },
+    ok: true, user: { name: 'T', isBoss: false }, orderFee: { paise: 1500, exempt: false },
     accounts: [{ key: 'mine', name: 'Mine', phone: '9234567890', active: true, isLoggedIn: true }],
     activeAccount: { key: 'mine', name: 'Mine' }, selectedAddress: receiver, selectedAddresses: [receiver],
     checkoutEnabled: true, ordersDetailAllowed: true,
-    cart: { restaurantId: '201', restaurantName: 'Biryani', items: [{ lineKey: 'l', name: 'Biryani', price: 68, qty: 1 }], quote: { total: 68, fetchedAt: new Date().toISOString(), itemTotal: 68 } },
-    wallet: { balancePaise: 0, balance: '0', feePaise: 1500, fee: '15', ready: false, shortfall: '15', upiId: 'mius@ybl', presets: [], history: [] }
+    cart: { restaurantId: '201', restaurantName: 'Biryani', items: [{ lineKey: 'l', name: 'Biryani', price: 68, qty: 1 }], quote: { total: 68, fetchedAt: new Date().toISOString(), itemTotal: 68 } }
   };
   const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'http://localhost/pro', pretendToBeVisual: true });
   const { window } = dom;
   window.Telegram = { WebApp: { initData: 'x', ready() {}, expand() {} } };
   window.scrollTo = () => {};
-  window.fetch = async () => ({ ok: true, status: 200, json: async () => state });
+  const calls = [];
+  window.fetch = async (url) => { calls.push(String(url)); return { ok: true, status: 200, json: async () => state }; };
   window.eval(appSource);
   try {
-    const waitFor = async (fn, label, ms = 5000) => {
-      const started = Date.now();
-      while (Date.now() - started < ms) { try { const v = fn(); if (v) return v; } catch {} await new Promise((r) => setTimeout(r, 20)); }
-      throw new Error('timeout: ' + label);
-    };
-    await waitFor(() => window.document.querySelector('[data-tab="cart"]:not([disabled])'), 'nav');
-    window.document.querySelector('[data-tab="cart"]').click();
-    await waitFor(() => window.document.querySelector('form[data-form="wallet-claim"]'), 'wallet card');
-    const form = await waitFor(() => window.document.querySelector('form[data-form="wallet-claim"]'), 'claim form');
-    const amount = form.querySelector('input[name="amount"]');
-    assert.ok(amount, 'amount box hai');
-    assert.equal(amount.value, '15', 'shortfall pehle se bhara');
-    assert.ok(form.querySelector('input[name="utr"]'), 'UTR box hai');
-    assert.equal(form.querySelector('button[type="submit"]').disabled, false);
-    assert.match(form.textContent, /jitna paisa sach me aaya utna hi/i);
-    assert.match(form.textContent, /fetch/i);
+    const started = Date.now();
+    while (!window.document.querySelector('[data-tab="cart"]:not([disabled])') && Date.now() - started < 5000) await new Promise(r => setTimeout(r, 20));
+    const tab = window.document.querySelector('[data-tab="cart"]:not([disabled])');
+    assert.ok(tab, 'navigation ready');
+    tab.click();
+    assert.equal(window.document.querySelector('form[data-form="wallet-claim"]'), null);
+    assert.equal(window.document.querySelector('input[name="utr"]'), null);
+    assert.ok(window.document.querySelector('[data-action="checkout-start"]'), 'Swiggy checkout retained');
+    assert.ok(!calls.some(url => /wallet\//.test(url)), 'Mini App does not load wallet API');
   } finally { window.close(); }
 });

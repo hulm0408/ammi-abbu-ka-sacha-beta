@@ -870,7 +870,7 @@ export function saveDb(data) {
     text = DB_PRETTY ? JSON.stringify(data, null, 2) : JSON.stringify(data);
   } catch (err) {
     console.error('[store] serialize failed:', err?.message || err);
-    return;
+    return false;
   }
 
   dbIo.file = getDbFile();
@@ -888,8 +888,25 @@ export function saveDb(data) {
   if (DB_ASYNC_WRITE) {
     dbIo.dirty = true;
     scheduleDbFlush();
-  } else {
-    writeDbTextSync(text);
+    return true;
+  }
+  return writeDbTextSync(text);
+}
+
+/** Persist money/order mutations before allowing an external placement. */
+export function saveDbDurable(data) {
+  if (!saveDb(data)) return false;
+  if (dbIo.dirty && !flushDbSync()) return false;
+  try {
+    const file = getDbFile();
+    const fd = fs.openSync(file, 'r');
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    const dirFd = fs.openSync(path.dirname(file), 'r');
+    try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+    return true;
+  } catch (err) {
+    console.error('[store] durable save failed:', err?.message || err);
+    return false;
   }
 }
 

@@ -24,6 +24,7 @@ import QRCode from 'qrcode';
 import {
   getDb,
   saveDb,
+  saveDbDurable,
   getDbIoStats,
   pruneDbForPerformance,
   flushDbSync,
@@ -66,9 +67,13 @@ import {
   syncAccountsJsonMirror,
 } from './store.js';
 import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
-import { restoreMoneyOnBoot, restoreIdentityOnBoot, startDbDurability } from './db-durability.js';
+import { restoreMoneyOnBoot, restoreIdentityOnBoot, startDbDurability, backupMoneyNow } from './db-durability.js';
+import { submitBotWalletTopup, notifyPendingTopup, retryPendingTopupNotifications, retryPendingWalletUtrs } from './wallet-topup-service.js';
 import { runDurabilityDoctor } from './durability-doctor.js';
-import { recordStatementPayment } from './upi-statement.js';
+import { recordStatementPayment, importStatementText } from './upi-statement.js';
+import { isBossPayee, paymentStatusOk } from './upi-credit-policy.js';
+import { fetchUtrPaymentDetails } from './utr-lookup.js';
+import { describeUtrPayment } from './utr-truth.js';
 import { isMenuText, isCommandText, looksLikePlainOrderId } from './menu-labels.js';
 import {
   extractStandaloneMobileNumber,
@@ -146,6 +151,9 @@ import {
 import {
   serviceFeePaise,
   minTopupPaise,
+  walletUpiId as configuredWalletUpiId,
+  setWalletUpiId,
+  submitTopupRequestWithLookup,
   TOPUP_PRESETS_PAISE,
   TOPUP_STATUS,
   rupees as walletRupees,
@@ -161,6 +169,9 @@ import {
   orderFeeState,
   isOrderPlaced,
   submitTopupRequest,
+  validateUtr,
+  findUsedUtr,
+  markUtrUsed,
   approveTopupRequest,
   rejectTopupRequest,
   listTopupRequests,
@@ -1390,7 +1401,8 @@ function getUserScreen(userId, user) {
     [cartBtn, addressBtn],
     [{ text: '👤 Order for Someone Else', callback_data: 'action_order_for_others', style: 'primary' }],
     [{ text: '🚀 Send to Beta', callback_data: 'action_send_to_boss', style: bothReady ? 'success' : 'primary' }],
-    [{ text: '🆘 Admin se baat karein', callback_data: 'support_contact_admin', style: 'primary' }],
+    [{ text: '👛 Wallet', callback_data: 'wallet_home', style: 'primary' },
+     { text: '🆘 Admin', callback_data: 'support_contact_admin', style: 'primary' }],
     [
       { text: '📦 Previous Order', callback_data: 'action_previous_order', style: 'primary' },
       { text: '✖ Cancel', callback_data: 'action_cancel_order_confirm', style: 'danger' }
@@ -8847,59 +8859,86 @@ bot.on('text', async (ctx, next) => {
   if (state && state.action === 'waiting_wallet_utr') {
     delete userWaitState[userId];
     const amountPaise = Number(state.amountPaise || feePaiseNow());
-    const db = getDb();
-    const userName = String(ctx.from?.first_name || '').trim() || String(ctx.from?.username || '');
-    ensureWallet(db, userId, { name: userName, username: ctx.from?.username || '' });
-    const submitted = await submitTopupRequest(db, {
-      userId,
-      utr: rawText,
-      amountPaise,
-      name: userName,
-      username: ctx.from?.username || '',
-      note: `order fee topup`
-    });
-    saveDb(db);
+    const userName = String(ctx.from?.first_name || ctx.from?.username || '').trim();
+    let submitted;
+    try {
+      submitted = await submitBotWalletTopup({
+        userId, utr: rawText, amountPaise, name: userName,
+        username: ctx.from?.username || '', note: 'Wallet recharge', minPaise: 100
+      });
+    } catch (err) {
+      return ctx.reply('Recharge save nahi hua. Dobara payment na bhejein; admin se baat karein.').catch(() => {});
+    }
     if (!submitted.ok) {
-      // State wapas — user dobara sahi UTR bhej sake.
       userWaitState[userId] = { action: 'waiting_wallet_utr', amountPaise };
-      return ctx.reply(
-        `❌ <b>UTR nahi chala</b>\n\n<i>${escapeHtml(submitted.reason || submitted.code || 'invalid')}</i>\n\n` +
-        `Sahi <b>UTR / Ref No.</b> dobara bhejein (UPI app → History → payment → UTR).`,
-        { parse_mode: 'HTML' }
-      ).catch(() => {});
+      return ctx.reply(`UTR accept nahi hua: ${escapeHtml(submitted.reason || submitted.code || 'invalid')}`, {
+        parse_mode: 'HTML', ...Markup.inlineKeyboard([[{ text: 'Admin', callback_data: 'support_contact_admin' }]])
+      }).catch(() => {});
     }
-    const auto = submitted.code === 'AUTO_VERIFIED';
-    await ctx.reply(
-      auto
-        ? `✅ <b>PAYMENT VERIFIED</b>\n\nUTR <code>${escapeHtml(submitted.request.utr)}</code> — ` +
-          `₹${walletRupees(Number(submitted.creditedPaise || submitted.request.approvedPaise || 0))} asli paisa juda, ` +
-          `balance <b>₹${walletRupees(submitted.balancePaise)}</b>.`
-        : `⏳ <b>UTR RECEIVED</b>\n\nUTR <code>${escapeHtml(submitted.request.utr)}</code> · claimed ₹${walletRupees(amountPaise)}\n` +
-          `<i>Ab admin aapke UPI statement me payment dekh kar confirm karega (5-10 min). Bot jhootha "verified" nahi likhta. ` +
-          `Confirm hote hi aapka order QR khul jayega.</i>`,
-      { parse_mode: 'HTML', ...Markup.inlineKeyboard([[{ text: '🆘 Admin se baat', callback_data: 'support_contact_admin', style: 'primary' }]]) }
-    ).catch(() => {});
-
-    // Boss ko turant approval request (buttons ke saath) — aur provider set ho to auto.
-    const bossIds = [...new Set((getDb().config?.bossIds || []).map(String).filter(Boolean))];
-    for (const bossId of bossIds) {
-      await bot.telegram.sendMessage(
-        bossId,
-        `💳 <b>TOP-UP REQUEST</b>\n` +
-        `User: <b>${escapeHtml(userName || userId)}</b> · <code>${escapeHtml(String(userId))}</code>${ctx.from?.username ? ` · @${escapeHtml(ctx.from.username)}` : ''}\n` +
-        `UTR: <code>${escapeHtml(submitted.request.utr)}</code> · claimed <b>₹${walletRupees(amountPaise)}</b>\n` +
-        `<i>UPI statement / app me dekh kar confirm karein. Approve karte hi balance judega aur QR khud ban jayega.</i>`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([[
-            { text: `✅ Approve ₹${walletRupees(amountPaise)}`, callback_data: `boss_utr_ok_${submitted.request.id}`, style: 'success' },
-            { text: '❌ Reject', callback_data: `boss_utr_no_${submitted.request.id}`, style: 'danger' }
-          ], [{ text: '👛 Wallets', callback_data: 'boss_wallets', style: 'primary' }]])
-        }
-      ).catch(() => {});
+    if (submitted.code === 'AUTO_VERIFIED') {
+      await ctx.reply(`✅ ₹${walletRupees(submitted.creditedPaise)} added · Balance ₹${walletRupees(submitted.balancePaise)}.`, {
+        ...Markup.inlineKeyboard([[{ text: '👛 Wallet', callback_data: 'wallet_home' }]])
+      }).catch(() => {});
+      await resumeOrderAfterTopup(userId).catch(() => null);
+    } else {
+      await ctx.reply(`⏳ UTR ${escapeHtml(submitted.request.utr)} pending hai. Verify hone par balance judega.`, {
+        parse_mode: 'HTML', ...Markup.inlineKeyboard([[{ text: '👛 Wallet', callback_data: 'wallet_home' }]])
+      }).catch(() => {});
+      await notifyPendingTopup(bot.telegram, submitted.request.id);
+      retryPendingWalletUtrs({ telegram: bot.telegram }).catch(() => {});
     }
-    if (auto) await resumeOrderAfterTopup(userId).catch(() => null);
     return;
+  }
+
+  if (state && state.action === 'waiting_wallet_topup_amount') {
+    const rawAmount = rawText.trim().replace(/^₹\s*/, '');
+    const amount = /^\d{1,9}(?:\.\d{1,2})?$/.test(rawAmount) ? Math.round(Number(rawAmount) * 100) : 0;
+    if (amount < 100) return ctx.reply('Amount ₹1 ya zyada bhejein.').catch(() => {});
+    delete userWaitState[userId];
+    return sendWalletTopupInstructions(ctx, amount);
+  }
+
+  if (isBoss(userId) && state && state.action === 'waiting_boss_wallet_upi') {
+    const db = getDb();
+    const result = setWalletUpiId(db, rawText.trim(), { actor: `boss:${userId}` });
+    if (!result.ok) return ctx.reply('Sahi UPI ID bhejein, jaise name@bank.').catch(() => {});
+    if (!saveDbDurable(db)) return ctx.reply('UPI save nahi hua. Dobara try karein.').catch(() => {});
+    delete userWaitState[userId];
+    return ctx.reply(`Wallet UPI: ${result.upiId}`).catch(() => {});
+  }
+
+  if (isBoss(userId) && state && state.action === 'waiting_boss_utr_amount') {
+    const rawAmount = rawText.trim().replace(/^₹\s*/, '');
+    const amount = /^\d{1,9}(?:\.\d{1,2})?$/.test(rawAmount) ? Math.round(Number(rawAmount) * 100) : 0;
+    if (amount < 100) return ctx.reply('Actual amount ₹1 ya zyada bhejein.').catch(() => {});
+    delete userWaitState[userId];
+    return completeBossTopupApproval(ctx, state.requestId, amount);
+  }
+
+  if (isBoss(userId) && state && state.action === 'waiting_boss_wallet_statement') {
+    const db = getDb();
+    const imported = importStatementText(db, rawText, { actor: `boss:${userId}` });
+    if (!imported.accepted.length) return ctx.reply('Statement me UTR + amount nahi mila. Poori line bhejein.').catch(() => {});
+    if (!saveDbDurable(db)) return ctx.reply('Statement save nahi hua.').catch(() => {});
+    delete userWaitState[userId];
+    backupMoneyNow().catch(() => {});
+    for (const item of imported.settled.filter(row => row.action === 'CREDIT')) {
+      await bot.telegram.sendMessage(String(item.userId), `✅ ₹${walletRupees(item.creditedPaise)} wallet me added.`).catch(() => {});
+      await resumeOrderAfterTopup(item.userId).catch(() => null);
+    }
+    return ctx.reply(`Statement: ${imported.accepted.length} entries · ${imported.settled.filter(row => row.action === 'CREDIT').length} verified.`).catch(() => {});
+  }
+
+  if (isBoss(userId) && state && state.action === 'waiting_boss_utr_lookup') {
+    const checked = validateUtr(rawText);
+    if (!checked.ok) return ctx.reply('Valid UTR bhejein.').catch(() => {});
+    delete userWaitState[userId];
+    const lookup = await fetchUtrPaymentDetails(checked.utr, { userId: `boss:${userId}` })
+      .catch(err => ({ configured: false, found: false, reason: String(err?.message || err) }));
+    const db = getDb();
+    const payment = db.config?.upiStatement?.[checked.utr] || (lookup.found ? lookup.payment : null);
+    const truth = describeUtrPayment({ utr: checked.utr, payment, lookup, allowedPayeeVpas: [configuredWalletUpiId(db)] });
+    return ctx.reply(escapeHtml(truth.bossLine || truth.summaryLine || lookup.reason || 'Payment details nahi mili.'), { parse_mode: 'HTML' }).catch(() => {});
   }
 
   if (isBoss(userId) && state && (state.action === 'waiting_wallet_credit_amount' || state.action === 'waiting_wallet_debit_amount')) {
@@ -11902,14 +11941,17 @@ bot.action('simple_retry_address', async (ctx) => {
 // judta hai → QR khud ban jata hai. Cancel (place hone se pehle) → refund.
 
 function walletUpiId() {
-  // Boss panel se set ki hui UPI; na ho to env fallback (BOSS_UPI_ID / UPI_ID).
-  const fromDb = String(getDb().config?.bossUpiId || '').trim();
-  if (fromDb) return fromDb;
-  return String(process.env.BOSS_UPI_ID || process.env.UPI_ID || '').trim();
+  // Legacy order-fee UPI stays separate from the Mini App wallet setting.
+  const db = getDb();
+  const bossUpi = String(db.config?.bossUpiId || process.env.BOSS_UPI_ID || process.env.UPI_ID || '').trim();
+  return bossUpi || configuredWalletUpiId(db);
 }
 
 function walletOwnerId(order, fallback = '') {
-  return String(order?.userId || order?.userChatId || fallback || '');
+  const forwarded = String(order?.fwdSenderUserId || '').trim();
+  const candidate = String(order?.userId || order?.userChatId || fallback || '').trim();
+  if (order?.isForwardedOrder && !order?.isDirectBossOrder && !forwarded && isBoss(candidate)) return '';
+  return forwarded || candidate;
 }
 
 function walletNameOf(userId, fallback = '') {
@@ -12148,15 +12190,13 @@ async function sendWalletCard(ctx, { notice = '' } = {}) {
   });
   saveDb(db);
   const pending = listTopupRequests(getDb(), { userId, status: TOPUP_STATUS.PENDING, limit: 1 }).length;
-  const text = (notice ? `${notice}\n\n` : '') + formatOrderWalletCard({
-    wallet: w,
-    feePaise: feePaiseNow(),
-    pending
-  });
+  const text = (notice ? `${notice}\n` : '') +
+    `👛 <b>Wallet: ₹${walletRupees(w.balancePaise)}</b>\n` +
+    `Order fee: ${w.feeExempt || isBoss(userId) ? 'Free' : `₹${walletRupees(feePaiseNow())}`} · Swiggy bill alag hai.` +
+    (pending ? `\n⏳ Recharge pending` : '');
   const kb = Markup.inlineKeyboard([
-    [{ text: '🔐 Verification baaki hai — UTR', callback_data: 'wallet_topup', style: 'success' }],
-    [{ text: '🧾 History', callback_data: 'wallet_history', style: 'primary' }],
-    supportRow(),
+    [{ text: '➕ Add money', callback_data: 'wallet_topup', style: 'success' },
+     { text: '🧾 History', callback_data: 'wallet_history', style: 'primary' }],
     [{ text: '◀ Back', callback_data: 'wallet_back_home', style: 'primary' }]
   ]);
   return ctx.reply(text, { parse_mode: 'HTML', ...kb }).catch(() => {});
@@ -12164,20 +12204,28 @@ async function sendWalletCard(ctx, { notice = '' } = {}) {
 
 async function sendTopupAmounts(ctx) {
   const fee = feePaiseNow();
-  const amounts = [...new Set([fee, ...TOPUP_PRESETS_PAISE])];
+  const amounts = [...new Set([fee, ...TOPUP_PRESETS_PAISE])].filter((amount) => Number.isSafeInteger(amount) && amount >= 100);
   const rows = [];
   for (let i = 0; i < amounts.length; i += 2) {
     rows.push(amounts.slice(i, i + 2).map((paise) => ({
       text: `₹${walletRupees(paise)}`, callback_data: `wallet_topup_amt_${paise}`, style: 'success'
     })));
   }
+  rows.push([{ text: '✏️ Other amount', callback_data: 'wallet_topup_custom', style: 'primary' }]);
   rows.push([{ text: '◀ Back', callback_data: 'wallet_home', style: 'primary' }]);
-  return ctx.reply(
-    `➕ <b>VERIFICATION AMOUNT</b>\n\n` +
-    `<i>Ek order ka verification ₹${walletRupees(fee)} hai (refundable). Ek baar bharo (ek order) ya zyada (kai orders).</i>\n\n` +
-    `Kitna bhejna hai?`,
-    { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) }
-  ).catch(() => {});
+  return ctx.reply('➕ <b>Amount chunein</b>', { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) }).catch(() => {});
+}
+
+async function sendWalletTopupInstructions(ctx, amountPaise) {
+  // Same value used by the wallet ledger, Mini App API and UTR payee policy.
+  const upi = configuredWalletUpiId(getDb());
+  const valid = isValidUpiVpa(upi) && !isPlaceholderUpiId(upi);
+  const text = valid
+    ? `₹${walletRupees(amountPaise)} wallet ke liye <code>${escapeHtml(upi)}</code> par bhejein.\nSwiggy order payment alag hai. Phir UTR bhejein.`
+    : 'Wallet UPI set nahi hai. Admin se baat karein.';
+  const rows = valid ? [[{ text: '📝 UTR bhejein', callback_data: `wallet_utr_${amountPaise}`, style: 'success' }]] : [supportRow()];
+  rows.push([{ text: '◀ Back', callback_data: 'wallet_topup', style: 'primary' }]);
+  return ctx.reply(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) }).catch(() => {});
 }
 
 bot.command(['wallet', 'balance', 'mybalance'], async (ctx) => {
@@ -12202,61 +12250,36 @@ bot.action('wallet_topup', async (ctx) => {
 bot.action(/^wallet_topup_amt_(\d+)$/, async (ctx) => {
   const amountPaise = Number(ctx.match[1] || 0);
   await ctx.answerCbQuery().catch(() => {});
-  if (!(amountPaise >= minTopupPaise())) {
-    return ctx.reply(`Minimum top-up ₹${walletRupees(minTopupPaise())} hai.`, { parse_mode: 'HTML' }).catch(() => {});
+  if (!Number.isSafeInteger(amountPaise) || amountPaise < 100) {
+    return ctx.reply('₹1 ya zyada amount chunein.').catch(() => {});
   }
-  const awaiting = findOrderAwaitingFee(getDb(), ctx.from.id, { feePaise: feePaiseNow() });
-  const text = formatTopupPayCard({ upiId: walletUpiId(), amountPaise, orderId: awaiting?.order?.id || '' });
-  await ctx.reply(text, {
-    parse_mode: 'HTML',
-    ...Markup.inlineKeyboard([
-      [{ text: '📝 UTR daalein', callback_data: `wallet_utr_${amountPaise}`, style: 'success' }],
-      [{ text: '◀ Back', callback_data: 'wallet_topup', style: 'primary' }]
-    ])
+  return sendWalletTopupInstructions(ctx, amountPaise);
+});
+
+bot.action('wallet_topup_custom', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[ctx.from.id] = { action: 'waiting_wallet_topup_amount' };
+  await ctx.reply('Amount bhejein (₹1 ya zyada).', {
+    reply_markup: { force_reply: true, input_field_placeholder: 'Amount in ₹' }
   }).catch(() => {});
 });
 
 // "Verification karein" — seedha UPI + UTR, bina amount choose kiye.
 bot.action('wallet_verify_pay', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const userId = String(ctx.from.id);
-  const fee = feePaiseNow();
-  const awaiting = findOrderAwaitingFee(getDb(), userId, { feePaise: fee });
-  const upi = walletUpiId();
-  const text = [
-    '🔐 <b>VERIFICATION</b>',
-    '',
-    awaiting?.order ? `Order <code>#${escapeHtml(String(awaiting.order.id))}</code> ka QR ready hai — bas ye chhota step.` : '',
-    '',
-    `<b>₹${walletRupees(fee)}</b> is UPI par bhejein: <code>${escapeHtml(upi || '(admin ne UPI set nahi kiya)')}</code>`,
-    '',
-    '<i>Ye order ke bill me nahi judta — cancel karne par turant wapas milta hai.</i>',
-    'Payment ke baad <b>UTR / Ref No.</b> bhejein.'
-  ].filter(Boolean).join('\n');
-  await ctx.reply(text, {
-    parse_mode: 'HTML',
-    ...Markup.inlineKeyboard([
-      [{ text: '📝 UTR daalein', callback_data: `wallet_utr_${fee}`, style: 'success' }],
-      supportRow()
-    ])
-  }).catch(() => {});
+  await sendTopupAmounts(ctx);
 });
 
 bot.action(/^wallet_utr_(\d+)$/, async (ctx) => {
-  const amountPaise = Number(ctx.match[1] || feePaiseNow());
+  const amountPaise = Number(ctx.match[1] || 0);
+  if (!Number.isSafeInteger(amountPaise) || amountPaise < 100) {
+    return ctx.answerCbQuery('Amount invalid hai.', { show_alert: true }).catch(() => {});
+  }
   await ctx.answerCbQuery().catch(() => {});
-  userWaitState[ctx.from.id] = {
-    action: 'waiting_wallet_utr',
-    amountPaise,
-    setAt: Date.now()
-  };
-  await ctx.reply(
-    `📝 <b>UTR DAALEIN</b>\n\n` +
-    `Payment ke baad UPI app me <b>History</b> kholo → us payment par tap → <b>UTR / Ref No.</b> copy karke yahan bhejo.\n\n` +
-    `<i>Amount claim: ₹${walletRupees(amountPaise)} · UTR 8-30 characters (asli UTR 12 digit hota hai).</i>\n` +
-    `<i>Ek UTR sirf ek baar chalta hai.</i>`,
-    { parse_mode: 'HTML', reply_markup: { force_reply: true, input_field_placeholder: 'UTR / Ref No. (12 digit)' } }
-  ).catch(() => {});
+  userWaitState[ctx.from.id] = { action: 'waiting_wallet_utr', amountPaise, setAt: Date.now() };
+  await ctx.reply(`₹${walletRupees(amountPaise)} payment ka UTR bhejein.`, {
+    reply_markup: { force_reply: true, input_field_placeholder: 'UTR / Ref No.' }
+  }).catch(() => {});
 });
 
 bot.action('wallet_history', async (ctx) => {
@@ -12269,15 +12292,23 @@ bot.action('wallet_history', async (ctx) => {
   }).catch(() => {});
 });
 
-/** Balance aane ke baad QR khud banao (boss: "balance reach hone par QR generate"). */
+/** A recharge must not silently place an order; the customer taps retry. */
 async function resumeOrderAfterTopup(userId) {
-  const awaiting = findOrderAwaitingFee(getDb(), userId, { feePaise: feePaiseNow() });
-  if (!awaiting?.canProceed) return { resumed: false, reason: 'verification amount abhi kaafi nahi' };
-  const orderId = awaiting.order.id;
-  // Held QR pehle se bana hua hai — wahi approve flow release kar deta hai
-  // (dobara Swiggy par QR nahi banega).
-  const res = await approveUserOrderBillAction(userId, orderId).catch((err) => ({ ok: false, error: String(err?.message || err) }));
-  return { resumed: Boolean(res?.ok), orderId, released: Boolean(res?.ok), res };
+  const db = getDb();
+  const w = getWallet(db, userId);
+  if (!isBoss(userId) && !w?.feeExempt && walletBalancePaise(db, userId) < serviceFeePaiseFor(db)) {
+    return { resumed: false, reason: 'balance low' };
+  }
+  const order = Object.values(db.orders || {}).find(o =>
+    String(o?.fwdSenderUserId || o?.userId || '') === String(userId) &&
+    !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(String(o.status || '').toUpperCase()) &&
+    ['AWAITING_WALLET', 'AWAITING_FEE', 'QR_HELD'].includes(String(o.cardStage || '').toUpperCase())
+  );
+  if (!order) return { resumed: false };
+  await bot.telegram.sendMessage(String(userId), 'Balance ready. Order ke liye retry dabayein.', {
+    ...Markup.inlineKeyboard([[{ text: '🔄 Retry order', callback_data: `user_retry_qr_${order.id}` }]])
+  }).catch(() => {});
+  return { resumed: false, orderId: order.id, ready: true };
 }
 
 // ── 🔐 FEE QR ka payment aaya → auto verify → ORDER QR release ─────────────
@@ -12340,6 +12371,10 @@ bot.action(/^simple_restart_order(_([A-Za-z0-9_-]+))?$/, async (ctx) => {
   await ctx.answerCbQuery('Shuru se dobara…').catch(() => {});
   const db = getDb();
   const target = (orderId && db.orders?.[orderId]) || getActiveUserOrder(db, userId) || getSimpleFocusOrder(userId);
+  if (target && !isOrderCustomer(target, userId) && !isBoss(userId)) return ctx.reply('Ye aapka order nahi hai.').catch(() => {});
+  if (target && hasPossibleSwiggyPlacement(target)) {
+    return ctx.reply('Order Swiggy par ho sakta hai. My Orders check karein; dobara order na karein.').catch(() => {});
+  }
   if (target && !['COMPLETED', 'DELIVERED'].includes(String(target.status || '').toUpperCase())) {
     const t = db.orders?.[target.id] || target;
     t.status = 'CANCELLED';
@@ -12366,7 +12401,7 @@ bot.action(/^user_retry_qr_(.+)$/, async (ctx) => {
   const userId = String(ctx.from.id);
   const order = getDb().orders?.[orderId];
   if (!order) return ctx.answerCbQuery('Order nahi mila').catch(() => {});
-  if (String(order.userId) !== userId && !isBoss(ctx.from.id)) return ctx.answerCbQuery('Ye aapka order nahi').catch(() => {});
+  if (!isOrderCustomer(order, userId) && !isBoss(ctx.from.id)) return ctx.answerCbQuery('Ye aapka order nahi').catch(() => {});
   await ctx.answerCbQuery('Dobara try kar raha hoon…').catch(() => {});
   const res = await approveUserOrderBillAction(userId, orderId).catch((err) => ({ ok: false, error: String(err?.message || err) }));
   if (!res?.ok) {
@@ -12402,6 +12437,11 @@ async function sendBossWalletList(ctx, { query = '', notice = '' } = {}) {
     { text: '🔎 Search user', callback_data: 'boss_wallet_search', style: 'primary' },
     { text: '⏳ Pending UTR', callback_data: 'boss_utr_list', style: 'success' }
   ]);
+  rows.push([{ text: '💳 Wallet UPI', callback_data: 'boss_wallet_upi', style: 'primary' }]);
+  rows.push([
+    { text: '🧾 Statement', callback_data: 'boss_wallet_statement' },
+    { text: '🔎 UTR check', callback_data: 'boss_wallet_utr_lookup' }
+  ]);
   rows.push([
     { text: '🧮 Fee & Prices', callback_data: 'boss_fee_panel', style: 'primary' },
     { text: '◀ Boss Panel', callback_data: 'boss_panel_home', style: 'primary' }
@@ -12413,6 +12453,29 @@ bot.action('boss_wallets', async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
   await sendBossWalletList(ctx);
+});
+
+bot.action('boss_wallet_statement', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[ctx.from.id] = { action: 'waiting_boss_wallet_statement' };
+  await ctx.reply('UPI statement ki lines bhejein (UTR + amount).', { reply_markup: { force_reply: true } }).catch(() => {});
+});
+
+bot.action('boss_wallet_utr_lookup', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[ctx.from.id] = { action: 'waiting_boss_utr_lookup' };
+  await ctx.reply('UTR bhejein.', { reply_markup: { force_reply: true } }).catch(() => {});
+});
+
+bot.action('boss_wallet_upi', async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[ctx.from.id] = { action: 'waiting_boss_wallet_upi' };
+  await ctx.reply(`Wallet UPI: ${configuredWalletUpiId(getDb())}\nNayi UPI ID bhejein.`, {
+    reply_markup: { force_reply: true, input_field_placeholder: 'name@bank' }
+  }).catch(() => {});
 });
 
 bot.action('boss_wallet_search', async (ctx) => {
@@ -12526,7 +12589,8 @@ function paymentUpiPanelText() {
     `Abhi: ${upiStatusLine()}`,
     '',
     '<b>Is UPI par paisa aata hai:</b>',
-    '• <b>Sirf</b> order verification / fee (₹' + walletRupees(feePaiseNow()) + ') aur wallet top-up',
+    '• Order verification / fee (₹' + walletRupees(feePaiseNow()) + ')',
+    `• Wallet recharge UPI: <b>${escapeHtml(configuredWalletUpiId(getDb()))}</b>`,
     '<i>Order ka food payment is UPI par NAHI aata — wo Swiggy ke apne QR/link se hi hota hai.</i>',
     '',
     setOk
@@ -12720,7 +12784,8 @@ bot.action('boss_utr_list', async (ctx) => {
     [
       { text: `✅ ${r.name || r.userId} ₹${walletRupees(r.claimedPaise)}`, callback_data: `boss_utr_ok_${r.id}`, style: 'success' },
       { text: '❌', callback_data: `boss_utr_no_${r.id}`, style: 'danger' }
-    ]
+    ],
+    [{ text: '✏️ Actual amount', callback_data: `boss_utr_amount_${r.id}` }]
   ]));
   rows.push([{ text: '◀ Wallets', callback_data: 'boss_wallets', style: 'primary' }]);
   await ctx.reply(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) }).catch(() => {});
@@ -12738,29 +12803,37 @@ bot.action(/^boss_wallet_utr_(\d+)$/, async (ctx) => {
   await ctx.reply(formatPendingUtrs({ requests, limit: 6 }), { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) }).catch(() => {});
 });
 
+async function completeBossTopupApproval(ctx, requestId, approvedPaise = null) {
+  const db = getDb();
+  const req = db.config?.topupRequests?.[requestId];
+  const result = approveTopupRequest(db, requestId, { actor: `boss:${ctx.from.id}`, approvedPaise });
+  if (!result.ok || !req) return ctx.reply(`Approve nahi hua: ${result.code}`).catch(() => {});
+  if (!saveDbDurable(db)) return ctx.reply('Approval save nahi hua. Admin panel me check karein.').catch(() => {});
+  backupMoneyNow().catch(() => {});
+  const uid = String(req.userId);
+  await bot.telegram.sendMessage(uid, `✅ ₹${walletRupees(req.approvedPaise)} wallet me added. Balance ₹${walletRupees(result.balancePaise)}.`).catch(() => {});
+  await resumeOrderAfterTopup(uid).catch(() => null);
+  return ctx.reply(`✅ UTR ${req.utr} · ₹${walletRupees(req.approvedPaise)} added.`, {
+    ...Markup.inlineKeyboard([[{ text: '◀ Pending UTR', callback_data: 'boss_utr_list' }]])
+  }).catch(() => {});
+}
+
 bot.action(/^boss_utr_ok_(tu_[A-Za-z0-9_]+)$/, async (ctx) => {
   if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
-  const db = getDb();
-  const req = db.config?.topupRequests?.[ctx.match[1]];
-  const res = approveTopupRequest(db, ctx.match[1], { actor: `boss:${ctx.from.id}` });
-  if (res.ok) saveDb(db);
-  await ctx.answerCbQuery(res.ok ? '✅ Balance jama ho gaya' : `❌ ${res.code}`).catch(() => {});
-  if (!res.ok || !req) return;
-  const uid = String(req.userId);
-  await bot.telegram.sendMessage(
-    uid,
-    `✅ <b>VERIFICATION DONE</b>\n\n` +
-    `<i>UTR <code>${escapeHtml(req.utr)}</code> verify ho gaya. Aapka order QR ab khul raha hai.</i>`,
-    { parse_mode: 'HTML' }
-  ).catch(() => {});
-  // Balance aa gaya → us user ka QR khud banao (agar koi order fee ka wait kar raha hai).
-  const resumed = await resumeOrderAfterTopup(uid).catch(() => null);
-  await ctx.reply(
-    `✅ <b>Approved</b> · <code>${escapeHtml(req.utr)}</code> · ₹${walletRupees(req.approvedPaise)}\n` +
-    `User: <b>${escapeHtml(req.name || uid)}</b> · new balance ₹${walletRupees(res.balancePaise)}\n` +
-    (resumed?.resumed ? `🟢 Order #${escapeHtml(String(resumed.orderId))} ka QR release ho gaya — customer ko chala gaya.` : '<i>Abhi koi order verification ka wait nahi kar raha.</i>'),
-    { parse_mode: 'HTML', ...Markup.inlineKeyboard([[{ text: '◀ Pending UTR', callback_data: 'boss_utr_list', style: 'primary' }]]) }
-  ).catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  return completeBossTopupApproval(ctx, ctx.match[1]);
+});
+
+bot.action(/^boss_utr_amount_(tu_[A-Za-z0-9_]+)$/, async (ctx) => {
+  if (!isBoss(ctx.from.id)) return ctx.answerCbQuery('Unauthorized').catch(() => {});
+  const requestId = ctx.match[1];
+  const req = getDb().config?.topupRequests?.[requestId];
+  if (!req || req.status !== TOPUP_STATUS.PENDING) return ctx.answerCbQuery('Request pending nahi hai.', { show_alert: true }).catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+  userWaitState[ctx.from.id] = { action: 'waiting_boss_utr_amount', requestId };
+  await ctx.reply(`UTR ${req.utr}: bank me mila actual amount bhejein (₹).`, {
+    reply_markup: { force_reply: true, input_field_placeholder: 'Actual amount' }
+  }).catch(() => {});
 });
 
 bot.action(/^boss_utr_no_(tu_[A-Za-z0-9_]+)$/, async (ctx) => {
@@ -12768,7 +12841,8 @@ bot.action(/^boss_utr_no_(tu_[A-Za-z0-9_]+)$/, async (ctx) => {
   const db = getDb();
   const req = db.config?.topupRequests?.[ctx.match[1]];
   const res = rejectTopupRequest(db, ctx.match[1], { actor: `boss:${ctx.from.id}`, reason: 'Boss ko UPI me payment nahi mila' });
-  if (res.ok) saveDb(db);
+  if (res.ok && !saveDbDurable(db)) return ctx.answerCbQuery('Save nahi hua.', { show_alert: true }).catch(() => {});
+  if (res.ok) backupMoneyNow().catch(() => {});
   await ctx.answerCbQuery(res.ok ? '❌ Reject kar diya' : `❌ ${res.code}`).catch(() => {});
   if (!res.ok || !req) return;
   await bot.telegram.sendMessage(
@@ -13044,7 +13118,7 @@ bot.action(/^simple_confirm_order_([A-Za-z0-9_-]+)$/, async (ctx) => {
     const res = await approveUserOrderBillAction(String(userId), orderId);
     // Fee QR / fail card / retry card already apna saaf message bhej chuke hain —
     // unke upar raw error nahi.
-    const alreadyExplained = ['SERVICE_FEE_DUE', 'QR_GENERATION_FAILED'].includes(String(res?.code || ''));
+    const alreadyExplained = ['SERVICE_FEE_DUE', 'QR_GENERATION_FAILED', 'WALLET_LOW_BALANCE', 'PLACEMENT_OUTCOME_UNKNOWN'].includes(String(res?.code || ''));
     if (!res?.ok && !alreadyExplained) {
       await ctx.reply(`! ${escapeHtml(res?.error || 'Payment QR abhi nahi ban paya.')}`).catch(() => {});
     }
@@ -14471,8 +14545,6 @@ async function approveUserOrderBillActionInner(uidStr, orderId) {
     return { ok: false, error: 'This bill is not awaiting approval.' };
   }
 
-  const callerIsBoss = isBoss(Number(uidStr));
-
   if (!order.billApprovedByUser) {
     order.billApprovedByUser = true;
     order.billApprovedAt = new Date().toISOString();
@@ -14484,11 +14556,9 @@ async function approveUserOrderBillActionInner(uidStr, orderId) {
 
   const bossTargetId = Number(process.env.BOSS_ID || db.bosses?.[0] || 6484999726);
   let qrGenerationError = '';
+  let qrGenerationFailure = null;
 
-  // ── 1) QR PEHLE, CHUPCHAP (boss 30-10-2026) ──────────────────────────────
-  // "jab user QR button dabaye aur wo successfully generate ho tabhi usko fees
-  //  ka ek QR jayega; agar QR making fail ho to user ko sirf 'try again' jayega."
-  // Customer ko is step par kuch nahi dikhta — na fee, na balance.
+  // The shared QR entry point reserves the order owner's fee before Swiggy.
   if (!order.pendingSwiggyUpiUri && !order.realUpiIntentUri && !order.swiggyPaymentUrl) {
     try {
       await executeRealQrGenerationForOrder({
@@ -14498,7 +14568,24 @@ async function approveUserOrderBillActionInner(uidStr, orderId) {
         formatOrderBodyFn: formatUserOrderCardText
       });
     } catch (error) {
+      qrGenerationFailure = error;
       qrGenerationError = String(error?.message || 'Swiggy payment details could not be prepared.').slice(0, 350);
+      if (error?.code === 'WALLET_LOW_BALANCE') {
+        const lowDb = getDb();
+        const lowOrder = lowDb.orders?.[orderId] || order;
+        lowOrder.status = 'APPROVAL_PENDING';
+        lowOrder.cardStage = 'AWAITING_WALLET';
+        lowDb.orders[orderId] = lowOrder;
+        saveDb(lowDb);
+        const owner = String(error.diag?.userId || lowOrder.fwdSenderUserId || lowOrder.userId || '');
+        if (owner) await bot.telegram.sendMessage(owner, qrGenerationError, {
+          ...Markup.inlineKeyboard([
+            [{ text: '👛 Wallet', callback_data: 'wallet_home', style: 'success' }],
+            [{ text: '🔄 Retry order', callback_data: `user_retry_qr_${orderId}` }]
+          ])
+        }).catch(() => {});
+        return { ok: false, code: 'WALLET_LOW_BALANCE', orderId, error: qrGenerationError };
+      }
       console.warn(`[BillApproval] Swiggy payment details are not ready for #${order.id}:`, error.message);
     }
   }
@@ -14516,6 +14603,16 @@ async function approveUserOrderBillActionInner(uidStr, orderId) {
 
   // ── 2) QR FAIL → sirf "QR ban nahi paya, try again" (fee ka zikr nahi) ───
   if (!hasPaymentData) {
+    if (qrGenerationFailure?.diag?.placementAttempted === true || readSwiggyPlacement(`chat:${String(orderId)}`)) {
+      updated.cardStage = 'PLACEMENT_UNKNOWN';
+      updated.qrFailedReason = qrGenerationError || 'Swiggy placement ka result clear nahi hai';
+      const uncertainDb = getDb();
+      uncertainDb.orders[orderId] = updated;
+      saveDb(uncertainDb);
+      const owner = String(updated.fwdSenderUserId || updated.userId || '');
+      if (owner) await bot.telegram.sendMessage(owner, 'Order Swiggy par ho sakta hai. Same account ke My Orders me check karein; dobara order na karein.').catch(() => {});
+      return { ok: false, code: 'PLACEMENT_OUTCOME_UNKNOWN', orderId, error: 'Swiggy My Orders check karein; dobara order na karein.' };
+    }
     updated.cardStage = 'QR_RETRY';
     updated.qrFailedAt = new Date().toISOString();
     updated.qrFailedReason = qrGenerationError || 'Swiggy ne is order ke liye payment QR nahi diya';
@@ -14527,7 +14624,7 @@ async function approveUserOrderBillActionInner(uidStr, orderId) {
       ok: false,
       code: 'QR_GENERATION_FAILED',
       orderId,
-      error: 'QR ban nahi paya — dobara try karein (koi charge nahi hua).'
+      error: qrGenerationError || 'QR ban nahi paya — dobara try karein.'
     };
   }
 
@@ -14565,32 +14662,8 @@ async function approveUserOrderBillActionInner(uidStr, orderId) {
   holdDb.orders[orderId] = updated;
   saveDb(holdDb);
 
-  // ── 4) Fee: balance ho to chupchap kati jaati hai, warna verification card ─
-  if (!callerIsBoss) {
-    const feeOwnerId = String(updated.userId || uidStr);
-    const feeDb = getDb();
-    const liveOrder = feeDb.orders[orderId] || updated;
-    const charge = chargeServiceFee(feeDb, liveOrder, feeOwnerId, { actor: 'customer', feePaise: feePaiseNow() });
-    feeDb.orders[orderId] = liveOrder;
-    saveDb(feeDb);
-    if (!charge.ok) {
-      // 🧊 NAYA PLAN (boss 30-10-2026): "if qr generate success the user wont
-      // receive the qr but after they pay the fee amount on given qr and utr will
-      // auto verify and then show them qr".
-      // => Order QR hold rehta hai; customer ko SIRF fee ka QR jata hai.
-      //    Paisa verify hua (webhook / auto provider) → tab order QR release.
-      await sendFeeQrForHeldOrder(liveOrder, { feePaise: charge.feePaise || feePaiseNow() })
-        .catch((err) => console.warn('[FeeQr] send failed:', err?.message || err));
-      return {
-        ok: false,
-        code: 'SERVICE_FEE_DUE',
-        orderId,
-        qrHeld: true,
-        error: `Order QR ban gaya hai (safe rakha hua) — ₹${walletRupees(charge.feePaise || feePaiseNow())} fee pay + auto-verify hone par QR aayega.`
-      };
-    }
-  }
-
+  // New orders were charged before placement. For older pending orders, keep
+  // existing Swiggy payment details usable rather than creating another order.
   // ── 5) Fee settle → held QR RELEASE (customer ko wahi QR jata hai) ───────
   updated = getDb().orders?.[orderId] || updated;
   releaseOrderQr(updated);
@@ -14859,13 +14932,19 @@ export async function closeOrderAccountLock(orderId, { reason = '', telegram = n
   // (Boss: "cancel par refund, par place ho chuka ho to nahi.")
   let feeRefund = null;
   try {
-    const feeUserId = String(order.userId || order.feeWalletUserId || '');
+    const feeUserId = String(order.feeWalletUserId || order.fwdSenderUserId || order.userId || '');
     if (feeUserId) {
-      const rf = refundServiceFee(getDb(), order, feeUserId, { reason: reason || plan.reason, actor: 'auto' });
+      const rfDb = getDb();
+      const feeOrder = rfDb.orders?.[orderId] || order;
+      // A dispatched or unreadable journal means the provider outcome is
+      // uncertain: do not refund as if no order existed.
+      const placement = readSwiggyPlacement(`chat:${String(orderId)}`);
+      const rf = placement
+        ? { ok: false, code: 'ORDER_PLACED_NO_REFUND', chargedPaise: Number(feeOrder.feeChargedPaise || 0) }
+        : refundServiceFee(rfDb, feeOrder, feeUserId, { reason: reason || plan.reason, actor: 'auto' });
       if (rf.ok) {
-        const rfDb = getDb();
-        rfDb.orders[orderId] = order;
-        saveDb(rfDb);
+        rfDb.orders[orderId] = feeOrder;
+        if (!saveDbDurable(rfDb)) throw new Error('Wallet refund could not be saved');
         feeRefund = rf;
         await bot.telegram.sendMessage(
           feeUserId,
@@ -14879,8 +14958,8 @@ export async function closeOrderAccountLock(orderId, { reason = '', telegram = n
         // Boss ka rule: place ho chuka → refund nahi. Customer ko saaf bata do.
         await bot.telegram.sendMessage(
           feeUserId,
-          `ℹ️ Order <code>#${escapeHtml(String(orderId))}</code> Swiggy par place ho chuka tha — ` +
-          `isliye ₹${walletRupees(rf.chargedPaise)} order fee refund nahi hoti.`,
+          `ℹ️ Order <code>#${escapeHtml(String(orderId))}</code> ka Swiggy result check karein. ` +
+          `Placement ho chuka ya pending ho sakta hai, isliye fee abhi auto-refund nahi hui.`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
       }
@@ -15649,7 +15728,7 @@ if (healthPort > 0) {
     try {
       notePublicServiceOrigin(req);
       const reqUrl = new URL(req.url || '/', `http://localhost:${healthPort}`);
-      if (await handleSwiggyProHttp(req, res, { authorizeUser: authorizeMiniAppUser })) return;
+      if (await handleSwiggyProHttp(req, res, { authorizeUser: authorizeMiniAppUser, telegram: bot.telegram })) return;
 
       // 🤖 PAYMENT AUTO-VERIFY WEBHOOK (boss 30-10-2026)
       // "utr auto verify nahi ho raha" — ab UTR type karne ki zaroorat nahi:
@@ -15678,15 +15757,37 @@ if (healthPort > 0) {
         const orderId = String(body.orderId || body.order_id || '').trim();
         const order = orderId ? wDb.orders?.[orderId] : null;
         const userId = String(body.userId || body.user_id || order?.userId || '').trim();
-        const amountPaise = Math.round(Number(body.amountPaise ?? body.amount_paise ?? 0) || 0);
+        const amountPaise = Number(body.amountPaise ?? body.amount_paise ?? 0);
         const utr = String(body.utr || body.rrn || '').trim();
+        const validUtr = validateUtr(utr);
+        if (!validUtr.ok || !Number.isSafeInteger(amountPaise) || amountPaise < 100) {
+          return replyJson(400, { ok: false, error: 'Valid UTR and actual amount (integer paise) are required.' });
+        }
+        const payeeName = String(body.payeeName || '');
+        const payeeVpa = String(body.payeeVpa || body.vpa || '').trim();
+        const configuredVpa = String(configuredWalletUpiId(wDb) || '').trim().toLowerCase();
+        const payeeVerified = isBossPayee({ name: payeeName, vpa: payeeVpa, allowedVpas: [configuredVpa] }).ok;
+        if (!paymentStatusOk(body.status).ok || !payeeVerified) {
+          // A secret alone is not proof of a successful payment to this wallet.
+          // Existing UTR claims remain pending for the admin to review.
+          const pending = Object.values(wDb.config?.topupRequests || {}).find(r => r?.utr === validUtr.utr && r?.status === TOPUP_STATUS.PENDING);
+          if (pending) notifyPendingTopup(bot.telegram, pending.id).catch(() => {});
+          return replyJson(422, { ok: false, error: 'Payment status or recipient could not be verified; review pending claim.' });
+        }
 
         // (a) Order ki fee — held QR (naya plan) ya deferred fee, dono settle.
         if (order && (Number(order.feeDeferredPaise || 0) > 0 || isOrderQrHeld(order) || Number(order.feeDuePaise || 0) > 0)) {
           const due = Number(order.feeDeferredPaise || order.feeDuePaise || feePaiseNow());
-          if (amountPaise && amountPaise < due) {
-            return replyJson(200, { ok: false, error: `Amount kam hai: due ₹${walletRupees(due)}` });
+          if (!(amountPaise >= due)) {
+            return replyJson(400, { ok: false, error: `Amount kam hai: due ₹${walletRupees(due)}` });
           }
+          const owner = walletOwnerId(order);
+          if (!owner || (body.userId && String(body.userId) !== owner) || (body.user_id && String(body.user_id) !== owner)) {
+            return replyJson(409, { ok: false, error: 'Order owner does not match payment.' });
+          }
+          if (findUsedUtr(wDb, validUtr.utr)) return replyJson(409, { ok: false, error: 'UTR already used.' });
+          const used = markUtrUsed(wDb, validUtr.utr, { userId: owner, amountPaise, status: 'CREDITED', source: 'order-fee-webhook' });
+          if (used) used.orderId = orderId;
           // Fee charged mark (QR held tha) + deferred due clear — dono ek saath.
           order.feeChargedPaise = Number(order.feeChargedPaise || 0) + due;
           order.feeChargedAt = new Date().toISOString();
@@ -15695,7 +15796,8 @@ if (healthPort > 0) {
           order.feeDuePaise = 0;
           const settled = { ok: true, feePaise: due };
           wDb.orders[orderId] = order;
-          saveDb(wDb);
+          if (!saveDbDurable(wDb)) return replyJson(503, { ok: false, error: 'Fee record could not be saved.' });
+          backupMoneyNow().catch(() => {});
           const chatId = order.userChatId || order.userId;
           if (chatId) {
             await bot.telegram.sendMessage(
@@ -15717,41 +15819,37 @@ if (healthPort > 0) {
           return replyJson(200, { ok: true, settled: settled.feePaise || due, orderId });
         }
 
-        // (b) Wallet top-up — request banao aur turant approve (paisa aaya hai).
-        if (userId && amountPaise > 0) {
-          // Round 20: webhook bhi asli paisa ka sabooot hai — UTR ledger me
-          // record karo (baad me statement import/audit me wahi dikhega).
-          if (utr) {
-            try {
-              recordStatementPayment(wDb, {
-                utr, amountPaise,
-                payeeName: String(body.payeeName || body.payerName || ''),
-                payeeVpa: String(body.payeeVpa || body.vpa || ''),
-                status: 'SUCCESS', at: Date.now(), source: 'webhook', ref: String(body.ref || '')
-              }, { actor: 'webhook' });
-            } catch { /* ledger best-effort — paisa webhook se hi verify hua hai */ }
+        // (b) A trusted, successful incoming payment may settle the matching
+        // pending claim, or create one. A used UTR never creates a second credit.
+        if (/^\d{1,20}$/.test(userId) && userId !== '0') {
+          const used = findUsedUtr(wDb, validUtr.utr);
+          const existing = Object.values(wDb.config?.topupRequests || {}).find((r) => r?.utr === validUtr.utr);
+          if (used && (!existing || existing.status !== TOPUP_STATUS.PENDING || String(existing.userId) !== userId || String(used.status || '').toUpperCase() === 'CREDITED')) {
+            return replyJson(409, { ok: false, error: 'UTR already used.' });
           }
-          const created = await submitTopupRequest(wDb, {
-            userId,
-            utr: utr || `WEBHOOK${Date.now()}`,
-            amountPaise,
-            name: walletNameOf(userId),
-            note: 'webhook auto-verify',
-            autoVerify: false
-          });
-          if (!created.ok && created.code !== 'DUPLICATE_UTR') {
-            return replyJson(200, { ok: false, error: created.reason || created.code });
+          let request = existing;
+          if (!request) {
+            const created = submitTopupRequestWithLookup(wDb, {
+              userId, utr: validUtr.utr, amountPaise, name: walletNameOf(userId),
+              note: 'webhook auto-verify', autoVerify: false, minPaise: 100
+            });
+            if (!created.ok) return replyJson(409, { ok: false, error: created.reason || created.code });
+            request = created.request;
           }
-          if (created.ok) {
-            approveTopupRequest(wDb, created.request.id, { actor: 'webhook', note: 'auto-verify' });
-            saveDb(wDb);
-            const chatId = userId;
-            await bot.telegram.sendMessage(
-              chatId,
-              `✅ <b>₹${walletRupees(amountPaise)} mil gaye</b> — auto-verify ho gaya. Aapko kuch nahi karna.`,
-              { parse_mode: 'HTML' }
-            ).catch(() => {});
+          if (request.status !== TOPUP_STATUS.PENDING || String(request.userId) !== userId) {
+            return replyJson(409, { ok: false, error: 'UTR already used.' });
           }
+          const approved = approveTopupRequest(wDb, request.id, { actor: 'webhook', approvedPaise: amountPaise, note: 'verified webhook' });
+          if (!approved.ok) return replyJson(409, { ok: false, error: approved.code });
+          recordStatementPayment(wDb, {
+            utr: validUtr.utr, amountPaise, payeeName, payeeVpa,
+            status: 'SUCCESS', at: Date.now(), source: 'webhook', ref: String(body.ref || '')
+          }, { actor: 'webhook' });
+          if (!saveDbDurable(wDb)) return replyJson(503, { ok: false, error: 'Wallet credit not saved.' });
+          backupMoneyNow().catch(() => {});
+          await bot.telegram.sendMessage(userId,
+            `✅ ₹${walletRupees(amountPaise)} wallet me added.`, { parse_mode: 'HTML' }).catch(() => {});
+          await resumeOrderAfterTopup(userId).catch(() => null);
           return replyJson(200, { ok: true, credited: amountPaise, userId });
         }
         return replyJson(200, { ok: false, error: 'orderId ya userId+amountPaise chahiye' });
@@ -16350,6 +16448,12 @@ async function startBotWithRetry() {
     for (let attempt = 1; attempt <= 10; attempt++) {
       try {
         console.log('⚙ Telegram Swiggy Real OTP Flow Bot is running live!');
+        const retryPendingNotices = () => {
+          retryPendingTopupNotifications(bot.telegram).catch(() => {});
+          retryPendingWalletUtrs({ telegram: bot.telegram }).catch(() => {});
+        };
+        setTimeout(retryPendingNotices, 5000).unref?.();
+        setInterval(retryPendingNotices, 60_000).unref?.();
         startWafKeepWarmLoop();
         startAutoEventOffersPrebookLoop();
         // 🔐 Mini App vault: key khud manage hoti hai (boss 31-10-2026 —

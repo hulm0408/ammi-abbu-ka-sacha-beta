@@ -67,10 +67,10 @@ export function describeWhen(atMs, { now = Date.now() } = {}) {
 }
 
 /** Payee — paisa humein aaya ya kisi aur ko. */
-export function describePayee(payment = {}) {
+export function describePayee(payment = {}, { allowedPayeeVpas = [] } = {}) {
   const name = String(payment.payeeName || '').trim();
   const vpa = String(payment.payeeVpa || '').trim();
-  const ours = isBossPayee({ name, vpa });
+  const ours = isBossPayee({ name, vpa, allowedVpas: allowedPayeeVpas });
   const target = `${name || vpa || 'payee ka naam nahi mila'}${vpa && name ? ` (${vpa})` : ''}`;
   return {
     name, vpa, isOurs: ours.ok, matchedBy: ours.by || '',
@@ -111,13 +111,13 @@ function statusLabel(status) {
  */
 export function describeUtrPayment({
   utr = '', payment = null, lookup = null, usedUtr = null, intent = null,
-  claimedPaise = 0, now = Date.now(), autoMaxPaise = 0
+  claimedPaise = 0, now = Date.now(), autoMaxPaise = 0, allowedPayeeVpas = []
 } = {}) {
   const cleanUtr = String(utr || payment?.utr || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   const paidPaise = Math.max(0, Math.round(Number(payment?.amountPaise) || 0));
   const askedPaise = Math.max(0, Math.round(Number(claimedPaise || intent?.amountPaise) || 0));
   const when = describeWhen(payment?.at, { now });
-  const payee = describePayee(payment || {});
+  const payee = describePayee(payment || {}, { allowedPayeeVpas });
   const payer = describePayer(payment || {});
   const status = statusLabel(payment?.status);
   const duplicate = usedUtr
@@ -136,6 +136,7 @@ export function describeUtrPayment({
     payment,
     usedUtrs: usedUtr && cleanUtr ? { [cleanUtr]: usedUtr } : {},
     autoMaxPaise: Math.max(0, Math.round(Number(autoMaxPaise) || 0)),
+    allowedPayeeVpas,
     now
   });
 

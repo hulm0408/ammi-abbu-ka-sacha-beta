@@ -22,6 +22,7 @@ function _isLazyRateLimited(userId, maxPerWindow = 5, windowMs = 60_000) {
 import { getDb, saveDb, upsertOrder, appendAuditEvent, maskAccountCode } from './store.js';
 import { validateUpiIntentForQr, describeQrRef, shouldReusePendingQr } from './payment-qr-guard.js';
 import { readSwiggyPlacement, placementAlreadyAttemptedError } from './swiggy-placement-journal.js';
+import { reserveChatOrderFee, refundChatOrderFeeBeforePlacement } from './wallet-order-gate.js';
 import { checkLoggedInFromCookies } from './swiggy-bridge.js';
 import { OFFER_TRACKS } from './account-views.js';
 import { startJob, clearJob } from './bot-maintenance.js';
@@ -2485,16 +2486,27 @@ const qrGenerationInFlight = new Map();
 const QR_GEN_BUDGET_MS = Math.max(20_000, Number(process.env.QR_GEN_BUDGET_MS) || 90_000);
 
 export function executeRealQrGenerationForOrder(args = {}) {
-  const key = String(args?.orderId || '');
+  const requested = String(args?.orderId || '');
+  const key = String(lookupOrder(getDb(), requested)?.id || requested);
   if (key && qrGenerationInFlight.has(key)) {
     return qrGenerationInFlight.get(key);
+  }
+  let reservation;
+  try {
+    // All bot QR entry points converge here. Charge the actual order owner,
+    // not the admin who happened to press the button, before provider work.
+    reservation = reserveChatOrderFee(key);
+  } catch (err) {
+    return Promise.reject(err);
   }
   // Job registry: agar ye budget se zyada chale to maintenance isko "atka hua"
   // batata hai (code QR_GENERATION_TIMEOUT) — chup-chaap hang nahi.
   const qrStartedAt = Date.now();
   const endJob = key ? startJob('QR_GENERATE', { timeoutMs: QR_GEN_BUDGET_MS, orderId: key }) : null;
-  const run = executeRealQrGenerationForOrderInternal(args).catch((err) => {
+  const run = executeRealQrGenerationForOrderInternal({ ...args, orderId: key || args.orderId }).catch((err) => {
     if (err && typeof err === 'object' && !err.diag) err.diag = {};
+    try { refundChatOrderFeeBeforePlacement(key, reservation, err); }
+    catch (refundErr) { console.error('[Wallet] fee refund failed:', refundErr?.message || refundErr); }
     throw err;
   }).finally(() => {
     if (endJob) endJob();

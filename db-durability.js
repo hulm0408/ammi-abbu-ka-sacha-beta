@@ -65,19 +65,25 @@ async function pullRemoteSnapshot(pathKey, decode) {
   let text = '';
   let reason = '';
   let via = '';
+  let status = 0;
+  let sha = '';
   try {
     const detail = await pullVaultTextFileDetailed(pathKey);
     text = detail.text || '';
     reason = detail.reason || '';
     via = detail.via || '';
+    status = Number(detail.status) || 0;
+    sha = String(detail.sha || '');
   } catch (err) { reason = String(err?.message || err); text = ''; }
-  const present = Boolean(text && String(text).trim().length > 20);
+  // A failed authenticated read is NOT evidence that the remote file is empty.
+  const cloudEnabled = Boolean(resolveVaultToken()) && process.env.PRO_VAULT_CLOUD_BACKUP !== '0';
+  const present = Boolean(String(text).trim()) || (cloudEnabled && status !== 404);
   let snapshot = null;
   if (present) {
     try { snapshot = decode(text); } catch { snapshot = null; }
   }
-  if (present && !snapshot) reason = 'file mili par is key se khul nahi rahi (VAULT_ENCRYPTION_KEY?)';
-  const entry = { at: Date.now(), present, readable: present && Boolean(snapshot), snapshot, reason, via };
+  if (present && !snapshot && !reason) reason = 'file mili par is key se khul nahi rahi (VAULT_ENCRYPTION_KEY?)';
+  const entry = { at: Date.now(), present, readable: present && Boolean(snapshot), snapshot, reason, via, status, sha, text };
   remoteCache.set(pathKey, entry);
   return entry;
 }
@@ -135,14 +141,19 @@ export async function backupMoneyNow({ force = false } = {}) {
   if (state.pushing) { state.pending = true; return { ok: false, skipped: 'busy' }; }
   state.pushing = true;
   try {
+    // Fetch first, then read the latest DB. A stale pre-network snapshot could
+    // otherwise overwrite a fee debit or a newly approved recharge.
+    const remote = await pullRemoteSnapshot(SNAPSHOT_PATH, decodeSnapshotText);
     const db = getDb();
     let snapshot = buildMoneySnapshot(db);
-    // Round 24: push se PEHLE cloud ka sach padho. Jo cloud par hai use local me
-    // milao (paisa kabhi kam nahi hota) — aur padha na ja sake to push band,
-    // taaki purana data overwrite na ho.
-    const remote = await pullRemoteSnapshot(SNAPSHOT_PATH, decodeSnapshotText);
     if (remote.readable && remote.snapshot) {
       const merged = mergeMoneySnapshot(db, remote.snapshot);
+      if (merged.conflicts?.length) {
+        const line = 'Wallet/UTR histories alag hain — cloud backup ruka hai; dono copies admin review ke liye rakhi gayi hain.';
+        recordAlert(state, PUSH_BLOCK.MONEY_CONFLICT, line);
+        state.lastError = line;
+        return { ok: false, blocked: PUSH_BLOCK.MONEY_CONFLICT, conflicts: merged.conflicts.length, reason: line };
+      }
       if (merged.changed) { saveDb(db); snapshot = buildMoneySnapshot(db); }
     }
     const verdict = assessPush({ kind: 'money', local: snapshot, remote: remote.snapshot, remotePresent: remote.present, remoteReadable: remote.readable });
@@ -162,8 +173,14 @@ export async function backupMoneyNow({ force = false } = {}) {
       return { ok: localOk, localOnly: true };
     }
     const text = JSON.stringify({ __moneySnapshot: true, at: snapshot.at, payload: encryptVaultPayloadObject(snapshot) });
-    const res = await pushVaultTextFile(SNAPSHOT_PATH, text, 'chore(vault): money/UTR snapshot (deploy-proof)');
-    if (res?.ok) forgetRemoteSnapshot(SNAPSHOT_PATH);
+    const res = await pushVaultTextFile(SNAPSHOT_PATH, text, 'chore(vault): money/UTR snapshot (deploy-proof)', {
+      expectedRemote: { present: remote.present, sha: remote.sha, text: remote.text }
+    });
+    if (res?.ok || res?.reason === 'REMOTE_CHANGED') forgetRemoteSnapshot(SNAPSHOT_PATH);
+    // A debit or credit can arrive while the network push is in progress.
+    // Queue another backup instead of treating the older snapshot as current.
+    const latest = buildMoneySnapshot(getDb());
+    if (JSON.stringify([latest.config, latest.sections]) !== JSON.stringify([snapshot.config, snapshot.sections])) state.pending = true;
     state.lastPushAt = new Date(now).toISOString();
     state.lastPushOk = res?.ok === true;
     state.lastError = res?.ok ? '' : String(res?.reason || res?.error || `HTTP ${res?.status || '?'}`);
@@ -211,39 +228,46 @@ function decodeSnapshotText(text) {
  */
 export async function restoreMoneyOnBoot() {
   state.bootChecked = true;
-  const db = getDb();
-  let snapshot = readLocalCopy();
-  let source = snapshot ? 'local' : '';
-  if (!snapshot) {
-    const remote = await pullRemoteSnapshot(SNAPSHOT_PATH, decodeSnapshotText);
-    if (remote.readable && remote.snapshot) {
-      snapshot = remote.snapshot;
-      source = 'cloud';
-    } else if (remote.present) {
-      // File hai par khul nahi rahi — ye wo khatra hai jisse data erase hota tha.
-      recordAlert(state, PUSH_BLOCK.REMOTE_UNREADABLE,
-        'Cloud par paisa/UTR snapshot hai par is key se khul nahi raha (VAULT_ENCRYPTION_KEY badli lagti hai) — restore nahi hua, aur backup ROK diya hai taaki purana data mite na.');
-    }
+  const local = readLocalCopy();
+  // Always inspect cloud too: a local copy can be older than a successful
+  // remote write. Read the DB only AFTER this potentially slow network call.
+  const remote = await pullRemoteSnapshot(SNAPSHOT_PATH, decodeSnapshotText);
+  const copies = [
+    ...(local ? [{ source: 'local', snapshot: local }] : []),
+    ...(remote.readable && remote.snapshot ? [{ source: 'cloud', snapshot: remote.snapshot }] : [])
+  ];
+  if (remote.present && !remote.readable) {
+    recordAlert(state, PUSH_BLOCK.REMOTE_UNREADABLE,
+      `Cloud money snapshot padha nahi gaya (${remote.reason || 'unknown'}); backup ruka hai taaki purana data na mite.`);
   }
-  if (!snapshot) {
+  if (!copies.length) {
     state.restoredAt = '';
     return { restored: false, reason: state.blockedPush?.line || 'snapshot nahi mila' };
   }
-  if (!needsMoneyRestore(db, snapshot)) {
-    // Local db me pehle se data hai — merge phir bhi karo (union, paisa kam nahi).
-    const merge = mergeMoneySnapshot(db, snapshot);
-    if (merge.changed) { saveDb(db); state.restoredAt = new Date().toISOString(); state.restoredSummary = merge.summary; }
-    return { restored: merge.changed, source, summary: merge.summary, reason: merge.changed ? '' : 'local db me pehle se data hai' };
+  const db = getDb();
+  // Preflight into an isolated object; a conflict in the second copy must not
+  // allow the first copy to partially mutate the real DB.
+  const staged = JSON.parse(JSON.stringify(db));
+  let restored = false;
+  let source = '';
+  let summary = null;
+  for (const copy of copies) {
+    const merge = mergeMoneySnapshot(staged, copy.snapshot);
+    if (merge.conflicts?.length) {
+      const line = 'Wallet/UTR histories alag hain — restore ruka hai; dono copies admin review ke liye rakhi gayi hain.';
+      recordAlert(state, PUSH_BLOCK.MONEY_CONFLICT, line);
+      return { restored: false, source: copy.source, blocked: PUSH_BLOCK.MONEY_CONFLICT, conflicts: merge.conflicts.length, reason: line };
+    }
+    if (merge.changed) { restored = true; source = copy.source; summary = merge.summary; }
   }
-  const merge = mergeMoneySnapshot(db, snapshot);
-  if (merge.changed) {
-    saveDb(db);
-    state.restoredAt = new Date().toISOString();
-    state.restoredSummary = merge.summary;
-    console.log('[db-durability] money/UTR restore', source, JSON.stringify(merge.summary));
-    return { restored: true, source, summary: merge.summary };
-  }
-  return { restored: false, source, reason: 'merge me kuch nahi mila' };
+  if (!restored) return { restored: false, source: copies[0].source, reason: 'local db me pehle se data hai' };
+  // No async gap since reading db; preserve its concurrency metadata.
+  db.config = staged.config;
+  saveDb(db);
+  state.restoredAt = new Date().toISOString();
+  state.restoredSummary = summary;
+  console.log('[db-durability] money/UTR restore', source, JSON.stringify(summary));
+  return { restored: true, source, summary };
 }
 
 /** Boot par interval — har 30s me (badla ho to) snapshot. */

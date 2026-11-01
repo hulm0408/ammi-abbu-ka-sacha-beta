@@ -12,7 +12,7 @@ import { parseStatementText, evaluateUtrCredit, CREDIT_ACTIONS, isBossPayee } fr
 import { fetchUtrPaymentDetails } from './utr-lookup.js';
 import { saveDb } from './store.js';
 import {
-  creditWallet, ensureWallet, findUsedUtr, markUtrUsed, listTopupRequests, normalizeUtr, walletBalancePaise
+  creditWallet, ensureWallet, findUsedUtr, markUtrUsed, listTopupRequests, normalizeUtr, walletBalancePaise, walletUpiId
 } from './user-wallet.js';
 
 const STATEMENT_KEY = 'upiStatement';
@@ -110,6 +110,7 @@ export function settledPendingClaims(db, { actor = 'system', at = Date.now() } =
       intent: { amountPaise: req.claimedPaise, createdAt: Date.parse(req.at || '') || 0 },
       payment,
       usedUtrs: {},
+      allowedPayeeVpas: [walletUpiId(db)],
       autoMaxPaise: 0
     });
     if (decision.action !== CREDIT_ACTIONS.CREDIT) {
@@ -124,9 +125,14 @@ export function settledPendingClaims(db, { actor = 'system', at = Date.now() } =
     }
     // Ledger me credit — UTR mark + wallet credit, dono ek saath.
     const already = findUsedUtr(db, req.utr);
-    if (already && String(already.userId || '') !== String(req.userId || '')) {
+    const otherSettled = Object.values(db.config?.topupRequests || {}).some((other) =>
+      other?.id !== req.id && normalizeUtr(other?.utr) === normalizeUtr(req.utr) &&
+      ['APPROVED', 'AUTO_VERIFIED'].includes(String(other?.status || '').toUpperCase())
+    );
+    if ((already?.userId && String(already.userId) !== String(req.userId || '')) ||
+        String(already?.status || '').toUpperCase() === 'CREDITED' || otherSettled) {
       req.status = 'REJECTED';
-      req.reason = 'ye UTR pehle kisi aur ke top-up me credit ho chuka hai';
+      req.reason = 'ye UTR pehle credit ho chuka hai ya kisi aur ka hai';
       result.push({ topupId: req.id, action: 'REJECT', reason: req.reason });
       continue;
     }
@@ -142,7 +148,8 @@ export function settledPendingClaims(db, { actor = 'system', at = Date.now() } =
       result.push({ topupId: req.id, action: 'FAIL', reason: credit.reason });
       continue;
     }
-    markUtrUsed(db, req.utr, { userId: req.userId, amountPaise: decision.creditedPaise, status: 'CREDITED', source: 'statement-match', at });
+    const ledger = already || markUtrUsed(db, req.utr, { userId: req.userId, amountPaise: decision.creditedPaise, status: 'CREDITED', source: 'statement-match', at });
+    if (ledger) { ledger.status = 'CREDITED'; ledger.amountPaise = decision.creditedPaise; ledger.topupId = req.id; }
     req.status = 'AUTO_VERIFIED';
     req.approvedPaise = decision.creditedPaise;
     req.verifiedBy = decision.verifiedBy || 'statement';

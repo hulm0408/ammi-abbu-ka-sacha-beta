@@ -27,7 +27,8 @@ const { readProWorkspace, writeProWorkspace } = await import('./swiggy-pro-store
 const { handleSwiggyProHttp } = await import('./swiggy-pro-api.js');
 const { detectOfoFromPlaceResponse, hasExplicitOfoCartFlag, withSwiggyAccountLock, releaseStaleAccountLocks } = await import('./swiggy-cart.js');
 const { getDb, saveDb } = await import('./store.js');
-const { creditWallet } = await import('./user-wallet.js');
+const { creditWallet, debitWallet, walletBalancePaise } = await import('./user-wallet.js');
+const { reserveChatOrderFee, refundChatOrderFeeBeforePlacement, assertChatOrderFeeStillReserved } = await import('./wallet-order-gate.js');
 const { executeRealQrGenerationForOrder, executeOrderBillSyncOnAccount, applyBossOrderUpdate } = await import('./forwarded-order-flow.js');
 
 const id = '123456789012';
@@ -38,6 +39,7 @@ let calls = 0, paymentMode = 'pending', checkoutMode = 'ok';
 const paymentAccounts = [];
 const fake = {
   async checkout(_account, _address, _cart, key) {
+    if (checkoutMode === 'preflight') throw Object.assign(new Error('offline preflight failure'), { code: 'PREFLIGHT_FAILED' });
     const reply = await executeSingleSwiggyPlacement(key, async () => {
       calls++;
       await new Promise(resolve => setTimeout(resolve, 30));
@@ -161,7 +163,8 @@ test('chat QR callers coalesce and never fail over after an ambiguous placement'
     a: { isLoggedIn: true, phone: '9123456789', token: 'mock-a' },
     b: { isLoggedIn: true, phone: '9234567890', token: 'mock-b' }
   };
-  db.orders['chat-race'] = { id: 'chat-race', status: 'ACCEPTED', selectedAccount: 'a', orderAccount: '9123456789' };
+  db.orders['chat-race'] = { id: 'chat-race', userId: '8118', status: 'ACCEPTED', selectedAccount: 'a', orderAccount: '9123456789' };
+  creditWallet(db, '8118', 1500, { reason: 'offline test', actor: 'test' });
   saveDb(db);
   let generated = 0;
   const generator = async () => {
@@ -336,6 +339,82 @@ test('a stale workspace or account failover cannot bypass the generation barrier
   const before = calls;
   const out = await req(8107, 'checkout', confirmation(ws.cart.quote));
   assert.equal(out.body.checkout.status, 'OUTCOME_UNKNOWN'); assert.equal(calls, before);
+});
+
+test('Mini App blocks low balance before provider; boss checkout needs no wallet', async () => {
+  checkoutMode = 'ok';
+  const lowQuote = seed(8201);
+  let db = getDb();
+  debitWallet(db, '8201', 1500, { actor: 'test' });
+  saveDb(db);
+  const before = calls;
+  const low = await req(8201, 'checkout', confirmation(lowQuote));
+  assert.equal(low.status, 409);
+  assert.equal(low.body.code, 'WALLET_LOW_BALANCE');
+  assert.equal(calls, before, 'no provider attempt without the fee');
+  assert.equal(readProWorkspace('8201').checkout, undefined);
+  const bossQuote = seed(8000);
+  db = getDb(); delete db.config.wallets['8000'];
+  db.config.accounts.a.customerId = 'customer-9123456789'; saveDb(db);
+  const boss = await req(8000, 'checkout', confirmation(bossQuote));
+  assert.equal(boss.status, 200, JSON.stringify(boss.body));
+  assert.equal(calls, before + 1);
+  assert.equal(walletBalancePaise(getDb(), '8000'), 0);
+});
+
+test('Mini App refunds a preflight failure, but not an uncertain POST', async () => {
+  checkoutMode = 'preflight';
+  const q = seed(8202);
+  const before = calls;
+  const fail = await req(8202, 'checkout', confirmation(q));
+  assert.equal(fail.status, 502);
+  assert.equal(calls, before);
+  assert.equal(walletBalancePaise(getDb(), '8202'), 1500);
+  assert.equal(readProWorkspace('8202').checkout, null);
+  checkoutMode = 'timeout';
+  const q2 = seed(8203);
+  const uncertain = await req(8203, 'checkout', confirmation(q2));
+  assert.equal(uncertain.body.checkout.status, 'OUTCOME_UNKNOWN');
+  assert.equal(walletBalancePaise(getDb(), '8203'), 0);
+  assert.equal((await req(8203, 'checkout', confirmation(q2))).status, 409);
+  assert.equal(calls, before + 1);
+  checkoutMode = 'ok';
+});
+
+test('chat gate charges the customer, not an acting boss; preflight refund is idempotent', async () => {
+  let db = getDb();
+  db.orders['chat-owner'] = { id: 'chat-owner', userId: '8000', fwdSenderUserId: '8204', isForwardedOrder: true, status: 'APPROVAL_PENDING', selectedAccount: 'a' };
+  saveDb(db);
+  let generated = 0;
+  const args = { orderId: 'chat-owner', chatId: 8000, telegram: {}, customRealQrGenerator: async () => { generated++; throw new Error('preflight'); } };
+  await assert.rejects(executeRealQrGenerationForOrder(args), e => e.code === 'WALLET_LOW_BALANCE');
+  assert.equal(generated, 0, 'boss pressing a customer order cannot waive the fee');
+  db = getDb(); creditWallet(db, '8204', 1500, { actor: 'test' }); saveDb(db);
+  await assert.rejects(executeRealQrGenerationForOrder(args), /preflight/);
+  assert.equal(generated, 1);
+  assert.equal(walletBalancePaise(getDb(), '8204'), 1500, 'preflight failure refunds');
+  const again = reserveChatOrderFee('chat-owner');
+  assert.equal(walletBalancePaise(getDb(), '8204'), 0);
+  assertChatOrderFeeStillReserved('chat-owner');
+  refundChatOrderFeeBeforePlacement('chat-owner', again, new Error('no POST'));
+  refundChatOrderFeeBeforePlacement('chat-owner', again, new Error('no POST'));
+  assert.equal(walletBalancePaise(getDb(), '8204'), 1500, 'refund cannot be duplicated');
+});
+
+test('chat admin exemption, unknown owner, and final cancellation barrier', () => {
+  const db = getDb();
+  db.orders['chat-boss'] = { id: 'chat-boss', userId: '8000', isDirectBossOrder: true, status: 'APPROVAL_PENDING' };
+  db.orders['chat-hidden'] = { id: 'chat-hidden', userId: '8000', isForwardedOrder: true, status: 'APPROVAL_PENDING' };
+  db.orders['chat-closed'] = { id: 'chat-closed', userId: '8205', status: 'APPROVAL_PENDING' };
+  creditWallet(db, '8205', 1500, { actor: 'test' }); saveDb(db);
+  assert.equal(reserveChatOrderFee('chat-boss').admin, true);
+  assertChatOrderFeeStillReserved('chat-boss');
+  assert.throws(() => reserveChatOrderFee('chat-hidden'), e => e.code === 'FEE_OWNER_UNKNOWN');
+  const reserved = reserveChatOrderFee('chat-closed');
+  const fresh = getDb(); fresh.orders['chat-closed'].status = 'CANCELLED'; saveDb(fresh);
+  assert.throws(() => assertChatOrderFeeStillReserved('chat-closed'), e => e.code === 'ORDER_CLOSED');
+  refundChatOrderFeeBeforePlacement('chat-closed', reserved, new Error('before POST'));
+  assert.equal(walletBalancePaise(getDb(), '8205'), 1500);
 });
 
 test('production bot entrypoints do not call an SMS gateway for recipients', () => {
