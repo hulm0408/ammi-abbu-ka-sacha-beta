@@ -23,12 +23,15 @@ const { getDb, saveDb } = await import('./store.js');
 
 const db = getDb();
 db.config.accounts = {
-  // Operator ne upload kiya — sabko dikhega, par claim/remove sirf boss.
+  // Operator IDs are visible only where the owner has granted them.
   acc_operator_used: { phone: '9876500001', name: 'Operator used', token: 'op-token-1', isLoggedIn: true, ordersVerifiedLive: true, totalOrdersCount: 4, freeCashBalance: 50 },
   acc_operator_fresh: { phone: '9876500002', name: 'Operator fresh', token: 'op-token-2', isLoggedIn: true, ordersVerifiedLive: true, totalOrdersCount: 0 },
   acc_operator_expired: { phone: '9876500003', name: 'Operator expired', isLoggedIn: true, isLoggedOut: true }
 };
 db.config.bossIds = ['9000'];
+const grants = Object.fromEntries(Object.entries(db.config.accounts).map(([key, a]) => [key,
+  crypto.createHash('sha256').update(`pro-account-access:phone:${a.phone}`).digest('hex')]));
+db.config.proAccountGrants = { '9101': { ...grants }, '9102': { ...grants } };
 saveDb(db);
 
 const receiver = { id: 'addr-1', name: 'Receiver', mobile: '9123456789', address: 'Test Road 1', lat: '18.5204', lng: '73.8567', annotation: 'HOME' };
@@ -108,7 +111,7 @@ function seedCart(userId, accountKey) {
   });
 }
 
-test('operator ke ID sabko dikhte hain, par claim/remove aur poora number sirf boss ka', async () => {
+test('authorized user sees operator IDs, but claim/remove and full number remain boss-only', async () => {
   const boot = await req(user, 'bootstrap');
   assert.equal(boot.status, 200);
   const keys = boot.body.accounts.map(a => a.key);
@@ -406,9 +409,8 @@ test('DOM: checkout page Swiggy jaisa — group cart, delivering to, coupon, bil
     assert.match(text, /Your Order/);
     assert.match(text, /Apply coupon/);
     assert.match(text, /Bill Details/i);
-    assert.match(text, /Payment Method/);
-    assert.match(text, /UPI \/ QR/);
-    assert.match(text, /Cash on Delivery/);
+    assert.match(text, /Payment: UPI \/ QR/);
+    assert.doesNotMatch(text, /Cash on Delivery/, 'unavailable payment methods stay hidden');
     assert.match(text, /PAY USING UPI/);
     // Coupon page khulta hai — koi code type karne ka box nahi, sirf APPLY.
     assert.equal(app.document.querySelector('input[name="coupon"]'), null);

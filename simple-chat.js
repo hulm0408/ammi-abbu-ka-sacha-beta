@@ -1,18 +1,9 @@
 // ============================================================================
-// SIMPLE CHAT FLOW — "Two links in, one tap consent, tracking link out"
+// SIMPLE CHAT SCREENS
 // ----------------------------------------------------------------------------
-// This module owns the *customer facing* chat screens when simple mode is on.
-// It deliberately knows nothing about Swiggy APIs: it only formats a draft or
-// an order into the smallest possible Telegram card.
-//
-//   1. Customer pastes the Swiggy CART link + ADDRESS link in one message.
-//   2. Bot auto-checks the best offer and shows ONE bill card:
-//          [ ✅ Confirm ₹xxx ]
-//      Tapping it is the customer's consent (no typing, no web app).
-//   3. Payment QR arrives in the same chat.
-//   4. Swiggy tracking link arrives in the same chat as a button.
-//
-// Everything stays inside Telegram chat — there is no mini-app / web app.
+// Existing chat orders and legacy drafts retain their cards here. New cart and
+// address links are collected by the bot and handed to the authenticated Mini
+// App, which handles account choice, confirmation, bill and checkout.
 // ============================================================================
 
 import { getStoredSwiggyTrackingUrl } from './swiggy-cart.js';

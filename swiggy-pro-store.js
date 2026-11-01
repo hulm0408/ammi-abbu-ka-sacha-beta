@@ -144,6 +144,32 @@ function aad(userId) {
   return Buffer.from(`sacha-beta-miniapp-v1:${userId}`);
 }
 
+// Encrypt chat handoff links before storing them in the bot database. The
+// Telegram user id is authenticated data, so blobs cannot be moved between
+// users. The same vault key and rotation rules as the workspace apply.
+export function sealProHandoff(userId, links) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', secretKey(), iv);
+  cipher.setAAD(Buffer.from(`pro-chat-handoff:v1:${String(userId)}`));
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(links), 'utf8'), cipher.final()]);
+  return { version: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: encrypted.toString('base64') };
+}
+export function openProHandoff(userId, envelope) {
+  try {
+    if (!envelope || envelope.version !== 1) throw new Error('Invalid envelope');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', secretKey(), Buffer.from(envelope.iv, 'base64'));
+    decipher.setAAD(Buffer.from(`pro-chat-handoff:v1:${String(userId)}`));
+    decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
+    const value = JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.data, 'base64')), decipher.final()]).toString('utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid links');
+    return value;
+  } catch {
+    const err = new Error('Mini App links khol nahi sake. Existing data nahi badla; admin se baat karein.');
+    err.statusCode = 503; err.code = 'PRO_VAULT_DECRYPT_FAILED';
+    throw err;
+  }
+}
+
 export function emptyProWorkspace() {
   return { version: 1, accounts: {}, activeAccountKey: '', selectedAddress: null, addressCandidates: [], cart: null };
 }
@@ -214,6 +240,7 @@ export function writeProWorkspace(userId, workspace) {
 const hydratedUsers = new Set();
 const backupTimers = new Map();
 const mirrorTimers = new Map();
+const pendingMirrorEnvelopes = new Map();
 
 /**
  * Boss (31-10-2026): "TU BAAR BAAR KEHTA HAI DATA SAFE HAI BUT DATA TO ERASE
@@ -303,10 +330,15 @@ function readProWorkspaceMirror(userId) {
 
 function scheduleProWorkspaceMirror(userId, envelope) {
   const key = String(userId);
+  // Several wizard steps can finish inside the debounce window. Mirror the
+  // newest envelope, not the first (which may still contain an older draft).
+  pendingMirrorEnvelopes.set(key, envelope);
   if (mirrorTimers.has(key)) return;
   const timer = setTimeout(() => {
     mirrorTimers.delete(key);
-    writeProWorkspaceMirror(key, envelope);
+    const latest = pendingMirrorEnvelopes.get(key);
+    pendingMirrorEnvelopes.delete(key);
+    if (latest) writeProWorkspaceMirror(key, latest);
   }, 1500);
   if (typeof timer.unref === 'function') timer.unref();
   mirrorTimers.set(key, timer);
@@ -324,7 +356,9 @@ export function workspaceHasContent(workspace) {
   const addresses = Array.isArray(workspace.addressCandidates) ? workspace.addressCandidates.length : 0;
   const orders = Array.isArray(workspace.orders) ? workspace.orders.length : 0;
   return accounts > 0 || addresses > 0 || orders > 0
-    || Boolean(workspace.cart) || Boolean(workspace.selectedAddress) || Boolean(workspace.activeAccountKey);
+    || Boolean(workspace.cart) || Boolean(workspace.selectedAddress) || Boolean(workspace.pendingAddress)
+    || Boolean(workspace.activeAccountKey) || Boolean(workspace.chatFlow) || Boolean(workspace.checkout)
+    || (Array.isArray(workspace.handoffDraftBackups) && workspace.handoffDraftBackups.length > 0);
 }
 
 /** Encrypted envelope kholo — fail ho to null (kabhi throw nahi). */
@@ -529,6 +563,7 @@ export function resetProWorkspaceHydrationCache() {
   backupTimers.clear();
   for (const timer of mirrorTimers.values()) clearTimeout(timer);
   mirrorTimers.clear();
+  pendingMirrorEnvelopes.clear();
 }
 
 /** Tests ke liye — mirror timers ko turant chalane ki ummeed nahi karte. */

@@ -137,6 +137,8 @@ extracted_mp4_frames/
 !test_v121_five_minute_verify_and_share_link.mjs
 !test_v122_wallet_bot.mjs
 !test_v123_payment_webhook.mjs
+!test_v124_chat_miniapp.mjs
+!test_v125_quick_bill.mjs
 
 # Screenshot QA (local only) — generated PNGs aur browser libs commit nahi
 screenshots/

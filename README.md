@@ -4,7 +4,7 @@
 
 Telegram bot built for Swiggy food ordering with saved-address, group-cart, billing, and tracking integrations.
 
-> **Verification note:** Historical feature descriptions and offline tests below are not proof of a real Swiggy order. The optional Mini App is a work in progress: its in-app payment, order placement, and live tracking are not enabled. See [Mini App setup and limitations](./MINI_APP_SETUP.md).
+> **Verification note:** Historical descriptions and offline tests are not proof of a real Swiggy order, payment, tracking or recipient SMS. Checkout is experimental and configurable; see [Mini App setup and limitations](./MINI_APP_SETUP.md).
 
 ## 🚀 1-Click Render Deployment
 
@@ -12,23 +12,13 @@ Telegram bot built for Swiggy food ordering with saved-address, group-cart, bill
 2. Enter your **`BOT_TOKEN`** (from `@BotFather`) — set a strong **`BOSS_SECRET`** (e.g. `openssl rand -hex 16`) and `HEADLESS` (`true`) are already pre-configured.
 3. Click **Apply / Deploy Web Service** — health check listens automatically on `0.0.0.0:$PORT` (`GET /` -> `200 OK`).
 
-## 💬 Simple chat mode (default) — two links, one tap, tracking link
+## 💬 Chat links → Mini App
 
-Customers no longer see topics, "Send to Beta", mobile-number prompts or any multi-step quiz.
-The whole journey lives in the Telegram chat (no web app / mini app):
+1. Send the Swiggy **cart and address links** together or separately in private chat.
+2. Open the Mini App, choose an authorized ID or Auto Choose, and confirm the fetched address and recipient.
+3. Check the fetched cart, consent to replacing the selected Swiggy cart, and review the provider's bill before Pay Now.
 
-1. paste the Swiggy **Cart link + Address link** (one message or two),
-2. the bot auto-picks the best account + max offer and shows **one bill card**,
-3. tapping **✅ Confirm ₹amount** is the customer's consent — it is stored on the order
-   (`customerConsentGiven`, `customerConsentAt`, `customerConsentBy`, `customerConsentVia`,
-   `customerConsentAmount`) before any payment QR exists,
-4. the payment QR arrives, the customer taps **✓ I have paid**,
-5. the **real Swiggy tracking link** arrives once as its own bubble with a `🛵 Track on Swiggy`
-   button (plus delivery OTP when Swiggy provides it).
-
-Controls: `SIMPLE_CHAT_MODE=0` restores the older screens. Full details in
-[`SIMPLE_CHAT_FLOW.md`](./SIMPLE_CHAT_FLOW.md); guarded offline by
-`test_v40_simple_chat_consent_tracking_e2e.mjs`.
+Boss grants individual shared IDs under **Tools → ID access** after each user contacts the bot. The bot does not send recipient SMS; whether Swiggy sends one is unverified. Old chat orders remain available; [`SIMPLE_CHAT_FLOW.md`](./SIMPLE_CHAT_FLOW.md) documents the earlier chat-only flow. `SIMPLE_CHAT_MODE=0` changes legacy screens but does not disable the new production link handoff.
 
 ## 📍 Address intake rule (URL-first)
 

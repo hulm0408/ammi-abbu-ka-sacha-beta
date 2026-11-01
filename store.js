@@ -687,7 +687,8 @@ function buildBaselines(pristineText) {
     accounts: toMap(base.config?.accounts),
     deleted: toMap(base.config?.deletedAccounts),
     vault: toMap(base.sessionVault),
-    drafts: toMap(base.drafts)
+    drafts: toMap(base.drafts),
+    proAccountGrants: toMap(base.config?.proAccountGrants)
   };
 }
 
@@ -809,7 +810,7 @@ function baselinesFor(data) {
   // bana): purana behaviour = khaali baseline. Isse disk ke naye tombstones
   // phir bhi lagte hain — logged-out ID wapas zinda nahi hoti.
   if (!data.__pristineText) {
-    const empty = { orders: {}, accounts: {}, deleted: {}, vault: {}, drafts: {} };
+    const empty = { orders: {}, accounts: {}, deleted: {}, vault: {}, drafts: {}, proAccountGrants: {} };
     try { Object.defineProperty(data, '__baseCache', { value: empty, enumerable: false, configurable: true, writable: true }); } catch {}
     return empty;
   }
@@ -1047,6 +1048,38 @@ function mergeConcurrentWriters(data) {
         data.drafts[uid] = diskDraft;
       }
     }
+  }
+
+  // Mini App shared-ID grants are security decisions, not last-writer-wins
+  // config. A stale account/wallet/snapshot writer must never undo a revoke.
+  // Merge each grant against its read baseline; conflicting changes deny.
+  if (data.config && typeof data.config === 'object') {
+    const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const caller = object(data.config.proAccountGrants);
+    const disk = object(liveDisk?.config?.proAccountGrants);
+    const baseRows = object(base.proAccountGrants);
+    const haveBaseline = typeof data.__pristineText === 'string';
+    const merged = {};
+    for (const uid of new Set([...Object.keys(caller), ...Object.keys(disk), ...Object.keys(baseRows)])) {
+      if (!/^\d{1,20}$/.test(uid)) continue;
+      let prior = {};
+      try { prior = object(JSON.parse(baseRows[uid] || '{}')); } catch {}
+      const local = object(caller[uid]);
+      const live = object(disk[uid]);
+      const row = {};
+      for (const key of new Set([...Object.keys(prior), ...Object.keys(local), ...Object.keys(live)])) {
+        if (['__proto__', 'prototype', 'constructor'].includes(key)) continue;
+        const before = prior[key], wanted = local[key], current = live[key];
+        let value;
+        if (!haveBaseline) value = wanted === current ? current : undefined;
+        else if (wanted === before) value = current;
+        else if (current === before || wanted === current) value = wanted;
+        // Divergent concurrent decisions, including any revoke, fail closed.
+        if (typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)) row[key] = value;
+      }
+      if (Object.keys(row).length) merged[uid] = row;
+    }
+    data.config.proAccountGrants = merged;
   }
 
   if (typeof data.orders === 'object' && data.orders !== null) {
@@ -1608,13 +1641,16 @@ export function updateDraft(userId, updates) {
   return db.drafts[userId];
 }
 
-export function clearDraft(userId) {
+export function clearDraft(userId, { clearMiniAppLinks = false } = {}) {
   const db = getDb();
+  const links = db.drafts?.[userId]?.miniAppLinks;
   db.drafts[userId] = {
     address: null,
     cart: null,
     submitted: false,
-    currentOrderId: null
+    currentOrderId: null,
+    // Closing an older chat order must not erase newer Mini App handoff links.
+    ...(!clearMiniAppLinks && links ? { miniAppLinks: links } : {})
   };
   saveDb(db);
   return db.drafts[userId];

@@ -1045,3 +1045,12 @@ main { padding-top: 18px; }
 
 /* Keep the Mini App still; loading states remain visible without animation. */
 *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+
+/* Chat link handoff: compact, accessible account choices. */
+.handoff-accounts { display: grid; gap: 8px; }
+.handoff-account { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); text-align: left; cursor: pointer; }
+.handoff-account strong, .handoff-account small { display: block; }
+.handoff-account small { margin-top: 3px; color: var(--muted); }
+.handoff-account > span:last-child { font-weight: 700; color: var(--blue); }
+.handoff-account:disabled { cursor: not-allowed; opacity: .55; }
+.input-wrap select { width: 100%; min-width: 0; padding: 12px 0; border: 0; background: transparent; color: var(--text); font: inherit; }

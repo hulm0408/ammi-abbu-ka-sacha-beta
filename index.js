@@ -10,6 +10,7 @@ import {
 } from './channel-gate.js';
 import http from 'http';
 import net from 'node:net';
+import crypto from 'node:crypto';
 import { Telegraf, Markup } from 'telegraf';
 import { handleSwiggyProHttp } from './swiggy-pro-api.js';
 import { getProVaultSource } from './swiggy-pro-store.js';
@@ -67,6 +68,7 @@ import {
   syncAccountsJsonMirror,
 } from './store.js';
 import { extractSharedUrls, stripSharedLinks, isLinkOnlyShareText } from './link-utils.js';
+import { parseChatShareLinks, readChatHandoff, saveChatHandoffLinks } from './chat-miniapp-handoff.js';
 import { restoreMoneyOnBoot, restoreIdentityOnBoot, startDbDurability, backupMoneyNow } from './db-durability.js';
 import { submitBotWalletTopup, notifyPendingTopup, retryPendingTopupNotifications, retryPendingWalletUtrs } from './wallet-topup-service.js';
 import { runDurabilityDoctor } from './durability-doctor.js';
@@ -1384,6 +1386,7 @@ function getUserScreen(userId, user) {
   }
 
   const draft = getDraft(userId);
+  if (draft.miniAppLinks) return chatHandoffCard(readChatHandoff(userId));
   if (simpleMode) return buildSimpleHomeScreen(draft);
   const hasCart = Boolean(draft.cart);
   const hasAddr = Boolean(draft.address);
@@ -1514,6 +1517,11 @@ function makeFullSessionCopyButton(_ctx, label, accKey, fullValue, fallbackCallb
 // `SIMPLE_CHAT_MODE=0` restores the older multi-topic customer screens.
 function simpleChatForUser(userId) {
   return isSimpleChatEnabled() && !isBoss(Number(userId));
+}
+function chatHandoffEnabled() {
+  // Production link handoff is independent of the legacy screen theme. Offline
+  // legacy suites opt out through TEST_MODE unless they explicitly enable it.
+  return String(process.env.TEST_MODE || '') !== '1' || isSimpleChatEnabled();
 }
 
 function customerOrderCard(order, chatId = null) {
@@ -2535,8 +2543,8 @@ bot.start(async (ctx) => {
   }
 });
 
-// Optional Mini App: the chat flow remains unchanged. Set an explicit HTTPS
-// origin rather than trusting request Host headers or a guessed deployment URL.
+// Set an explicit HTTPS Mini App origin rather than trusting request Host
+// headers or a guessed deployment URL.
 function configuredMiniAppUrl(raw = process.env.PRO_MINIAPP_URL) {
   try {
     const url = new URL(String(raw || '').trim());
@@ -2546,6 +2554,83 @@ function configuredMiniAppUrl(raw = process.env.PRO_MINIAPP_URL) {
     return url.toString();
   } catch { return ''; }
 }
+
+function chatHandoffCard(links = {}) {
+  const cart = Boolean(links.cartUrl);
+  const address = Boolean(links.addressUrl);
+  const ready = cart && address;
+  const url = configuredMiniAppUrl();
+  const prompt = ready
+    ? (url ? 'Mini App mein continue karein.' : 'Mini App configured nahi hai. Admin se baat karein.')
+    : (!cart && !address ? 'Swiggy cart aur address links bhejein.' : !cart ? 'Ab cart link bhejein.' : 'Ab address link bhejein.');
+  const rows = [];
+  if (ready && url) rows.push([{ text: 'Open Mini App', web_app: { url } }]);
+  rows.push([{ text: '👛 Wallet', callback_data: 'wallet_home' }]);
+  return {
+    text: `🛒 Cart ${cart ? '✓' : '—'}  ·  📍 Address ${address ? '✓' : '—'}\n${prompt}`,
+    keyboard: { reply_markup: { inline_keyboard: rows } }
+  };
+}
+
+async function showChatHandoff(ctx, entry) {
+  const card = chatHandoffCard(entry);
+  await ctx.reply(card.text, card.keyboard);
+}
+
+async function recordChatHandoffLinks(ctx, links) {
+  const userId = ctx.from.id;
+  try {
+    const saved = saveChatHandoffLinks(userId, links);
+    if (!saved.cartUrl) userWaitState[userId] = { action: 'waiting_miniapp_cart' };
+    else if (!saved.addressUrl) userWaitState[userId] = { action: 'waiting_miniapp_address' };
+    else delete userWaitState[userId];
+    await showChatHandoff(ctx, saved);
+    return true;
+  } catch (err) {
+    await ctx.reply(err?.message || 'Links save nahi hue. Dobara bhejein.');
+    return false;
+  }
+}
+
+async function askChatLinkKind(ctx, pending) {
+  let label = 'Link';
+  try { const u = new URL(pending.urls[0]); label = `${u.hostname}/…${u.pathname.slice(-6)}`; } catch {}
+  // A different token for every link prevents an old button or a double tap
+  // from classifying a later URL in the queue.
+  pending.nonce = crypto.randomBytes(6).toString('hex');
+  await ctx.reply(`${label}: cart hai ya address?`, {
+    reply_markup: { inline_keyboard: [[
+      { text: '🛒 Cart', callback_data: `mini_link_c:${pending.nonce}` },
+      { text: '📍 Address', callback_data: `mini_link_a:${pending.nonce}` }
+    ]] }
+  });
+}
+
+bot.action(/^mini_link_([ca]):([a-f0-9]{12})$/, async (ctx) => {
+  const pending = userWaitState[ctx.from.id];
+  if (pending?.action !== 'classify_miniapp_link' || !pending.urls?.length || pending.nonce !== ctx.match[2]) {
+    await ctx.answerCbQuery('Naya button use karein.').catch(() => {});
+    return;
+  }
+  const kind = ctx.match[1] === 'c' ? 'cart' : 'address';
+  pending.nonce = ''; // consume before the first await
+  const current = pending.urls.shift();
+  const duplicate = pending.links[kind] && pending.links[kind] !== current;
+  if (!duplicate) pending.links[kind] = current;
+  await ctx.answerCbQuery().catch(() => {});
+  if (userWaitState[ctx.from.id] !== pending) return;
+  if (duplicate) {
+    delete userWaitState[ctx.from.id];
+    await ctx.reply(`Do ${kind} links mile. Cart aur address alag se bhejein.`);
+    return;
+  }
+  if (pending.urls.length) {
+    pending.number += 1;
+    await askChatLinkKind(ctx, pending);
+    return;
+  }
+  await recordChatHandoffLinks(ctx, pending.links);
+});
 
 async function authorizeMiniAppUser(user) {
   if (isBoss(user.id)) return { allowed: true };
@@ -2631,16 +2716,8 @@ bot.action('boss_maintenance_heal', async (ctx) => {
 
 bot.command('help', async (ctx) => {
   const isBossUser = isBoss(ctx.from?.id);
-  if (isSimpleChatEnabled() && !isBossUser) {
-    return ctx.reply(
-      '🍽 <b>Order kaise karein</b>\n\n' +
-      '1️⃣ Swiggy <b>Cart link</b> + <b>Address link</b> ek saath paste karein\n' +
-      '2️⃣ Bot bill dikhayega — <b>✅ Confirm</b> dabayein\n' +
-      '3️⃣ QR aayega, pay karein\n' +
-      '4️⃣ <b>Tracking link</b> yahin chat me aa jayega\n\n' +
-      '<i>Kuch type nahi karna. Koi web app / mini app nahi.</i>',
-      { parse_mode: 'HTML' }
-    );
+  if (chatHandoffEnabled() && !isBossUser) {
+    return ctx.reply('Swiggy ka cart aur address link bhejein, phir Mini App mein ID, address, cart aur bill check karein.');
   }
   const text =
     `🍽 <b>Order Kaise Karein</b>\n\n` +
@@ -2661,7 +2738,7 @@ bot.command('cancel', async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
   delete userWaitState[userId];
-  clearDraft(userId);
+  clearDraft(userId, { clearMiniAppLinks: true });
   if (isBoss(userId)) {
     const home = getBossPanelHome();
     return ctx.reply(home.text, { parse_mode: 'HTML', ...home.keyboard });
@@ -8638,7 +8715,7 @@ bot.command(['sendtobeta', 'send_to_beta', 'sendorder', 'send_order', 'order'], 
 
 bot.hears(['✖ Cancel Draft', 'Cancel Draft', 'cancel draft', '● Cancel Draft'], async (ctx) => {
   const userId = ctx.from.id;
-  clearDraft(userId);
+  clearDraft(userId, { clearMiniAppLinks: true });
   delete userWaitState[userId];
   await ctx.reply('✖ <b>Draft clear ho gaya!</b>', { parse_mode: 'HTML', ...getUserReplyKeyboard() });
   return renderUserCard(ctx, userId);
@@ -8647,7 +8724,7 @@ bot.hears(['✖ Cancel Draft', 'Cancel Draft', 'cancel draft', '● Cancel Draft
 bot.action(['action_clear_draft', 'action_cancel_draft'], async (ctx) => {
   await ctx.answerCbQuery('Draft Cleared').catch(() => {});
   const userId = ctx.from.id;
-  clearDraft(userId);
+  clearDraft(userId, { clearMiniAppLinks: true });
   delete userWaitState[userId];
   const screen = getUserScreen(userId, ctx.from);
   try {
@@ -9051,6 +9128,41 @@ bot.on('text', async (ctx, next) => {
   if (isBoss(userId) && state && state.action === 'waiting_boss_wallet_search') {
     delete userWaitState[userId];
     return sendBossWalletList(ctx, { query: rawText, notice: '' }).catch(() => {});
+  }
+
+  // New private-chat links are only collected here. No account is chosen and
+  // no Swiggy request, bill, or order starts in Telegram chat. Forwarded/admin
+  // work and unrelated wait states keep their existing paths.
+  const handoffWaits = new Set(['waiting_cart', 'waiting_address', 'waiting_both_links',
+    'waiting_miniapp_cart', 'waiting_miniapp_address', 'classify_miniapp_link']);
+  if (chatHandoffEnabled() && ctx.chat?.type === 'private' && (!isBoss(userId) || !extractForwardSenderInfo(ctx.message)) &&
+      (!state || handoffWaits.has(state.action))) {
+    const parsed = parseChatShareLinks(rawText);
+    const found = Boolean(parsed.cart || parsed.address || parsed.ambiguous.length);
+    if (parsed.duplicates.length) {
+      await ctx.reply('Ek cart aur ek address link bhejein.');
+      return;
+    }
+    if (found) {
+      const links = { ...(parsed.cart ? { cart: parsed.cart } : {}), ...(parsed.address ? { address: parsed.address } : {}) };
+      if (parsed.ambiguous.length) {
+        const pending = { action: 'classify_miniapp_link', links, urls: [...parsed.ambiguous], number: 1 };
+        userWaitState[userId] = pending;
+        await askChatLinkKind(ctx, pending);
+      } else {
+        await recordChatHandoffLinks(ctx, links);
+      }
+      return;
+    }
+    if (parsed.unsupported.some(link => /(?:swiggy|swig\.gy|maps\.app|maps\.google|goo\.gl\/maps)/i.test(link) && !isOfficialSwiggyTrackingUrl(link))) {
+      await ctx.reply('Swiggy ka cart aur address share link bhejein.');
+      return;
+    }
+    if (state && ['waiting_miniapp_cart', 'waiting_miniapp_address', 'classify_miniapp_link'].includes(state.action) &&
+        !rawText.startsWith('/')) {
+      await ctx.reply('Sahi Swiggy cart ya address link bhejein.');
+      return;
+    }
   }
 
   // ================= PRIORITY #1: ZERO-OTP CART / ADDRESS / JSON GUARD (BOTH BOSS & CUSTOMERS!) =================
@@ -11804,7 +11916,7 @@ async function promptSimpleBothLinks(ctx) {
   state.promptIds = [];
   try {
     const prompt = await ctx.reply(
-      '🛒 <b>Cart link</b> + 📍 <b>Address link</b> — dono ek saath paste karein 👇',
+      '🛒 <b>Cart link</b> + 📍 <b>Address link</b> — saath ya alag bhejein 👇',
       {
         parse_mode: 'HTML',
         reply_markup: {
