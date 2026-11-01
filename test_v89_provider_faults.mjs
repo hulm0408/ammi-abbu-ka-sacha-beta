@@ -63,12 +63,15 @@ test('real provider path revalidates and sends exactly one POST with receiver de
   assert.equal(calls, 1); assert.deepEqual(unknownUrls, []);
 });
 
-test('stale quote, changed address, recipient or quantity stop before POST', async () => {
+test('stale quote, missing/changed address, recipient, quantity, add-on or variant stop before POST', async () => {
   for (const mutate of [
     () => { meta.order_total = 150.26; },
     () => { meta.address_id = 'another'; },
+    () => { delete meta.address_id; },
     () => { remoteAddress.mobile = '9345678901'; },
-    () => { meta.cart_menu_items[0].quantity = 2; }
+    () => { meta.cart_menu_items[0].quantity = 2; },
+    () => { meta.cart_menu_items[0].addons = [{ group_id: '1', choice_id: '2' }]; },
+    () => { meta.cart_menu_items[0].variants = [{ group_id: '5', variation_id: '7' }]; }
   ]) {
     reset(); mutate();
     await assert.rejects(attempt('provider:preflight-' + Math.random()), /Swiggy|receiver|recipient/i);

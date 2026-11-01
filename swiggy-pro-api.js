@@ -11,9 +11,10 @@ import { importStatementText, recordStatementPayment, statementStatus, retryPend
 import { describeSmsTruth, describeTrackingTruth, scanRecipientSmsEvidence } from './tracking-truth.js';
 import { summarizeIdentity } from './identity-snapshot.js';
 import { planQrGeneration, isRenderableQrImage, describeQrPlan } from './qr-generation-plan.js';
-import { exactPaise } from './swiggy-cart-integrity.js';
-import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder, isZeroSmsTestSandboxActive } from './swiggy-cart.js';
-import { deleteAccount, getDb, isBoss, saveDb, saveDbDurable, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
+import { exactPaise, sameDeliveryRecipient } from './swiggy-cart-integrity.js';
+import { isOfficialSwiggyTrackingUrl, normalizeSwiggyOrderId, validateTrackingUrlForOrder, isZeroSmsTestSandboxActive, isValidIndianDeliveryCoordinates } from './swiggy-cart.js';
+import { deleteAccount, getDb, getActiveUserOrder, isBoss, saveDb, saveDbDurable, updateAccount, permanentLogoutAccount, normalizeSwiggySessionPayload } from './store.js';
+import { readChatHandoff, markChatHandoffStarted, safeSwiggyShareUrl } from './chat-miniapp-handoff.js';
 import { notifyPendingTopup, retryPendingWalletUtrs } from './wallet-topup-service.js';
 import {
   buildTopupUpiIntent, chargeServiceFee, creditWallet, ensureWallet, findUsedUtr, getWallet, minTopupPaise,
@@ -133,22 +134,28 @@ async function bodyJson(req) {
 }
 
 /**
- * Boss (31-10-2026): "JO ACCOUNT ME UPLOAD KARTA HU WO SAARE USERS KO SHOW HONA
- * CHAHIYE BUT KOI USER AGAR APNA ACCOUNT ADD KARE TO WO SABKO SHOW NA HO."
- *
- * Isliye map do hone chahiye:
- *   • shared (boss/operator vault) — har user ko dikhta hai, par sirf boss
- *     badal sakta hai;
- *   • private workspace — sirf us Telegram user ka, kisi doosre ko kabhi nahi.
- * Boss ka apna map pehle jaisa hi shared vault hai (boss wahin likhta hai).
+ * The operator sees the vault; each other Telegram user sees only their own
+ * private accounts and the specific operator accounts explicitly granted to
+ * them. Missing or unreadable grant data fails closed. Grant changes do not
+ * delete any account or workspace.
  */
 function sharedAccountMap() {
   try { return getDb().config?.accounts || {}; } catch { return {}; }
 }
+function grantIdentity(account) {
+  const phone = normalizeIndianMobileNumber(account?.phone || account?.mobile || '');
+  const customerId = String(account?.customerId || '').trim();
+  const identity = phone ? `phone:${phone}` : (customerId && customerId !== '0' && customerId !== '-1' ? `customer:${customerId}` : '');
+  return identity ? crypto.createHash('sha256').update(`pro-account-access:${identity}`).digest('hex') : '';
+}
 function accountMap(user, workspace) {
   const shared = sharedAccountMap();
   if (isBoss(user.id)) return shared;
-  return { ...shared, ...workspace.accounts };
+  const grants = getDb().config?.proAccountGrants?.[String(user.id)] || {};
+  const allowed = Object.fromEntries(Object.entries(shared).filter(([key, account]) =>
+    Object.prototype.hasOwnProperty.call(grants, key) && grantIdentity(account) && grants[key] === grantIdentity(account)
+  ));
+  return { ...allowed, ...workspace.accounts };
 }
 /**
  * Kya ye ID operator (boss) ki hai? User ke apne workspace me isi key ka
@@ -226,35 +233,57 @@ function listAccounts(user, workspace) {
       };
     });
 }
+function sessionFingerprint(account) {
+  // Bind a verified customer ID to the actual stored credentials, not merely a
+  // phone/account key. Never send this digest or any session field to a client.
+  const stable = [account?.cookies || account?.cookie, account?.token, account?.sid, account?._session_tid].filter(Boolean);
+  const material = stable.length ? stable : [account?.jwtTid || account?.tid].filter(Boolean);
+  if (!material.length) return '';
+  return crypto.createHash('sha256').update(JSON.stringify(material)).digest('hex');
+}
+function validCustomerId(value) {
+  const id = String(value || '').trim();
+  return id && id !== '0' && id !== '-1' ? id : '';
+}
+function accountWithBinding(ws, key, saved) {
+  const account = { ...saved, __proPrivate: true };
+  const binding = ws.sessionBindings?.[key];
+  if (!validCustomerId(account.customerId) && binding && sessionFingerprint(saved) &&
+      binding.fingerprint === sessionFingerprint(saved)) account.customerId = validCustomerId(binding.customerId);
+  return account;
+}
 function currentAccount(user, workspace) {
   const map = accountMap(user, workspace);
   const key = workspace.activeAccountKey;
   if (!key || !Object.prototype.hasOwnProperty.call(map, key) || !map[key]?.isLoggedIn || map[key]?.isLoggedOut) {
     throw error(400, 'First select a logged-in Swiggy account in Accounts.');
   }
-  // External provider helpers must never mutate the shared vault by matching
-  // this Mini App session's phone, even when it is a boss's own account.
-  return { ...map[key], __proPrivate: true };
+  return accountWithBinding(workspace, key, map[key]);
 }
-/**
- * Purane session JSON me `customer_id` nahi hota. Checkout usi par rukta tha
- * ("reconnect karein") — user ke liye dead end. Bill/sync ke waqt ek hi baar
- * Swiggy se identity le kar workspace me save kar dete hain; order placement
- * ka raasta (aur uska double-tap barrier) chhua nahi jaata.
- */
-async function ensureAccountCustomerId(provider, user, ws, account) {
-  const existing = String(account?.customerId || '').trim();
-  if (existing) return existing;
-  const live = await provider.verifySession(account).catch(() => null);
-  const resolved = String(live?.customerId || '').trim();
-  if (!resolved) return '';
-  account.customerId = resolved;
-  const key = String(ws.activeAccountKey || '');
-  if (key && ws.accounts?.[key]) {
-    ws.accounts[key] = { ...ws.accounts[key], customerId: resolved };
-    writeProWorkspace(user.id, ws);
-  }
+async function verifyAndBindAccount(provider, user, ws, key, saved) {
+  const fingerprint = sessionFingerprint(saved);
+  if (!fingerprint) throw error(409, 'Selected ID ka session available nahi hai. Admin se baat karein.');
+  const live = await provider.verifySession({ ...saved, __proPrivate: true }).catch(() => null);
+  const resolved = validCustomerId(live?.customerId);
+  if (live?.valid !== true || !resolved) throw error(409, 'Selected ID ka Swiggy session verify nahi hua. Doosri ID chunein ya admin se baat karein.');
+  const original = validCustomerId(saved.customerId);
+  if (original && original !== resolved) throw error(409, 'Selected ID ka session saved customer se match nahi hua. Admin se baat karein.');
+  ws.sessionBindings ||= {};
+  ws.sessionBindings[key] = { fingerprint, customerId: resolved };
+  writeProWorkspace(user.id, ws);
   return resolved;
+}
+async function ensureAccountCustomerId(provider, user, ws, account) {
+  const existing = validCustomerId(account?.customerId);
+  if (existing) return existing;
+  const key = String(ws.activeAccountKey || '');
+  const saved = accountMap(user, ws)[key];
+  if (!key || !saved) return '';
+  try {
+    const id = await verifyAndBindAccount(provider, user, ws, key, saved);
+    account.customerId = id;
+    return id;
+  } catch { return ''; }
 }
 function requireEditableCart(ws) {
   if (ws.checkout && ws.checkout.status !== 'PAID') {
@@ -875,13 +904,128 @@ function applyIdleExpiry(user, ws, { route = '' } = {}) {
   return { changed, closed: plan.expire ? ws.abandoned[ws.abandoned.length - 1] : null, timeoutMs: timeout };
 }
 
+function draftDigest(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(value ?? null)).digest('hex');
+}
+function chatCartDigest(cart) {
+  return draftDigest({ restaurantId: String(cart?.restaurantId || ''), items: cart?.items || [], forSomeoneElse: cart?.forSomeoneElse === true });
+}
+function reconcileChatFlow(user, ws) {
+  const flow = ws.chatFlow;
+  if (!flow || flow.stage === 'DONE' || ws.checkout) return false;
+  let changed = false;
+  if (flow.accountKey && (ws.activeAccountKey !== flow.accountKey || !accountMap(user, ws)[flow.accountKey])) {
+    preserveHandoffDraft(ws);
+    flow.stage = 'ACCOUNT'; flow.accountKey = ''; flow.sessionFingerprint = '';
+    ws.pendingAddress = null; ws.selectedAddress = null;
+    if (ws.cart) ws.cart.quote = null;
+    changed = true;
+  } else if (['CART', 'BILL'].includes(flow.stage) && !ws.selectedAddress) {
+    flow.stage = 'ADDRESS'; changed = true;
+  } else if (flow.stage === 'BILL' && !ws.cart?.quote) {
+    flow.stage = 'CART'; changed = true;
+  }
+  return changed;
+}
+function chatHandoffView(user, ws) {
+  const pending = readChatHandoff(user.id);
+  const ready = pending?.id && safeSwiggyShareUrl(pending.cartUrl) && safeSwiggyShareUrl(pending.addressUrl) && pending.cartUrl !== pending.addressUrl;
+  const flow = ws.chatFlow && ws.chatFlow.stage !== 'DONE' ? ws.chatFlow : null;
+  const newLink = ready && pending.id !== ws.chatFlow?.id ? pending.id : '';
+  if (!flow && !newLink) return null;
+  let stage = flow?.stage || '';
+  if (stage === 'BILL' && !ws.cart?.quote) stage = 'CART';
+  if (['CART', 'BILL'].includes(stage) && !ws.selectedAddress) stage = 'ADDRESS';
+  if (flow?.accountKey && ws.activeAccountKey !== flow.accountKey) stage = 'ACCOUNT';
+  return {
+    pendingId: String(newLink || ''), activeId: String(flow?.id || ''), stage,
+    address: stage === 'ADDRESS' ? (ws.pendingAddress || null) : null,
+    cartFetched: stage === 'CART' && Boolean(ws.cart?.items?.length),
+    existingDraft: Boolean(ws.cart || ws.selectedAddress || ws.pendingAddress || flow),
+    blockedByCheckout: Boolean(ws.checkout), blockedByChatOrder: Boolean(getActiveUserOrder(user.id))
+  };
+}
+function bossAccountAccessView() {
+  const db = getDb();
+  const grants = db.config?.proAccountGrants && typeof db.config.proAccountGrants === 'object' ? db.config.proAccountGrants : {};
+  const accounts = Object.entries(db.config?.accounts || {}).map(([key, a]) => ({
+    key, name: String(a?.swiggyName || a?.name || 'Swiggy ID').slice(0, 80), phoneMasked: maskAccountPhone(a?.phone || a?.mobile || '')
+  }));
+  const users = Object.entries(db.knownUsers || {})
+    .filter(([id]) => /^\d{1,20}$/.test(id) && !isBoss(id))
+    .sort((a, b) => Number(b[1]?.lastSeen || 0) - Number(a[1]?.lastSeen || 0)).slice(0, 300)
+    .map(([id, u]) => ({
+      id, name: String([u?.firstName, u?.lastName].filter(Boolean).join(' ') || u?.username || id).slice(0, 80),
+      allowed: accounts.filter(a => {
+        const identity = grantIdentity(db.config?.accounts?.[a.key]);
+        return identity && grants[id]?.[a.key] === identity;
+      }).map(a => a.key)
+    }));
+  return { accounts, users };
+}
+function preserveHandoffDraft(ws) {
+  if (!ws.cart && !ws.selectedAddress && !ws.pendingAddress && !ws.chatFlow) return;
+  ws.handoffDraftBackups ||= [];
+  ws.handoffDraftBackups.push(structuredClone({
+    savedAt: new Date().toISOString(), activeAccountKey: ws.activeAccountKey || '',
+    selectedAddress: ws.selectedAddress || null, pendingAddress: ws.pendingAddress || null,
+    cart: ws.cart || null, chatFlow: ws.chatFlow || null
+  }));
+}
+function requireChatFlow(user, ws, body, stages, { checkAccount = true } = {}) {
+  const flow = ws.chatFlow;
+  if (!flow || flow.stage === 'DONE' || String(body?.handoffId || '') !== String(flow.id)) throw error(409, 'Links badal gaye. Mini App refresh karein.');
+  if (ws.checkout) throw error(409, 'Pehle existing checkout check karein.');
+  if (!stages.includes(flow.stage)) throw error(409, 'Pehle pichla step complete karein.');
+  if (checkAccount && flow.accountKey) {
+    const saved = accountMap(user, ws)[flow.accountKey];
+    if (ws.activeAccountKey !== flow.accountKey || !saved || !saved.isLoggedIn || saved.isLoggedOut ||
+        !flow.sessionFingerprint || sessionFingerprint(saved) !== flow.sessionFingerprint) {
+      throw error(409, 'Selected ID badal gayi ya unavailable hai. Mini App refresh karke ID phir chunein.');
+    }
+    const row = listAccounts(user, ws).find(a => a.key === flow.accountKey);
+    if (!row || (!row.selectable && !(row.needsConfirm && flow.confirmedUsed))) throw error(409, row?.reason || 'Selected ID abhi available nahi hai.');
+  }
+  return flow;
+}
+async function quoteChatHandoff(provider, user, ws, flow, { quick }) {
+  if (!ws.cart?.items?.length || flow.cartDigest !== chatCartDigest(ws.cart) ||
+      !ws.selectedAddress || flow.addressDigest !== draftDigest(ws.selectedAddress)) {
+    throw error(409, 'Cart ya address badal gaya. Dobara check karein.');
+  }
+  const account = currentAccount(user, ws);
+  if (!validCustomerId(account.customerId)) throw error(409, 'Selected ID ko dobara verify karein.');
+  if (getActiveUserOrder(user.id)) throw error(409, 'Chat mein active order hai. Pehle usko check karein.');
+  enforceRateLimit(user, 'cartSync');
+  ws.cart.quote = null;
+  flow.stage = 'CART';
+  writeProWorkspace(user.id, ws);
+  const quote = await provider.quoteCart(account, ws.selectedAddress, { ...ws.cart, quickBill: quick, autoOneLite: false, skipOfferClaim: true }, '');
+  if (!quote?.bill || exactPaise(quote.bill.total) === null || Number(quote.bill.total) <= 0 ||
+      !quote.address?.id || !sameDeliveryRecipient(ws.selectedAddress, quote.address)) {
+    throw error(502, 'Swiggy ne same address aur valid bill confirm nahi kiya. Koi order place nahi hua.');
+  }
+  ws.selectedAddress = cleanAddress(quote.address);
+  flow.addressDigest = draftDigest(ws.selectedAddress);
+  ws.cart.activeSubscriptionItems = Array.isArray(quote.bill.subscriptionItems) ? quote.bill.subscriptionItems : [];
+  ws.cart.quote = {
+    ...billBreakdown(quote.bill, { items: ws.cart.items }),
+    couponCode: String(quote.bill.coupon || '').toUpperCase(), autoCoupon: quote.bill.autoCoupon === true,
+    couponTried: Array.isArray(quote.bill.couponTried) ? quote.bill.couponTried.slice(0, 5) : [],
+    ofoConfirmed: quote.ofoConfirmed === true, quickBill: quick, fetchedAt: new Date().toISOString()
+  };
+  flow.stage = 'BILL';
+  writeProWorkspace(user.id, ws);
+}
 function publicState(user, ws) {
-  autoSelectAccount(user, ws);
+  const handoff = chatHandoffView(user, ws);
+  // For a chat handoff the customer must explicitly choose or auto-choose.
+  if (!handoff) autoSelectAccount(user, ws);
   return {
     user: { name: user.firstName || 'Friend', isBoss: isBoss(user.id) },
     orderFee: { paise: serviceFeePaiseFor(getDb()), exempt: isBoss(user.id) || Boolean(getWallet(getDb(), user.id)?.feeExempt) },
     accounts: listAccounts(user, ws), activeAccount: activeAccountForClient(user, ws),
-    selectedAddress: ws.selectedAddress, cart: ws.cart,
+    selectedAddress: ws.selectedAddress, cart: ws.cart, chatHandoff: chatHandoffView(user, ws),
     checkout: publicCheckout(ws.checkout, { restricted: Boolean(ws.checkout) && isSharedAccountFor(user, ws, ws.checkout.accountKey) }),
     // Boss (31-10-2026, round 3): "ACTUAL PAYMENT FLOW APPLY KAR." Ab in-app
     // checkout default ON hai; band karna ho to PRO_ENABLE_CHECKOUT=0.
@@ -894,11 +1038,19 @@ function publicState(user, ws) {
 function checkoutAccount(user, ws) {
   const key = String(ws.checkout?.accountKey || '');
   const map = accountMap(user, ws);
-  const account = Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+  // Revoking a shared ID must stop new use but must not strand an already
+  // submitted order. Only this checkout's original account is available for
+  // status/recovery; normal account selection still requires a grant.
+  const account = Object.prototype.hasOwnProperty.call(map, key) ? map[key]
+    : (isSharedAccountFor(user, ws, key) ? sharedAccountMap()[key] : null);
   if (!account?.isLoggedIn || account.isLoggedOut) throw error(409, 'The original Swiggy account is unavailable. Reconnect that account before checking this order.');
+  const bound = accountWithBinding(ws, key, account);
+  if (ws.checkout?.accountSessionFingerprint && sessionFingerprint(account) !== ws.checkout.accountSessionFingerprint) {
+    throw error(409, 'The original account session changed. Reconnect the verified original account before checking this order.');
+  }
   const originalId = String(ws.checkout?.accountCustomerId || '').trim();
-  if (originalId && String(account.customerId || '').trim() !== originalId) throw error(409, 'The saved account no longer matches the original checkout account. Check Swiggy My Orders.');
-  return { ...account, __proPrivate: true };
+  if (originalId && String(bound.customerId || '').trim() !== originalId) throw error(409, 'The saved account no longer matches the original checkout account. Check Swiggy My Orders.');
+  return bound;
 }
 /**
  * Boss (31-10-2026): "USER KO ORDER HISTORY ME BAS CHOTA CARD DIKHEGA, JAB ME
@@ -1003,9 +1155,13 @@ function storeAccount(user, ws, incoming) {
     ws.accounts[key] = { ...incoming, phone, mobile: phone, isLoggedIn: true };
     ws.activeAccountKey = key;
   }
-  // Refreshing the original session must not erase the pending order's receiver
-  // and cart. A different account is blocked above until the checkout resolves.
-  if (!unresolved) invalidateAccountDependentState(ws);
+  // Refreshing the verified original session must not erase the pending order.
+  // Bind its new credentials only after requireOriginalReconnect matched the
+  // provider-verified customer ID; a different account remains blocked.
+  if (unresolved) {
+    const fresh = accountMap(user, ws)[ws.activeAccountKey];
+    ws.checkout.accountSessionFingerprint = sessionFingerprint(fresh);
+  } else invalidateAccountDependentState(ws);
 }
 
 export async function handleSwiggyProHttp(req, res, { provider = proProvider, otp = defaultOtp, authorizeUser = null, claim = activateAllEventOffers, deleteOtp = defaultDeleteOtp, telegram = null } = {}) {
@@ -1061,7 +1217,8 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
       const ws = readProWorkspace(user.id);
       // Idle sweep — har request par, routes se pehle (boss: 2 minute rule).
       const idle = applyIdleExpiry(user, ws, { route });
-      if (idle.changed) writeProWorkspace(user.id, ws);
+      const handoffReconciled = reconcileChatFlow(user, ws);
+      if (idle.changed || handoffReconciled) writeProWorkspace(user.id, ws);
       if (route === '/pro/api/bootstrap' && req.method === 'GET') {
         const quotedAt = Date.parse(ws.cart?.quote?.fetchedAt || '');
         if (ws.cart?.quote && (!Number.isFinite(quotedAt) || Date.now() - quotedAt > 5 * 60_000 || quotedAt > Date.now() + 30_000)) {
@@ -1091,6 +1248,183 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           // ka intezaar bekaar hai — boss ko yahi saaf dikhna chahiye.
           liveOrder: liveOrderStatus()
         });
+        return;
+      }
+      // Only the operator can grant individual shared IDs to a known Telegram
+      // user. Existing records are retained; an absent grant always means no
+      // access. A user must first contact the bot so the operator can identify them.
+      if (route === '/pro/api/boss/account-access' && req.method === 'GET') {
+        if (!isBoss(user.id)) throw error(403, 'ID access sirf admin manage kar sakta hai.');
+        json(res, 200, { ok: true, access: bossAccountAccessView() });
+        return;
+      }
+      if (route === '/pro/api/boss/account-access' && req.method === 'POST') {
+        if (!isBoss(user.id)) throw error(403, 'ID access sirf admin manage kar sakta hai.');
+        const body = await bodyJson(req);
+        const target = String(body.userId || '');
+        const key = String(body.accountKey || '');
+        const db = getDb();
+        if (body.confirm !== true || typeof body.allow !== 'boolean') throw error(400, 'Access change confirm karein.');
+        if (!/^\d{1,20}$/.test(target) || !Object.prototype.hasOwnProperty.call(db.knownUsers || {}, target) || isBoss(target)) {
+          throw error(400, 'Pehle user ko bot kholne ko kahein, phir user list se chunein.');
+        }
+        if (!key || ['__proto__', 'prototype', 'constructor'].includes(key) ||
+            !Object.prototype.hasOwnProperty.call(db.config?.accounts || {}, key)) throw error(404, 'Operator ID nahi mili.');
+        if (!db.config.proAccountGrants || typeof db.config.proAccountGrants !== 'object' || Array.isArray(db.config.proAccountGrants)) db.config.proAccountGrants = {};
+        const previous = db.config.proAccountGrants[target];
+        const grants = previous && typeof previous === 'object' && !Array.isArray(previous) ? { ...previous } : {};
+        if (body.allow) {
+          const identity = grantIdentity(db.config.accounts[key]);
+          if (!identity) throw error(400, 'Is ID ka saved phone ya customer ID nahi mila.');
+          grants[key] = identity;
+        } else delete grants[key];
+        db.config.proAccountGrants[target] = grants;
+        if (!saveDbDurable(db)) throw error(503, 'ID access save nahi hua. Dobara check karein.');
+        json(res, 200, { ok: true, access: bossAccountAccessView() });
+        return;
+      }
+      // Chat hands off only links. Every transition below is scoped to the
+      // verified Telegram user and persisted in their encrypted workspace.
+      if (route === '/pro/api/chat-handoff/start' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const links = readChatHandoff(user.id);
+        if (!links || String(body.handoffId || '') !== String(links.id || '') ||
+            !safeSwiggyShareUrl(links.cartUrl) || !safeSwiggyShareUrl(links.addressUrl) || links.cartUrl === links.addressUrl) {
+          throw error(409, 'Dono Swiggy links chat mein dobara bhejein.');
+        }
+        if (ws.chatFlow?.id === links.id && ws.chatFlow.stage !== 'DONE') {
+          json(res, 200, { ok: true, ...publicState(user, ws) }); return;
+        }
+        if (ws.checkout) throw error(409, 'Existing checkout pehle check karein; naya order start nahi hua.');
+        if (getActiveUserOrder(user.id)) throw error(409, 'Chat mein pehle se active order hai. Pehle usko check karein.');
+        const existing = Boolean(ws.cart || ws.selectedAddress || ws.pendingAddress || (ws.chatFlow && ws.chatFlow.stage !== 'DONE'));
+        if (existing && body.confirmReplaceDraft !== true) {
+          const e = error(409, 'Mini App mein pehle se draft hai. Replace karne se pehle confirm karein.');
+          e.code = 'DRAFT_EXISTS'; throw e;
+        }
+        if (existing) preserveHandoffDraft(ws);
+        ws.cart = null; ws.selectedAddress = null; ws.pendingAddress = null; ws.addressCandidates = []; ws.menu = null;
+        ws.chatFlow = {
+          id: String(links.id), stage: 'ACCOUNT', accountKey: '', sessionFingerprint: '',
+          cartUrl: safeSwiggyShareUrl(links.cartUrl), addressUrl: safeSwiggyShareUrl(links.addressUrl),
+          createdAt: new Date().toISOString()
+        };
+        writeProWorkspace(user.id, ws);
+        if (!markChatHandoffStarted(user.id, links.id)) throw error(503, 'Links Mini App mein saved hain; app dobara khol kar continue karein.');
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/chat-handoff/select' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const flow = requireChatFlow(user, ws, body, ['ACCOUNT']);
+        const rows = listAccounts(user, ws);
+        const row = body.auto === true
+          ? (rows.find(r => r.selectable && r.status === 'READY') || rows.find(r => r.selectable))
+          : rows.find(r => r.key === String(body.key || ''));
+        if (!row) throw error(404, 'Koi available ID nahi mili. Admin se baat karein.');
+        if (!row.selectable && !(row.needsConfirm && body.confirmUsed === true)) {
+          const e = error(409, row.reason || 'Ye ID abhi available nahi hai.');
+          e.code = row.needsConfirm ? 'ACCOUNT_NEEDS_CONFIRM' : 'ACCOUNT_UNAVAILABLE'; throw e;
+        }
+        const saved = accountMap(user, ws)[row.key];
+        if (!saved || !saved.isLoggedIn || saved.isLoggedOut) throw error(409, 'Ye ID abhi available nahi hai.');
+        const fingerprint = sessionFingerprint(saved);
+        await verifyAndBindAccount(provider, user, ws, row.key, saved);
+        const after = accountMap(user, ws)[row.key];
+        if (!after || sessionFingerprint(after) !== fingerprint) throw error(409, 'ID ka session badal gaya. Dobara chunein.');
+        ws.activeAccountKey = row.key;
+        invalidateAccountDependentState(ws);
+        flow.accountKey = row.key; flow.sessionFingerprint = fingerprint;
+        flow.confirmedUsed = row.needsConfirm === true && body.confirmUsed === true;
+        flow.stage = 'ADDRESS';
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/chat-handoff/leave' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const flow = requireChatFlow(user, ws, body, ['ACCOUNT', 'ADDRESS', 'CART', 'BILL'], { checkAccount: false });
+        if (body.confirmLeave !== true) throw error(400, 'Draft chhodne se pehle confirm karein.');
+        preserveHandoffDraft(ws);
+        flow.stage = 'DONE';
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/chat-handoff/reselect' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const flow = requireChatFlow(user, ws, body, ['ADDRESS', 'CART', 'BILL'], { checkAccount: false });
+        if (body.confirmChange !== true) throw error(400, 'ID change confirm karein.');
+        preserveHandoffDraft(ws);
+        ws.pendingAddress = null; ws.selectedAddress = null; ws.cart = null;
+        flow.stage = 'ACCOUNT'; flow.accountKey = ''; flow.sessionFingerprint = '';
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/chat-handoff/address' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const flow = requireChatFlow(user, ws, body, ['ADDRESS']);
+        if (ws.pendingAddress?.address) { json(res, 200, { ok: true, ...publicState(user, ws) }); return; }
+        enforceRateLimit(user, 'addressResolve');
+        const address = cleanAddress(await provider.resolveAddress(currentAccount(user, ws), flow.addressUrl));
+        if (!address.address || !isValidIndianDeliveryCoordinates(address.lat, address.lng)) {
+          throw error(502, 'Swiggy se pura address aur location nahi mila. Link check karke dobara try karein.');
+        }
+        ws.pendingAddress = address;
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/chat-handoff/confirm-address' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const flow = requireChatFlow(user, ws, body, ['ADDRESS']);
+        if (body.confirmAddress !== true || !ws.pendingAddress?.address ||
+            !isValidIndianDeliveryCoordinates(ws.pendingAddress.lat, ws.pendingAddress.lng)) {
+          throw error(400, 'Pehle fetched address check karke confirm karein.');
+        }
+        const name = String(body.name || '').trim().slice(0, 120);
+        const mobile = normalizeIndianMobileNumber(body.mobile || '');
+        if (!name || !mobile) throw error(400, 'Receiver ka naam aur 10-digit mobile number zaroori hai.');
+        ws.selectedAddress = cleanAddress({ ...ws.pendingAddress, name, mobile });
+        ws.pendingAddress = null;
+        flow.addressDigest = draftDigest(ws.selectedAddress);
+        flow.stage = 'CART';
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/chat-handoff/cart' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const flow = requireChatFlow(user, ws, body, ['CART']);
+        if (!ws.selectedAddress || flow.addressDigest !== draftDigest(ws.selectedAddress)) throw error(409, 'Address badal gaya. Phir se confirm karein.');
+        if (ws.cart?.items?.length && flow.cartDigest === chatCartDigest(ws.cart)) { json(res, 200, { ok: true, ...publicState(user, ws) }); return; }
+        enforceRateLimit(user, 'cartImport');
+        const group = await provider.groupCart(currentAccount(user, ws), ws.selectedAddress, flow.cartUrl);
+        if (!group?.restaurantId || !Array.isArray(group.items) || !group.items.length ||
+            group.items.some(i => !i?.menu_item_id || !Number.isFinite(Number(i.qty ?? i.quantity)) || Number(i.qty ?? i.quantity) <= 0 || i.inStock === false)) {
+          throw error(502, 'Swiggy se available cart items nahi mile. Link check karke dobara try karein.');
+        }
+        ws.cart = { ...group, items: group.items.map(i => ({ ...i, lineKey: crypto.randomUUID() })), forSomeoneElse: true, activeSubscriptionItems: [], quote: null };
+        flow.cartDigest = chatCartDigest(ws.cart);
+        writeProWorkspace(user.id, ws);
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/chat-handoff/bill' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const flow = requireChatFlow(user, ws, body, ['CART']);
+        if (body.confirmReplaceSwiggyCart !== true) throw error(400, 'Selected ID ka Swiggy cart replace karne ki permission dein.');
+        await quoteChatHandoff(provider, user, ws, flow, { quick: true });
+        json(res, 200, { ok: true, ...publicState(user, ws) });
+        return;
+      }
+      if (route === '/pro/api/chat-handoff/offers' && req.method === 'POST') {
+        const body = await bodyJson(req);
+        const flow = requireChatFlow(user, ws, body, ['BILL']);
+        if (body.confirmResync !== true) throw error(400, 'Swiggy cart phir se sync karne ki permission dein.');
+        await quoteChatHandoff(provider, user, ws, flow, { quick: false });
+        json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
       }
       if (route === '/pro/api/backup' && req.method === 'POST') {
@@ -1810,6 +2144,10 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (!id) throw error(400, 'Invalid Swiggy order ID.');
         const scope = url.searchParams.get('scope') || 'active';
         const scopeKey = scope === 'checkout' ? String(ws.checkout?.accountKey || '') : String(ws.activeAccountKey || '');
+        if (scope === 'checkout' && isSharedAccountFor(user, ws, scopeKey) &&
+            id !== normalizeSwiggyOrderId(ws.checkout?.orderId || '')) {
+          throw error(403, 'Only this checkout order can be tracked through the original shared ID.');
+        }
         // Boss (31-10-2026, round 19): "TRACKING LINK BHI NAHI AARAHA".
         // Operator ke ID par pehle poora tracking band tha. Tracking LINK
         // Swiggy ka public page hai (order ID ka token) — customer ko wo
@@ -1925,6 +2263,13 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const body = await bodyJson(req);
         if (!checkoutEnabled()) throw error(503, checkoutBlockReason());
         if (ws.checkout) throw error(409, 'A checkout is already pending or unresolved. Check its status; do not place another order.');
+        if (ws.chatFlow && ws.chatFlow.stage !== 'DONE') {
+          const flow = requireChatFlow(user, ws, { handoffId: ws.chatFlow.id }, ['BILL']);
+          if (flow.cartDigest !== chatCartDigest(ws.cart) || flow.addressDigest !== draftDigest(ws.selectedAddress)) {
+            throw error(409, 'Cart ya address badal gaya. Pehle naya bill check karein.');
+          }
+          if (getActiveUserOrder(user.id)) throw error(409, 'Chat mein active order hai. Pehle usko check karein.');
+        }
         const account = currentAccount(user, ws);
         const customerId = String(account.customerId || '').trim();
         if (!customerId) throw error(409, 'Reconnect this Swiggy account before checkout so its identity can be verified for recovery.');
@@ -1973,7 +2318,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         // Workspace/cart mutation still requires one app instance (see setup).
         ws.checkout = {
           id: checkoutId, accountKey: ws.activeAccountKey, accountPhone: String(account.phone || ''), status: 'SUBMITTING',
-          accountCustomerId: customerId,
+          accountCustomerId: customerId, accountSessionFingerprint: sessionFingerprint(accountMap(user, ws)[ws.activeAccountKey]),
           createdAt: new Date().toISOString(), amount: total, restaurantName: String(ws.cart.restaurantName || ''),
           // Round 21 ("NO SMS RECEIVED"): SMS ka sach receiver ke number par
           // tika hai — isliye order ke waqt hi yaad rakho ki Swiggy ko kaunsa
@@ -2206,6 +2551,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         ws.checkoutGeneration = generation + 1;
         ws.checkout = null;
         ws.cart = null;
+        if (ws.chatFlow) ws.chatFlow.stage = 'DONE';
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, ...publicState(user, ws) });
         return;
@@ -2223,7 +2569,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         'GROUP_CART_PLACED', 'GROUP_CART_BUSY', 'GROUP_CART_FETCH_FAILED', 'SWIGGY_ACCOUNT_NOT_REGISTERED',
         'OTP_IDENTITY_MISSING', 'WALLET_LOW_BALANCE', 'INVALID_UPI', 'DUPLICATE_UTR',
         'UTR_REQUIRED', 'UTR_INVALID', 'NO_TOPUP_INTENT', 'TOPUP_AMOUNT_MISMATCH',
-        'RATE_LIMITED', 'ACCOUNT_ALREADY_MANAGED', 'AMOUNT_TOO_LOW'
+        'RATE_LIMITED', 'ACCOUNT_ALREADY_MANAGED', 'ACCOUNT_UNAVAILABLE', 'DRAFT_EXISTS', 'AMOUNT_TOO_LOW'
       ]);
       const code = KNOWN_CODES.has(String(err?.code || '')) ? err.code : undefined;
       json(res, status, {

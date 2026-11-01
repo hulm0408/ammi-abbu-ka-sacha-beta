@@ -656,6 +656,10 @@ export const proProvider = {
     const { lat, lng } = coords(address);
     if (!address.name || !normalizeIndianMobileNumber(address.mobile)) throw badRequest('Confirm the receiver name and 10-digit mobile number first.');
     const requestedCoupon = String(coupon || '').trim().toUpperCase();
+    // The chat handoff asks for a first, genuine bill without waiting for the
+    // optional offer/One Lite search. It still saves and reads back the exact
+    // address, cart and payable amount under the same account lock.
+    const quickBill = cart.quickBill === true && !requestedCoupon;
     const budget = {
       // Boss ko speed chahiye par offers bhi — dono: discovery 2.5s, trials 9s.
       trialBudgetMs: Math.max(3_000, Math.min(Number(process.env.PRO_COUPON_BUDGET_MS) || 9_000, 20_000)),
@@ -673,8 +677,12 @@ export const proProvider = {
       const itemsPayload = buildSwiggyCartItemsPayload(cart.items);
       const ofoFields = cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: address }) : {};
       const engine = { offersClaimed: 0, offersNote: '', oneLite: 'not_tried', couponTrials: [], couponsSeen: 0, notes: [] };
-
+      let lastReadback = null;
+      let unconfirmedCartWrite = false;
       const push = async ({ couponCode = '', subscriptionItems = [], timeoutMs = 9000 } = {}) => {
+        // A timeout can occur after Swiggy changed the cart. Do not reuse an
+        // earlier quote until a final successful write and readback settle it.
+        unconfirmedCartWrite = true;
         const out = await swiggyCartUpdate(account, {
           restaurantId: cart.restaurantId,
           address_id: addressId,
@@ -701,26 +709,28 @@ export const proProvider = {
         }
         const total = Number(meta.order_total);
         if (exactPaise(total) === null || total <= 0) throw unavailable('Swiggy did not return a valid payable amount.');
-        return {
+        lastReadback = {
           parsed, meta, total,
           coupon: String(parsed?.couponCode || '').toUpperCase(),
           originalTotal: Number(parsed?.itemTotal || meta.item_total || 0) + Number(parsed?.packingCharges || 0) + Number(parsed?.taxesAndCharges || 0)
         };
+        unconfirmedCartWrite = false;
+        return lastReadback;
       };
 
       // ── Step 0: ₹50-off / free-cash offers claim (bot ka same call) ────────
       // Ye claim hi bill me "Extra Discount (Free Cash)" laata hai. Pehle Mini
       // App ise kabhi nahi karta tha — isliye ₹50 kabhi nahi lagta tha.
-      const claimPromise = Promise.race([
+      const claimPromise = quickBill || cart.skipOfferClaim === true ? Promise.resolve(null) : Promise.race([
         activateAllEventOffers(account).catch(err => ({ success: false, reason: String(err?.message || err).slice(0, 120) })),
         new Promise(resolve => { const t = setTimeout(() => resolve(null), 6000); if (typeof t.unref === 'function') t.unref(); })
       ]);
 
       // ── Step 1: plain cart + One Lite (delivery free) ─────────────────────
-      let base = await push({ couponCode: requestedCoupon });
-      const deliveryFee = Number(base.parsed?.deliveryFee || 0);
       let subscriptionItems = Array.isArray(cart.activeSubscriptionItems) ? cart.activeSubscriptionItems : [];
-      if (cart.autoOneLite !== false && deliveryFee > 1 && Number(base.parsed?.swiggyOneMembershipFee || 0) === 0) {
+      let base = await push({ couponCode: requestedCoupon, subscriptionItems });
+      const deliveryFee = Number(base.parsed?.deliveryFee || 0);
+      if (!quickBill && cart.autoOneLite !== false && deliveryFee > 1 && Number(base.parsed?.swiggyOneMembershipFee || 0) === 0) {
         const planIds = [...new Set([
           String(base.parsed?.eligibleSuperPlan?.planId || '').trim(),
           '773'
@@ -774,7 +784,7 @@ export const proProvider = {
       if (base.parsed?.suggestedCouponCode) add(base.parsed.suggestedCouponCode, base.parsed.suggestedCouponCode, 'Swiggy ka best suggested', 3);
 
       const estCartVal = Math.round(Number(base.parsed?.itemTotal || 250));
-      const [mcpCoupons, mcpCart, offersPay, offersRest] = await Promise.all([
+      const [mcpCoupons, mcpCart, offersPay, offersRest] = quickBill ? [null, null, null, null] : await Promise.all([
         callSwiggyFoodMcpTool(account, 'fetch_food_coupons', { restaurantId: String(cart.restaurantId), addressId }, 2500).catch(() => null),
         callSwiggyFoodMcpTool(account, 'get_food_cart', { addressId }, 2000).catch(() => null),
         dapiFetch(account, `offers/payment?lat=${lat}&lng=${lng}&restaurantId=${cart.restaurantId}&cart_value=${estCartVal}&restaurant_id=${cart.restaurantId}&sourcePage=cart&source_page=cart&page_type=PAYMENT_OFFERS_PAGE`, { lat, lng, timeoutMs: 2500 }).catch(() => null),
@@ -795,8 +805,12 @@ export const proProvider = {
       }
       const mcpSuggested = mcpCart?.structured?.offers?.coupon_applied || mcpCart?.structured?.coupon_code || mcpCart?.structured?.data?.coupon_code || '';
       if (mcpSuggested) add(mcpSuggested, mcpSuggested, 'Swiggy auto-suggested', 3);
-      for (const code of ['SNACKIT', 'TRYNEW', 'STEALDEAL', 'SWIGGYIT', 'WELCOME50', 'FLAT150', 'MEALDEAL', 'DELULU4FOOD']) {
-        add(code, code, 'Swiggy promo code', 35);
+      if (!quickBill) {
+        for (const code of ['SNACKIT', 'TRYNEW', 'STEALDEAL', 'SWIGGYIT', 'WELCOME50', 'FLAT150', 'MEALDEAL', 'DELULU4FOOD']) {
+          add(code, code, 'Swiggy promo code', 35);
+        }
+      } else {
+        engine.notes.push('Quick bill: extra offers and One Lite were not checked.');
       }
       engine.couponsSeen = found.size;
 
@@ -804,7 +818,7 @@ export const proProvider = {
       let best = base;
       // User ne khud koi code chuna ho to wahi chalta hai — auto use nahi
       // badalta (user ka faisla upar hai). Auto mode me hi sabse kam bill dhoondte hain.
-      const candidates = (requestedCoupon ? [] : [...found.values()])
+      const candidates = (requestedCoupon || quickBill ? [] : [...found.values()])
         .filter(c => c.applicable !== false || c.code === base.coupon)
         .filter(c => !ineligible.has(c.code) || c.code === base.coupon)
         .filter(c => c.code !== base.coupon)
@@ -829,15 +843,7 @@ export const proProvider = {
         if (attempt.total < best.total - 0.005) best = attempt;
       }
 
-      // ── Step 4: jeetne wala coupon cart par final rakho ──────────────────
-      if (best.coupon !== base.coupon || best !== base) {
-        try {
-          const settled = await push({ couponCode: best.coupon, subscriptionItems });
-          if (settled.total <= best.total + 0.005) best = settled;
-        } catch { engine.notes.push('winning coupon dobara lagane par Swiggy ne alag total diya'); }
-      }
-
-      // ── Step 5: claim ka sach + free cash bill me aaya ya nahi ───────────
+      // ── Step 4: claim ka sach + free cash bill me aaya ya nahi ───────────
       const claimAnswer = await claimPromise.catch(() => null);
       if (claimAnswer) {
         engine.offersClaimed = Number(claimAnswer.claimed || 0);
@@ -855,6 +861,16 @@ export const proProvider = {
         }
       }
 
+      // Trials may leave a different coupon/subscription in the real cart, or
+      // time out after a write. Settle the chosen configuration and use its
+      // latest readback; if that fails, return no bill rather than an old one.
+      if (unconfirmedCartWrite || lastReadback !== best) {
+        const chosen = best;
+        best = await push({ couponCode: chosen.coupon, subscriptionItems });
+        if (Math.abs(best.total - chosen.total) > 0.005 || best.coupon !== chosen.coupon) {
+          engine.notes.push('Swiggy returned a different final bill; latest readback shown.');
+        }
+      }
       const { parsed, meta, total } = best;
       const returnedNumber = (...values) => {
         const raw = values.find(v => v !== undefined && v !== null && v !== '');
@@ -944,20 +960,15 @@ export const proProvider = {
       } else if (!parsed) {
         fail('CART_PARSE', 'Swiggy ka cart jawab samajh nahi aaya (items parse nahi hue).');
       } else {
-        const quantityOk = sameCartItems(cart.items, parsed.items) ||
-          // Group cart import ke raw variants/add-ons Swiggy ke shape se thoda
-          // alag hote hain — pehle item+qty compare karo, phir hi "badal gaya"
-          // bolo. Jhoothi mismatch ki wajah se order nahi rukna chahiye.
-          (() => {
-            const key = list => list.map(i => `${i.menu_item_id || i.itemId || i.id}:${Number(i.qty ?? i.quantity) || 0}`).sort().join('|');
-            return Boolean(cart.items?.length) && key(cart.items) === key(parsed.items || []);
-          })();
-        if (!quantityOk) fail('CART_ITEMS', 'Swiggy ke cart me items badal gaye (Swiggy app me kuch add/hata hua hai).');
+        // Item IDs and quantities alone are insufficient: an add-on or variant
+        // can change while the total stays the same. The quote used this same
+        // strict readback, so checkout must fail closed on any mismatch.
+        if (!sameCartItems(cart.items, parsed.items)) fail('CART_ITEMS', 'Swiggy ke cart me items, variants ya add-ons badal gaye.');
         if (parsed.restaurantId && String(parsed.restaurantId) !== String(cart.restaurantId)) {
           fail('RESTAURANT', `Restaurant badal gaya — bill ${cart.restaurantId}, Swiggy ${parsed.restaurantId}.`);
         }
       }
-      if (addressId && addressId !== String(address.id)) fail('ADDRESS', `Delivery address Swiggy par alag hai (bill ${address.id}, Swiggy ${addressId}).`);
+      if (!addressId || addressId !== String(address.id)) fail('ADDRESS', `Delivery address Swiggy cart par confirm nahi hua (bill ${address.id}, Swiggy ${addressId || 'missing'}).`);
       if (exactPaise(liveTotal) === null) fail('AMOUNT_MISSING', 'Swiggy ne payable amount nahi diya.');
       else if (exactPaise(liveTotal) !== exactPaise(expected)) {
         fail('AMOUNT', `Bill ka amount badal gaya — aapne ₹${expected} dekh kar Pay dabaya, Swiggy ab ₹${liveTotal} keh raha hai.`);

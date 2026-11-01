@@ -27,6 +27,8 @@ const { bootstrapSwiggyWebSessionFromAndroidTokens } = await import('./swiggy-ca
 const { getDb, saveDb } = await import('./store.js');
 const db = getDb();
 db.config.accounts.shared_test = { id: 'shared_test', isLoggedIn: true, name: 'Boss vault account', phone: '9876543210', token: 'boss-secret-sentinel' };
+const sharedGrant = crypto.createHash('sha256').update('pro-account-access:phone:9876543210').digest('hex');
+db.config.proAccountGrants = Object.fromEntries(['7001', '7002', '7003', '7011'].map(id => [id, { shared_test: sharedGrant }]));
 saveDb(db);
 
 const address = { id: 'address-1', name: 'Receiver', mobile: '9876543210', address: 'Test apartment, Test Road', area: 'Test', city: 'Test City', lat: '18.5204', lng: '73.8567', annotation: 'HOME' };
@@ -114,7 +116,7 @@ test('vault key khud banti hai (dead-end nahi), par purana data galat key se nah
     const bootstrap = await request('/pro/api/bootstrap', fresh);
     assert.equal(bootstrap.status, 200);
     assert.equal(bootstrap.body.ok, true);
-    // Boss (31-10-2026): operator ke upload kiye ID sabko dikhte hain.
+    // This fixture explicitly grants the operator ID to this user.
     assert.equal(bootstrap.body.accounts.length, 1);
     assert.equal(bootstrap.body.accounts[0].owner, 'operator');
     assert.equal(JSON.stringify(bootstrap.body).includes('boss-secret-sentinel'), false);
