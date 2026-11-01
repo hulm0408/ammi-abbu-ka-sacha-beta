@@ -249,23 +249,21 @@
   }
   // Boss (31-10-2026): "JAISE YOUTUBE PAR NET NA HO" — har load par upar patli
   // progress bar, aur content me skeleton. Koi button bina feedback nahi.
+  // Round 34 (boss): "REMOVE THAT DASH WHICH ANIMATION." Top ki sweeping
+  // progress bar gayi — busy button khud spin karta hai, so wahi feedback
+  // kaafi hai. `state.loading` abhi bhi ginti rakhta hai (idle refresh isse
+  // rukta hai), bas koi patli dash bar animate nahi hoti.
   function startLoading() {
     state.loading += 1;
-    try {
-      const bar = document.getElementById('loadbar');
-      if (bar) bar.hidden = false;
-      document.body.classList.add('is-loading');
-    } catch { /* window band ho gaya */ }
+    try { document.body.classList.add('is-loading'); } catch { /* window band ho gaya */ }
   }
   function stopLoading() {
     state.loading = Math.max(0, state.loading - 1);
     if (state.loading) return;
-    try {
-      const bar = document.getElementById('loadbar');
-      if (bar) bar.hidden = true;
-      document.body.classList.remove('is-loading');
-    } catch { /* window band ho gaya */ }
+    try { document.body.classList.remove('is-loading'); } catch { /* window band ho gaya */ }
   }
+  // `.is-loading` ko CSS me rakhte hain taaki koi bhi naya loader isi hook par
+  // lage — par abhi koi dash/sweep animation nahi chalti.
   async function run(task, button) {
     // Boss (31-10-2026): "ADDRESS PAGE LOAD HO RAHA HAI TO KISI AUR PAGE PAR
     // SHIFT NAHI HO PAA RAHA." Ek global busy-lock tab change ko rok deta tha.
@@ -782,6 +780,19 @@
     const distance = q.deliveryDistance ? ` <small>${esc(q.deliveryDistance)}</small>` : '';
     return `<div class="card bill-card" id="bill-details"><div class="card-title">${icon('receipt')} Bill Details ${q.optimizePending === true ? '<span class="bill-chip">Best coupon check…</span>' : ''} <button class="icon-button right" type="button" data-action="bill-refresh" aria-label="Refresh bill">${icon('refresh')}</button></div><div class="divider"></div>${present(q.itemTotal) ? row('Items Total', money(q.itemTotal)) : ''}${discount > 0 ? row(`Coupon ${esc(q.coupon || '')}`, `−${money(discount)}`, 'saving') : ''}${freeCash > 0 ? row('Extra Discount (Free Cash)', `−${money(freeCash)}`, 'saving') : ''}${tradeDiscount > 0 ? row('Extra Discount (Restaurant)', `−${money(tradeDiscount)}`, 'saving') : ''}${oneFee > 0 ? row('Swiggy One Lite Membership', `+${money(oneFee)}`) : ''}${deliveryFree ? `<div class="bill-row free-delivery"><span>Free Delivery</span><strong>${deliverySaved > 0 ? `${money(deliverySaved)} saved` : 'Applied'}</strong></div>` : ''}${deliveryKnown ? row(`Delivery Fee${distance}`, deliveryFree ? `FREE${deliverySaved > 0 ? ` (${money(deliverySaved)} saved)` : ''}` : money(q.deliveryFee), deliveryFree ? 'saving' : '') : ''}${packing > 0 ? row('Packing Charges', money(packing)) : ''}${(taxes + other) > 0 ? row('GST &amp; Other Charges', money(taxes + other)) : ''}${offer > 0 ? row('Extra saving (bill me)', `−${money(offer)}`, 'saving') : ''}${savings > 0 ? `<div class="bill-row total-savings"><span>Total Savings</span><strong>${money(savings)}</strong></div>` : ''}<div class="bill-row total"><span>To Pay</span><span>${money(q.total)}</span></div></div>`;
   }
+  /**
+   * Boss (01-11-2026, round 34): "REMOVE THAT DASH WHICH ANIMATION — LITTLE
+   * CREATIVE WHICH DENOTES BILLS ARE LOADING."
+   *
+   * Isliye jab tak asli bill nahi aata, ek chhoti si "receipt print ho rahi
+   * hai" card dikhti hai: bill ki lines ek-ek karke aati hain (top se neeche),
+   * na round spinner, na sweeping dash. Aur kitna hoga — koi number nahi.
+   * Ye `.bill-card` nahi hai, taaki "bill ke bina bill card nahi" rule bacha rahe.
+   */
+  function renderBillLoading(q, cart) {
+    if (q || !cart || !(cart.items || []).length) return '';
+    return `<div class="card bill-loading" role="status" aria-live="polite"><div class="card-title">${icon('receipt')} Bill Details</div><div class="divider"></div><div class="bill-loading-body"><span class="bill-paper" aria-hidden="true"><i></i><i></i><i></i><i class="total"></i></span><div class="bill-loading-copy"><strong>Bill ban raha hai…</strong><small>Swiggy se asli bill aa raha hai — koi andaaza nahi.</small><button class="link-button" type="button" data-action="bill-refresh">Nahi aa raha? Dobara try</button></div></div></div>`;
+  }
   /** Kitna bacha — sirf jo Swiggy ke bill me asli me dikha. */
   function savedAmount(q) {
     if (!q) return 0;
@@ -988,8 +999,25 @@
     const savingsBanner = saved > 0 ? `<div class="savings-banner">${icon('spark')} ${money(saved)} saved!${q?.coupon ? ` · ${esc(q.coupon)}` : ''}</div>` : '';
     const eta = `<div class="eta-strip"><span class="eta-clock">${icon('orders')}</span><span class="eta-copy"><strong>${cart.restaurantTime ? `Delivery in ${esc(cart.restaurantTime)}` : 'Delivery time Swiggy se aayega'}</strong><small>${esc([cart.restaurantName, cart.restaurantArea].filter(Boolean).join(' · '))}</small></span></div>`;
     // Pay bar: Swiggy jaisa — bada amount + bill link left, green pay right.
-    const payBar = `<div class="pay-bar"><button class="button green pay-now" type="button" data-action="checkout-start" ${locked || !state.checkoutEnabled ? 'disabled' : ''} ${!state.checkoutEnabled ? `title="${esc(state.checkoutBlockReason || '')}"` : ''}>${state.checkoutEnabled ? `Pay Now ${icon('arrow')}` : 'Payment band'}</button><div class="pay-left"><strong aria-label="Bill amount">${q ? money(q.total) : '—'}</strong></div></div>${state.checkoutEnabled ? '' : `<div class="warning pay-blocked">Payment abhi band hai — ${esc(state.checkoutBlockReason || 'server ne reason nahi diya')}</div>`}`;
-    return `${head('CHECKOUT', 'Checkout', '')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${renderSavingsCorner(q)}${renderBill(q)}${state.checkoutWarning ? `<div class="warning" role="alert">${esc(state.checkoutWarning)}</div>` : ''}${payBar}`;
+    // Boss (round 34): "BESIDE PAY NOW BUTTON ADD SOMETHING" — bill aane ke baad
+    // Pay Now ke bagal me 2 minute ka live clock. Uske andar tap karo, warna
+    // sab saaf ho jata hai (server wahi karta hai).
+    const idleLeft = q ? payRemaining() : 0;
+    const idleChip = q
+      ? (idleLeft > 0
+        ? `<span class="idle-chip" title="Itne time me Pay Now dabaiye"><span class="idle-dot" aria-hidden="true"></span><b data-pay-countdown>${payCountdownText(idleLeft)}</b></span>`
+        : '<span class="idle-chip expired"><b>Time up</b></span>')
+      : '';
+    // Ek chhoti line — boss ka rule saaf bole, lecture na ho. Pay bar ke andar
+    // NAHI (round 33: pay bar par lambi copy nahi) — bar ke thik upar.
+    const idleNote = q
+      ? '<p class="idle-note">2 minute tak koi activity nahi — sab band ho jayega.</p>'
+      : '<p class="idle-note">Bill aane ke baad 2 minute honge Pay Now ke liye — tab tak kuch saaf nahi hoga.</p>';
+    // Bill ke bina bhi Pay Now chalta hai (round 27 ka rule) — dabane par pehle
+    // asli bill aata hai, phir payment. Bas total "—" rehta hai, koi andaaza nahi.
+    const billReady = Boolean(q && Number.isFinite(Number(q.total)));
+    const payBar = `<div class="pay-bar"><button class="button green pay-now" type="button" data-action="checkout-start" ${locked || !state.checkoutEnabled ? 'disabled' : ''} ${!state.checkoutEnabled ? `title="${esc(state.checkoutBlockReason || '')}"` : ''}>${state.checkoutEnabled ? `Pay Now ${icon('arrow')}` : 'Payment band'}</button><div class="pay-left"><strong aria-label="Bill amount">${billReady ? money(q.total) : '—'}</strong>${idleChip}</div></div>${state.checkoutEnabled ? '' : `<div class="warning pay-blocked">Payment abhi band hai — ${esc(state.checkoutBlockReason || 'server ne reason nahi diya')}</div>`}`;
+    return `${head('CHECKOUT', 'Checkout', '')}${lockedNotice}${state.checkout ? renderCheckout() : ''}${eta}${savingsBanner}${delivery}<div class="line-heading">${icon('cart')} Your Order <span class="pill right">${quantity} item${quantity === 1 ? '' : 's'}${q ? ' · ' + money(q.total) : ''}</span></div>${restaurantCard}${renderMealRail(cart)}${groupCard}${renderSavingsCorner(q)}${renderBill(q)}${renderBillLoading(q, cart)}${state.checkoutWarning ? `<div class="warning" role="alert">${esc(state.checkoutWarning)}</div>` : ''}${idleNote}${payBar}`;
   }
   /**
    * Order detail ka bill/payment hissa (round 30). Rule: sirf wahi line jo
@@ -1213,18 +1241,64 @@
    * (user ko button dabane ki zaroorat nahi).
    */
   let idleTimer = null;
+  let payCountdown = null;
+  /**
+   * Boss (01-11-2026, round 34): "AFTER BILL IS FETCHED YOU HAVE 2 MINUTES TO
+   * CLICK PAY NOW, OTHERWISE EVERYTHING WILL GET CLEAR."
+   * Clock bill ke `fetchedAt` se chalta hai — bill load hone ke dauraan nahi.
+   */
+  function payDeadline() {
+    const timeout = Number(state.idle?.timeoutMs || 0) || 2 * 60 * 1000;
+    const fetched = Date.parse(String(state.cart?.quote?.fetchedAt || ''));
+    if (!Number.isFinite(fetched)) return 0;
+    return fetched + timeout;
+  }
+  function payRemaining() {
+    const deadline = payDeadline();
+    return deadline ? Math.max(0, deadline - Date.now()) : 0;
+  }
+  /** `m:ss` — Pay Now ke bagal me dikhta hai. */
+  function payCountdownText(ms) {
+    const total = Math.max(0, Math.ceil(ms / 1000));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+  }
+  function startPayCountdown() {
+    if (payCountdown) return;
+    payCountdown = setInterval(() => {
+      const el = document.querySelector('[data-pay-countdown]');
+      if (!el) { clearInterval(payCountdown); payCountdown = null; return; }
+      const left = payRemaining();
+      el.textContent = left > 0 ? payCountdownText(left) : '0:00';
+      el.classList.toggle('is-low', left > 0 && left <= 30_000);
+      if (left <= 0) { clearInterval(payCountdown); payCountdown = null; }
+    }, 1000);
+    if (typeof payCountdown?.unref === 'function') payCountdown.unref();
+  }
   function scheduleIdleRefresh() {
     clearTimeout(idleTimer);
     const timeout = Number(state.idle?.timeoutMs || 0);
     if (!timeout) return;
     const hasDraft = Boolean(state.cart || (state.checkout && state.checkout.status !== 'PAID'));
     if (!hasDraft) return;
+    // Bill aane se pehle clock shuru hi nahi hota (server bhi yahi maanta hai).
+    // Bill load ho raha ho to refresh bhi nahi — warna adhoora page saaf dikhta.
+    const hasQuote = Boolean(state.cart?.quote && Number.isFinite(Date.parse(String(state.cart.quote.fetchedAt || ''))));
+    const left = hasQuote ? payRemaining() : 0;
+    // Bill aa chuka aur waqt nikal gaya — turant server se sach lete hain.
+    if (hasQuote && !left) {
+      idleTimer = setTimeout(async () => {
+        try { merge(await api('bootstrap')); render(); } catch { /* net */ }
+      }, 600);
+      return;
+    }
+    if (!left) return;
     idleTimer = setTimeout(async () => {
+      if (state.loading > 0) { scheduleIdleRefresh(); return; }
       try {
         const out = await api('bootstrap');
         merge(out); render();
       } catch { /* net gaya — agla render phir try karega */ }
-    }, timeout + 2000);
+    }, left + 1500);
   }
   /**
    * Boss (01-11-2026, round 32): "QR AYE TO WO QR 5 MINUTE TAK PAYMENT VERIFY
@@ -1584,6 +1658,7 @@
       }
       maybeAutoBill();
       maybeFetchHandoff();
+      if (payRemaining() > 0) startPayCountdown();
       scheduleIdleRefresh();
       schedulePaymentPoll();
     } catch { /* window band ho gaya */ }

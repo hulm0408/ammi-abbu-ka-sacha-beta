@@ -155,6 +155,18 @@ function parseMenu(json, restaurantId) {
 
 // Short links are followed without credentials and only to these Swiggy hosts.
 // This avoids exposing account cookies to redirects or using a link as SSRF.
+/**
+ * Round 34: address confirm kitni der maanya jaye. 10 minute me user ka wahi
+ * address/phone/street phir se badalna nahi hota; isse bill ke 2 Swiggy call
+ * bach jate hain. Har confirm ke baad fingerprint (naam+phone+street+pin) match
+ * hona zaroori hai — andaza nahi.
+ */
+const ADDRESS_CONFIRM_TTL_MS = Math.max(60_000, Math.min(Number(process.env.PRO_ADDRESS_CONFIRM_TTL_MS) || 10 * 60_000, 60 * 60_000));
+export function addressFingerprint(address = {}) {
+  const norm = v => String(v ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return [norm(address.name), norm(address.mobile), norm(address.flat_no), norm(address.address || address.area), norm(address.pin || address.pincode)].join('|');
+}
+
 const SHARE_HOSTS = new Set(['swig.gy', 'swiggy.onelink.me', 'www.swiggy.com', 'swiggy.com', 'm.swiggy.com']);
 function shareUrl(value) {
   let url;
@@ -653,6 +665,7 @@ export const proProvider = {
    * `engine` field me jaata hai — jhootha "sab lag gaya" nahi.
    */
   async quoteCart(account, address, cart, coupon, options = {}) {
+    let engineAddressReused = false;
     const { lat, lng } = coords(address);
     if (!address.name || !normalizeIndianMobileNumber(address.mobile)) throw badRequest('Confirm the receiver name and 10-digit mobile number first.');
     const requestedCoupon = String(coupon || '').trim().toUpperCase();
@@ -675,20 +688,51 @@ export const proProvider = {
       maxTrials: Math.max(1, Math.min(Number(process.env.PRO_COUPON_TRIALS) || 6, 12))
     };
     return withSwiggyAccountLock(checkoutLockKey(account), async () => {
-      const saved = await saveAddressToAccount(account, address);
-      if (!saved?.addressId || !saved?.addressDetails) throw unavailable(saved?.error || 'Swiggy did not confirm the delivery address.');
-      const savedList = await fetchAccountAddresses(account);
-      const confirmedAddress = savedList.find(a => String(a.id || '') === String(saved.addressId));
-      if (!confirmedAddress || !sameDeliveryRecipient(address, confirmedAddress)) {
-        throw unavailable('Swiggy did not read back the same receiver, street and location. No bill or order was created.');
+      // ── Round 34 (boss): "MAKE THE CHECK OUT FASTER" ──────────────────────
+      // Bill ke raste me sabse mehnga hissa address tha: har baar saveAddress
+      // (POST) + addresses (GET) + readback. Ab:
+      //   (a) agar wahi address pichhle kuch minute me confirm ho chuka hai
+      //       (ws.cart.confirmedAddress), to dono call bach jate hain — par
+      //       sirf tab jab naam/phone/street BLKUL wahi ho (andaza nahi);
+      //   (b) warna ek hi GET me list laa kar saveAddress ko dete hain, aur
+      //       agar wahi saved address reuse hua to dobara GET nahi.
+      const addressDigest = addressFingerprint(address);
+      const prior = cart.confirmedAddress && Number(cart.confirmedAddress.savedAt || 0) > Date.now() - ADDRESS_CONFIRM_TTL_MS
+        && cart.confirmedAddress.fingerprint === addressDigest ? cart.confirmedAddress : null;
+      let confirmedAddress = null;
+      let addressId = '';
+      if (prior && prior.id && sameDeliveryRecipient(address, prior)) {
+        confirmedAddress = prior;
+        addressId = String(prior.id);
+        engineAddressReused = true;
+      } else {
+        const listed = await fetchAccountAddresses(account).catch(() => null);
+        const saved = await saveAddressToAccount(account, address, Array.isArray(listed) ? listed : null);
+        if (!saved?.addressId || !saved?.addressDetails) throw unavailable(saved?.error || 'Swiggy did not confirm the delivery address.');
+        addressId = String(saved.addressId);
+        if (Array.isArray(listed) && saved.createdNew !== true) {
+          // Wahi purana saved address — list pehle hi aa chuki hai, readback done.
+          const reused = listed.find(a => String(a.id || '') === addressId);
+          if (reused && sameDeliveryRecipient(address, { ...reused, mobile: reused.mobile || reused.phone || '' })) {
+            confirmedAddress = { ...reused, id: addressId, mobile: normalizeIndianMobileNumber(reused.mobile || reused.phone || '') };
+          }
+        }
+        if (!confirmedAddress) {
+          const savedList = await fetchAccountAddresses(account);
+          confirmedAddress = savedList.find(a => String(a.id || '') === String(addressId));
+        }
+        if (!confirmedAddress || !sameDeliveryRecipient(address, confirmedAddress)) {
+          throw unavailable('Swiggy did not read back the same receiver, street and location. No bill or order was created.');
+        }
       }
-      const addressId = String(saved.addressId);
       const itemsPayload = buildSwiggyCartItemsPayload(cart.items);
       const ofoFields = cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: address }) : {};
       const engine = { offersClaimed: 0, offersNote: '', oneLite: 'not_tried', couponTrials: [], couponsSeen: 0, notes: [] };
       let lastReadback = null;
       let unconfirmedCartWrite = false;
-      const push = async ({ couponCode = '', subscriptionItems = [], timeoutMs = 9000 } = {}) => {
+      // Fast phase me har call par timeout — bill 2 minute tak latka na rahe.
+      const pushTimeout = fast ? Math.max(4_000, Math.min(Number(process.env.PRO_FAST_BILL_TIMEOUT_MS) || 7_000, 20_000)) : 9_000;
+      const push = async ({ couponCode = '', subscriptionItems = [], timeoutMs = pushTimeout } = {}) => {
         // A timeout can occur after Swiggy changed the cart. Do not reuse an
         // earlier quote until a final successful write and readback settle it.
         unconfirmedCartWrite = true;
@@ -705,10 +749,30 @@ export const proProvider = {
           const msg = String(out?.json?.statusMessage || '').slice(0, 120) || `HTTP ${out?.status || '?'}`;
           throw unavailable(`Swiggy ne cart update reject kiya (${msg}).`);
         }
-        const readback = await swiggyCartGet(account, { lat, lng, timeoutMs: 8000 });
-        const data = readback?.json?.data;
-        const meta = data?.cartMeta || data;
-        const parsed = data && parseDapiCartPayload(data);
+        // Round 34: cart update ka apna jawab aksar poora cart hi hota hai
+        // (cartMeta + order_total). Us halat me alag GET ki zaroorat nahi —
+        // ek Swiggy round trip bachta hai, bill turant aata hai. Jawab adhoora
+        // ho to hi GET karte hain (jhooth nahi: wahi validation dono par).
+        const pushData = out?.json?.data;
+        const pushMeta = pushData?.cartMeta || pushData;
+        const pushParsed = pushData ? parseDapiCartPayload(pushData) : null;
+        const pushUsable = Boolean(
+          successCode(out?.json?.statusCode) && pushParsed && pushMeta &&
+          Array.isArray(pushParsed.items) && pushParsed.items.length &&
+          exactPaise(Number(pushMeta.order_total)) !== null
+        );
+        let readback;
+        let data;
+        let meta;
+        let parsed;
+        if (pushUsable) {
+          readback = out; data = pushData; meta = pushMeta; parsed = pushParsed;
+        } else {
+          readback = await swiggyCartGet(account, { lat, lng, timeoutMs: 8000 });
+          data = readback?.json?.data;
+          meta = data?.cartMeta || data;
+          parsed = data && parseDapiCartPayload(data);
+        }
         if (!successCode(readback?.json?.statusCode) || !parsed || !meta || !Array.isArray(parsed.items)) {
           throw unavailable('Swiggy did not confirm the cart. Refresh in Swiggy before trying again.');
         }
@@ -910,8 +974,10 @@ export const proProvider = {
       engine.freeCashAvailable = Math.max(0, Number(parsed?.freeCashBalance || 0));
       engine.deliveryFee = Number(parsed?.deliveryFee || 0);
       engine.phase = phase;
+      engine.addressReused = engineAddressReused;
       return {
         address: confirmedAddress,
+        addressFingerprint: addressDigest,
         // Bill turant mila, par offers/One Lite/coupon ka check bacha hai —
         // app ise dikha kar peeche se sudhaar leta hai (jhooth nahi: likha hai).
         optimizePending: fast && !quickBill,

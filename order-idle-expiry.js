@@ -23,6 +23,21 @@ export const MIN_IDLE_TIMEOUT_MS = 30 * 1000;
 export const MAX_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 /** Boss ka rule: 2 minute. */
 export const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60 * 1000;
+/**
+ * Boss (01-11-2026, round 34): "IT SHOULD BE AFTER BILL IS FETCHED — YOU HAVE
+ * 2 MINUTES TO CLICK PAY NOW, OTHERWISE EVERYTHING WILL GET CLEAR."
+ *
+ * Matlab: 2 minute ka clock **bill aane ke baad** shuru hota hai. Jab tak bill
+ * load ho raha hai (ya bill manga hi nahi gaya), kuch saaf nahi hota — warna
+ * dheere bill me cart khud hi ud jata tha. Bahut purana adhoora draft (15
+ * minute) phir bhi saaf hota hai, taaki pada na rahe.
+ */
+export const STALE_DRAFT_TIMEOUT_MS = 15 * 60 * 1000;
+
+/** Bill aaya hai ya nahi — sirf asli fetchedAt maante hain. */
+export function billFetched(ws = {}) {
+  return ms(ws?.cart?.quote?.fetchedAt) > 0;
+}
 
 function clampTimeout(value) {
   const n = Number(value);
@@ -106,6 +121,11 @@ export function planIdleExpiry({ ws = null, now = Date.now(), timeoutMs = DEFAUL
 
   if (!checkout && !hasCart) return base;
   if (kind === 'PAID' || kind === 'UNKNOWN') return { ...base, kind, idledAt }; // kabhi nahi
+  // Round 34: bill abhi aaya hi nahi — 2 minute ka clock shuru hi nahi hua.
+  // (Bill load hote hote cart saaf hona boss ki shikayat thi.)
+  if (kind === 'DRAFT' && hasCart && !billFetched(ws) && idleMs < STALE_DRAFT_TIMEOUT_MS) {
+    return { ...base, kind, idledAt, waitingForBill: true };
+  }
   // SUBMITTING may have crashed between saving the fee and creating the
   // dispatch journal. A placed/unpaid order can still exist on Swiggy. Neither
   // is safe to clear automatically or to unlock a second checkout.

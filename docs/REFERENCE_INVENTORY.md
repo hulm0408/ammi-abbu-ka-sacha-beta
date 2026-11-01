@@ -190,3 +190,11 @@ bar). Har async ka end: success / error / retry — koi infinite spinner nahi.
 | Payment ke baad | order My Orders me | My Orders → wahi order → share link + Copy + Go back |
 | Account list filter | — | `USED FRESH NIGHT BREAKFAST` chips, counts ke saath, multi-select |
 | Bill | ek hi baar me poora | pehla bill turant + peeche se best-coupon (chip dikhta hai) |
+
+## 11. Round 34 — pay bar clock + bill loading indicator
+
+| Cheez | Reference (Swiggy) | Yahan |
+|---|---|---|
+| Pay bar | bada total + Pay Now | total + **live 2-minute clock chip** + Pay Now. Koi text lecture nahi |
+| Bill loading | shimmer/skeleton | chhoti "receipt print" card (lines print hoti hain) — spinner/dash nahi |
+| Load bar | — | hata diya (boss ne dash animation mana kiya) |
