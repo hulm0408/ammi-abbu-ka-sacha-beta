@@ -528,3 +528,20 @@ test('C19: missing wallet eligibility is not presented as an explicit Swiggy den
   assert.equal(ineligible.swiggyMoneyBalanceReported, true);
   assert.equal(ineligible.walletSplitPayAmount, 0);
 });
+
+
+test('C20: secondary wallet balance survives a zero primary field but cannot override eligibility', () => {
+  const base = { item_total: 230, order_total: 270, user_swiggy_money: 0,
+    user_swiggy_money_balance: 10,
+    cart_menu_items: [{ menu_item_id: 9001, quantity: 1, subtotal: 23000, final_price: 23000 }] };
+  const unknown = parseDapiCartPayload({ cartMeta: base });
+  assert.equal(unknown.reportedSwiggyMoneyBalance, 10);
+  assert.equal(unknown.swiggyMoneyBalanceReported, true);
+  assert.equal(unknown.swiggyMoneyEligibilityReported, false);
+  assert.equal(unknown.walletSplitPayAmount, 10);
+  assert.equal(unknown.finalPayable, 260);
+  const ineligible = parseDapiCartPayload({ cartMeta: { ...base, swiggy_pay_eligible_balance: 0 } });
+  assert.equal(ineligible.reportedSwiggyMoneyBalance, 10);
+  assert.equal(ineligible.walletSplitPayAmount, 0);
+  assert.equal(ineligible.finalPayable, 270);
+});

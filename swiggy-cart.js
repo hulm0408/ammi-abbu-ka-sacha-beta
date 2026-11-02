@@ -3836,9 +3836,17 @@ export function parseDapiCartPayload(data) {
   // user_swiggy_money still reads 0. An explicit eligible balance wins,
   // including 0: wallet balance alone is not proof it can pay for this cart.
   const eligibleWallet = cm.swiggy_pay_eligible_balance;
+  // Swiggy checkout has used both balance keys. Other flows in this project
+  // already read user_swiggy_money_balance; the Mini App used to ignore it,
+  // displaying ₹0 even when that key alone held the account's wallet cash.
+  // A positive balance is NOT permission to override explicit ₹0 eligibility.
+  const reportedWallet = Math.max(0,
+    Number(cm.user_swiggy_money) || 0,
+    Number(cm.user_swiggy_money_balance) || 0
+  );
   const freeCashBalance = eligibleWallet !== null && eligibleWallet !== undefined && eligibleWallet !== ''
     ? Math.max(0, Number(eligibleWallet) || 0)
-    : Math.max(0, Number(cm.user_swiggy_money) || 0);
+    : reportedWallet;
   const alreadyDeductedWallet = Math.max(0, Number(cm.swiggy_money ?? 0));
   const walletSplitPayAmount = alreadyDeductedWallet > 0
     ? alreadyDeductedWallet
@@ -3900,9 +3908,10 @@ export function parseDapiCartPayload(data) {
     suggestedCouponCode,
     discountAmount: Math.round(couponDiscount * 100) / 100,
     freeCashBalance: Math.round(freeCashBalance * 100) / 100,
-    reportedSwiggyMoneyBalance: Math.max(0, Number(cm.user_swiggy_money) || 0),
+    reportedSwiggyMoneyBalance: reportedWallet,
     // Presence matters: a missing field is not a confirmed zero balance.
-    swiggyMoneyBalanceReported: cm.user_swiggy_money !== null && cm.user_swiggy_money !== undefined,
+    swiggyMoneyBalanceReported: (cm.user_swiggy_money !== null && cm.user_swiggy_money !== undefined) ||
+      (cm.user_swiggy_money_balance !== null && cm.user_swiggy_money_balance !== undefined),
     swiggyMoneyEligibilityReported: eligibleWallet !== null && eligibleWallet !== undefined && eligibleWallet !== '',
     freeCashApplied: Math.round(freeCashApplied * 100) / 100,
     // Sirf jo Swiggy ne SACH ME kaat diya (balance hona alag baat hai).
