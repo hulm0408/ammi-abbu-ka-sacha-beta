@@ -31,7 +31,8 @@ const {
   doesCouponMatchExpectedOrder,
   doesOrderBillMatchLiveCart,
   findBestMaxCouponAccountForOrder,
-  selectSingleBillAccount
+  selectSingleBillAccount,
+  applyLiveFreeCashRelock
 } = await import('../swiggy-cart.js');
 const { getDb, saveDb } = await import('../store.js');
 const { executeOrderBillSyncOnAccount, executeRealQrGenerationForOrder } = await import('../forwarded-order-flow.js');
@@ -444,6 +445,26 @@ test('E2: QR generation is refused while a bill sync is in flight (offer discove
   releaseFetch();
   await assert.rejects(billPromise);
 });
+
+test('E4: optional offer claim never waits indefinitely — small claimWaitMs bounds the whole relock', async () => {
+  seedAccounts(['e4-acc']);
+  const order = seedOrder('e4-order', { selectedAccount: 'e4-acc', restaurantId: '201', campaignFreeCash: 0, freeCashApplied: 0 });
+  order.addressDetails = { ...order.addressDetails, id: 'addr-1' };
+  // events API hangs (worst case: WAF retry storm) — the relock must still return fast.
+  mockFetch(async (url) => {
+    if (String(url).includes('events.swiggy.com')) { await new Promise((r) => setTimeout(r, 30_000)); return new Response('slow', { status: 500 }); }
+    if (String(url).includes('cart/client')) return new Response(JSON.stringify({ statusCode: 0, data: { cartMeta: { cartId: 'c1', address_id: 'addr-1', order_total: 500, item_total: 500, restaurant_details: { id: '201', name: 'M' }, cart_menu_items: [{ menu_item_id: 9001, quantity: 1, name: 'X', subtotal: 50000, final_price: 50000 }] } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify({ statusCode: 0, data: {} }), { status: 200, headers: { 'content-type': 'application/json' } });
+  });
+  const t0 = Date.now();
+  const out = await applyLiveFreeCashRelock(db_account('e4-acc'), order, { claimWaitMs: 300 });
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 2500, `optional offer wait must be bounded by claimWaitMs, took ${elapsed}ms`);
+  assert.equal(out.applied, false, 'a hung claim must not fabricate a discount');
+  assert.ok(out.reason, 'honest reason is reported');
+});
+
+function db_account(key) { return getDb().config.accounts[key]; }
 
 test('E3: duplicate QR generation for one order is deduped (no duplicate checkout/placement)', async () => {
   seedAccounts(['e3-acc']);

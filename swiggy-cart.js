@@ -6264,14 +6264,16 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       return { fetchedAddrs, earlySaved, resolvedAddr };
     })();
 
-    // Keep the SAME claim promise: wave 1 only waits 450ms for it (so the cart is not
-    // delayed), and the free-cash step below can still await the real answer once.
+    // Keep the SAME claim promise: wave 1 only waits a SHORT cap for it (so the cart
+    // is never delayed by the multi-track events API), and the free-cash step below
+    // still awaits the real answer once (bounded). 450ms -> 250ms: the claim is
+    // single-flight, so nothing is lost — the later await gets the same promise.
     const eventsClaimPromise = claimSwiggyBreakfastAndLateNightOffers(account).catch(() => null);
     const [auth, eventsClaimRes, cartMeta, addrBundle, inspectedInitialCart] = await Promise.all([
       getSwiggySessionAuth(account, false),
       Promise.race([
         eventsClaimPromise,
-        new Promise(r => setTimeout(r, 450))
+        new Promise(r => setTimeout(r, 250))
       ]),
       order.cart && !alreadyHasResolvedCart
         ? resolveSwiggyLink(order.cart).catch(() => null)
@@ -7558,6 +7560,7 @@ export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = defa
   // timeouts). Wait at most `maxWaitMs`, then fail fast with a clear code.
   const waitLimit = Math.min(120_000, Math.max(1_000, Number(maxWaitMs) || defaultAccountLockMaxWaitMs()));
   let waitTimer = null;
+  const waitStartedAt = Date.now();
   const waited = await Promise.race([
     prev.catch(() => {}).then(() => 'acquired'),
     // NOTE: intentionally NOT unref'd — this guard must still fire when a queued
@@ -7566,6 +7569,7 @@ export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = defa
       waitTimer = setTimeout(() => resolve('timeout'), waitLimit);
     })
   ]).finally(() => { if (waitTimer) clearTimeout(waitTimer); });
+  const waitedMs = Date.now() - waitStartedAt;
 
   if (waited === 'timeout') {
     // The prior holder is still running. Resolve only this waiter's slot and
@@ -7581,7 +7585,10 @@ export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = defa
 
   const nextHeld = new Set(heldSet || []);
   nextHeld.add(lockId);
-  swiggyAccountLockMeta.set(lockId, { since: Date.now(), waitedMs: 0 });
+  swiggyAccountLockMeta.set(lockId, { since: Date.now(), waitedMs });
+  if (waitedMs > 100) {
+    console.log(`[LockPerf] ${lockId}: waited ${waitedMs}ms for the previous job to release the account lock`);
+  }
   try {
     return await heldAccountLocksAls.run(nextHeld, fn);
   } finally {
@@ -7601,7 +7608,7 @@ export function getAccountLockStats() {
   const now = Date.now();
   const locks = [];
   for (const [id, meta] of swiggyAccountLockMeta.entries()) {
-    locks.push({ id, ageMs: now - Number(meta.since || now) });
+    locks.push({ id, ageMs: now - Number(meta.since || now), waitedMs: Number(meta.waitedMs || 0) });
   }
   locks.sort((a, b) => b.ageMs - a.ageMs);
   return { at: new Date().toISOString(), count: locks.length, locks };
@@ -9084,7 +9091,11 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     throw err;
   }
 
-  return withSwiggyAccountLock(account, async () => {
+  // PERF INSTRUMENTATION: per-stage wall-clock marks for the QR/checkout path
+  // (lock wait itself is measured by the caller's [QrPerf]). Logged once in a
+  // finally so slow stages are visible even when placement fails.
+  const qrPerf = { t0: Date.now(), wave: 0, addr: 0, resync: 0, relock: 0, offer: 0, ofo: 0, final: 0, place: 0 };
+  const qrRun = withSwiggyAccountLock(account, async () => {
     if (!account || (!account.cookies && !account.tid && !account.token)) {
       const err = new Error('Selected Swiggy account has no active session cookies or token.');
       err.diag = { code: 'QR_NO_ACCOUNT_COOKIES', stage: 'GENERATE_REAL_QR' };
@@ -9125,6 +9136,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       err.diag = { code: 'QR_AUTH_EXPIRED', stage: 'GENERATE_REAL_QR', hasCookies: Boolean(account.cookies), transport: auth?.transport || 'none' };
       throw err;
     }
+    qrPerf.wave = Date.now();
 
     let cm = unwrapCartMeta(curCart);
     let itemCount = extractCartCount(curCart, cm);
@@ -9158,6 +9170,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       throw err;
     }
     order.addressDetails = readbackAddress;
+    qrPerf.addr = Date.now();
     let requestedAddressId = String(savedRes.addressId);
     let cartAddressId = boundAddressFromReadback(curCart);
     let resolvedOwnAddressId = requestedAddressId;
@@ -9182,6 +9195,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       resolvedOwnAddressId = requestedAddressId;
       cartAddressMismatch = cartAddressId !== requestedAddressId;
     }
+    qrPerf.resync = Date.now();
 
     // Instant Direct Cart + Address + Swiggy One + `offer_ids` Rehydration Shield:
     const expectedSubItems = Array.isArray(order?.activeSubscriptionItems) && order.activeSubscriptionItems.length > 0
@@ -9272,6 +9286,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       }
     }
 
+    qrPerf.relock = Date.now();
     if (cartAddressMismatch || cartAddressId !== requestedAddressId) {
       const err = new Error('Swiggy checkout is still bound to a different delivery address. The order was stopped before payment.');
       err.diag = {
@@ -9295,8 +9310,11 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         + Math.max(0, Number(cm.offer_presentation_info?.reward_offer_savings_info?.savings || 0));
       const walletAlreadyThere = Math.max(0, Number(cm.swiggy_money || 0)) + Math.max(0, Number(cm.user_swiggy_money || 0));
       if (order && beforeRewardCash === 0 && Number(order.campaignFreeCash || 0) === 0) {
+        // SPEED: the bill phase already awaited this single-flight claim (and a
+        // success is cached), so at QR time wait only a SHORT bound for a fresh
+        // answer — an optional offer must never stretch QR generation by seconds.
         prePlaceOfferApply = await applyLiveFreeCashRelock(account, order, {
-          claimWaitMs: 3500,
+          claimWaitMs: 1500,
           ignoreSlotGate: true
         }).catch((e) => ({ applied: false, reason: `error: ${e?.message || e}` }));
         if (prePlaceOfferApply?.applied) {
@@ -9323,6 +9341,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     } catch (offerApplyErr) {
       console.warn('[OfferApply] skipped:', offerApplyErr?.message || offerApplyErr);
     }
+    qrPerf.offer = Date.now();
 
     // Even a lower price changes the approved bill. Do not silently replace it;
     // the final readback below requires a fresh confirmation on any change.
@@ -9462,6 +9481,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       // A self-order can use the normal cart; never claim a recipient SMS.
       order.ofoWarning = 'OFO was not confirmed on this cart.';
     }
+    qrPerf.ofo = Date.now();
 
     // OFO/offer operations can change the cart. Read it again immediately
     // before placement and fail closed if the address, items or payable differ.
@@ -9487,6 +9507,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     cm = finalMeta;
     itemCount = extractCartCount(finalCart, finalMeta);
     cartId = String(cm.originalCartId || cm.cartId || cm.cart_id || cartId);
+    qrPerf.final = Date.now();
 
     // Swiggy kabhi `app_redirection_info` ke bajaye kisi doosre field me intent
     // bhejta hai (ya `payment_fallbacks` me). Pehle sirf ek path dekha jata tha,
@@ -9701,6 +9722,7 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
     const attemptOut = await executeSingleSwiggyPlacement(placementKey, () =>
       useWeb ? sendWebPaymentsPlaceOrder(desiredSplitPay) : sendNativeAndroidPlaceOrder(desiredSplitPay)
     );
+    qrPerf.place = Date.now();
 
     const { placeRes, rawText, json, splitPayUsed } = attemptOut || { placeRes: { ok: false, status: 0 }, rawText: '', json: null, splitPayUsed: 0 };
 
@@ -9883,6 +9905,20 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
       confirmWindowMs: Number(redir?.upiRedirect?.upiIntentRedirect?.upiIntentConfirmTimeInMs || 45000)
     };
   });
+  qrRun.finally(() => {
+    try {
+      const now = Date.now();
+      const d = (a, b) => Math.max(0, (b || now) - a);
+      console.log(
+        `[QrStages] order #${order?.id}: total=${now - qrPerf.t0}ms ` +
+        `wave(auth+cart+addrs)=${d(qrPerf.t0, qrPerf.wave)} addr=${d(qrPerf.wave, qrPerf.addr)} ` +
+        `resync=${d(qrPerf.addr, qrPerf.resync)} relock=${d(qrPerf.resync, qrPerf.relock)} ` +
+        `offer=${d(qrPerf.relock, qrPerf.offer)} ofo=${d(qrPerf.offer, qrPerf.ofo)} ` +
+        `finalRead=${d(qrPerf.ofo, qrPerf.final)} place=${d(qrPerf.final, qrPerf.place)}`
+      );
+    } catch {}
+  });
+  return qrRun;
 }
 
 /**

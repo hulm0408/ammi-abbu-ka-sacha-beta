@@ -2141,7 +2141,9 @@ async function executeOrderBillSyncOnAccountInternal({
       ? 8_000
       : Math.min(60_000, Math.max(1_000, Number(process.env.BILL_SYNC_LOCK_MAX_WAIT_MS) || 15_000));
     const lockWaitT0 = Date.now();
+    let lockAcquiredAt = 0;
     syncRes = await withSwiggyAccountLock(accKey, async () => {
+      lockAcquiredAt = Date.now(); // measure the WAIT, not the whole critical section
       // Clear any foreign `addressDetails.id` from a previous account before syncing on `accKey`!
       if (order.addressDetails?.id && order.selectedAccount && order.selectedAccount !== accKey) {
         delete order.addressDetails.id;
@@ -2149,7 +2151,7 @@ async function executeOrderBillSyncOnAccountInternal({
       const r = await syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false, skipAutoOffers });
       return r;
     }, { maxWaitMs: billLockMaxWaitMs });
-    perf.lockWaitMs = Date.now() - lockWaitT0;
+    perf.lockWaitMs = (lockAcquiredAt || Date.now()) - lockWaitT0;
     if (!syncRes?.success) {
       const err = new Error(syncRes?.error || 'Failed to sync cart & address on selected Swiggy account.');
       err.diag = {
@@ -2208,7 +2210,10 @@ async function executeOrderBillSyncOnAccountInternal({
     let freeCashTimer = null;
     try {
       const freeCashOut = await Promise.race([
-        applyLiveFreeCashRelock(getDb().config.accounts[order.selectedAccount], order),
+        // SPEED: the in-sync free-cash step already awaited this single-flight
+        // claim once — the second chance here only needs a SHORT bounded wait
+        // (an optional offer must never add seconds to bill generation).
+        applyLiveFreeCashRelock(getDb().config.accounts[order.selectedAccount], order, { claimWaitMs: 1200 }),
         new Promise((resolve) => { freeCashTimer = setTimeout(() => resolve(null), 10_000); })
       ]);
       if (freeCashOut?.reason) console.log(`[FreeCash] ${order.orderAccount || order.selectedAccount}: ${freeCashOut.reason}`);
@@ -2593,8 +2598,12 @@ async function executeRealQrGenerationForOrderInternal({
     // Individual network calls have their own deadlines; this promise remains
     // in the in-flight map until the worker actually finishes.
     const qrLockT0 = Date.now();
-    realQr = await withSwiggyAccountLock(accKey, () => runGenerator(acc, order, forceNewQr));
-    console.log(`[QrPerf] order #${order.id} acc=${accKey}: lockWait=${Date.now() - qrLockT0}ms (offer claim + bill verify + place happen inside the generator before any QR bytes)`);
+    let qrLockAcquiredAt = 0;
+    realQr = await withSwiggyAccountLock(accKey, () => {
+      qrLockAcquiredAt = Date.now(); // measure the WAIT, not the whole generation
+      return runGenerator(acc, order, forceNewQr);
+    });
+    console.log(`[QrPerf] order #${order.id} acc=${accKey}: lockWait=${(qrLockAcquiredAt || Date.now()) - qrLockT0}ms generate=${Date.now() - (qrLockAcquiredAt || qrLockT0)}ms (offer claim + bill verify + place happen inside the generator before any QR bytes)`);
     if (!realQr) {
       const err = new Error('Payment details were not returned. Check Swiggy My Orders before trying anything else.');
       err.diag = { code: 'QR_RESULT_MISSING', stage: 'GENERATE_REAL_SWIGGY_QR', placementAttempted: true };

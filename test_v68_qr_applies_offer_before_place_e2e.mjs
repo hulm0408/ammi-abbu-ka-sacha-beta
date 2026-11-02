@@ -134,7 +134,10 @@ console.log('\n=== 1. QR path: place se PEHLE offer apply hota hai (source proof
 {
   const src = fs.readFileSync('./swiggy-cart.js', 'utf8');
   check('pre-place offer apply block hai', /OFFER APPLY BEFORE PLACE/.test(src));
-  check('applyLiveFreeCashRelock place se pehle call hota hai', /prePlaceOfferApply = await applyLiveFreeCashRelock\(account, order, \{\s*claimWaitMs: 3500,\s*ignoreSlotGate: true/.test(src));
+  // Bounded wait (any explicit ms cap) — the pin is "awaited before place with
+  // ignoreSlotGate", not one magic number; smaller caps keep checkout fast when
+  // the events claim is slow.
+  check('applyLiveFreeCashRelock place se pehle call hota hai', /prePlaceOfferApply = await applyLiveFreeCashRelock\(account, order, \{\s*claimWaitMs: \d+,\s*ignoreSlotGate: true/.test(src));
   check('apply ke baad cart dobara padha jata hai (fresh total)', /const refreshedCart = await swiggyCartGet\(account, \{ lat: reqLat, lng: reqLng, timeoutMs: 6000 \}\)/.test(src));
   check('cm naye total se replace hota hai', /curCart = refreshedCart;\s*\n\s*cm = refreshedMeta;/.test(src));
   check('audit order par likha jata hai', /order\.prePlaceOfferApply = \{/.test(src));
