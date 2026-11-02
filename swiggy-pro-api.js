@@ -28,7 +28,7 @@ import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { describeAccountForPicker } from './mini-app.js';
 import { proProvider } from './swiggy-pro-provider.js';
 import { backupProWorkspaceNow, cloudBackupEnabled, ensureProWorkspaceHydrated, proBackupStatus, readProWorkspace, writeProWorkspace, withProWorkspaceLock } from './swiggy-pro-store.js';
-import { classifyCheckout, describeIdleClosure, idleTimeoutMs, planIdleExpiry, touchActivity } from './order-idle-expiry.js';
+import { classifyCheckout, describeIdleClosure, idleTimeoutMs, planIdleExpiry, STALE_PLACED_TIMEOUT_MS, touchActivity } from './order-idle-expiry.js';
 import { fetchUtrPaymentDetails } from './utr-lookup.js';
 import { describeUtrPayment, utrTruthRows } from './utr-truth.js';
 
@@ -2865,8 +2865,16 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
             if (found) {
               checkout.orderId = normalizeSwiggyOrderId(found);
               writeProWorkspace(user.id, ws);
-            } else if (verified) {
-              bandCheckoutLocally(user, ws, checkout, { refund: !hadPlacementJournal(user, ws), reason: 'status check: Swiggy ki order list me matching order nahi mila — local band' });
+            } else {
+              // Boss (02-11-2026): card baar-baar nahi aana chahiye — verified-no-match
+              // YA unverified-but-old, dono me local band (cancel ka claim nahi; order
+              // agar hai to My Orders me dikhega). Refund sirf bina-journal par.
+              bandCheckoutLocally(user, ws, checkout, {
+                refund: !hadPlacementJournal(user, ws),
+                reason: verified
+                  ? 'status check: Swiggy ki order list me matching order nahi mila — local band'
+                  : 'status check verify nahi ho paya aur checkout purana hai — local band (My Orders me order dikhega)'
+              });
               json(res, 200, { ok: true, checkout: null, cart: ws.cart, closed: ws.lastClosed });
               return;
             }
@@ -2920,6 +2928,15 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           delete checkout.qrDataUrl;
         } else if (checkout.paymentVerified) {
           checkout.message = 'Payment was reported by Swiggy, but this exact order is not yet confirmed. Check My Orders; do not pay again.';
+        } else {
+          // Boss (02-11-2026): unpaid order bahut purana (STALE_PLACED, createdAt age
+          // se — active user bhi atka nahi rahe) → local band, naya Pay Now free.
+          const ageMs = Date.now() - (Date.parse(String(checkout.createdAt || '')) || 0);
+          if (normalizeSwiggyOrderId(checkout.orderId) && ageMs >= STALE_PLACED_TIMEOUT_MS) {
+            bandCheckoutLocally(user, ws, checkout, { refund: false, reason: 'status check: unpaid placed order bahut purana — local band (Swiggy par unpaid auto-cancel hota hai)' });
+            json(res, 200, { ok: true, checkout: null, cart: ws.cart, closed: ws.lastClosed });
+            return;
+          }
         }
         const freshStatus = readProWorkspace(user.id);
         const sameCheckout = freshStatus.checkout && (checkout.checkoutToken
