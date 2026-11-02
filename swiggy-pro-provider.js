@@ -955,8 +955,12 @@ export const proProvider = {
         });
       };
       if (requestedCoupon) add(requestedCoupon, requestedCoupon, 'Aapne chuna', 1);
-      if (!requestedCoupon && autoCoupon && options.previousAutoCoupon) {
-        add(options.previousAutoCoupon, options.previousAutoCoupon, 'Previous auto coupon', 4);
+      if (!requestedCoupon && autoCoupon) {
+        if (options.previousAutoCoupon) add(options.previousAutoCoupon, options.previousAutoCoupon, 'Previously verified coupon', 3);
+        // The live feed omits FLASHSALE on some carts although Swiggy has
+        // previously accepted it at ₹160. Trial ONE known code (not the old
+        // eight-code blind ladder), then trust only its positive readback.
+        if (!fast && !quickBill) add('FLASHSALE', 'FLASHSALE', 'Verify on this Swiggy cart', 4);
       }
       if (base.coupon) add(base.coupon, base.coupon, 'Bill me laga hua', 2);
       if (base.parsed?.suggestedCouponCode) add(base.parsed.suggestedCouponCode, base.parsed.suggestedCouponCode, 'Swiggy ka best suggested', 3);

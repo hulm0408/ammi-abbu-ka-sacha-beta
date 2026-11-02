@@ -25,11 +25,11 @@ const baseCart = () => ({
   items: [{ menu_item_id: 9001, qty: 1, name: 'Biryani', price: 230, variants: [], addons: [] }],
   quote: null
 });
-const state = { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, coupons: [], requests: [] };
-function reset() { Object.assign(state, { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, coupons: [], requests: [] }); }
+const state = { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, flashSaleEligible: false, coupons: [], requests: [] };
+function reset() { Object.assign(state, { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, flashSaleEligible: false, coupons: [], requests: [] }); }
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 function cartPayload() {
-  const discount = state.coupon === 'SAVE50' ? 50 : state.coupon === 'BEST80' ? 80 : 0;
+  const discount = state.coupon === 'SAVE50' ? 50 : state.coupon === 'BEST80' ? 80 : state.coupon === 'FLASHSALE' && state.flashSaleEligible ? 160 : 0;
   const total = 270 - discount - state.trade;
   return { statusCode: 0, data: { cartMeta: {
     address_id: 'addr-1', cartId: 'cart-1', order_total: total, item_total: 230,
@@ -151,7 +151,7 @@ test('offer reads overlap safely with bill work; cart writes stay ordered', asyn
   assert.ok(payment >= 0 && mcp >= 0 && payment < mcp, 'payment offer read starts before cart-dependent discovery');
 });
 
-test('checkout quote never probes blind promo codes and flushes cart before event claim', async () => {
+test('checkout quote tries only one targeted fallback, confirms it live, and flushes cart before claim', async () => {
   reset();
   const out = await proProvider.quoteCart(account, address, { ...baseCart(), skipOfferClaim: false, autoCoupon: true }, '', { phase: 'full', autoCoupon: true });
   assert.equal(out.bill.total, 270);
@@ -159,7 +159,9 @@ test('checkout quote never probes blind promo codes and flushes cart before even
   const firstCart = state.requests.findIndex(u => u.includes('/api/v2/cart/client/update'));
   const firstEvent = state.requests.findIndex(u => u.includes('events.swiggy.com'));
   assert.ok(firstEvent > firstCart, 'claim must happen after initial cart write/flush');
-  assert.deepEqual(out.bill.engine.couponTrials, [], 'no unverified promo-code cart writes');
+  assert.deepEqual(out.bill.engine.couponTrials.map(t => t.code), ['FLASHSALE'], 'one targeted code, not eight blind promo trials');
+  assert.equal(out.bill.engine.couponTrials[0].ok, false);
+  assert.equal(out.bill.couponCode, '', 'a rejected fallback never appears applied');
 });
 
 
@@ -214,4 +216,17 @@ test('auto quote reconsiders previously auto-selected coupon if live discovery i
   assert.ok(state.removeCalls >= 1);
   assert.equal(out.bill.couponCode, 'SAVE50');
   assert.equal(out.bill.total, 220);
+});
+
+
+test('max-offer quote tries FLASHSALE even when feed omits it, and keeps verified lowest total', async () => {
+  reset(); state.flashSaleEligible = true;
+  state.coupons = [{ coupon_code: 'TRYNEW', is_applicable: true }];
+  const out = await proProvider.quoteCart(account, address, { ...baseCart(), autoCoupon: true }, '', {
+    phase: 'full', autoCoupon: true
+  });
+  assert.equal(out.bill.couponCode, 'FLASHSALE');
+  assert.equal(out.bill.discount, 160);
+  assert.equal(out.bill.total, 110);
+  assert.equal(out.bill.engine.couponTrials.find(t => t.code === 'FLASHSALE')?.ok, true);
 });
