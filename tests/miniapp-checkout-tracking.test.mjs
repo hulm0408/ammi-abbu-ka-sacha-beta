@@ -72,14 +72,16 @@ test('UI: merge() keeps the fetched live link across checkout/status polls (same
     'link is kept only for the same order');
 });
 
-test('UI: Pay Now ke baad bada "Checkout band karein" cancel card nahi aata — status + tracking card aata hai', () => {
-  assert.ok(!app.includes('<div class="card cancel-card">'), 'cancel card markup hona hi nahi chahiye');
+test('UI: Pay Now ke baad stuck checkout par sirf cancel card (status button nahi) — round 35 contract', () => {
+  // Boss (01-11 round 35 + 02-11 fix): uncertain checkout par "Checkout band karein"
+  // cancel card; "Check payment & order" / "Order status" / original-account row nahi.
   const checkoutFn = app.slice(app.indexOf('function renderCheckout()'), app.indexOf('function renderBill('));
-  assert.match(checkoutFn, /Order status/);
-  assert.match(checkoutFn, /data-action="checkout-status"/);
-  assert.ok((checkoutFn.match(/\$\{trackCard\}/g) || []).length >= 3, 'tracking card har checkout branch me');
-  // Cancel ka option ab bhi hai, par sirf chhote text button me.
-  assert.match(checkoutFn, /<button class="text-button" type="button" data-action="checkout-cancel">/);
+  const cancelCard = checkoutFn.slice(checkoutFn.indexOf('<div class="card cancel-card">'), checkoutFn.indexOf('${trackCard}`;', checkoutFn.indexOf('cancel-card')));
+  assert.ok(cancelCard.length > 0, 'cancel-card branch present');
+  assert.doesNotMatch(cancelCard, /data-action="checkout-status"/, 'cancel card me status button nahi');
+  assert.doesNotMatch(cancelCard, /Order status/, 'cancel card par "Order status" title nahi');
+  assert.match(cancelCard, /<button class="button danger block" type="button" data-action="checkout-cancel">/);
+  assert.match(cancelCard, /paisa nahi katega/i);
   // Auto-poll OUTCOME_UNKNOWN pe bhi chalta hai — PAID hote hi My Orders khule.
   assert.match(app, /c\.status === 'PAYMENT_PENDING' \|\| c\.status === 'OUTCOME_UNKNOWN'/);
   assert.match(app, /out\.checkout\?\.status === 'PAYMENT_PENDING' \|\| out\.checkout\?\.status === 'OUTCOME_UNKNOWN'\) maybeCheckoutTracking/);

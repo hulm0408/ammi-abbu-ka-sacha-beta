@@ -777,14 +777,20 @@
       const paidNote = c.paymentVerified ? '<div class="warning">Payment was reported, but order confirmation is still pending. Do not pay again.</div>' : '';
       return `<div class="card"><div class="card-title">${icon('receipt')} Payment pending</div>${id}${warning}${paidNote}${qr}<p class="hint">${c.ofoConfirmed ? 'Swiggy returned an OFO flag; recipient SMS is not verified.' : 'Swiggy has not confirmed OFO acceptance or recipient SMS.'}</p><button class="button primary block" data-action="checkout-status">Check payment & order ${icon('refresh')}</button></div>${trackCard}`;
     }
-    // Boss (02-11-2026): Pay Now ke baad bada "Checkout band karein" cancel card
-    // NAHI aana chahiye. Order agar bana ho (orderId hai) to seedha Live Order
-    // Tracking card + status check dikhao — PAID hote hi poll khud My Orders
-    // khol dega. Cancel ka option sirf chhote text button me rehta hai.
+    // Round 35 (01-11-2026) + fix (02-11-2026): Pay Now ke baad jo checkout
+    // QR tak nahi pahunchta (SUBMITTING / OUTCOME_UNKNOWN / orderId ke bina),
+    // uske liye ek hi saaf card: "Order cancel karein". "Check payment & order",
+    // "Original account" row aur live-tracking card yahan nahi dikhte — status
+    // poll background me apne aap chalta hai (renderCart → schedulePaymentPoll).
+    // Cancel sach me server par jata hai: checkout band, fee wapas, cart wapas.
     const stuck = c.status === 'SUBMITTING'
-      ? 'Order Swiggy par ja raha hai — neeche status check hota rahega.'
-      : (c.orderId ? esc(c.message || 'Swiggy par order ban sakta hai — neeche live link dekhein.') : 'Swiggy se order status check ho raha hai…');
-    return `<div class="card"><div class="card-title">${icon('receipt')} Order status</div>${id}<div class="warning">${stuck}</div><button class="button primary block" data-action="checkout-status">${icon('refresh')} Check payment &amp; order</button>${trackCard}<p class="hint">Cancel karne par: paisa nahi katega, wallet fee wapas (agar li gayi thi), aur cart dobara khul jayega.</p><button class="text-button" type="button" data-action="checkout-cancel">Order cancel karein</button></div>`;
+      ? 'Order Swiggy par ja raha hai — ruk kar dekhein, ya cancel karein.'
+      : 'Swiggy se status apne aap check ho raha hai. Aap kuch na karein, ya cancel karein.';
+    const sure = c.orderId
+      ? `<p class="hint">Swiggy par order #${esc(c.orderId)} ho sakta hai — cancel se sirf yahan ka checkout band hoga.</p>`
+      : '';
+    // trackCard sirf info hai (orderId ho to Swiggy ka live link); isme koi action nahi.
+    return `<div class="card cancel-card"><div class="card-title">${icon('alert')} Checkout band karein</div><p class="hint">${stuck}</p>${sure}<p class="hint">Cancel karne par: paisa nahi katega, wallet fee wapas (agar li gayi thi), aur cart dobara khul jayega.</p><button class="button danger block" type="button" data-action="checkout-cancel">Order cancel karein</button></div>${trackCard}`;
   }
   /**
    * Boss (31-10-2026): "CART WALA PAGE JAISA DIKHAYA WAISA HI — OPTION BAHUT
