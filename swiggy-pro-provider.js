@@ -1135,6 +1135,12 @@ export const proProvider = {
           walletSplitPayAmount,
           walletSplitPending: walletSplitPayAmount > 0 && walletReallyDeducted <= 0,
           freeCashAvailable: Math.max(0, Number(parsed?.freeCashBalance || 0)),
+          cashEvidence: {
+            balance: parsed?.swiggyMoneyBalanceReported === true ? reportedWallet : null,
+            eligible: parsed?.swiggyMoneyEligibilityReported === true ? Math.max(0, Number(parsed?.freeCashBalance || 0)) : null,
+            cashWithoutCoupon: noCouponBill ? noCouponBill.cash : null,
+            noCouponTotal: noCouponBill ? noCouponBill.total : null
+          },
           // Poora trade discount (restaurant + campaign free cash) — ye Swiggy
           // ke order_total ke andar pehle se hai, isliye ek hi line me.
           tradeDiscount: merchantDiscount > 0 ? merchantDiscount : null,

@@ -758,3 +758,18 @@ test('Pay Now explicitly warns that zero Free Cash will not be added to the QR',
     assert.equal(app.calls.some(c => c.url.endsWith('/checkout')), false);
   } finally { app.close(); }
 });
+
+
+test('bill shows reported wallet balance and Food eligibility without inventing missing fields', async () => {
+  const bootstrap = baseState();
+  bootstrap.cart.quote = { ...bootstrap.cart.quote, freeCash: 0,
+    cashEvidence: { balance: 10, eligible: 0 } };
+  const app = harness({ bootstrap });
+  try {
+    await waitFor(() => app.document.querySelector('.ac-row.active'), 'accounts');
+    nav(app, 'cart');
+    const bill = await waitFor(() => app.document.querySelector('.bill-card'), 'bill');
+    assert.match(bill.textContent, /wallet balance ₹10/);
+    assert.match(bill.textContent, /Food eligible ₹0/);
+  } finally { app.close(); }
+});

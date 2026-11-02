@@ -3901,6 +3901,9 @@ export function parseDapiCartPayload(data) {
     discountAmount: Math.round(couponDiscount * 100) / 100,
     freeCashBalance: Math.round(freeCashBalance * 100) / 100,
     reportedSwiggyMoneyBalance: Math.max(0, Number(cm.user_swiggy_money) || 0),
+    // Presence matters: a missing field is not a confirmed zero balance.
+    swiggyMoneyBalanceReported: cm.user_swiggy_money !== null && cm.user_swiggy_money !== undefined,
+    swiggyMoneyEligibilityReported: eligibleWallet !== null && eligibleWallet !== undefined && eligibleWallet !== '',
     freeCashApplied: Math.round(freeCashApplied * 100) / 100,
     // Sirf jo Swiggy ne SACH ME kaat diya (balance hona alag baat hai).
     swiggyMoneyApplied: Math.round(alreadyDeductedWallet * 100) / 100,

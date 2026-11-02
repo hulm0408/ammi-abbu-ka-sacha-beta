@@ -178,6 +178,7 @@ test('provider: credited money without cart eligibility is not silently deducted
   assert.equal(out.bill.freeCash, null);
   assert.equal(out.bill.total, 270);
   assert.match(out.bill.offerNote, /₹0 eligible/);
+  assert.deepEqual(out.bill.cashEvidence, { balance: 10, eligible: 0, cashWithoutCoupon: 0, noCouponTotal: 270 });
 });
 
 test('bill diagnostic does not confuse Night/Breakfast claim with Diya or promise coupon stacking', async () => {
