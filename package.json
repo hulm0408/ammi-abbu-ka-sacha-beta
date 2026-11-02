@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node index.js",
     "test": "node test_comprehensive_audit_suite.mjs",
+    "test:bill-regression": "node --test tests/bill-checkout-regression.test.mjs",
     "test:round19": "node test_v108_deployproof_tracking_autopay.mjs",
     "test:round20": "node test_v109_utr_asli_paisa.mjs",
     "test:round21": "node test_v110_tracking_and_sms_truth.mjs",

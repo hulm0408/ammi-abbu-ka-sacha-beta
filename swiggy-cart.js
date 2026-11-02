@@ -15,6 +15,7 @@ import * as wafPool from './waf-pool.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken } from './swiggy-bridge.js';
 import { OFFER_TRACKS } from './account-views.js';
 import { lockedKeysForOtherOrders, isAccountLockedForOtherOrder } from './order-account-lock.js';
+import { computeFinalPayable } from './checkout-total.js';
 
 const CHROME_PATH = findChromePath();
 const PUPPETEER_HEADLESS = (process.platform === 'linux' || process.env.RAILWAY_ENVIRONMENT || process.env.HEADLESS === 'true') ? 'new' : false;
@@ -3611,9 +3612,23 @@ export function applyMaxOfferToOrder(order) {
 
   // If Swiggy checkout returned an authoritative `order_total`, keep it intact unless un-discounted
   const totalDeductions = discount + tradeDisc + freeCash;
+  // Centralized reconstruction (checkout-total.js): packing AND taxes are both
+  // payable charges (the old `(taxes > 0 ? taxes : packing)` silently dropped
+  // packing whenever taxes were present). Discounts apply exactly once; the
+  // result is clamped at 0 (never negative). The unverified-local floor of ₹1
+  // is kept by the caller below.
   const calculatedPayable = Math.max(
     1,
-    Math.round(order.subtotal - discount - tradeDisc - freeCash + swiggyOneFee + delivery + (taxes > 0 ? taxes : packing))
+    computeFinalPayable({
+      itemTotal: subtotal,
+      couponDiscount: discount,
+      tradeDiscountTotal: tradeDisc,
+      extraFreeCash: freeCash,
+      swiggyOneMembershipFee: swiggyOneFee,
+      deliveryFee: delivery,
+      packingCharges: packing,
+      taxesAndCharges: taxes
+    })
   );
 
   const hasAuthoritativeVerifiedTotal = Boolean(
@@ -3624,7 +3639,11 @@ export function applyMaxOfferToOrder(order) {
     Number(order.finalPayable) >= 0 &&
     (totalDeductions <= 0 || Number(order.finalPayable) < order.subtotal)
   );
-  if (!hasAuthoritativeVerifiedTotal || !order.finalPayable || Number(order.finalPayable) <= 0) {
+  // A verified total is preserved AS-IS — including a legitimate verified ₹0
+  // (fully discounted bill; downstream `hasVerifiedZeroBill` handles it).
+  // Only when there is NO authoritative verified total do we use the local
+  // reconstruction (never negative, floor ₹1 for the unverified path).
+  if (!hasAuthoritativeVerifiedTotal) {
     order.finalPayable = calculatedPayable;
   }
 
@@ -3816,9 +3835,26 @@ export function parseDapiCartPayload(data) {
     ? alreadyDeductedWallet
     : (freeCashBalance > 0 && rawOrderTotal > 0 ? Math.min(rawOrderTotal, freeCashBalance) : 0);
   const freeCashApplied = Math.round((campaignFreeCash + walletSplitPayAmount) * 100) / 100;
-  const orderTotal = alreadyDeductedWallet > 0
-    ? rawOrderTotal
-    : Math.max(0, Math.round((rawOrderTotal - walletSplitPayAmount) * 100) / 100);
+  // Centralized final-payable calculation (checkout-total.js): the Swiggy
+  // `order_total` / `grand_total` is authoritative ONLY when it is consistent
+  // with the validated breakdown (or lower — extra discounts already inside).
+  // A stale/undiscounted `order_total` (validated coupon/trade discounts not
+  // reflected in it) is NOT used as the payable; the breakdown reconstruction
+  // is used instead. Wallet split-pay is deducted exactly once. The fallback
+  // reconstruction includes packing charges (previously omitted).
+  const finalPayable = computeFinalPayable({
+    itemTotal,
+    couponDiscount,
+    tradeDiscountTotal,
+    swiggyOneMembershipFee,
+    deliveryFee,
+    packingCharges,
+    taxesAndCharges,
+    independentTaxesAndCharges: (renderTaxesAndCharges !== null ? renderTaxesAndCharges : pureTaxAndFees),
+    authoritativeTotal: (cm.order_total != null ? cm.order_total : renderGrandTotal),
+    walletSplitPayAmount,
+    walletAlreadyDeducted: alreadyDeductedWallet > 0
+  });
   const totalSavings = Math.round((couponDiscount + tradeDiscountTotal + extraCampaignSavings + freeDeliveryDiscount + walletSplitPayAmount) * 100) / 100;
 
   return {
@@ -3863,7 +3899,7 @@ export function parseDapiCartPayload(data) {
     rawCartOrderTotal: Math.round(rawOrderTotal * 100) / 100,
     packingCharges: Math.round(packingCharges * 100) / 100,
     taxesAndCharges: Math.round(taxesAndCharges * 100) / 100,
-    finalPayable: Math.round(((cm.order_total != null || renderGrandTotal != null) ? orderTotal : Math.max(0, itemTotal - couponDiscount - tradeDiscountTotal + swiggyOneMembershipFee + deliveryFee + taxesAndCharges)) * 100) / 100,
+    finalPayable,
     totalSavings
   };
 }
@@ -3963,7 +3999,16 @@ export async function verifyAndInspectSwiggyLink(url, cookies = '', accountSessi
   const tradeDiscountTotal = cd.tradeDiscountTotal || 0;
   const packingCharges = cd.packingCharges || 0;
   const taxesAndCharges = cd.gstCharges || 0;
-  const finalPayable = cd.finalPayable || Math.max(0, Math.round(itemTotal - discountAmount - tradeDiscountTotal + packingCharges + taxesAndCharges));
+  const finalPayable = computeFinalPayable({
+    itemTotal,
+    couponDiscount: discountAmount,
+    tradeDiscountTotal,
+    swiggyOneMembershipFee: 0,
+    deliveryFee: 0,
+    packingCharges,
+    taxesAndCharges,
+    authoritativeTotal: (Number(cd.finalPayable) > 0 ? cd.finalPayable : null)
+  });
 
   return {
     verified: Boolean(items.length > 0 || meta.restaurantName),
@@ -6181,6 +6226,10 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
   }
 
   try {
+    // PERF INSTRUMENTATION: stage timestamps for bill generation (account lock
+    // wait is measured by the caller; here: wave1 / cart push / offer discovery /
+    // coupon trials / free-cash claim / final bill).
+    const perf = { t0: Date.now(), wave1: 0, cart: 0, discovery: 0, trials: 0, freeCash: 0 };
     // Wave 1 (single concurrent batch — bootstraps `_session_tid`, checks session, pre-locks LN/BF offers,
     // resolves any raw links, AND saves/matches delivery address ALL IN PARALLEL!):
     const alreadyHasResolvedCart = Boolean(
@@ -6230,6 +6279,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       bootstrapAndSaveAddrPromise,
       inspectCartForAccount(account)
     ]);
+    perf.wave1 = Date.now() - perf.t0;
     const addrMeta = addrBundle.resolvedAddr;
     const savedAddresses = addrBundle.fetchedAddrs;
 
@@ -6601,6 +6651,8 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       } catch {}
     }
 
+    perf.cart = Date.now() - perf.t0;
+
     // Step 5: Parallel 5-Engine Zero-Chromium Offer & Auto-Suggested Coupon Discovery ON POPULATED SERVER CART!
     const estCartVal = Math.round(
       liveCart?.itemTotal ||
@@ -6751,6 +6803,8 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       pushCoupon(std, std, 'Swiggy Promo Offer', 35);
     }
 
+    perf.discovery = Date.now() - perf.t0;
+
     availableCoupons.sort((a, b) => (a.priority || 50) - (b.priority || 50));
 
     const isStrictlyBetterCart = (candidate, incumbent) => {
@@ -6883,6 +6937,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
 
       liveCart = bestCartState;
     }
+    perf.trials = Date.now() - perf.t0;
 
     // FREE CASH / LATE-NIGHT SELF-HEAL:
     // Wave 1 only gives the Breakfast/Late-Night offer lock 450ms. When that answer
@@ -6946,6 +7001,7 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     } catch (freeCashErr) {
       console.warn('[FreeCash] Re-lock skipped:', freeCashErr?.message || freeCashErr);
     }
+    perf.freeCash = Date.now() - perf.t0;
 
     // Step 6: Populate `order` cleanly with 100% genuine Swiggy numbers
     if (liveCart && liveCart.items?.length > 0 && (!restaurantId || String(liveCart.restaurantId) === String(restaurantId))) {
@@ -7062,6 +7118,14 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
     // suspend flag clear (jhoothi suspension ID ko hamesha band na kare).
     const healthyKey = resolveAccountKeyForHealth(account);
     if (healthyKey) markAccountHealthy(healthyKey, { note: 'cart sync ok' });
+
+    console.log(
+      `[BillSyncPerf] ${account?.phone || account?.name || 'ID'}: ` +
+      `wave1=${perf.wave1}ms cartPush=${Math.max(0, perf.cart - perf.wave1)}ms ` +
+      `discovery=${Math.max(0, perf.discovery - perf.cart)}ms trials=${Math.max(0, perf.trials - perf.discovery)}ms ` +
+      `freeCash=${Math.max(0, perf.freeCash - perf.trials)}ms total=${Date.now() - perf.t0}ms ` +
+      `payable=₹${Number(order.finalPayable || 0)} coupon=${order.couponCode || 'none'}(-₹${Number(order.discountAmount || 0)})`
+    );
 
     return {
       success: true,
@@ -7468,7 +7532,16 @@ export function isSwiggyAccountBusy(accountOrKey) {
 // Har lock kab se pakda hua hai — maintenance isi se atke locks dhoondta hai.
 const swiggyAccountLockMeta = new Map(); // lockId -> { since, waitedMs }
 
-export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = 25_000 } = {}) {
+// Default max wait for a busy per-account lock — configurable and BOUNDED via
+// ACCOUNT_LOCK_MAX_WAIT_MS (env, clamped to [1s, 120s], default 25s). Callers
+// doing short operations (bill sync) pass a smaller explicit `maxWaitMs`.
+function defaultAccountLockMaxWaitMs() {
+  const raw = Number(process.env.ACCOUNT_LOCK_MAX_WAIT_MS);
+  const val = Number.isFinite(raw) && raw > 0 ? raw : 25_000;
+  return Math.min(120_000, Math.max(1_000, val));
+}
+
+export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = defaultAccountLockMaxWaitMs() } = {}) {
   const lockId = resolveAccountLockId(accountOrKey);
   const heldSet = heldAccountLocksAls.getStore();
   if (heldSet && heldSet.has(lockId)) {
@@ -7483,7 +7556,7 @@ export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = 25_0
   // A queued lock must never wait forever: one stuck cart/QR job used to block
   // every later ID-selection for minutes ("5 minute" hangs, 240s Telegraf
   // timeouts). Wait at most `maxWaitMs`, then fail fast with a clear code.
-  const waitLimit = Math.max(1000, Number(maxWaitMs) || 25_000);
+  const waitLimit = Math.min(120_000, Math.max(1_000, Number(maxWaitMs) || defaultAccountLockMaxWaitMs()));
   let waitTimer = null;
   const waited = await Promise.race([
     prev.catch(() => {}).then(() => 'acquired'),
@@ -7500,7 +7573,7 @@ export async function withSwiggyAccountLock(accountOrKey, fn, { maxWaitMs = 25_0
     // the next caller mutate the same account concurrently with a placement.
     release();
     tail.then(() => { if (swiggyAccountLocks.get(lockId) === tail) swiggyAccountLocks.delete(lockId); }, () => { if (swiggyAccountLocks.get(lockId) === tail) swiggyAccountLocks.delete(lockId); });
-    const err = new Error('Swiggy ID is busy on another job — is ID par abhi kaam chal raha hai. 20-25 second me dobara try karein.');
+    const err = new Error(`Swiggy ID is busy on another job — is ID par abhi kaam chal raha hai. ${Math.round(waitLimit / 1000)} second baad dobara try karein.`);
     err.code = 'ACCOUNT_LOCK_TIMEOUT';
     err.diag = { code: 'ACCOUNT_LOCK_TIMEOUT', stage: 'ACCOUNT_LOCK', waitedMs: waitLimit };
     throw err;
