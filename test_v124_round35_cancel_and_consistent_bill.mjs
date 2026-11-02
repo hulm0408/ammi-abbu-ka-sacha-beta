@@ -52,8 +52,8 @@ const fakeProvider = {
       address,
       addressFingerprint: 'fp',
       optimizePending: false,
-      offerNote: '1 offer claim hua (0 pehle se active).',
       bill: {
+        offerNote: '1 offer claim hua (0 pehle se active).',
         itemTotal: 342, deliveryFee: 28, packingCharges: 0, taxes: 32,
         discount: 50, coupon: 'TRYNEW', tradeDiscount: null, freeCash: 50,
         oneMembershipFee: null, total: 352
@@ -137,7 +137,8 @@ test('bill: ek hi (full) quote — koi chhupa hua doosra phase nahi', async () =
   const out = await post('cart/sync', { confirmReplaceSwiggyCart: true, autoCoupon: true, forSomeoneElse: false });
   assert.equal(out.status, 200);
   assert.deepEqual(phases, ['full'], 'sirf poora bill');
-  assert.equal(out.body.cart.quote.total, 352, 'Pay bar par wahi number jo bill me hai');
+  assert.equal(out.body.cart.quote.total, 352, 'Swiggy bill ka total');
+  assert.equal(out.body.cart.quote.offerNote, '1 offer claim hua (0 pehle se active).', 'provider ke bill se offer status aata hai');
   // Client background me bill badalne wala call nahi karta.
   assert.doesNotMatch(appSource, /optimizeBill\(/);
   assert.match(appSource, /phase: 'full'/);
@@ -161,7 +162,7 @@ test('free cash: offer claim quote se pehle hota hai (bill me hi lage)', () => {
   // Claim fail/used ho to sach likha jata hai, jhoothi \"applied\" nahi.
   assert.match(providerSource, /pre-booked|PRE_LOCKED/);
   assert.match(providerSource, /engine\.offerNote = claimNote/);
-  assert.match(apiSource, /offerNote: String\(quote\.offerNote \|\| ''\)/);
+  assert.match(apiSource, /quote\.bill\?\.offerNote \|\| quote\.offerNote/);
 });
 
 // ── 3. UI: cancel card + bill ki offer line ──────────────────────────────
@@ -242,9 +243,9 @@ test('bill: offer claim ka sach bill card par dikhta hai (chhoti line)', async (
     const note = await waitFor(() => window.document.querySelector('.bill-offer-note'), 'offer note');
     assert.match(note.textContent, /offer claim/i);
     assert.match(css, /\.bill-offer-note \{/);
-    // Pay bar ka number bill ke total se hi aata hai — dono ek.
-    const pay = await waitFor(() => window.document.querySelector('.pay-bar .pay-left strong'), 'pay amount');
-    assert.match(pay.textContent, /352/);
+    // Pay bar me sirf full-width button hai; amount bill me dikhata hai.
+    const pay = await waitFor(() => window.document.querySelector('.pay-bar .pay-now'), 'pay button');
+    assert.match(pay.textContent, /Pay Now/);
     assert.match(window.document.querySelector('.bill-card').textContent, /352/);
   } finally { window.close(); }
 });

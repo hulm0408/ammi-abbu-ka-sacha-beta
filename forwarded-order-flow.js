@@ -1213,7 +1213,7 @@ export function buildForwardedOrderCardView(order, db, formatOrderBodyFn) {
       `▤ <b>Cart:</b> ${summarizeCartPreview(order)}\n\n` +
       (order.accountSwitchReason === 'next_id' || order.accountSwitchReason === 'manual_pick' || order.accountSwitchReason === 'auto_retry'
         ? `<i>⚡ Instant ID switch → <code>${escapeHtml(String(order.orderAccount || order.selectedAccount || ''))}</code> · offer scan skip (sab ID par same offers), bill turant ban raha hai…</i>${errNotice}`
-        : `<i>› Finding free 0-Order Swiggy ID + applying Maximum Coupon, Item Offers, Free Cash &amp; Free Delivery in parallel...</i>${errNotice}`);
+        : `<i>› Selected Swiggy ID par coupon, Free Cash aur delivery check ho raha hai...</i>${errNotice}`);
     return {
       text,
       keyboard: Markup.inlineKeyboard([
@@ -2015,12 +2015,18 @@ export function executeOrderBillSyncOnAccount(args = {}) {
   if (!key) return executeOrderBillSyncOnAccountInternal(args);
   const running = orderBillSyncInFlight.get(key);
   if (running) {
-    // Naya request purane ke saath hi chalega — jhagdna nahi.
-    return running;
+    // Never give a different account's in-flight result to the selected ID.
+    if (running.accountKey !== String(args.accKey || '')) {
+      const err = new Error('Bill kisi aur ID par ban raha hai. Uske baad selected ID dobara chunein.');
+      err.code = 'BILL_SYNC_IN_FLIGHT';
+      return Promise.reject(err);
+    }
+    return running.promise;
   }
   const run = executeOrderBillSyncOnAccountInternal(args);
-  orderBillSyncInFlight.set(key, run);
-  const clear = () => { if (orderBillSyncInFlight.get(key) === run) orderBillSyncInFlight.delete(key); };
+  const entry = { promise: run, accountKey: String(args.accKey || '') };
+  orderBillSyncInFlight.set(key, entry);
+  const clear = () => { if (orderBillSyncInFlight.get(key) === entry) orderBillSyncInFlight.delete(key); };
   run.then(clear, clear);
   return run;
 }
@@ -2053,7 +2059,7 @@ async function executeOrderBillSyncOnAccountInternal({
   // chalti hai, sync ke baad sequential nahi — ID switch ~1 RTT tez.
   const baselineAcc = accKey === 'BEST'
     ? null
-    : (getDb().config?.accounts?.[order.selectedAccount || accKey] || null);
+    : (getDb().config?.accounts?.[accKey] || null);
   const baselineAuthPromise = baselineAcc
     ? getSwiggySessionAuth(baselineAcc).catch(() => null)
     : Promise.resolve(null);
@@ -2331,57 +2337,13 @@ export async function autoAssignBestAccountWithFallback({
   const order = lookupOrder(startDb, orderId);
   if (!order) throw new Error(`Order #${orderId} not found. ` + orderNotFoundDiag(startDb, orderId));
 
-  const excluded = [...new Set((excludeAccountKeys || []).filter(Boolean).map(String))];
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      return await executeOrderBillSyncOnAccount({
-        telegram,
-        chatId,
-        orderId,
-        accKey: 'BEST',
-        formatOrderBodyFn,
-        excludeAccountKeys: excluded
-      });
-    } catch (err) {
-      lastError = err;
-      if (attempt === 2 || !isRetryableFetchError(err)) break;
-      await new Promise((resolve) => setTimeout(resolve, 900));
-    }
-  }
-
-  const ladder = planAccountFallbacks(getDb()?.config?.accounts, order, { exclude: excluded });
-  const tried = [];
-  for (const candidate of ladder.slice(0, 3)) {
-    try {
-      const result = await executeOrderBillSyncOnAccount({
-        telegram,
-        chatId,
-        orderId,
-        accKey: candidate.key,
-        formatOrderBodyFn
-      });
-      const doneDb = getDb();
-      const doneOrder = doneDb.orders?.[orderId];
-      if (doneOrder) {
-        doneOrder.accountFallbackReason = candidate.reason;
-        doneOrder.accountFallbackTier = candidate.tier;
-        doneOrder.accountSyncError = '';
-        doneOrder.lastAccountError = '';
-        upsertOrder(orderId, doneOrder);
-      }
-      return result;
-    } catch (err) {
-      lastError = err;
-      tried.push(candidate.phone || candidate.key);
-    }
-  }
-
-  if (lastError && tried.length) {
-    lastError.message = `${lastError.message} (aage try kiye: ${tried.join(', ')})`;
-  }
-  throw lastError || new Error('No usable Swiggy ID could build a live bill.');
+  // Once selected, a failed bill must not silently switch to another account.
+  // With no selection the BEST helper chooses one local account, then probes it only.
+  return executeOrderBillSyncOnAccount({
+    telegram, chatId, orderId,
+    accKey: order.selectedAccount || 'BEST',
+    formatOrderBodyFn, excludeAccountKeys
+  });
 }
 
 // Shared helper to generate REAL Swiggy Dynamic QR for a single order (safe for `Promise.all` across 10+ distinct IDs!)
@@ -3407,11 +3369,11 @@ export function registerForwardedOrderHandlers(bot, {
       }
     }
 
-    await ctx.answerCbQuery(`◷ Syncing on ${accKey === 'BEST' ? 'Best FREE Account (Parallel)' : accKey}...`);
+    await ctx.answerCbQuery(`◷ Syncing on ${accKey === 'BEST' ? 'Selected / active account' : accKey}...`);
     await ctx.editMessageText(
       `◷ <b>Fetching Live Swiggy Bill &amp; Applying Max Coupon (#${escapeHtml(orderId)})...</b>\n` +
       `${buildSenderHeaderLine(order)}\n\n` +
-      `<i>Syncing on <code>${escapeHtml(accKey)}</code> — other Swiggy IDs remain 100% free &amp; parallel!</i>`,
+      `<i>Syncing on <code>${escapeHtml(accKey)}</code> — sirf isi ID par bill check hoga!</i>`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([[Markup.button.callback('× Cancel Order', `fwd_cancel_${orderId}`)]])

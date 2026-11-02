@@ -8104,6 +8104,16 @@ export async function applyLiveFreeCashRelock(account, order, {
   return out;
 }
 
+// Bill ke liye pehle locally ek account chunna hai; live coupon/cart probes
+// kabhi doosre accounts par fan out nahi karte. An explicit selection may not
+// silently fall back to another account when it is unavailable.
+export function selectSingleBillAccount(entries, { selectedKey = '', activeKey = '', excludedKeys = [], busyKeys = [] } = {}) {
+  const blocked = new Set([...excludedKeys, ...busyKeys].map(String));
+  const preferred = String(selectedKey || activeKey || '');
+  if (preferred) return !blocked.has(preferred) && entries.some(([key]) => key === preferred) ? preferred : null;
+  return entries.find(([key]) => !blocked.has(key))?.[0] || null;
+}
+
 export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   const {
     captureScreenshot = false,
@@ -8121,7 +8131,7 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
   // Busy ID skip: warna scan ek hi ID par 25s lock ka intezaar karta hai
   // (yahi ACCOUNT_LOCK_TIMEOUT aur "ID busy" ka asli source tha).
   const busyEntries = Object.entries(accounts).filter(([k, a]) => a && isSwiggyAccountBusy(k)).map(([k]) => k);
-  const allEntries = Object.entries(accounts).filter(([k, a]) => a && a.isLoggedIn && !a.isLoggedOut && !isAccountSuspended(a) && !isSwiggyAccountBusy(k) && (a.cookies || a.tid || a.jwtTid || a.token));
+  let allEntries = Object.entries(accounts).filter(([k, a]) => a && a.isLoggedIn && !a.isLoggedOut && !isAccountSuspended(a) && !isSwiggyAccountBusy(k) && (a.cookies || a.tid || a.jwtTid || a.token));
   if (allEntries.length === 0 && suspendedKeys.length > 0) {
     return {
       success: false,
@@ -8153,6 +8163,18 @@ export async function findBestMaxCouponAccountForOrder(order, options = {}) {
         : 'No Swiggy accounts found in bot vault. Please login via OTP or import session JSON in ☎ Accounts.'
     };
   }
+
+  const chosenKey = selectSingleBillAccount(allEntries, {
+    selectedKey: order?.selectedAccount,
+    activeKey: db.config?.activeOrderAccount,
+    excludedKeys: Array.isArray(excludeAccountKeys) ? excludeAccountKeys : [],
+    busyKeys: [...getBusySwiggyAccountsMap(db, orderId).keys()]
+  });
+  if (!chosenKey) {
+    return { success: false, code: 'SELECTED_ACCOUNT_UNAVAILABLE', error: 'Selected Swiggy ID unavailable or busy. Doosri ID manually select karein.' };
+  }
+  // All subsequent history, cart and offer checks use only this account.
+  allEntries = allEntries.filter(([key]) => key === chosenKey);
 
   // Inspect logged-in accounts with bounded concurrency (6 workers) so Vault scans stay <1s
   // without firing a 30-way simultaneous burst that trips Swiggy's AWS WAF!

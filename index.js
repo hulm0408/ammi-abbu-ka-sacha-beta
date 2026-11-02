@@ -2072,7 +2072,7 @@ export async function autoOptimizeUserOrder(orderId, { reason = 'CUSTOMER_SEND_T
     saveDb(db);
     await updateOrderCards(order).catch(() => {});
 
-    console.log(`[AutoOptimize] Order #${key} (${reason}): scanning accounts for max offer...`);
+    console.log(`[AutoOptimize] Order #${key} (${reason}): checking selected account for max offer...`);
     const best = await findBestMaxCouponAccountForOrder(order, { captureScreenshot: false });
 
     if (!best?.success) {

@@ -517,7 +517,7 @@ function saveProviderQuote(ws, quote) {
     optimizePending: quote.optimizePending === true,
     // Round 35: offer claim ka SACH — free cash laga, ya Swiggy ne mana kiya.
     // Bill card par ek chhoti line, taaki "free cash nahi laga" ka andhera na rahe.
-    offerNote: String(quote.offerNote || '').slice(0, 160),
+    offerNote: String(quote.bill?.offerNote || quote.offerNote || '').slice(0, 160),
     fetchedAt: new Date().toISOString()
   };
   return ws.cart.quote;
