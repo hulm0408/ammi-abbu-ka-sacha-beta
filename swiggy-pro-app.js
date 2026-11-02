@@ -2468,8 +2468,8 @@
         if (approvalSignature !== billSyncSignature() || state.cart?.quote?.total !== quote.total || state.cart?.quote?.fetchedAt !== quote.fetchedAt) {
           throw new Error('Cart or bill changed. Review it again before paying.');
         }
+        const epoch = checkoutEpoch;
         try {
-          const epoch = checkoutEpoch;
           const out = await api('checkout', 'POST', { confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt });
           if (epoch !== checkoutEpoch) return;
           state.checkoutWarning = ''; merge(out); render();
@@ -2477,6 +2477,9 @@
           if (out.checkout?.orderId) refreshCheckoutTracking().catch(() => {});
           toast(out.checkout?.status === 'PAYMENT_PENDING' ? 'Payment details returned. Verify before paying.' : 'Check Swiggy My Orders; do not retry.');
         } catch (e) {
+          // User ne is checkout ko cancel kar diya hai to koi purana response
+          // (ya lost-response ka recovery) card wapas nahi laana chahiye.
+          if (epoch !== checkoutEpoch) return;
           // Boss (31-10-2026): "PAY PAR CLICK KARTA HU TO ... COULD NOT BE
           // CONFIRMED" — ab har wajah alag dikhti hai. Bill badla ho to naya
           // bill save ho chuka hai; order nahi gaya, dobara Pay dabaiye.
@@ -2496,7 +2499,13 @@
           // A lost browser response is not proof that the server never sent the
           // request. Hide retry until an authenticated bootstrap resolves it.
           state.checkout = { status: 'OUTCOME_UNKNOWN', message: 'The response was lost. Check Swiggy My Orders; do not place another order.' };
-          try { merge(await api('bootstrap')); } catch {}
+          // Bootstrap ko timeout dete hain: server par purana checkout lock ke
+          // peeche ho to UI hamesha ke liye atakna nahi chahiye.
+          try {
+            const fresh = await api('bootstrap', 'GET', undefined, { timeoutMs: 8000 });
+            if (epoch !== checkoutEpoch) return;
+            merge(fresh);
+          } catch { /* server state abhi nahi mila — card + cancel dikhta rahega */ }
           render();
           throw e;
         }
@@ -2554,9 +2563,14 @@
           toast(out.message || 'Checkout band. Cart wapas khula hai.', 'ok');
         } catch (e) {
           if (epoch !== checkoutEpoch) return;
-          try { merge(await api('bootstrap')); } catch {}
+          try {
+            const fresh = await api('bootstrap', 'GET', undefined, { timeoutMs: 8000 });
+            if (epoch === checkoutEpoch) merge(fresh);
+          } catch {}
           render();
-          toast(e?.name === 'TimeoutError' ? 'Cancel request time out hui. Server state dobara load kar diya — zaroorat ho to phir cancel dabaiye.' : (e.message || 'Cancel confirm nahi hua.'), 'bad');
+          // 404 = server par checkout pehle hi band tha — cart ab free hai.
+          if (e?.status === 404) toast('Checkout pehle hi band ho chuka tha — cart wapas khula hai.', 'ok');
+          else toast(e?.name === 'TimeoutError' ? 'Cancel request time out hui. Server state dobara load kar diya — zaroorat ho to phir cancel dabaiye.' : (e.message || 'Cancel confirm nahi hua.'), 'bad');
         }
       }
       else if (action === 'back-to-cart') {
