@@ -2363,8 +2363,14 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           return;
         }
         const account = orderHistoryAccount(user, ws, scope);
-        const orders = await provider.orders(account);
-        if (!orders.some(o => String(o.id) === id)) throw error(404, 'Order was not returned for this Swiggy account.');
+        // Boss (02-11-2026): "live tracking link order bante hi" — checkout
+        // scope me apne orderId ka link order-history list ke intezaar ke bina:
+        // checkout record hi proof hai ki order bana hai, seedha track karo.
+        const isLiveCheckoutOrder = scope === 'checkout' && id === normalizeSwiggyOrderId(ws.checkout?.orderId || '');
+        if (!isLiveCheckoutOrder) {
+          const orders = await provider.orders(account);
+          if (!orders.some(o => String(o.id) === id)) throw error(404, 'Order was not returned for this Swiggy account.');
+        }
         const tracking = await provider.tracking(account, id);
         const link = String(tracking?.trackingUrl || '');
         const safeLink = safeTrackingUrl(link, id);
