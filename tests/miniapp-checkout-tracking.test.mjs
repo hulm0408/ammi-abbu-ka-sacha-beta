@@ -72,6 +72,19 @@ test('UI: merge() keeps the fetched live link across checkout/status polls (same
     'link is kept only for the same order');
 });
 
+test('UI: Pay Now ke baad bada "Checkout band karein" cancel card nahi aata — status + tracking card aata hai', () => {
+  assert.ok(!app.includes('<div class="card cancel-card">'), 'cancel card markup hona hi nahi chahiye');
+  const checkoutFn = app.slice(app.indexOf('function renderCheckout()'), app.indexOf('function renderBill('));
+  assert.match(checkoutFn, /Order status/);
+  assert.match(checkoutFn, /data-action="checkout-status"/);
+  assert.ok((checkoutFn.match(/\$\{trackCard\}/g) || []).length >= 3, 'tracking card har checkout branch me');
+  // Cancel ka option ab bhi hai, par sirf chhote text button me.
+  assert.match(checkoutFn, /<button class="text-button" type="button" data-action="checkout-cancel">/);
+  // Auto-poll OUTCOME_UNKNOWN pe bhi chalta hai — PAID hote hi My Orders khule.
+  assert.match(app, /c\.status === 'PAYMENT_PENDING' \|\| c\.status === 'OUTCOME_UNKNOWN'/);
+  assert.match(app, /out\.checkout\?\.status === 'PAYMENT_PENDING' \|\| out\.checkout\?\.status === 'OUTCOME_UNKNOWN'\) maybeCheckoutTracking/);
+});
+
 test('UI: tracking link is fetched as soon as the order is placed', () => {
   assert.match(app, /if \(out\.checkout\?\.orderId\) refreshCheckoutTracking\(\)/,
     'checkout-start must fire the tracking fetch right after place');
