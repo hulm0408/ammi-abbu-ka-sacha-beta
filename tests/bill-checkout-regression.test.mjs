@@ -515,3 +515,16 @@ test('C18: stale cart total does not mask a reward just because wallet split-pay
     taxesAndCharges: 40, independentTaxesAndCharges: 40,
     authoritativeTotal: 270, walletSplitPayAmount: 10 }), 250);
 });
+
+
+test('C19: missing wallet eligibility is not presented as an explicit Swiggy denial', () => {
+  const base = { item_total: 230, order_total: 270,
+    cart_menu_items: [{ menu_item_id: 9001, quantity: 1, subtotal: 23000, final_price: 23000 }] };
+  const unknown = parseDapiCartPayload({ cartMeta: base });
+  const ineligible = parseDapiCartPayload({ cartMeta: { ...base, user_swiggy_money: 10, swiggy_pay_eligible_balance: 0 } });
+  assert.equal(unknown.swiggyMoneyEligibilityReported, false);
+  assert.equal(unknown.swiggyMoneyBalanceReported, false);
+  assert.equal(ineligible.swiggyMoneyEligibilityReported, true);
+  assert.equal(ineligible.swiggyMoneyBalanceReported, true);
+  assert.equal(ineligible.walletSplitPayAmount, 0);
+});
