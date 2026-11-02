@@ -91,6 +91,8 @@ async function post(p, body, userId = USER) {
   return { status: res.status, body: await res.json().catch(() => ({})) };
 }
 function seedWorkspace(checkout = null) {
+  // Workspace ka checkoutGeneration disk par kabhi peeche nahi jata (cancel ke baad stale write se checkout wapas na aaye). Test seed ke liye purani file hatao.
+  fs.rmSync(path.join(tmp, 'pro-workspaces', crypto.createHash('sha256').update(String(USER)).digest('hex') + '.json'), { force: true });
   writeProWorkspace(USER, {
     version: 1,
     accounts: { mine: { phone: '9123456789', name: 'Mine', token: 'mine-token', isLoggedIn: true, customerId: 'c-9123456789' } },

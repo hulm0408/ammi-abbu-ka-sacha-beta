@@ -196,7 +196,30 @@ export function readProWorkspace(userId) {
   }
 }
 
-export function writeProWorkspace(userId, workspace) {
+/**
+ * Lost-update guard. Ek lock-holding request (menu, coupons, cart sync...) apna
+ * workspace snapshot lock ke shuru me leta hai aur Swiggy ka wait karta hai.
+ * Is beech user cancel/finish/band kar de (ye lock nahi lete, aur checkoutGeneration
+ * badhate hain). Tab purana snapshot likhne par band checkout wapas aa jata tha
+ * ("cancel hua par order pending dikhta hai"). Isliye disk par generation naya ho
+ * to checkout/generation/lastClosed disk wale hi rakhte hain.
+ */
+function keepNewerCheckoutClose(userId, workspace) {
+  const file = workspacePath(userId);
+  if (!fs.existsSync(file)) return workspace;
+  let disk;
+  try { disk = readProWorkspace(userId); } catch { return workspace; }
+  const diskGen = Number(disk.checkoutGeneration ?? 0);
+  const incomingGen = Number(workspace.checkoutGeneration ?? 0);
+  if (!Number.isSafeInteger(diskGen) || !Number.isSafeInteger(incomingGen) || diskGen <= incomingGen) return workspace;
+  workspace.checkoutGeneration = diskGen;
+  workspace.checkout = disk.checkout ?? null;
+  if (disk.lastClosed) workspace.lastClosed = disk.lastClosed;
+  return workspace;
+}
+
+export function writeProWorkspace(userId, rawWorkspace) {
+  const workspace = keepNewerCheckoutClose(userId, rawWorkspace);
   const key = secretKey();
   const file = workspacePath(userId);
   const dir = path.dirname(file);

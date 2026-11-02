@@ -33,6 +33,10 @@
     try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ...readCache(), ...patch, version: 2, savedAt: new Date().toISOString() })); } catch {}
   }
   let mealRequestVersion = 0;
+  // Bill (cart/sync) chal raha ho ya confirm pooch raha ho — tab tak meal rail aur
+  // coupon list ke requests rukte hain, taaki server ka per-user lock bill ko na roke.
+  let billInFlight = 0;
+  let billPrompting = false;
   let couponRequestVersion = 0;
   let couponWriteVersion = 0;
   function locationContext() {
@@ -1132,24 +1136,53 @@
       (cart?.items || []).map(i => [i.lineKey, i.id, i.qty, i.price, i.variants, i.addons])
     ]);
   }
-  function maybeAutoBill() {
-    if (!state.auth || !state.activeAccount || state.tab !== 'cart' || state.couponView || state.track || state.chatHandoff) return;
-    if (!state.checkoutEnabled || cartLocked()) return;
-    const cart = state.cart;
+  /** cart/sync ka har call yahi se — in-flight counter bill ke waqt meal/coupon rokta hai. */
+  function syncCartRequest(body) {
+    billInFlight++;
+    return api('cart/sync', 'POST', body).finally(() => { billInFlight = Math.max(0, billInFlight - 1); });
+  }
+  /** Auto bill ke liye screen/cart/address sahi hai ya nahi. */
+  function autoBillReady() {
+    if (!state.auth || !state.activeAccount || state.tab !== 'cart' || state.couponView || state.track || state.chatHandoff) return false;
+    if (!state.checkoutEnabled || cartLocked()) return false;
     const addr = state.selectedAddress;
+    return Boolean(String(addr?.name || '').trim()) && String(addr?.mobile || '').replace(/\D/g, '').length === 10;
+  }
+  /**
+   * Bill abhi aane wala/chal raha hai → meal rail aur coupon list ko wait karna
+   * chahiye. Bill aate hi render() dobara chalta hai, to ye khud load ho jaate hain.
+   */
+  function billWaiting(cart) {
+    if (billInFlight > 0 || billPrompting) return true;
+    if (!cart?.items?.length || cart.quote || state.checkout) return false;
+    if (state.autoBillFor === billSyncSignature()) return false; // is cart ka bill pehle try ho chuka
+    return autoBillReady();
+  }
+  function maybeAutoBill() {
+    if (!autoBillReady()) return;
+    const cart = state.cart;
     if (!cart?.items?.length || cart.quote) return;
-    if (!String(addr?.name || '').trim() || String(addr?.mobile || '').replace(/\D/g, '').length !== 10) return;
     const signature = billSyncSignature();
     if (state.autoBillFor === signature) return;
     state.autoBillFor = signature;
+    billPrompting = true;
     confirmInApp({ title: 'Swiggy cart sync karein?', message: 'Selected ID ka existing Swiggy cart replace hoga aur address save hoga.', confirmText: 'Sync cart' })
-      .then(confirmed => confirmed && signature === billSyncSignature() ? api('cart/sync', 'POST', {
-        confirmReplaceSwiggyCart: true,
-        forSomeoneElse: cart.forSomeoneElse === true,
-        coupon: '', autoCoupon: true,
-        // Round 35 (boss): ek hi bill — jo dikha wahi Pay Now par bhi.
-        phase: 'full'
-      }) : null)
+      .catch(() => false)
+      .then(confirmed => {
+        billPrompting = false;
+        if (!(confirmed && signature === billSyncSignature())) {
+          // Bill nahi hoga — meal/coupon ab load ho sakte hain, to cart dobara banao.
+          if (state.tab === 'cart' && !state.track) render();
+          return null;
+        }
+        return syncCartRequest({
+          confirmReplaceSwiggyCart: true,
+          forSomeoneElse: cart.forSomeoneElse === true,
+          coupon: '', autoCoupon: true,
+          // Round 35 (boss): ek hi bill — jo dikha wahi Pay Now par bhi.
+          phase: 'full'
+        });
+      })
       .then(out => {
         // Do not show an old account/address/cart's quote after the user has
         // changed the current context while Swiggy was responding.
@@ -1162,7 +1195,11 @@
         } else if (state.tab === 'cart') render();
         else renderNav();
         if (out.cart?.quote) toast('Bill taiyar — Swiggy ka hisaab neeche hai.');
-      }).catch(e => { if (signature === billSyncSignature()) toast(e?.message || 'Swiggy ne bill nahi diya.'); });
+      }).catch(e => {
+        // Bill fail — meal/coupon ab load ho sakte hain (billWaiting ab false hai), cart dobara banao.
+        if (state.tab === 'cart' && !state.track) render();
+        if (signature === billSyncSignature()) toast(e?.message || 'Swiggy ne bill nahi diya.');
+      });
   }
 
   /**
@@ -1748,6 +1785,7 @@
   function maybeLoadMeal(cart) {
     const id = String(cart?.restaurantId || '');
     if (!id || state.mealFor === id || state.mealLoading) return;
+    if (billWaiting(cart)) return; // bill pehle — meal rail bill ke baad
     const request = ++mealRequestVersion;
     const context = cartSourceContext();
     const current = () => request === mealRequestVersion && context === cartSourceContext();
@@ -1766,6 +1804,7 @@
    */
   function maybeAutoCoupons() {
     if (state.coupons !== null || state.couponsLoading) return;
+    if (billWaiting(state.cart)) return; // coupon list bhi bill ke baad
     const id = String(state.cart?.restaurantId || '');
     if (!id) return;
     if (state.autoCouponsFor === id) return;
@@ -1928,7 +1967,7 @@
     const current = () => request === couponWriteVersion && signature === billSyncSignature();
     state.couponBusy = value; render();
     try {
-      const out = await api('cart/sync', 'POST', {
+      const out = await syncCartRequest({
         coupon: value, autoCoupon: false,
         forSomeoneElse: state.cart?.forSomeoneElse === true,
         confirmReplaceSwiggyCart: true, phase: 'full'
@@ -1959,7 +1998,7 @@
     const signature = billSyncSignature();
     state.couponBusy = '__remove__'; render();
     try {
-      const out = await api('cart/sync', 'POST', {
+      const out = await syncCartRequest({
         coupon: '', autoCoupon: false,
         forSomeoneElse: state.cart?.forSomeoneElse === true,
         confirmReplaceSwiggyCart: true, phase: 'full'
@@ -2040,7 +2079,7 @@
         // The prior quote is stale as soon as sync starts, including when the
         // response times out after Swiggy has changed the cart.
         state.cart.quote = null; render();
-        const out = await api('cart/sync', 'POST', { coupon: code, forSomeoneElse: data.has('forSomeoneElse'), confirmReplaceSwiggyCart: true });
+        const out = await syncCartRequest({ coupon: code, forSomeoneElse: data.has('forSomeoneElse'), confirmReplaceSwiggyCart: true });
         state.couponDraft = '';
         merge(out); render();
         const applied = Number(out.cart?.quote?.discount || 0);
@@ -2408,7 +2447,7 @@
         if (!await confirmWithTrigger({ title: 'Fresh bill check?', message: 'Swiggy par cart dobara sync hoga aur naya bill aayega.', confirmText: 'Check bill' })) return;
         if (signature !== billSyncSignature()) throw new Error('Cart or account changed. Review the bill again.');
         // Bill refresh = poora hisaab ek saath (offers + One Lite + coupon).
-        const out = await api('cart/sync', 'POST', { confirmReplaceSwiggyCart: true, forSomeoneElse: state.cart?.forSomeoneElse === true, coupon: state.cart?.quote?.autoCoupon ? '' : String(state.cart?.quote?.couponCode || state.cart?.quote?.coupon || ''), autoCoupon: true, phase: 'full' });
+        const out = await syncCartRequest({ confirmReplaceSwiggyCart: true, forSomeoneElse: state.cart?.forSomeoneElse === true, coupon: state.cart?.quote?.autoCoupon ? '' : String(state.cart?.quote?.couponCode || state.cart?.quote?.coupon || ''), autoCoupon: true, phase: 'full' });
         if (signature !== billSyncSignature()) return;
         merge(out); render(); toast('Bill update ho gaya.');
       }
@@ -2458,7 +2497,7 @@
           const syncSignature = billSyncSignature();
           if (!await confirmWithTrigger({ title: 'Swiggy cart sync karein?', message: 'Selected ID ka existing Swiggy cart replace hoga aur address save hoga.', confirmText: 'Sync cart' })) return;
           if (syncSignature !== billSyncSignature()) throw new Error('Cart or account changed. Review it again.');
-          const synced = await api('cart/sync', 'POST', { confirmReplaceSwiggyCart: true, forSomeoneElse: state.cart?.forSomeoneElse === true, coupon: state.cart?.quote?.autoCoupon ? '' : String(state.cart?.quote?.couponCode || state.cart?.quote?.coupon || ''), autoCoupon: true, phase: 'full' });
+          const synced = await syncCartRequest({ confirmReplaceSwiggyCart: true, forSomeoneElse: state.cart?.forSomeoneElse === true, coupon: state.cart?.quote?.autoCoupon ? '' : String(state.cart?.quote?.couponCode || state.cart?.quote?.coupon || ''), autoCoupon: true, phase: 'full' });
           if (syncSignature !== billSyncSignature()) throw new Error('Cart or account changed. Review it again.');
           merge(synced); quote = state.cart?.quote; render();
           if (!quote) throw new Error('Swiggy ne bill nahi diya. Dobara Pay Now dabayein.');
