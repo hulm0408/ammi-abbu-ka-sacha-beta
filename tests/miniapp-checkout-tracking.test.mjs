@@ -75,10 +75,11 @@ test('UI: tracking link is fetched as soon as the order is placed', () => {
 // ── 2. API level (fully mocked provider; no real order/payment) ─────────────
 const receiver = { id: 'a1', name: 'R', mobile: '9123456789', address: 'Test road', lat: '18.5204', lng: '73.8567' };
 const placedOrder = { id: ORDER_ID, restaurant: 'Mock', status: 'Order placed', amount: 150.25, placedAt: new Date().toISOString(), items: [{ name: 'Meal', qty: 1 }] };
+let ordersList = [placedOrder]; // mutable: simulate Swiggy history lag right after place
 const fakeProvider = {
   async verifySession() { return { valid: true, customerId: 'c-9123456789' }; },
   async addresses() { return [receiver]; },
-  async orders() { return [placedOrder]; },
+  async orders() { return ordersList; },
   async checkout() {
     return { orderId: ORDER_ID, upiIntentUrl: 'upi://pay?pa=upiswiggy%40icici&am=150.25&cu=INR&tr=offline', amount: 150.25 };
   },
@@ -146,4 +147,32 @@ test('Place: checkout response carries orderId immediately, tracking link comes 
   // A different order id is not trackable through this checkout scope.
   const other = await call('orders/tracking?id=999999999999&scope=checkout');
   assert.equal(other.status, 404);
+});
+
+test('Live link right after place: checkout-scope tracking skips the order-history gate (history lag)', async () => {
+  // Fresh checkout (cancel advances the generation, so the journal key is new).
+  const cancel = await call('checkout/cancel', { method: 'POST', body: { confirmCancel: true } });
+  assert.equal(cancel.status, 200, JSON.stringify(cancel.body));
+  seedWorkspace();
+  const quote = readProWorkspace('9900').cart.quote;
+  const placed = await call('checkout', { method: 'POST', body: { confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt } });
+  assert.equal(placed.status, 200, JSON.stringify(placed.body));
+  assert.equal(placed.body.checkout.status, 'PAYMENT_PENDING');
+  assert.equal(placed.body.checkout.orderId, ORDER_ID);
+
+  // Right after place, Swiggy's order history may not list the new order yet.
+  ordersList = [];
+  try {
+    // This is the exact call the mini app fires the moment the order is placed.
+    const track = await call('orders/tracking?id=' + encodeURIComponent(ORDER_ID) + '&scope=checkout');
+    assert.equal(track.status, 200, JSON.stringify(track.body));
+    assert.equal(track.body.tracking.trackingUrl, LIVE_LINK);
+    assert.equal(track.body.tracking.orderId, ORDER_ID);
+    // Outside checkout scope the history gate still applies.
+    const active = await call('orders/tracking?id=' + encodeURIComponent(ORDER_ID));
+    assert.equal(active.status, 404);
+    // A different id under checkout scope is still rejected.
+    const other = await call('orders/tracking?id=999999999999&scope=checkout');
+    assert.equal(other.status, 404);
+  } finally { ordersList = [placedOrder]; }
 });
