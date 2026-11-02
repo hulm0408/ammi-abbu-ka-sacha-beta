@@ -1851,7 +1851,9 @@
     state.checkoutTrackBusy = true; state.checkoutTrackError = ''; state.checkoutTrackLastTry = Date.now();
     render();
     try {
-      const out = await api('orders/tracking?id=' + encodeURIComponent(orderId) + '&scope=checkout');
+      // Timeout: server Swiggy se link dhoondhne me atak jaye to "aa raha hai…"
+      // hamesha ke liye na dikhe — Re-fetch dobara dabane layak rahe.
+      const out = await api('orders/tracking?id=' + encodeURIComponent(orderId) + '&scope=checkout', 'GET', undefined, { timeoutMs: 30000 });
       if (epoch !== checkoutEpoch) return null;
       const t = out && out.tracking ? out.tracking : null;
       if (state.checkout && String(state.checkout.orderId || '') === orderId) {
@@ -1860,7 +1862,9 @@
       return t;
     } catch (e) {
       if (epoch !== checkoutEpoch) return null;
-      state.checkoutTrackError = e?.message || 'Tracking link nahi mili.';
+      state.checkoutTrackError = e?.name === 'TimeoutError'
+        ? 'Swiggy ne link abhi nahi diya (30s). Re-fetch Tracking Link dabaiye.'
+        : (e?.message || 'Tracking link nahi mili.');
       return null;
     } finally {
       if (epoch === checkoutEpoch) { state.checkoutTrackBusy = false; render(); }

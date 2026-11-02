@@ -1395,12 +1395,24 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
   }
 
   const isCancelRoute = route === '/pro/api/checkout/cancel' && req.method === 'POST';
+  // Live checkout ka tracking link Swiggy se laane me kabhi 10-20s lagte hain.
+  // Ye lookup workspace lock ke bahar chalta hai — warna wo checkout/status poll
+  // (jo Swiggy payment check karta hai) ke peeche queue hota aur app "link aa
+  // raha hai…" par atki rehti. Lock sirf link save karte waqt chhota sa liya jata hai.
+  const isLiveTrackingRoute = route === '/pro/api/orders/tracking' && req.method === 'GET' &&
+    url.searchParams.get('scope') === 'checkout' && (() => {
+      try {
+        const id = normalizeSwiggyOrderId(url.searchParams.get('id'));
+        const liveId = normalizeSwiggyOrderId(readProWorkspace(user.id).checkout?.orderId || '');
+        return Boolean(id) && id === liveId;
+      } catch { return false; }
+    })();
   const runRequest = async () => {
     try {
       // Redeploy ke baad naya disk khali ho sakta hai — encrypted workspace
       // cloud vault se wapas (sirf jab local file na ho).
       let ws;
-      if (isCancelRoute) {
+      if (isCancelRoute || isLiveTrackingRoute) {
         ws = readProWorkspace(user.id);
         if (!ws.checkout) {
           await ensureProWorkspaceHydrated(user.id);
@@ -1413,8 +1425,8 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
       // Idle sweep — har request par, routes se pehle (boss: 2 minute rule).
       // Cancel reads the freshest workspace after body parsing and must not
       // race a stale idle-sweep write against an in-flight checkout.
-      const idle = isCancelRoute ? { changed: false, timeoutMs: idleTimeoutMs(getDb()) } : applyIdleExpiry(user, ws, { route });
-      const handoffReconciled = isCancelRoute ? false : reconcileChatFlow(user, ws);
+      const idle = (isCancelRoute || isLiveTrackingRoute) ? { changed: false, timeoutMs: idleTimeoutMs(getDb()) } : applyIdleExpiry(user, ws, { route });
+      const handoffReconciled = (isCancelRoute || isLiveTrackingRoute) ? false : reconcileChatFlow(user, ws);
       if (idle.changed || handoffReconciled) writeProWorkspace(user.id, ws);
       if (route === '/pro/api/bootstrap' && req.method === 'GET') {
         const quotedAt = Date.parse(ws.cart?.quote?.fetchedAt || '');
@@ -2495,21 +2507,32 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         // Boss (02-11-2026): live link ko checkout record me bhi persist karo —
         // taaki checkout/status poll aur reload ke baad bhi wahi link rahe
         // (PAYMENT_PENDING me server ise khud nahi bhejta), gayab na ho.
+        // Save ko response ke BAAD chalaate hain: link response me already hai, aur
+        // lock-bypass route par save ka lock payment poll ke peeche na atke.
+        let afterResponse = null;
         if (isLiveCheckoutOrder && safeLink) {
-          try {
-            const fresh = readProWorkspace(user.id);
-            if (fresh.checkout && normalizeSwiggyOrderId(fresh.checkout.orderId || '') === id && fresh.checkout.status !== 'PAID') {
-              fresh.checkout.tracking = {
-                orderId: id,
-                status: String(tracking?.status || '').slice(0, 200),
-                eta: String(tracking?.eta || tracking?.etaMinutes || '').slice(0, 100),
-                trackingUrl: safeLink,
-                via: String(tracking?.via || ''),
-                tried: Array.isArray(tracking?.tried) ? tracking.tried.slice(0, 4) : []
-              };
-              writeProWorkspace(user.id, fresh);
-            }
-          } catch { /* response me link to hai hi; persist best-effort hai */ }
+          const persistLink = () => {
+            try {
+              const fresh = readProWorkspace(user.id);
+              if (fresh.checkout && normalizeSwiggyOrderId(fresh.checkout.orderId || '') === id && fresh.checkout.status !== 'PAID') {
+                fresh.checkout.tracking = {
+                  orderId: id,
+                  status: String(tracking?.status || '').slice(0, 200),
+                  eta: String(tracking?.eta || tracking?.etaMinutes || '').slice(0, 100),
+                  trackingUrl: safeLink,
+                  via: String(tracking?.via || ''),
+                  tried: Array.isArray(tracking?.tried) ? tracking.tried.slice(0, 4) : []
+                };
+                writeProWorkspace(user.id, fresh);
+              }
+            } catch { /* response me link to hai hi; persist best-effort hai */ }
+          };
+          // Lock-bypass route par khud lock lo (chhota write); lock ke andar wale
+          // route par lock pehle se hai — dobara lene se deadlock hoga.
+          afterResponse = () => {
+            if (isLiveTrackingRoute) withProWorkspaceLock(user.id, async () => persistLink()).catch(() => {});
+            else persistLink();
+          };
         }
         json(res, 200, { ok: true, sms: smsTruthFor({ ...orderScopeContext(ws, scope), tracking }), tracking: {
           orderId: id, status: String(tracking?.status || '').slice(0, 200), eta: String(tracking?.eta || '').slice(0, 100),
@@ -2521,6 +2544,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           deliveryOtp: /^\d{4,8}$/.test(String(tracking?.deliveryOtp || '')) ? String(tracking.deliveryOtp) : '',
           deliveryPartner: { name: String(tracking?.deliveryPartner?.name || '').slice(0, 100), phone: String(tracking?.deliveryPartner?.phone || '').slice(0, 30) }
         } });
+        if (afterResponse) afterResponse();
         return;
       }
       if (route === '/pro/api/wallet' && req.method === 'GET') {
@@ -2989,7 +3013,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
   // Cancel is a control action: it must never wait behind a slow Swiggy
   // checkout/provider call. Checkout completion re-checks its token before
   // reviving state, so a late provider response cannot undo the cancel.
-  if (isCancelRoute) await runRequest();
+  if (isCancelRoute || isLiveTrackingRoute) await runRequest();
   else await withProWorkspaceLock(user.id, runRequest);
   return true;
 }
