@@ -489,6 +489,16 @@ function billBreakdown(bill, { expectedTotal = null, items = [] } = {}) {
  * (Pehle sirf sync likhta tha; optimize aate hi duplicate code na ho.)
  */
 function saveProviderQuote(ws, quote) {
+  // Keep only a coupon that Swiggy actually discounted on this account/cart.
+  // Quotes expire quickly; the live coupon feed can omit a good code on the
+  // next refresh. This is merely a candidate for a fresh verified trial.
+  const verifiedCode = String(quote?.bill?.couponCode || '').toUpperCase();
+  if (/^[A-Z0-9_-]{3,28}$/.test(verifiedCode) && Number(quote?.bill?.discount || 0) > 0) {
+    ws.cart.lastVerifiedCoupon = {
+      code: verifiedCode, accountKey: ws.activeAccountKey,
+      restaurantId: String(ws.cart.restaurantId || ''), verifiedAt: Date.now()
+    };
+  }
   if (Array.isArray(quote?.bill?.subscriptionItems)) ws.cart.activeSubscriptionItems = quote.bill.subscriptionItems;
   ws.selectedAddress = cleanAddress(quote.address);
   // Round 34: ab confirmed address yaad rehta hai — agla bill 2 Swiggy call
@@ -2352,7 +2362,12 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         ws.cart.autoCoupon = body.autoCoupon !== false;
         // Preserve only a previously AUTO-selected code as a candidate after
         // resetting the quote. Never override a manually selected coupon.
-        const previousAutoCoupon = ws.cart.quote?.autoCoupon === true ? String(ws.cart.quote.couponCode || '') : '';
+        const remembered = ws.cart.lastVerifiedCoupon;
+        const previousAutoCoupon = ws.cart.quote?.autoCoupon === true ? String(ws.cart.quote.couponCode || '')
+          : remembered?.accountKey === ws.activeAccountKey &&
+            String(remembered.restaurantId) === String(ws.cart.restaurantId) &&
+            Number(remembered.verifiedAt) > Date.now() - 24 * 60 * 60 * 1000
+            ? String(remembered.code || '') : '';
         ws.cart.quote = null;
         writeProWorkspace(user.id, ws);
         // One Lite (+₹1) subscription jo bill me laga, wo cart par bhi yaad
