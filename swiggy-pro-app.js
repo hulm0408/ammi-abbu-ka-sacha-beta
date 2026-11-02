@@ -2525,7 +2525,7 @@
         const approvalSignature = billSyncSignature();
         if (!await confirmWithTrigger({
           title: `Pay ${money(quote.total)} — order confirm?`,
-          message: `${state.cart.restaurantName || 'Restaurant'} · ${state.selectedAddress.name} · +91 ${state.selectedAddress.mobile}\n${state.selectedAddress.address}\n${state.orderFee?.exempt ? 'Order fee: free.' : `Order fee ${money(Number(state.orderFee?.paise || 0) / 100)} (bot wallet); Swiggy bill alag.`}\nSwiggy par order jayega. Result na aaye to dobara order na karein.`,
+          message: `${state.cart.restaurantName || 'Restaurant'} · ${state.selectedAddress.name} · +91 ${state.selectedAddress.mobile}\n${state.selectedAddress.address}\n${Number(quote.freeCash || 0) <= 0 ? `Free Cash: ₹0 is bill me laga hai. Diya/Free Cash expect kar rahe hain to CANCEL karein — Pay Now par cash apne aap nahi lagega.\n` : quote.walletSplitPending === true ? `Free Cash: ${money(quote.freeCash)} split-pay eligible; payment QR ka amount isi bill se match hona chahiye.\n` : ''}${state.orderFee?.exempt ? 'Order fee: free.' : `Order fee ${money(Number(state.orderFee?.paise || 0) / 100)} (bot wallet); Swiggy bill alag.`}\nSwiggy par order jayega. Result na aaye to dobara order na karein.`,
           confirmText: `Pay ${money(quote.total)}`
         })) return;
         if (approvalSignature !== billSyncSignature() || state.cart?.quote?.total !== quote.total || state.cart?.quote?.fetchedAt !== quote.fetchedAt) {

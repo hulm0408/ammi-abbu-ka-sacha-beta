@@ -25,8 +25,8 @@ const baseCart = () => ({
   items: [{ menu_item_id: 9001, qty: 1, name: 'Biryani', price: 230, variants: [], addons: [] }],
   quote: null
 });
-const state = { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, coupons: [], requests: [] };
-function reset() { Object.assign(state, { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, coupons: [], requests: [] }); }
+const state = { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, coupons: [], requests: [] };
+function reset() { Object.assign(state, { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, coupons: [], requests: [] }); }
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 function cartPayload() {
   const discount = state.coupon === 'SAVE50' ? 50 : state.coupon === 'BEST80' ? 80 : 0;
@@ -38,7 +38,7 @@ function cartPayload() {
     coupon_code: state.coupon, is_coupon_valid: state.coupon ? 1 : 0,
     coupon_discount_total: discount, coupon_discount_effective: discount,
     trade_discount_total: state.trade, trade_discount_reward_amount: state.reward,
-    user_swiggy_money: state.wallet, ...(state.eligible !== null ? { swiggy_pay_eligible_balance: state.eligible } : {}), swiggy_money: 0, positiveDeliveryChargesExclusive: 0,
+    user_swiggy_money: state.wallet, ...(state.cashWithoutCouponOnly ? { swiggy_pay_eligible_balance: state.coupon ? 0 : state.wallet } : state.eligible !== null ? { swiggy_pay_eligible_balance: state.eligible } : {}), swiggy_money: 0, positiveDeliveryChargesExclusive: 0,
     taxesAndCharges: 30, total_packing_charges: 10, is_order_for_someone_else: false
   } } };
 }
@@ -178,4 +178,39 @@ test('provider: credited money without cart eligibility is not silently deducted
   assert.equal(out.bill.freeCash, null);
   assert.equal(out.bill.total, 270);
   assert.match(out.bill.offerNote, /₹0 eligible/);
+});
+
+test('bill diagnostic does not confuse Night/Breakfast claim with Diya or promise coupon stacking', async () => {
+  const { describeCheckoutFreeCash } = await import('../swiggy-pro-provider.js');
+  const note = describeCheckoutFreeCash({ activeClaims: 1, claimEnabled: true, couponCode: 'FLASHSALE' });
+  assert.match(note, /Night\/Breakfast claim verified \(Diya nahi\)/);
+  assert.match(note, /Free Cash ₹0/);
+  assert.match(note, /FLASHSALE hata kar bill compare/);
+  assert.doesNotMatch(note, /FLASHSALE.*(blocked|ineligible)/i, 'coupon incompatibility is not established');
+  assert.match(describeCheckoutFreeCash({ campaignCash: 10, activeClaims: 1, claimEnabled: true }), /₹10.*applied/);
+});
+
+
+test('auto quote clears a retained coupon, checks cash-only bill, then restores cheaper live coupon', async () => {
+  reset(); state.wallet = 10; state.cashWithoutCouponOnly = true;
+  state.coupon = 'SAVE50'; state.bulkHonorsRemove = false;
+  state.coupons = [{ coupon_code: 'SAVE50', is_applicable: true }];
+  const out = await proProvider.quoteCart(account, address, { ...baseCart(), autoCoupon: true }, '', { phase: 'full', autoCoupon: true });
+  assert.ok(state.removeCalls >= 1, 'dedicated removal confirms the cash-only baseline');
+  assert.equal(out.bill.engine.cashOnlyBill.total, 260);
+  assert.equal(out.bill.engine.cashOnlyBill.cash, 10);
+  assert.equal(out.bill.couponCode, 'SAVE50');
+  assert.equal(out.bill.total, 220, 'cheaper payable wins without fabricating cash stacking');
+  assert.equal(out.bill.freeCash, null);
+  assert.match(out.bill.offerNote, /Bina SAVE50 cash ₹10.*bill ₹260.*bill ₹220/);
+});
+
+test('auto quote reconsiders previously auto-selected coupon if live discovery is empty', async () => {
+  reset(); state.coupon = 'SAVE50'; state.bulkHonorsRemove = false;
+  const out = await proProvider.quoteCart(account, address, { ...baseCart(), autoCoupon: true }, '', {
+    phase: 'full', autoCoupon: true, previousAutoCoupon: 'SAVE50'
+  });
+  assert.ok(state.removeCalls >= 1);
+  assert.equal(out.bill.couponCode, 'SAVE50');
+  assert.equal(out.bill.total, 220);
 });

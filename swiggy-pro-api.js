@@ -2350,6 +2350,9 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         // Boss (31-10-2026, round 11): "AUTO SAARE COUPON LAG". Default haan —
         // user ne koi code diya ho to wahi, warna best coupon khud lagta hai.
         ws.cart.autoCoupon = body.autoCoupon !== false;
+        // Preserve only a previously AUTO-selected code as a candidate after
+        // resetting the quote. Never override a manually selected coupon.
+        const previousAutoCoupon = ws.cart.quote?.autoCoupon === true ? String(ws.cart.quote.couponCode || '') : '';
         ws.cart.quote = null;
         writeProWorkspace(user.id, ws);
         // One Lite (+₹1) subscription jo bill me laga, wo cart par bhi yaad
@@ -2361,7 +2364,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         // quote. `body.phase === 'fast'` sirf tab jab koi jaan-boojh kar turant
         // number maange (chat handoff) — default poora hi hai.
         const phase = body.phase === 'fast' ? 'fast' : 'full';
-        const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon, { phase, autoCoupon: ws.cart.autoCoupon !== false });
+        const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon, { phase, autoCoupon: ws.cart.autoCoupon !== false, previousAutoCoupon });
         saveProviderQuote(ws, quote);
         // Bill ke saath outlet ka sach bhi — header/outlet row ke liye.
         if (ws.menu?.restaurant && String(ws.menu.restaurant.id) === String(ws.cart.restaurantId)) {

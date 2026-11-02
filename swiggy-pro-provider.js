@@ -31,6 +31,31 @@ function badRequest(message) {
   return e;
 }
 
+/** A campaign claim is not a cart discount, and Night/Breakfast is not Diya. */
+export function describeCheckoutFreeCash({ campaignCash = 0, walletSplitPayAmount = 0,
+  walletReallyDeducted = 0, reportedWallet = 0, eligibleWallet = 0,
+  activeClaims = 0, claimEnabled = false, claimNote = '', couponCode = '', cashOnlyBill = null, chosenTotal = null } = {}) {
+  if (campaignCash > 0) return `Campaign Free Cash ₹${campaignCash} Swiggy bill me applied.`;
+  if (walletSplitPayAmount > 0 && walletReallyDeducted <= 0) {
+    return `₹${walletSplitPayAmount} Swiggy Money eligible for split-pay; payment QR par amount verify karein.`;
+  }
+  if (walletReallyDeducted > 0) return `₹${walletReallyDeducted} Swiggy Money Swiggy cart me deducted.`;
+  const code = /^[A-Z0-9_-]{3,28}$/.test(String(couponCode)) ? couponCode : '';
+  if (code && cashOnlyBill && Number(cashOnlyBill.cash) > 0) {
+    return `Bina ${code} cash ₹${cashOnlyBill.cash}, bill ₹${cashOnlyBill.total}; ${code} ke saath cash ₹0, bill ₹${chosenTotal}. Sasta bill rakha.`;
+  }
+  if (code && cashOnlyBill && Number(cashOnlyBill.cash) === 0) {
+    return `Bina ${code} bhi is cart par Free Cash ₹0.${claimEnabled && activeClaims > 0 ? ' Night/Breakfast claim Diya nahi;' : ''} Swiggy me eligibility/account check karein.`;
+  }
+  if (reportedWallet > 0 && eligibleWallet <= 0) {
+    return `Swiggy Money balance ₹${reportedWallet} hai, par is cart par ₹0 eligible — Swiggy me offer terms check karein.`;
+  }
+  if (claimEnabled && activeClaims > 0) {
+    return `Night/Breakfast claim verified (Diya nahi); is cart par Free Cash ₹0.${code ? ` ${code} hata kar bill compare karein;` : ''} Swiggy eligibility check karein.`;
+  }
+  return claimNote;
+}
+
 function coords(address) {
   if (!isValidIndianDeliveryCoordinates(address?.lat, address?.lng)) {
     const e = new Error('Select an address with a verified map location first.');
@@ -834,7 +859,11 @@ export const proProvider = {
       let subscriptionItems = Array.isArray(cart.activeSubscriptionItems) ? cart.activeSubscriptionItems : [];
       // Flush the old cart BEFORE waiting for a claim: flushFirst on the first
       // write can otherwise discard the newly claimed cart reward.
-      let base = await push({ couponCode: requestedCoupon, subscriptionItems });
+      // A pre-existing auto coupon must not be mistaken for a no-coupon
+      // baseline. Clear it first so cash-only and coupon bills can be compared
+      // on the SAME account; any coupon restored later is read back again.
+      let base = await push({ couponCode: requestedCoupon, subscriptionItems,
+        clearCoupon: !requestedCoupon && !quickBill && !fast });
       // Payment offers only need the initial item total; One Lite trials do
       // not change item prices. Keep all cart updates strictly sequential.
       const estCartVal = Math.round(Number(base.parsed?.itemTotal || 250));
@@ -926,6 +955,9 @@ export const proProvider = {
         });
       };
       if (requestedCoupon) add(requestedCoupon, requestedCoupon, 'Aapne chuna', 1);
+      if (!requestedCoupon && autoCoupon && options.previousAutoCoupon) {
+        add(options.previousAutoCoupon, options.previousAutoCoupon, 'Previous auto coupon', 4);
+      }
       if (base.coupon) add(base.coupon, base.coupon, 'Bill me laga hua', 2);
       if (base.parsed?.suggestedCouponCode) add(base.parsed.suggestedCouponCode, base.parsed.suggestedCouponCode, 'Swiggy ka best suggested', 3);
 
@@ -958,6 +990,14 @@ export const proProvider = {
 
       // ── Step 3: har coupon ka asli bill — sabse kam total jeetta hai ──────
       let best = base;
+      // Cash-only comparison is meaningful only when Swiggy read back a cart
+      // WITHOUT a coupon, after claims and One Lite have already been checked.
+      const noCouponBill = !requestedCoupon && !base.coupon ? {
+        total: base.total,
+        cash: Math.max(0, Number(base.parsed?.campaignFreeCash || 0))
+          + Math.max(0, Number(base.parsed?.swiggyMoneyApplied || 0), Number(base.parsed?.walletSplitPayAmount || 0))
+      } : null;
+      if (!requestedCoupon && base.coupon) engine.notes.push('No-coupon baseline Swiggy ne confirm nahi kiya — cash vs coupon compare nahi hua.');
       // User ne khud koi code chuna ho to wahi chalta hai — auto use nahi
       // badalta (user ka faisla upar hai). Auto mode me hi sabse kam bill dhoondte hain.
       const candidates = (requestedCoupon || !autoCoupon || quickBill || fast ? [] : [...found.values()])
@@ -1012,6 +1052,14 @@ export const proProvider = {
         }
       }
       const { parsed, meta, total } = best;
+      const cashComparison = noCouponBill && best.coupon ? {
+        withoutCoupon: noCouponBill,
+        withCoupon: { code: best.coupon, total,
+          cash: Math.max(0, Number(parsed?.campaignFreeCash || 0))
+            + Math.max(0, Number(parsed?.swiggyMoneyApplied || 0), Number(parsed?.walletSplitPayAmount || 0)) }
+      } : null;
+      engine.cashComparison = cashComparison;
+      engine.cashOnlyBill = noCouponBill;
       const returnedNumber = (...values) => {
         const raw = values.find(v => v !== undefined && v !== null && v !== '');
         return raw === undefined || !Number.isFinite(Number(raw)) ? null : Number(raw);
@@ -1051,17 +1099,11 @@ export const proProvider = {
       // A verified campaign claim is not evidence of a cart discount. Do not
       // call it applied unless Swiggy returned an actual deducted amount.
       const reportedWallet = Math.max(0, Number(parsed?.reportedSwiggyMoneyBalance || 0));
-      const billOfferNote = campaignCash > 0
-        ? `Campaign Free Cash ₹${campaignCash} Swiggy bill me applied.`
-        : walletSplitPayAmount > 0 && walletReallyDeducted <= 0
-          ? `₹${walletSplitPayAmount} Swiggy Money eligible for split-pay; payment QR par amount verify karein.`
-          : walletReallyDeducted > 0
-            ? `₹${walletReallyDeducted} Swiggy Money Swiggy cart me deducted.`
-            : reportedWallet > 0 && Number(parsed?.freeCashBalance || 0) <= 0
-              ? `Swiggy Money balance ₹${reportedWallet} hai, par is cart par ₹0 eligible — Swiggy me offer terms check karein.`
-              : claimEnabled && activeClaims > 0
-                ? 'Offer claim verified, par Swiggy ne is cart par campaign Free Cash apply nahi kiya. Eligibility/window check karein.'
-                : claimNote;
+      const billOfferNote = describeCheckoutFreeCash({
+        campaignCash, walletSplitPayAmount, walletReallyDeducted, reportedWallet,
+        eligibleWallet: Number(parsed?.freeCashBalance || 0), activeClaims,
+        claimEnabled, claimNote, couponCode: best.coupon, cashOnlyBill: noCouponBill, chosenTotal: total
+      });
       engine.offerNote = billOfferNote;
       return {
         address: confirmedAddress,
