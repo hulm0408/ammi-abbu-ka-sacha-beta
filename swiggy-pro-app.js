@@ -1356,6 +1356,13 @@
         if (epoch !== checkoutEpoch) return;
         merge(out);
         render();
+        if (!out.checkout) {
+          // Server ne purana unpaid/unknown checkout band kar diya — cart free, naya Pay Now.
+          stopPaymentPoll();
+          state.payWindow = null; state.payExpired = false;
+          toast(out.closed?.message || 'Purana checkout band kar diya — naya Pay Now karein.', 'ok');
+          return;
+        }
         // Live link abhi nahi aaya ho to poll ke saath dobara maangte hain.
         if (out.checkout?.status === 'PAYMENT_PENDING' || out.checkout?.status === 'OUTCOME_UNKNOWN') maybeCheckoutTracking();
         if (out.checkout?.status === 'PAID' && out.checkout.orderId) {
@@ -2496,6 +2503,13 @@
         const out = await api('checkout/status', 'POST', {});
         if (epoch !== checkoutEpoch) return;
         merge(out); render();
+        if (!out.checkout) {
+          // Purana unpaid/unknown checkout server ne band kar diya — ab naya Pay Now chalega.
+          stopPaymentPoll();
+          state.payWindow = null; state.payExpired = false;
+          toast(out.closed?.message || 'Purana checkout band kar diya — naya Pay Now karein.', 'ok');
+          return;
+        }
         if (out.checkout?.status === 'PAID' && out.checkout.orderId) {
           stopPaymentPoll();
           state.payWindow = null;

@@ -254,3 +254,47 @@ test('New Pay Now: old UNPAID checkout auto-closes (payment checked first); fres
     assert.equal(readProWorkspace('9900').checkout.status, 'PAID', 'paid checkout must never be closed');
   } finally { paymentResult = { paid: false, paymentVerified: false }; }
 });
+
+test('Status check resolves no-orderId OUTCOME_UNKNOWN: no matching Swiggy order → auto-band + new Pay Now works; match found → orderId attached + live link', async () => {
+  const place = async () => {
+    const quote = readProWorkspace('9900').cart.quote;
+    return call('checkout', { method: 'POST', body: { confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt } });
+  };
+  const seedUnknown = () => {
+    seedWorkspace();
+    const ws = readProWorkspace('9900');
+    ws.checkout = { id: '0', status: 'OUTCOME_UNKNOWN', orderId: '', amount: 150.25, accountKey: 'mine', accountPhone: '9123456789', createdAt: new Date(Date.now() - 10 * 60_000).toISOString(), message: 'Order Swiggy par ho sakta hai.' };
+    writeProWorkspace('9900', ws);
+  };
+  // Case A: Swiggy order list verify hui, match nahi → local band; fresh Pay Now phir kaam kare.
+  seedUnknown();
+  ordersList = [];
+  let st = await call('checkout/status', { method: 'POST', body: {} });
+  assert.equal(st.status, 200, JSON.stringify(st.body));
+  assert.equal(st.body.checkout, null, 'verified no-order → local band, checkout null (no dead-end card)');
+  assert.ok(st.body.closed?.message, 'closed record message present');
+  let ws = readProWorkspace('9900');
+  assert.equal(ws.checkout, null);
+  assert.ok((ws.checkoutGeneration ?? 0) >= 1, 'generation advanced so the old journal cannot block');
+  const placed = await place();
+  assert.equal(placed.status, 200, JSON.stringify(placed.body));
+  assert.equal(placed.body.checkout.status, 'PAYMENT_PENDING', 'after auto-band, new Pay Now works');
+
+  // Case B: matching order found in Swiggy list → real orderId attached, live link available.
+  await call('checkout/cancel', { method: 'POST', body: { confirmCancel: true } });
+  seedUnknown();
+  const created = new Date(Date.now() - 10 * 60_000).toISOString();
+  ws = readProWorkspace('9900');
+  ws.checkout.createdAt = created;
+  writeProWorkspace('9900', ws);
+  ordersList = [{ id: ORDER_ID, restaurant: 'Mock', status: 'Order placed', amount: 150.25, placedAt: new Date(Date.parse(created) + 60_000).toISOString(), items: [] }];
+  try {
+    st = await call('checkout/status', { method: 'POST', body: {} });
+    assert.equal(st.status, 200, JSON.stringify(st.body));
+    assert.equal(st.body.checkout.orderId, ORDER_ID, 'discovery attached the real orderId');
+    assert.notEqual(st.body.checkout.status, 'PAID', 'unpaid stays unpaid (no false PAID)');
+    const track = await call('orders/tracking?id=' + encodeURIComponent(ORDER_ID) + '&scope=checkout');
+    assert.equal(track.status, 200, JSON.stringify(track.body));
+    assert.equal(track.body.tracking.trackingUrl, LIVE_LINK);
+  } finally { ordersList = [placedOrder]; }
+});
