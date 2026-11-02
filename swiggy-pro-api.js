@@ -2374,6 +2374,25 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const tracking = await provider.tracking(account, id);
         const link = String(tracking?.trackingUrl || '');
         const safeLink = safeTrackingUrl(link, id);
+        // Boss (02-11-2026): live link ko checkout record me bhi persist karo —
+        // taaki checkout/status poll aur reload ke baad bhi wahi link rahe
+        // (PAYMENT_PENDING me server ise khud nahi bhejta), gayab na ho.
+        if (isLiveCheckoutOrder && safeLink) {
+          try {
+            const fresh = readProWorkspace(user.id);
+            if (fresh.checkout && normalizeSwiggyOrderId(fresh.checkout.orderId || '') === id && fresh.checkout.status !== 'PAID') {
+              fresh.checkout.tracking = {
+                orderId: id,
+                status: String(tracking?.status || '').slice(0, 200),
+                eta: String(tracking?.eta || tracking?.etaMinutes || '').slice(0, 100),
+                trackingUrl: safeLink,
+                via: String(tracking?.via || ''),
+                tried: Array.isArray(tracking?.tried) ? tracking.tried.slice(0, 4) : []
+              };
+              writeProWorkspace(user.id, fresh);
+            }
+          } catch { /* response me link to hai hi; persist best-effort hai */ }
+        }
         json(res, 200, { ok: true, sms: smsTruthFor({ ...orderScopeContext(ws, scope), tracking }), tracking: {
           orderId: id, status: String(tracking?.status || '').slice(0, 200), eta: String(tracking?.eta || '').slice(0, 100),
           trackingUrl: safeLink,

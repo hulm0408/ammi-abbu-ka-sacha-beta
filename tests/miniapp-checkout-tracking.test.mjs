@@ -63,6 +63,15 @@ test('UI: checkout/payment views render the Live Order Tracking card', () => {
   assert.match(card, /data-action="checkout-track-refresh"/);
 });
 
+test('UI: merge() keeps the fetched live link across checkout/status polls (same orderId)', () => {
+  const mergeFn = app.slice(app.indexOf('function merge(data)'), app.indexOf('function merge(data)') + 1200);
+  assert.match(mergeFn, /const previousCheckout = state\.checkout/);
+  assert.match(mergeFn, /tracking: previousCheckout\.tracking/,
+    'poll response without tracking must not wipe the app-fetched live link');
+  assert.match(mergeFn, /String\(previousCheckout\.orderId \|\| ''\) === String\(state\.checkout\.orderId \|\| ''\)/,
+    'link is kept only for the same order');
+});
+
 test('UI: tracking link is fetched as soon as the order is placed', () => {
   assert.match(app, /if \(out\.checkout\?\.orderId\) refreshCheckoutTracking\(\)/,
     'checkout-start must fire the tracking fetch right after place');
@@ -143,6 +152,13 @@ test('Place: checkout response carries orderId immediately, tracking link comes 
   assert.equal(track.body.tracking.trackingUrl, LIVE_LINK);
   assert.equal(track.body.tracking.orderId, ORDER_ID);
   assert.equal(track.body.tracking.status, 'Order placed');
+
+  // Boss (02-11-2026): link checkout record me persist ho — poll/reload me gayab na ho.
+  assert.equal(readProWorkspace('9900').checkout?.tracking?.trackingUrl, LIVE_LINK, 'live link must be persisted on the checkout record');
+  const status = await call('checkout/status', { method: 'POST', body: {} });
+  assert.equal(status.status, 200, JSON.stringify(status.body));
+  assert.equal(status.body.checkout.status, 'PAYMENT_PENDING');
+  assert.equal(status.body.checkout.tracking?.trackingUrl, LIVE_LINK, 'checkout/status poll must keep returning the live link');
 
   // A different order id is not trackable through this checkout scope.
   const other = await call('orders/tracking?id=999999999999&scope=checkout');
