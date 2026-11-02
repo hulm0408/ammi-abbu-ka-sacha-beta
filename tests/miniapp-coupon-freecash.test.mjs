@@ -25,8 +25,8 @@ const baseCart = () => ({
   items: [{ menu_item_id: 9001, qty: 1, name: 'Biryani', price: 230, variants: [], addons: [] }],
   quote: null
 });
-const state = { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, flashSaleEligible: false, staleUpdate: 0, staleGet: 0, wrongAddressAlways: false, wrongItemsAlways: false, updateCalls: 0, getCalls: 0, coupons: [], requests: [] };
-function reset() { Object.assign(state, { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, flashSaleEligible: false, staleUpdate: 0, staleGet: 0, wrongAddressAlways: false, wrongItemsAlways: false, updateCalls: 0, getCalls: 0, coupons: [], requests: [] }); }
+const state = { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, walletAlias: null, eligible: null, cashWithoutCouponOnly: false, flashSaleEligible: false, staleUpdate: 0, staleGet: 0, wrongAddressAlways: false, wrongItemsAlways: false, updateCalls: 0, getCalls: 0, coupons: [], requests: [] };
+function reset() { Object.assign(state, { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, walletAlias: null, eligible: null, cashWithoutCouponOnly: false, flashSaleEligible: false, staleUpdate: 0, staleGet: 0, wrongAddressAlways: false, wrongItemsAlways: false, updateCalls: 0, getCalls: 0, coupons: [], requests: [] }); }
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 function cartPayload() {
   const discount = state.coupon === 'SAVE50' ? 50 : state.coupon === 'BEST80' ? 80 : state.coupon === 'FLASHSALE' && state.flashSaleEligible ? 160 : 0;
@@ -38,7 +38,7 @@ function cartPayload() {
     coupon_code: state.coupon, is_coupon_valid: state.coupon ? 1 : 0,
     coupon_discount_total: discount, coupon_discount_effective: discount,
     trade_discount_total: state.trade, trade_discount_reward_amount: state.reward,
-    user_swiggy_money: state.wallet, ...(state.cashWithoutCouponOnly ? { swiggy_pay_eligible_balance: state.coupon ? 0 : state.wallet } : state.eligible !== null ? { swiggy_pay_eligible_balance: state.eligible } : {}), swiggy_money: 0, positiveDeliveryChargesExclusive: 0,
+    user_swiggy_money: state.wallet, ...(state.walletAlias !== null ? { user_swiggy_money_balance: state.walletAlias } : {}), ...(state.cashWithoutCouponOnly ? { swiggy_pay_eligible_balance: state.coupon ? 0 : state.wallet } : state.eligible !== null ? { swiggy_pay_eligible_balance: state.eligible } : {}), swiggy_money: 0, positiveDeliveryChargesExclusive: 0,
     taxesAndCharges: 30, total_packing_charges: 10, is_order_for_someone_else: false
   } } };
 }
@@ -270,4 +270,23 @@ test('changed provider items never produce a bill even when the address matches'
   await assert.rejects(proProvider.quoteCart(account, address, baseCart(), '', { phase: 'full', autoCoupon: false }), /alag items\/variants/);
   assert.equal(state.updateCalls, 2);
   assert.equal(state.getCalls, 2);
+});
+
+
+test('Mini App reads credited wallet cash from the alternate Swiggy balance key', async () => {
+  reset(); state.wallet = 0; state.walletAlias = 10;
+  const out = await proProvider.quoteCart(account, address, baseCart(), '', { phase: 'full', autoCoupon: false });
+  assert.equal(out.bill.cashEvidence.balance, 10);
+  assert.equal(out.bill.cashEvidence.eligible, null, 'missing eligibility remains unknown');
+  assert.equal(out.bill.walletSplitPayAmount, 10);
+  assert.equal(out.bill.total, 260);
+});
+
+test('alternate wallet balance does not override explicit zero Food eligibility', async () => {
+  reset(); state.walletAlias = 10; state.eligible = 0;
+  const out = await proProvider.quoteCart(account, address, baseCart(), '', { phase: 'full', autoCoupon: false });
+  assert.equal(out.bill.cashEvidence.balance, 10);
+  assert.equal(out.bill.cashEvidence.eligible, 0);
+  assert.equal(out.bill.freeCash, null);
+  assert.equal(out.bill.total, 270);
 });
