@@ -2050,6 +2050,11 @@ async function executeOrderBillSyncOnAccountInternal({
     throw new Error(`Order #${orderId} not found. ` + orderNotFoundDiag(db, orderId));
   }
 
+  // PERF INSTRUMENTATION: stage durations for bill generation — account
+  // selection, account-lock acquisition, cart/bill sync, offer (free-cash)
+  // claiming, final bill snapshot. QR generation is timed separately.
+  const perf = { t0: Date.now(), lockWaitMs: 0, selectedMs: 0, syncedMs: 0, freeCashMs: 0 };
+
   // Resyncing or switching accounts clears pending payment fields. Do not do
   // it once this logical order may already exist on Swiggy.
   const existingPlacement = placementForChatOrder(order);
@@ -2125,6 +2130,17 @@ async function executeOrderBillSyncOnAccountInternal({
     // Execute inside per-account lock so DIFFERENT accounts run 100% simultaneously in parallel!
     // SPEED: instant switch me lock ka intezaar 25s nahi, 8s — warna "ID select
     // karne me lag" wala hi problem. Actually free accounts ko farq nahi padta.
+    // SPEED: the lock wait is BOUNDED and configurable — instant switch
+    // (skipAutoOffers) waits at most 8s; normal bill sync waits at most
+    // BILL_SYNC_LOCK_MAX_WAIT_MS (default 15s, clamped [1s, 60s]) instead of a
+    // fixed 25s. A busy lock fails fast with ACCOUNT_LOCK_TIMEOUT into the
+    // existing retry/failover handling — the lock itself is NEVER bypassed
+    // (that would allow concurrent cart/QR operations on one Swiggy ID).
+    // Free accounts are unaffected (0ms wait).
+    const billLockMaxWaitMs = skipAutoOffers
+      ? 8_000
+      : Math.min(60_000, Math.max(1_000, Number(process.env.BILL_SYNC_LOCK_MAX_WAIT_MS) || 15_000));
+    const lockWaitT0 = Date.now();
     syncRes = await withSwiggyAccountLock(accKey, async () => {
       // Clear any foreign `addressDetails.id` from a previous account before syncing on `accKey`!
       if (order.addressDetails?.id && order.selectedAccount && order.selectedAccount !== accKey) {
@@ -2132,7 +2148,8 @@ async function executeOrderBillSyncOnAccountInternal({
       }
       const r = await syncGroupCartAndCheckoutForAccount(acc, order, { captureScreenshot: false, skipAutoOffers });
       return r;
-    }, { maxWaitMs: skipAutoOffers ? 8_000 : 25_000 });
+    }, { maxWaitMs: billLockMaxWaitMs });
+    perf.lockWaitMs = Date.now() - lockWaitT0;
     if (!syncRes?.success) {
       const err = new Error(syncRes?.error || 'Failed to sync cart & address on selected Swiggy account.');
       err.diag = {
@@ -2170,6 +2187,8 @@ async function executeOrderBillSyncOnAccountInternal({
     order.selectedAccount = accKey;
     order.orderAccount = acc.phone || accKey;
   }
+  perf.selectedMs = Date.now() - perf.t0 - perf.lockWaitMs;
+  perf.syncedMs = Date.now() - perf.t0;
 
   // Remember the coupons this scan actually found, so the Offer & Cash panel can
   // show every offer as its own button (no re-scan needed to open the panel).
@@ -2199,6 +2218,7 @@ async function executeOrderBillSyncOnAccountInternal({
       if (freeCashTimer) clearTimeout(freeCashTimer);
     }
   }
+  perf.freeCashMs = Date.now() - perf.t0;
 
   // ROTATION MEMORY: an ID is selected ONCE per order. The next ⚡ Next ID tap
   // therefore always lands on a different account.
@@ -2279,6 +2299,13 @@ async function executeOrderBillSyncOnAccountInternal({
     // nahi hua to background me theek ho jata hai (kaam karte hue, block kiye bina).
     if (order.selectedAccount) void autoHealOffersForAccount(order.selectedAccount);
   } catch {}
+
+  console.log(
+    `[BillPerf] order #${order.id} acc=${order.selectedAccount || accKey || 'BEST'}: ` +
+    `select=${perf.selectedMs}ms lockWait=${perf.lockWaitMs}ms sync=${Math.max(0, perf.syncedMs - perf.lockWaitMs - perf.selectedMs)}ms ` +
+    `freeCash=${Math.max(0, perf.freeCashMs - perf.syncedMs)}ms total=${Date.now() - perf.t0}ms ` +
+    `payable=₹${Number(order.finalPayable || 0)} coupon=${order.couponCode || 'none'}(-₹${Number(order.discountAmount || 0)})`
+  );
 
   return order;
 }
@@ -2565,7 +2592,9 @@ async function executeRealQrGenerationForOrderInternal({
     // does not cancel that worker and used to let a retry create a second order.
     // Individual network calls have their own deadlines; this promise remains
     // in the in-flight map until the worker actually finishes.
+    const qrLockT0 = Date.now();
     realQr = await withSwiggyAccountLock(accKey, () => runGenerator(acc, order, forceNewQr));
+    console.log(`[QrPerf] order #${order.id} acc=${accKey}: lockWait=${Date.now() - qrLockT0}ms (offer claim + bill verify + place happen inside the generator before any QR bytes)`);
     if (!realQr) {
       const err = new Error('Payment details were not returned. Check Swiggy My Orders before trying anything else.');
       err.diag = { code: 'QR_RESULT_MISSING', stage: 'GENERATE_REAL_SWIGGY_QR', placementAttempted: true };
