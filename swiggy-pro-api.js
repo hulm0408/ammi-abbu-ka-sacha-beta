@@ -2142,7 +2142,15 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           }
         }
         if (!Array.isArray(addresses)) throw lastError || error(502, 'Could not fetch addresses from Swiggy.');
-        ws.addressCandidates = addresses.slice(0, 50).map(a => ({ ...cleanAddress(a), ref: crypto.randomUUID() }));
+        // Keep refs stable across refreshes: a Select tap queued while a
+        // refresh finishes must still refer to the same provider address.
+        // Never reuse a ref for changed coordinates/street or another account.
+        const identity = a => JSON.stringify([String(a.id || ''), String(a.address || ''), String(a.lat || ''), String(a.lng || '')]);
+        const previous = new Map((ws.addressCandidates || []).map(a => [identity(a), a.ref]));
+        ws.addressCandidates = addresses.slice(0, 50).map(a => {
+          const clean = cleanAddress(a);
+          return { ...clean, ref: previous.get(identity(clean)) || crypto.randomUUID() };
+        });
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, addresses: ws.addressCandidates, note: addresses.length ? '' : 'Swiggy ne koi saved address nahi diya. Address link se add karein, ya ek baar Refresh dabayein — Swiggy kabhi kabhi late jawab deta hai.' });
         return;

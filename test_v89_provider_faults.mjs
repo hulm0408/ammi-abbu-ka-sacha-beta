@@ -67,7 +67,7 @@ test('stale quote, missing/changed address, recipient, quantity, add-on or varia
   for (const mutate of [
     () => { meta.order_total = 150.26; },
     () => { meta.address_id = 'another'; },
-    () => { delete meta.address_id; },
+    () => { delete meta.address_id; remoteAddress.selected = false; },
     () => { remoteAddress.mobile = '9345678901'; },
     () => { meta.cart_menu_items[0].quantity = 2; },
     () => { meta.cart_menu_items[0].addons = [{ group_id: '1', choice_id: '2' }]; },

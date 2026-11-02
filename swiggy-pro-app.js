@@ -1756,6 +1756,9 @@
   let addressRequestVersion = 0;
   let ordersRequestVersion = 0;
   async function loadAddresses() {
+    // Avoid overlapping refreshes that replace server refs after the UI has
+    // rendered them. A stale ref can make a perfectly valid Select tap fail.
+    if (state.addressesLoading) return;
     const request = ++addressRequestVersion;
     const accountKey = state.activeAccount?.key || '';
     state.addressesLoading = true; render();
