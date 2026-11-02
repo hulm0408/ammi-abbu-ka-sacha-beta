@@ -851,18 +851,18 @@ async function androidCheckoutCartCall(accountOrCookies, endpointPath, { method 
     acc.jwtTid = json.tid;
     if (!acc.tid || String(acc.tid).includes('.')) acc.tid = json.tid;
   }
-  // Native Android `chkout` returns selected `addresses` array without copying `.id` onto `data.address_id`:
-  // Normalize `data.address_id` & `data.delivery_address` automatically so checkout/QR code always sees the exact bound `address_id`!
+  // The requested body.address_id is NOT a readback. Never fill a missing
+  // provider address with the value we just sent, or checkout could approve
+  // a cart bound to a different receiver. Only a provider-selected address
+  // (top-level or cartMeta) is evidence when address_id is absent.
   if (json?.data && typeof json.data === 'object') {
-    const selectedAddr = Array.isArray(json.data.addresses)
-      ? (json.data.addresses.find(a => a?.selected && a?.id) || json.data.addresses.find(a => a?.delivery_valid && a?.id))
+    const meta = json.data.cartMeta || json.data;
+    const addresses = Array.isArray(meta.addresses) ? meta.addresses : json.data.addresses;
+    const selectedAddr = Array.isArray(addresses)
+      ? (addresses.find(a => a?.selected && a?.id) || addresses.find(a => a?.delivery_valid && a?.id))
       : null;
-    if (!json.data.address_id) {
-      json.data.address_id = String(body?.address_id || selectedAddr?.id || '');
-    }
-    if (!json.data.delivery_address && selectedAddr) {
-      json.data.delivery_address = selectedAddr;
-    }
+    if (!json.data.address_id && selectedAddr?.id) json.data.address_id = String(selectedAddr.id);
+    if (!json.data.delivery_address && selectedAddr) json.data.delivery_address = selectedAddr;
   }
   return { status: res.status, json };
 }

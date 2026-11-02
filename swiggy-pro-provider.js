@@ -769,8 +769,13 @@ export const proProvider = {
         const parsed = data ? parseDapiCartPayload(data) : null;
         if (!parsed || !meta || !Array.isArray(parsed.items)) throw unavailable('Swiggy did not confirm the cart. Refresh in Swiggy before trying again.');
         const boundAddress = String(meta.address_id || meta.delivery_address?.id || data.address_id || data.delivery_address?.id || '');
-        if (!sameCartItems(cart.items, parsed.items) || boundAddress !== addressId) {
-          throw unavailable('Swiggy returned different items or address. No bill is being shown; check the Swiggy cart.');
+        const itemsMatch = sameCartItems(cart.items, parsed.items);
+        if (!itemsMatch || boundAddress !== addressId) {
+          const err = unavailable(!itemsMatch
+            ? 'Swiggy cart me alag items/variants aaye. Bill nahi dikhaya; cart check karke dobara sync karein.'
+            : 'Swiggy cart naye delivery address se abhi bind nahi hua. Bill nahi dikhaya; dobara sync karein.');
+          err.code = !itemsMatch ? 'CART_ITEMS_MISMATCH' : 'CART_ADDRESS_MISMATCH';
+          throw err;
         }
         const rawCartTotal = Number(meta.order_total);
         const total = Number(parsed.finalPayable ?? meta.order_total);
@@ -795,7 +800,7 @@ export const proProvider = {
         // the same cart, so they do not flush the reward that just landed.
         unconfirmedCartWrite = true;
         const code = String(couponCode || '').trim().toUpperCase();
-        const out = await swiggyCartUpdate(account, {
+        const updatePayload = {
           restaurantId: cart.restaurantId,
           address_id: addressId,
           couponCode: code,
@@ -803,7 +808,9 @@ export const proProvider = {
           mealItems: [],
           subscriptionItems,
           ...ofoFields
-        }, { lat, lng, flushFirst: !cartInitialized, timeoutMs });
+        };
+        const firstWrite = !cartInitialized;
+        const out = await swiggyCartUpdate(account, updatePayload, { lat, lng, flushFirst: firstWrite, timeoutMs });
         cartInitialized = true;
         if (!successCode(out?.json?.statusCode)) {
           const msg = String(out?.json?.statusMessage || '').slice(0, 120) || `HTTP ${out?.status || '?'}`;
@@ -814,7 +821,23 @@ export const proProvider = {
         const parsed = data ? parseDapiCartPayload(data) : null;
         const usable = Boolean(successCode(out?.json?.statusCode) && parsed && meta &&
           Array.isArray(parsed.items) && parsed.items.length && exactPaise(Number(meta.order_total)) !== null);
-        let snapshot = usable ? acceptCart(out) : await readCart(Math.min(timeoutMs, 6000));
+        let snapshot;
+        try {
+          snapshot = usable ? acceptCart(out) : await readCart(Math.min(timeoutMs, 6000));
+        } catch (err) {
+          if (!['CART_ITEMS_MISMATCH', 'CART_ADDRESS_MISMATCH'].includes(err?.code)) throw err;
+          // /update can answer with the OLD cart/address even after accepting
+          // the write. Read it back before failing; on the initial write only,
+          // retry binding once without flushing the items/reward again. Never
+          // show a bill unless the final provider readback matches both.
+          try { snapshot = await readCart(Math.min(timeoutMs, 5000)); } catch (readErr) {
+            if (!firstWrite || !['CART_ITEMS_MISMATCH', 'CART_ADDRESS_MISMATCH'].includes(readErr?.code)) throw readErr;
+            const retry = await swiggyCartUpdate(account, updatePayload, { lat, lng, flushFirst: false, timeoutMs });
+            if (!successCode(retry?.json?.statusCode)) throw unavailable('Swiggy ne address/cart dobara bind nahi kiya. Koi bill ya order nahi bana.');
+            // The retry response can also be stale; only GET proves the cart.
+            snapshot = await readCart(Math.min(timeoutMs, 5000));
+          }
+        }
         const needsApply = code && !couponSettled(snapshot, code);
         const needsRemove = !code && (clearCoupon || (!requestedCoupon && !autoCoupon)) && snapshot.coupon;
         if (needsApply || needsRemove) {

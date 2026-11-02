@@ -25,8 +25,8 @@ const baseCart = () => ({
   items: [{ menu_item_id: 9001, qty: 1, name: 'Biryani', price: 230, variants: [], addons: [] }],
   quote: null
 });
-const state = { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, flashSaleEligible: false, coupons: [], requests: [] };
-function reset() { Object.assign(state, { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, flashSaleEligible: false, coupons: [], requests: [] }); }
+const state = { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, flashSaleEligible: false, staleUpdate: 0, staleGet: 0, wrongAddressAlways: false, wrongItemsAlways: false, updateCalls: 0, getCalls: 0, coupons: [], requests: [] };
+function reset() { Object.assign(state, { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, cashWithoutCouponOnly: false, flashSaleEligible: false, staleUpdate: 0, staleGet: 0, wrongAddressAlways: false, wrongItemsAlways: false, updateCalls: 0, getCalls: 0, coupons: [], requests: [] }); }
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 function cartPayload() {
   const discount = state.coupon === 'SAVE50' ? 50 : state.coupon === 'BEST80' ? 80 : state.coupon === 'FLASHSALE' && state.flashSaleEligible ? 160 : 0;
@@ -55,12 +55,21 @@ globalThis.fetch = async (raw, options = {}) => {
     if (u.includes('removecoupon')) { state.removeCalls++; state.coupon = ''; return json(cartPayload()); }
     if (u.includes('/flush')) return json({ statusCode: 0, data: {} });
     if (u.includes('/update') && body) {
+      state.updateCalls++;
+      const stale = state.wrongAddressAlways || state.staleUpdate-- > 0;
       const code = String(body.couponCode || '').toUpperCase();
       if (code && state.bulkHonorsCoupon) state.coupon = code;
       if (!code && state.bulkHonorsRemove) state.coupon = '';
-      return json(cartPayload());
+      const payload = cartPayload();
+      if (stale) payload.data.cartMeta.address_id = 'old-address';
+      if (state.wrongItemsAlways) payload.data.cartMeta.cart_menu_items[0].quantity = 2;
+      return json(payload);
     }
-    return json(cartPayload());
+    state.getCalls++;
+    const payload = cartPayload();
+    if (state.wrongAddressAlways || state.staleGet-- > 0) payload.data.cartMeta.address_id = 'old-address';
+    if (state.wrongItemsAlways) payload.data.cartMeta.cart_menu_items[0].quantity = 2;
+    return json(payload);
   }
   return json({ statusCode: 0, data: {} });
 };
@@ -229,4 +238,36 @@ test('max-offer quote tries FLASHSALE even when feed omits it, and keeps verifie
   assert.equal(out.bill.discount, 160);
   assert.equal(out.bill.total, 110);
   assert.equal(out.bill.engine.couponTrials.find(t => t.code === 'FLASHSALE')?.ok, true);
+});
+
+
+test('cart update stale address is recovered by a genuine provider GET before showing a bill', async () => {
+  reset(); state.staleUpdate = 1;
+  const out = await proProvider.quoteCart(account, address, baseCart(), '', { phase: 'full', autoCoupon: false });
+  assert.equal(out.bill.total, 270);
+  assert.equal(state.updateCalls, 1);
+  assert.ok(state.getCalls >= 1, 'stale update was not accepted without a matching readback');
+});
+
+test('a still-stale first GET retries binding exactly once without flushing', async () => {
+  reset(); state.staleUpdate = 1; state.staleGet = 1;
+  const out = await proProvider.quoteCart(account, address, baseCart(), '', { phase: 'full', autoCoupon: false });
+  assert.equal(out.bill.total, 270);
+  assert.equal(state.updateCalls, 2);
+  assert.ok(state.getCalls >= 2);
+});
+
+test('persistent wrong address refuses the bill after bounded retry', async () => {
+  reset(); state.wrongAddressAlways = true;
+  await assert.rejects(proProvider.quoteCart(account, address, baseCart(), '', { phase: 'full', autoCoupon: false }), /naye delivery address/);
+  assert.equal(state.updateCalls, 2, 'never loops indefinitely or pays on a wrong address');
+  assert.equal(state.getCalls, 2);
+});
+
+
+test('changed provider items never produce a bill even when the address matches', async () => {
+  reset(); state.wrongItemsAlways = true;
+  await assert.rejects(proProvider.quoteCart(account, address, baseCart(), '', { phase: 'full', autoCoupon: false }), /alag items\/variants/);
+  assert.equal(state.updateCalls, 2);
+  assert.equal(state.getCalls, 2);
 });
