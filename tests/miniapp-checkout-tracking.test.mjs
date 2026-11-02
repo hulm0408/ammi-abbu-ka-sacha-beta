@@ -137,6 +137,8 @@ async function call(route, { method = 'GET', body, userId = '9900' } = {}) {
   return { status: res.status, body: await res.json().catch(() => ({})) };
 }
 function seedWorkspace() {
+  // checkoutGeneration disk par peeche nahi jata — seed se pehle purani workspace file hatao.
+  fs.rmSync(path.join(tmp, 'pro-workspaces', crypto.createHash('sha256').update('9900').digest('hex') + '.json'), { force: true });
   const db = getDb();
   db.config.accounts ||= {};
   db.config.accounts.mine = { phone: '9123456789', name: 'Mine', token: 'mine-token', isLoggedIn: true, customerId: 'c-9123456789' };
