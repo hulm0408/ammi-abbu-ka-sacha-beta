@@ -14,6 +14,7 @@
     coupons: null, couponsNote: '', couponsError: '', couponsLoading: false, couponBusy: '', couponView: false, couponResults: {}, ordersFilter: 'all', accountQuery: '', accountFilters: [], payWindow: null, payTicks: 0, payExpired: false, shareNote: '',
     meal: null, mealFor: '', mealLoading: false, couponDraft: '', groupCartDraft: '', groupCartOn: true,
     track: null, trackData: null, trackError: '', trackBusy: false,
+    checkoutTrackBusy: false, checkoutTrackError: '', checkoutTrackLastTry: 0,
     orderFee: null, checkoutWarning: '',
     chatHandoff: null, handoffHidden: false, handoffIgnorePending: '', handoffBusy: false, handoffError: '', handoffAutoFor: '', handoffName: null, handoffMobile: null,
     doctor: null, doctorBusy: false, doctorNote: '', access: null, accessUser: '', accessLoading: false,
@@ -757,12 +758,13 @@
     }
     const id = `${c.accountPhone ? `<div class="bill-row"><span>Original account</span><strong>${esc(c.accountPhone)}</strong></div>` : ''}${c.orderId ? `<div class="bill-row"><span>Swiggy order ID</span><strong>#${esc(c.orderId)}</strong></div>` : ''}`;
     const warning = `<p class="hint">${esc(c.message || '')}</p>`;
-    if (c.status === 'PAID') return `<div class="card"><div class="card-title">${icon('check')} Payment verified</div>${id}${warning}${trackingDetails(c.tracking ? { ...c.tracking, sms: c.sms || c.tracking.sms } : null)}<button class="button outline block" data-action="checkout-finish">Start a new draft</button></div>`;
+    const trackCard = renderCheckoutTracking(c);
+    if (c.status === 'PAID') return `<div class="card"><div class="card-title">${icon('check')} Payment verified</div>${id}${warning}${trackingDetails(c.tracking ? { ...c.tracking, sms: c.sms || c.tracking.sms } : null)}<button class="button outline block" data-action="checkout-finish">Start a new draft</button></div>${trackCard}`;
     if (c.status === 'PAYMENT_PENDING') {
       const qr = c.qrDataUrl && /^data:image\/png;base64,/.test(c.qrDataUrl) && c.upiIntentUrl && /^upi:\/\/pay\?/i.test(c.upiIntentUrl)
         ? `<img class="payment-qr" src="${esc(c.qrDataUrl)}" alt="Swiggy UPI payment QR"><a class="button green block" href="${esc(c.upiIntentUrl)}">Open UPI app</a><p class="hint">Pay ${money(c.amount)} only once. If your UPI app cannot open here, scan this QR with another device.</p>` : '';
       const paidNote = c.paymentVerified ? '<div class="warning">Payment was reported, but order confirmation is still pending. Do not pay again.</div>' : '';
-      return `<div class="card"><div class="card-title">${icon('receipt')} Payment pending</div>${id}${warning}${paidNote}${qr}<p class="hint">${c.ofoConfirmed ? 'Swiggy returned an OFO flag; recipient SMS is not verified.' : 'Swiggy has not confirmed OFO acceptance or recipient SMS.'}</p><button class="button primary block" data-action="checkout-status">Check payment & order ${icon('refresh')}</button></div>`;
+      return `<div class="card"><div class="card-title">${icon('receipt')} Payment pending</div>${id}${warning}${paidNote}${qr}<p class="hint">${c.ofoConfirmed ? 'Swiggy returned an OFO flag; recipient SMS is not verified.' : 'Swiggy has not confirmed OFO acceptance or recipient SMS.'}</p><button class="button primary block" data-action="checkout-status">Check payment & order ${icon('refresh')}</button></div>${trackCard}`;
     }
     // Boss (round 35): "CHECKOUT NEEDS CHECKING KA CARD ARAHA AND BUTTON AARAHA
     // CHECK THIS ORDER AND CHECK ORIGINAL ACCOUNT BLAH BAKH — ISKO HATADO,
@@ -772,7 +774,7 @@
     const stuck = c.status === 'SUBMITTING'
       ? 'Local checkout abhi band kar sakte hain. Cancel dabate hi cart wapas khulega; Swiggy ko gaya order agar bana ho to order history me dikhega.'
       : esc(c.message || 'Ye checkout band nahi hua. Cancel karke cart wapas lein — dobara order tabhi karein jab My Orders khaali dikhe.');
-    return `<div class="card cancel-card"><div class="card-title">${icon('receipt')} Checkout band karein</div>${id}<div class="warning">${stuck}</div><button class="button danger-soft block" type="button" data-action="checkout-cancel">Order cancel karein</button><p class="hint">Cancel karne par: paisa nahi katega, wallet fee wapas (agar li gayi thi), aur cart dobara khul jayega.</p></div>`;
+    return `<div class="card cancel-card"><div class="card-title">${icon('receipt')} Checkout band karein</div>${id}<div class="warning">${stuck}</div><button class="button danger-soft block" type="button" data-action="checkout-cancel">Order cancel karein</button><p class="hint">Cancel karne par: paisa nahi katega, wallet fee wapas (agar li gayi thi), aur cart dobara khul jayega.</p></div>${trackCard}`;
   }
   /**
    * Boss (31-10-2026): "CART WALA PAGE JAISA DIKHAYA WAISA HI — OPTION BAHUT
@@ -921,6 +923,23 @@
     const timeline = status ? `<ol class="track-steps">${steps.map((label, i) => `<li class="${i < reached ? 'done' : ''}${i === reached - 1 ? ' current' : ''}"><span class="track-dot"></span><span>${esc(label)}</span></li>`).join('')}</ol>` : '';
     return `<button class="back-button" data-action="track-close">${icon('back')} Cart</button>${head('LIVE ORDER', 'Order track karein', data?.orderId || state.track?.id ? `Swiggy order #${esc(data?.orderId || state.track?.id)}` : 'Swiggy order')}<div class="card track-card"><div class="card-title">${icon('orders')} <span class="title-copy"><strong>${esc(status || (state.trackError ? 'Status nahi mila' : 'Status aa raha hai…'))}</strong><small>${esc(data?.eta ? 'ETA ' + data.eta : 'Swiggy ka taaza status')}</small></span>${state.trackBusy ? '<span class="spinner right" aria-label="Loading"></span>' : ''}</div>${timeline}${state.trackError ? `<div class="warning">${esc(state.trackError)}</div>` : ''}${trackingDetails(data)}${renderShareCard()}<div class="track-actions"><button class="button soft block" type="button" data-action="nav" data-tab="orders">Saare orders</button></div></div>`;
   }
+  /**
+   * Boss (02-11-2026): checkout page par hi "Live Order Tracking" card — order
+   * bante hi (orderId milte hi) Swiggy order ID + live link (Copy/Open) +
+   * Re-fetch. Pay Now button wahi ka wahi rehta hai, isme koi change nahi.
+   */
+  function renderCheckoutTracking(c) {
+    if (!c || !c.orderId) return '';
+    const t = c.tracking || null;
+    const link = /^https:\/\//i.test(String(t?.trackingUrl || '')) ? String(t.trackingUrl) : '';
+    const busy = state.checkoutTrackBusy === true;
+    const badge = link ? '<span class="pill green right">Active Live Link</span>' : '';
+    const linkRow = link
+      ? `<div class="share-link-row"><input class="share-link-input" readonly value="${esc(link)}" aria-label="Live tracking link" data-share-input><button class="icon-button" type="button" data-action="share-copy" aria-label="Copy link">${icon('copy')}</button></div><div class="share-actions"><button class="button primary" type="button" data-action="share-copy" ${busy ? 'disabled' : ''}>${icon('copy')} Copy</button><a class="button soft" href="${esc(link)}" target="_blank" rel="noopener noreferrer">${icon('arrow')} Open</a></div>`
+      : `<p class="hint">${busy ? 'Swiggy se live link aa raha hai…' : 'Live link abhi nahi mila — neeche Re-fetch Tracking Link dabaiye.'}</p>`;
+    const err = !link && state.checkoutTrackError ? `<div class="warning">${esc(state.checkoutTrackError)}</div>` : '';
+    return `<div class="card share-card checkout-track-card" id="live-tracking"><div class="card-title">${icon('link')} Live Order Tracking ${badge}</div><div class="bill-row"><span>Swiggy Order ID</span><strong>#${esc(c.orderId)}</strong></div>${t?.status ? `<div class="bill-row"><span>Status</span><strong>${esc(t.status)}</strong></div>` : ''}${t?.eta ? `<div class="bill-row"><span>ETA</span><strong>${esc(t.eta)}</strong></div>` : ''}${linkRow}${err}<div class="track-actions"><button class="button soft block" type="button" data-action="checkout-track-refresh" ${busy ? 'disabled' : ''}>${icon('refresh')} Re-fetch Tracking Link</button></div></div>`;
+  }
   /** Payment pending: QR screen Swiggy jaisa, phir track. */
   function renderPaymentScreen(c) {
     // Boss (round 33): "PAYMENT PAGE SE OPEN UPI APP HATAYE AND CANCEL ORDER
@@ -939,7 +958,7 @@
     const qr = hasQr
       ? `<img class="payment-qr" src="${esc(c.qrDataUrl)}" alt="Swiggy UPI payment QR">`
       : `<div class="pay-hold"><div class="pay-hold-head">${tile('alert')}<div class="title-copy"><strong>QR Swiggy ne nahi diya</strong><small>Order ban gaya hai — paisa abhi nahi kata.</small></div></div>${reasons.length ? `<ul class="pay-reasons">${reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : (c.qrMissingReason ? `<p class="pay-reason-line">${esc(c.qrMissingReason)}</p>` : '')}<div class="pay-order-chip"><span>Order</span><b>#${esc(c.orderId || '—')}</b></div></div>${/^https:\/\//.test(String(c.paymentPageUrl || '')) ? `<a class="button soft block" href="${esc(c.paymentPageUrl)}">Swiggy ka payment page</a>` : ''}`;
-    return `${head('PAYMENT', `Pay ${money(c.amount)}`, c.orderId ? `Order #${esc(c.orderId)}` : '')}<div class="card pay-screen"><div class="card-title">${tile('receipt')}<span class="title-copy"><strong>UPI se pay karein</strong><small>${hasQr ? 'QR scan karke pay karein — ek hi baar.' : 'Swiggy ne order le liya, bas QR nahi diya.'}</small></span></div>${verifyStrip}${qr}<div class="pay-actions"><button class="button green block" type="button" data-action="checkout-status">${icon('check')} I have paid</button><button class="button soft block danger-soft" type="button" data-action="checkout-cancel">Cancel order</button></div><p class="hint pay-foot">${hasQr ? 'Paisa sirf isi QR par dein — ek hi baar.' : 'Dobara order mat karein — Swiggy par order pehle se bana hua hai.'}</p></div>`;
+    return `${head('PAYMENT', `Pay ${money(c.amount)}`, c.orderId ? `Order #${esc(c.orderId)}` : '')}<div class="card pay-screen"><div class="card-title">${tile('receipt')}<span class="title-copy"><strong>UPI se pay karein</strong><small>${hasQr ? 'QR scan karke pay karein — ek hi baar.' : 'Swiggy ne order le liya, bas QR nahi diya.'}</small></span></div>${verifyStrip}${qr}<div class="pay-actions"><button class="button green block" type="button" data-action="checkout-status">${icon('check')} I have paid</button><button class="button soft block danger-soft" type="button" data-action="checkout-cancel">Cancel order</button></div><p class="hint pay-foot">${hasQr ? 'Paisa sirf isi QR par dein — ek hi baar.' : 'Dobara order mat karein — Swiggy par order pehle se bana hua hai.'}</p></div>${renderCheckoutTracking(c)}`;
   }
   function renderCart(behindCoupon = false) {
     // QR aaya to 5-minute verify शुरू (render ke andar se, kyunki yahi entry point hai).
@@ -953,6 +972,7 @@
     const cart = state.cart;
     const locked = cartLocked();
     const lockAttr = locked ? 'disabled' : '';
+    maybeCheckoutTracking();
     if (state.checkout?.status === 'PAYMENT_PENDING') return renderPaymentScreen(state.checkout);
     // Boss (round 35): "CHECK ORIGINAL ACCOUNT BLAH BAKH ... HATADO" — ab
     // seedha raasta: cancel karo, cart wapas, naya order.
@@ -1325,6 +1345,8 @@
         if (epoch !== checkoutEpoch) return;
         merge(out);
         render();
+        // Live link abhi nahi aaya ho to poll ke saath dobara maangte hain.
+        if (out.checkout?.status === 'PAYMENT_PENDING') maybeCheckoutTracking();
         if (out.checkout?.status === 'PAID' && out.checkout.orderId) {
           stopPaymentPoll();
           state.payWindow = null;
@@ -1790,6 +1812,43 @@
     } finally {
       state.trackBusy = false; render(); scheduleTrackPolling();
     }
+  }
+  /**
+   * Boss (02-11-2026): "LIVE TRACKING LINK ORDER BANTE HI BAN JATA HAI — AFTER
+   * ORDER NAHI, CHECKOUT PAR JAATE HI." Order place hote hi (orderId milte
+   * hi) Swiggy se live link lekar checkout page par rakhte hain; payment ka
+   * intezaar nahi. Link Swiggy ka apna public tracking page hai.
+   */
+  async function refreshCheckoutTracking() {
+    const c = state.checkout;
+    const orderId = String(c?.orderId || '');
+    if (!orderId || state.checkoutTrackBusy) return null;
+    const epoch = checkoutEpoch;
+    state.checkoutTrackBusy = true; state.checkoutTrackError = ''; state.checkoutTrackLastTry = Date.now();
+    render();
+    try {
+      const out = await api('orders/tracking?id=' + encodeURIComponent(orderId) + '&scope=checkout');
+      if (epoch !== checkoutEpoch) return null;
+      const t = out && out.tracking ? out.tracking : null;
+      if (state.checkout && String(state.checkout.orderId || '') === orderId) {
+        state.checkout = { ...state.checkout, tracking: t || state.checkout.tracking || null };
+      }
+      return t;
+    } catch (e) {
+      if (epoch !== checkoutEpoch) return null;
+      state.checkoutTrackError = e?.message || 'Tracking link nahi mili.';
+      return null;
+    } finally {
+      if (epoch === checkoutEpoch) { state.checkoutTrackBusy = false; render(); }
+    }
+  }
+  /** Payment screen khulte hi link maangte hain (throttled); Re-fetch se seedha. */
+  function maybeCheckoutTracking() {
+    const c = state.checkout;
+    if (!c?.orderId || state.checkoutTrackBusy) return;
+    if (/^https:\/\//i.test(String(c.tracking?.trackingUrl || ''))) return;
+    if (Date.now() - (state.checkoutTrackLastTry || 0) < 4000) return;
+    refreshCheckoutTracking().catch(() => {});
   }
   function startTracking(orderId, scope = 'active') {
     if (!orderId) return;
@@ -2390,6 +2449,8 @@
           const out = await api('checkout', 'POST', { confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt });
           if (epoch !== checkoutEpoch) return;
           state.checkoutWarning = ''; merge(out); render();
+          // Order banate hi live tracking link checkout par le aate hain.
+          if (out.checkout?.orderId) refreshCheckoutTracking().catch(() => {});
           toast(out.checkout?.status === 'PAYMENT_PENDING' ? 'Payment details returned. Verify before paying.' : 'Check Swiggy My Orders; do not retry.');
         } catch (e) {
           // Boss (31-10-2026): "PAY PAR CLICK KARTA HU TO ... COULD NOT BE
@@ -2433,6 +2494,12 @@
           return;
         }
         toast('Payment abhi confirm nahi hui. Thodi der me phir dabaiye — paisa dobara na dein.', 'bad');
+      }
+      else if (action === 'checkout-track-refresh') {
+        // Checkout page ka "Re-fetch Tracking Link" — order bante hi link chahiye.
+        const t = await refreshCheckoutTracking();
+        if (t && /^https:\/\//i.test(String(t.trackingUrl || ''))) toast('Live tracking link aa gaya.', 'ok');
+        else if (!t) toast(state.checkoutTrackError || 'Abhi link nahi mila — thodi der baad dobara dabaiye.', 'bad');
       }
       else if (action === 'checkout-cancel') {
         const ok = await confirmInApp({

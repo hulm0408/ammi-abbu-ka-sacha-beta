@@ -394,6 +394,8 @@ body.dark .pay-steps li:before { background: #5b4524; color: #ffd996; }
 .track-steps li.done .track-dot { border-color: #0f8a4a; background: #0f8a4a; }
 .track-steps li.current .track-dot { border-color: #0f8a4a; background: #c8f0d8; box-shadow: 0 0 0 3px rgba(15, 138, 74, .16); }
 .track-actions { display: grid; gap: 8px; margin-top: 12px; }
+.card-title .pill.right { margin-left: auto; }
+.checkout-track-card { border-color: #bfe6d4; }
 .spinner {
   display: inline-block; width: 16px; height: 16px; border-radius: 50%;
   border: 2px solid #cfd9e2; border-top-color: #0f8a4a; animation: spin .8s linear infinite;
