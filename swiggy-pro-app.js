@@ -777,15 +777,14 @@
       const paidNote = c.paymentVerified ? '<div class="warning">Payment was reported, but order confirmation is still pending. Do not pay again.</div>' : '';
       return `<div class="card"><div class="card-title">${icon('receipt')} Payment pending</div>${id}${warning}${paidNote}${qr}<p class="hint">${c.ofoConfirmed ? 'Swiggy returned an OFO flag; recipient SMS is not verified.' : 'Swiggy has not confirmed OFO acceptance or recipient SMS.'}</p><button class="button primary block" data-action="checkout-status">Check payment & order ${icon('refresh')}</button></div>${trackCard}`;
     }
-    // Boss (round 35): "CHECKOUT NEEDS CHECKING KA CARD ARAHA AND BUTTON AARAHA
-    // CHECK THIS ORDER AND CHECK ORIGINAL ACCOUNT BLAH BAKH — ISKO HATADO,
-    // CANCEL KARDU." Isliye yahan sirf ek saaf raasta: cancel karo, cart wapas,
-    // naya order karo. Swiggy par order ban gaya ho to uska sach neeche likha
-    // rehta hai — hum use cancel nahi kar sakte, isliye jhooth nahi bolte.
+    // Boss (02-11-2026): Pay Now ke baad bada "Checkout band karein" cancel card
+    // NAHI aana chahiye. Order agar bana ho (orderId hai) to seedha Live Order
+    // Tracking card + status check dikhao — PAID hote hi poll khud My Orders
+    // khol dega. Cancel ka option sirf chhote text button me rehta hai.
     const stuck = c.status === 'SUBMITTING'
-      ? 'Local checkout abhi band kar sakte hain. Cancel dabate hi cart wapas khulega; Swiggy ko gaya order agar bana ho to order history me dikhega.'
-      : esc(c.message || 'Ye checkout band nahi hua. Cancel karke cart wapas lein — dobara order tabhi karein jab My Orders khaali dikhe.');
-    return `<div class="card cancel-card"><div class="card-title">${icon('receipt')} Checkout band karein</div>${id}<div class="warning">${stuck}</div><button class="button danger-soft block" type="button" data-action="checkout-cancel">Order cancel karein</button><p class="hint">Cancel karne par: paisa nahi katega, wallet fee wapas (agar li gayi thi), aur cart dobara khul jayega.</p></div>${trackCard}`;
+      ? 'Order Swiggy par ja raha hai — neeche status check hota rahega.'
+      : (c.orderId ? esc(c.message || 'Swiggy par order ban sakta hai — neeche live link dekhein.') : 'Swiggy se order status check ho raha hai…');
+    return `<div class="card"><div class="card-title">${icon('receipt')} Order status</div>${id}<div class="warning">${stuck}</div><button class="button primary block" data-action="checkout-status">${icon('refresh')} Check payment &amp; order</button>${trackCard}<p class="hint">Cancel karne par: paisa nahi katega, wallet fee wapas (agar li gayi thi), aur cart dobara khul jayega.</p><button class="text-button" type="button" data-action="checkout-cancel">Order cancel karein</button></div>`;
   }
   /**
    * Boss (31-10-2026): "CART WALA PAGE JAISA DIKHAYA WAISA HI — OPTION BAHUT
@@ -973,7 +972,7 @@
   }
   function renderCart(behindCoupon = false) {
     // QR aaya to 5-minute verify शुरू (render ke andar se, kyunki yahi entry point hai).
-    if (state.checkout?.status === 'PAYMENT_PENDING' && state.checkout.paymentVerified !== true) {
+    if ((state.checkout?.status === 'PAYMENT_PENDING' || state.checkout?.status === 'OUTCOME_UNKNOWN') && state.checkout.paymentVerified !== true) {
       try { schedulePaymentPoll(); } catch { /* render kabhi na toote */ }
     }
     if (state.track) return renderTrack();
@@ -1337,7 +1336,8 @@
   } catch { /* window band */ }
   function schedulePaymentPoll() {
     const c = state.checkout;
-    const pending = c && c.status === 'PAYMENT_PENDING' && c.paymentVerified !== true;
+    // OUTCOME_UNKNOWN bhi poll karo — orderId ke saath PAID hote hi My Orders khule.
+    const pending = c && (c.status === 'PAYMENT_PENDING' || c.status === 'OUTCOME_UNKNOWN') && c.paymentVerified !== true;
     if (!pending) { stopPaymentPoll(); return; }
     payWindowStart();
     if (state.payExpired || payRemainingMs() <= 0) {
@@ -1357,7 +1357,7 @@
         merge(out);
         render();
         // Live link abhi nahi aaya ho to poll ke saath dobara maangte hain.
-        if (out.checkout?.status === 'PAYMENT_PENDING') maybeCheckoutTracking();
+        if (out.checkout?.status === 'PAYMENT_PENDING' || out.checkout?.status === 'OUTCOME_UNKNOWN') maybeCheckoutTracking();
         if (out.checkout?.status === 'PAID' && out.checkout.orderId) {
           stopPaymentPoll();
           state.payWindow = null;

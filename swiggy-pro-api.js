@@ -28,7 +28,7 @@ import { normalizeIndianMobileNumber } from './phone-utils.js';
 import { describeAccountForPicker } from './mini-app.js';
 import { proProvider } from './swiggy-pro-provider.js';
 import { backupProWorkspaceNow, cloudBackupEnabled, ensureProWorkspaceHydrated, proBackupStatus, readProWorkspace, writeProWorkspace, withProWorkspaceLock } from './swiggy-pro-store.js';
-import { describeIdleClosure, idleTimeoutMs, planIdleExpiry, touchActivity } from './order-idle-expiry.js';
+import { classifyCheckout, describeIdleClosure, idleTimeoutMs, planIdleExpiry, touchActivity } from './order-idle-expiry.js';
 import { fetchUtrPaymentDetails } from './utr-lookup.js';
 import { describeUtrPayment, utrTruthRows } from './utr-truth.js';
 
@@ -973,6 +973,75 @@ function applyIdleExpiry(user, ws, { route = '' } = {}) {
     if (now - before > 5000) { touchActivity(ws, now); changed = true; }
   }
   return { changed, closed: plan.expire ? ws.abandoned[ws.abandoned.length - 1] : null, timeoutMs: timeout };
+}
+
+/**
+ * Boss (02-11-2026): "jo order pay nahi kiya woh cancel ho jana chahiye, pay
+ * screen par atka nahi rahe — aur purane order ka notification naye order me
+ * nahi aana chahiye." Naye Pay Now (POST /pro/api/checkout) par agar purana
+ * checkout UNPAID hai (payment ka sach confirm karke, aur fresh nahi), to use
+ * local band karo: Swiggy par unpaid order apne aap cancel ho jata hai, hum
+ * cancel ka claim nahi karte. PAID / in-flight SUBMITTING / fresh pending ko
+ * kabhi nahi chhedte — unke liye 409 (blocked message) return hota hai.
+ * Purane order ka record `abandoned`/`lastClosed` me rehta hai; generation
+ * aage badhta hai taaki purana journal naye placement ko block na kare, aur
+ * naya checkout ka apna naya orderId hota hai (purana tracking link leak nahi).
+ * @returns {Promise<{blocked?: string, closed?: object}|null>}
+ */
+async function autoCloseUnpaidCheckout(user, ws, provider) {
+  const existing = ws.checkout;
+  if (!existing) return null;
+  const kind = classifyCheckout(existing);
+  if (kind === 'PAID') return { blocked: 'Pehle wala order PAID ho chuka hai — My Orders me check karein; naya order na karein.' };
+  const hadJournal = (() => {
+    try { return Boolean(readSwiggyPlacement(`pro:${user.id}:${ws.checkoutGeneration ?? 0}`)); } catch { return true; }
+  })();
+  if (kind === 'SUBMITTING' && hadJournal) return { blocked: 'Checkout abhi chal raha hai — thodi der baad dobara try karein.' };
+  // Payment ka sach pehle — agar Swiggy ne paid de diya to kabhi band nahi karenge.
+  let payment = null;
+  try { payment = await provider.checkPayment(checkoutAccount(user, ws), existing); } catch { payment = null; }
+  if (!payment) return { blocked: 'Purane checkout ka payment status check nahi ho paya — pehle use status se resolve karein, phir naya order karein.' };
+  const exactPaid = payment.paid === true || payment.paymentVerified === true ||
+    (payment.swiggyOrderId && String(payment.swiggyOrderId) === String(existing.orderId || ''));
+  if (exactPaid) {
+    existing.status = 'PAID'; existing.paymentVerified = true;
+    existing.message = 'Swiggy ne is purane order ko paid bataya.';
+    writeProWorkspace(user.id, ws);
+    return { blocked: 'Pehle wala order Swiggy par PAID hai — My Orders me check karein; naya order na karein.' };
+  }
+  // Fresh (< idle timeout) unpaid pending ko nahi chhedte — user abhi UPI se pay kar sakta hai.
+  const ageMs = Date.now() - (Date.parse(String(existing.createdAt || '')) || 0);
+  if (ageMs < idleTimeoutMs(getDb())) {
+    return { blocked: 'Ek unpaid order abhi pending hai. Neeche cancel karke naya order karein — 2 minute baad ye khud band ho jayega.' };
+  }
+  // Unpaid + purana → local band (idle expiry jaisa). Refund sirf jab placement
+  // nahi ho sakta tha (DRAFT, ya SUBMITTING bina journal ke).
+  let refundedPaise = 0;
+  if ((kind === 'DRAFT' || (kind === 'SUBMITTING' && !hadJournal)) && existing.id) {
+    const walletDb = getDb();
+    const refunded = refundServiceFee(walletDb, existing, user.id, { reason: 'naya order place karne par purana unpaid checkout band' });
+    if (refunded?.ok) { refundedPaise = Number(refunded.refundedPaise || 0); saveDb(walletDb); }
+  }
+  const record = {
+    at: new Date().toISOString(), kind, orderId: String(existing.orderId || ''), idleMs: ageMs, refundedPaise,
+    amount: Number(existing.amount || 0) || null,
+    accountKey: String(existing.accountKey || ws.activeAccountKey || ''),
+    reason: 'naya order place karte waqt purana unpaid checkout band — Swiggy par unpaid order apne aap cancel ho jata hai'
+  };
+  record.message = (kind === 'PLACED_UNPAID' || kind === 'UNKNOWN')
+    ? `Order #${existing.orderId || '—'} unpaid tha — local checkout band kar diya. Swiggy par unpaid order apne aap cancel ho jata hai; hum cancel ka claim nahi karte.${refundedPaise ? ` Fee ${rupees(refundedPaise)} wapas.` : ''}`
+    : `Purana unpaid checkout band kar diya${refundedPaise ? ` aur fee ${rupees(refundedPaise)} wapas` : ''}.`;
+  ws.abandoned = Array.isArray(ws.abandoned) ? ws.abandoned.slice(-9) : [];
+  ws.abandoned.push(record);
+  ws.lastClosed = record;
+  // Journal wali key par naya placement block hota — generation aage badhao.
+  if (kind !== 'DRAFT') {
+    const g = ws.checkoutGeneration ?? 0;
+    if (Number.isSafeInteger(g) && g < Number.MAX_SAFE_INTEGER) ws.checkoutGeneration = g + 1;
+  }
+  ws.checkout = null;
+  writeProWorkspace(user.id, ws);
+  return { closed: record };
 }
 
 function draftDigest(value) {
@@ -2469,7 +2538,13 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
       if (route === '/pro/api/checkout' && req.method === 'POST') {
         const body = await bodyJson(req);
         if (!checkoutEnabled()) throw error(503, checkoutBlockReason());
-        if (ws.checkout) throw error(409, 'A checkout is already pending or unresolved. Check its status; do not place another order.');
+        if (ws.checkout) {
+          // Boss (02-11-2026): unpaid purana order naye order ko nahi rokega —
+          // payment sach confirm karke use local band karo (Swiggy par unpaid
+          // order apne aap cancel ho jata hai). PAID/in-flight/fresh → 409.
+          const auto = await autoCloseUnpaidCheckout(user, ws, provider);
+          if (auto?.blocked) throw error(409, auto.blocked);
+        }
         if (ws.chatFlow && ws.chatFlow.stage !== 'DONE') {
           const flow = requireChatFlow(user, ws, { handoffId: ws.chatFlow.id }, ['BILL']);
           if (flow.cartDigest !== chatCartDigest(ws.cart) || flow.addressDigest !== draftDigest(ws.selectedAddress)) {

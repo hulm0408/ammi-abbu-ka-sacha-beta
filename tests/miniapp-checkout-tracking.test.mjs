@@ -72,6 +72,19 @@ test('UI: merge() keeps the fetched live link across checkout/status polls (same
     'link is kept only for the same order');
 });
 
+test('UI: Pay Now ke baad bada "Checkout band karein" cancel card nahi aata — status + tracking card aata hai', () => {
+  assert.ok(!app.includes('<div class="card cancel-card">'), 'cancel card markup hona hi nahi chahiye');
+  const checkoutFn = app.slice(app.indexOf('function renderCheckout()'), app.indexOf('function renderBill('));
+  assert.match(checkoutFn, /Order status/);
+  assert.match(checkoutFn, /data-action="checkout-status"/);
+  assert.ok((checkoutFn.match(/\$\{trackCard\}/g) || []).length >= 3, 'tracking card har checkout branch me');
+  // Cancel ka option ab bhi hai, par sirf chhote text button me.
+  assert.match(checkoutFn, /<button class="text-button" type="button" data-action="checkout-cancel">/);
+  // Auto-poll OUTCOME_UNKNOWN pe bhi chalta hai — PAID hote hi My Orders khule.
+  assert.match(app, /c\.status === 'PAYMENT_PENDING' \|\| c\.status === 'OUTCOME_UNKNOWN'/);
+  assert.match(app, /out\.checkout\?\.status === 'PAYMENT_PENDING' \|\| out\.checkout\?\.status === 'OUTCOME_UNKNOWN'\) maybeCheckoutTracking/);
+});
+
 test('UI: tracking link is fetched as soon as the order is placed', () => {
   assert.match(app, /if \(out\.checkout\?\.orderId\) refreshCheckoutTracking\(\)/,
     'checkout-start must fire the tracking fetch right after place');
@@ -85,6 +98,7 @@ test('UI: tracking link is fetched as soon as the order is placed', () => {
 const receiver = { id: 'a1', name: 'R', mobile: '9123456789', address: 'Test road', lat: '18.5204', lng: '73.8567' };
 const placedOrder = { id: ORDER_ID, restaurant: 'Mock', status: 'Order placed', amount: 150.25, placedAt: new Date().toISOString(), items: [{ name: 'Meal', qty: 1 }] };
 let ordersList = [placedOrder]; // mutable: simulate Swiggy history lag right after place
+let paymentResult = { paid: false, paymentVerified: false }; // mutable: payment truth check
 const fakeProvider = {
   async verifySession() { return { valid: true, customerId: 'c-9123456789' }; },
   async addresses() { return [receiver]; },
@@ -92,7 +106,7 @@ const fakeProvider = {
   async checkout() {
     return { orderId: ORDER_ID, upiIntentUrl: 'upi://pay?pa=upiswiggy%40icici&am=150.25&cu=INR&tr=offline', amount: 150.25 };
   },
-  async checkPayment() { return { paid: false, paymentVerified: false }; },
+  async checkPayment() { return paymentResult; },
   async tracking(_account, id) {
     if (String(id) !== ORDER_ID) { const e = new Error('not found'); e.statusCode = 404; throw e; }
     return { orderId: ORDER_ID, trackingUrl: LIVE_LINK, status: 'Order placed', eta: '35 mins', via: 'FYI_CTA' };
@@ -191,4 +205,52 @@ test('Live link right after place: checkout-scope tracking skips the order-histo
     const other = await call('orders/tracking?id=999999999999&scope=checkout');
     assert.equal(other.status, 404);
   } finally { ordersList = [placedOrder]; }
+});
+
+test('New Pay Now: old UNPAID checkout auto-closes (payment checked first); fresh unpaid and PAID ones still block', async () => {
+  const place = async () => {
+    const quote = readProWorkspace('9900').cart.quote;
+    return call('checkout', { method: 'POST', body: { confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt } });
+  };
+  // 1) Place order A → PAYMENT_PENDING with orderId.
+  seedWorkspace();
+  let placed = await place();
+  assert.equal(placed.status, 200, JSON.stringify(placed.body));
+  assert.equal(placed.body.checkout.status, 'PAYMENT_PENDING');
+  assert.equal(placed.body.checkout.orderId, ORDER_ID);
+
+  // 2) Fresh unpaid checkout → new Pay Now still blocked (user may be paying right now).
+  let again = await place();
+  assert.equal(again.status, 409, JSON.stringify(again.body));
+  assert.ok(readProWorkspace('9900').checkout, 'fresh unpaid checkout must NOT be closed');
+
+  // 3) Age the old checkout beyond the idle timeout, still unpaid → auto-close + new placement succeeds.
+  const ws = readProWorkspace('9900');
+  ws.checkout.createdAt = new Date(Date.now() - 10 * 60_000).toISOString();
+  writeProWorkspace('9900', ws);
+  again = await place();
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.checkout.status, 'PAYMENT_PENDING');
+  const after = readProWorkspace('9900');
+  assert.equal(after.checkoutGeneration, 1, 'generation must advance so the old journal cannot block the new order');
+  assert.equal(after.abandoned?.length, 1);
+  assert.equal(after.abandoned[0].kind, 'PLACED_UNPAID');
+  assert.equal(after.abandoned[0].orderId, ORDER_ID);
+  assert.match(after.lastClosed.message, /apne aap cancel/);
+
+  // 4) If the old order was actually PAID on Swiggy → never auto-close, 409 + PAID kept.
+  await call('checkout/cancel', { method: 'POST', body: { confirmCancel: true } });
+  seedWorkspace();
+  placed = await place();
+  assert.equal(placed.status, 200, JSON.stringify(placed.body));
+  const ws2 = readProWorkspace('9900');
+  ws2.checkout.createdAt = new Date(Date.now() - 10 * 60_000).toISOString();
+  writeProWorkspace('9900', ws2);
+  paymentResult = { paid: true, paymentVerified: true, swiggyOrderId: ORDER_ID };
+  try {
+    again = await place();
+    assert.equal(again.status, 409);
+    assert.match(JSON.stringify(again.body), /PAID/);
+    assert.equal(readProWorkspace('9900').checkout.status, 'PAID', 'paid checkout must never be closed');
+  } finally { paymentResult = { paid: false, paymentVerified: false }; }
 });
