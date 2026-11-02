@@ -246,7 +246,18 @@
   function merge(data) {
     const previousLocation = locationContext();
     const previousCartSource = cartSourceContext();
+    const previousCheckout = state.checkout;
     for (const key of ['user','accounts','activeAccount','selectedAddress','cart','checkout','checkoutEnabled','checkoutBlockReason','ordersDetailAllowed','adminContact','backup','orderFee','identities','liveOrder','durability','chatHandoff']) if (Object.hasOwn(data, key)) state[key] = data[key];
+    // Boss (02-11-2026): live tracking link poll me gayab na ho — server ka
+    // PAYMENT_PENDING checkout/status response tracking nahi bhejta, par app ne
+    // orders/tracking se link le liya ho to usi orderId par wahi link rakho.
+    if (Object.hasOwn(data, 'checkout') && previousCheckout && state.checkout &&
+        String(previousCheckout.orderId || '') !== '' &&
+        String(previousCheckout.orderId || '') === String(state.checkout.orderId || '') &&
+        /^https:\/\//i.test(String(previousCheckout.tracking?.trackingUrl || '')) &&
+        !/^https:\/\//i.test(String(state.checkout.tracking?.trackingUrl || ''))) {
+      state.checkout = { ...state.checkout, tracking: previousCheckout.tracking };
+    }
     if (previousLocation !== locationContext()) {
       // Results are tied to a specific account and delivery location.
       state.results = null; state.menu = null; state.menuQuery = '';
