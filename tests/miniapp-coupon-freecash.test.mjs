@@ -25,8 +25,8 @@ const baseCart = () => ({
   items: [{ menu_item_id: 9001, qty: 1, name: 'Biryani', price: 230, variants: [], addons: [] }],
   quote: null
 });
-const state = { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, coupons: [], requests: [] };
-function reset() { Object.assign(state, { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, coupons: [], requests: [] }); }
+const state = { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, coupons: [], requests: [] };
+function reset() { Object.assign(state, { coupon: '', trade: 0, reward: 0, bulkHonorsCoupon: true, bulkHonorsRemove: true, applyCalls: 0, removeCalls: 0, discoveryCalls: 0, wallet: 0, eligible: null, coupons: [], requests: [] }); }
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 function cartPayload() {
   const discount = state.coupon === 'SAVE50' ? 50 : state.coupon === 'BEST80' ? 80 : 0;
@@ -38,7 +38,7 @@ function cartPayload() {
     coupon_code: state.coupon, is_coupon_valid: state.coupon ? 1 : 0,
     coupon_discount_total: discount, coupon_discount_effective: discount,
     trade_discount_total: state.trade, trade_discount_reward_amount: state.reward,
-    user_swiggy_money: state.wallet, swiggy_money: 0, positiveDeliveryChargesExclusive: 0,
+    user_swiggy_money: state.wallet, ...(state.eligible !== null ? { swiggy_pay_eligible_balance: state.eligible } : {}), swiggy_money: 0, positiveDeliveryChargesExclusive: 0,
     taxesAndCharges: 30, total_packing_charges: 10, is_order_for_someone_else: false
   } } };
 }
@@ -149,4 +149,33 @@ test('offer reads overlap safely with bill work; cart writes stay ordered', asyn
   const mcp = requests.findIndex(u => u.includes('mcp.swiggy.com'));
   assert.ok(restaurant >= 0 && cartUpdate >= 0 && restaurant < cartUpdate, 'restaurant offer read starts before cart update');
   assert.ok(payment >= 0 && mcp >= 0 && payment < mcp, 'payment offer read starts before cart-dependent discovery');
+});
+
+test('checkout quote never probes blind promo codes and flushes cart before event claim', async () => {
+  reset();
+  const out = await proProvider.quoteCart(account, address, { ...baseCart(), skipOfferClaim: false, autoCoupon: true }, '', { phase: 'full', autoCoupon: true });
+  assert.equal(out.bill.total, 270);
+  assert.equal(state.requests.findIndex(u => u.includes('/api/v2/cart/client/update')) >= 0, true);
+  const firstCart = state.requests.findIndex(u => u.includes('/api/v2/cart/client/update'));
+  const firstEvent = state.requests.findIndex(u => u.includes('events.swiggy.com'));
+  assert.ok(firstEvent > firstCart, 'claim must happen after initial cart write/flush');
+  assert.deepEqual(out.bill.engine.couponTrials, [], 'no unverified promo-code cart writes');
+});
+
+
+test('provider: Diya wallet cash in eligible alias is included in quote and does not count as a campaign claim', async () => {
+  reset(); state.wallet = 0; state.eligible = 10;
+  const out = await proProvider.quoteCart(account, address, baseCart(), '', { phase: 'full', autoCoupon: false });
+  assert.equal(out.bill.freeCash, 10);
+  assert.equal(out.bill.walletSplitPayAmount, 10);
+  assert.equal(out.bill.total, 260);
+  assert.match(out.bill.offerNote, /eligible for split-pay/);
+});
+
+test('provider: credited money without cart eligibility is not silently deducted', async () => {
+  reset(); state.wallet = 10; state.eligible = 0;
+  const out = await proProvider.quoteCart(account, address, baseCart(), '', { phase: 'full', autoCoupon: false });
+  assert.equal(out.bill.freeCash, null);
+  assert.equal(out.bill.total, 270);
+  assert.match(out.bill.offerNote, /₹0 eligible/);
 });

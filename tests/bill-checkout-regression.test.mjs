@@ -480,3 +480,38 @@ test('E3: duplicate QR generation for one order is deduped (no duplicate checkou
   assert.equal(qr.realQr.swiggyOrderId, 'SW2');
   await q2;
 });
+
+test('C15: Diya cash in eligible wallet alias reduces payable once even when legacy balance is zero', () => {
+  const parsed = parseDapiCartPayload({ cartMeta: {
+    item_total: 230, order_total: 270, user_swiggy_money: 0, swiggy_pay_eligible_balance: 10,
+    cart_menu_items: [{ menu_item_id: 9001, quantity: 1, subtotal: 23000, final_price: 23000 }]
+  } });
+  assert.equal(parsed.freeCashBalance, 10);
+  assert.equal(parsed.walletSplitPayAmount, 10);
+  assert.equal(parsed.finalPayable, 260);
+});
+
+test('C16: balance not eligible for this cart must not be presented as applied', () => {
+  const parsed = parseDapiCartPayload({ cartMeta: {
+    item_total: 230, order_total: 270, user_swiggy_money: 10, swiggy_pay_eligible_balance: 0,
+    cart_menu_items: [{ menu_item_id: 9001, quantity: 1, subtotal: 23000, final_price: 23000 }]
+  } });
+  assert.equal(parsed.walletSplitPayAmount, 0);
+  assert.equal(parsed.finalPayable, 270);
+});
+
+test('C17: zero primary reward field does not hide a validated savings alias', () => {
+  const parsed = parseDapiCartPayload({ cartMeta: {
+    item_total: 230, order_total: 260, trade_discount_total: 10, trade_discount_reward_amount: 0,
+    offer_presentation_info: { reward_offer_savings_info: { savings: 10 } },
+    cart_menu_items: [{ menu_item_id: 9001, quantity: 1, subtotal: 23000, final_price: 23000 }]
+  } });
+  assert.equal(parsed.campaignFreeCash, 10);
+  assert.equal(parsed.finalPayable, 260);
+});
+
+test('C18: stale cart total does not mask a reward just because wallet split-pay is present', () => {
+  assert.equal(computeFinalPayable({ itemTotal: 230, tradeDiscountTotal: 10,
+    taxesAndCharges: 40, independentTaxesAndCharges: 40,
+    authoritativeTotal: 270, walletSplitPayAmount: 10 }), 250);
+});

@@ -693,6 +693,30 @@ test('Pay Now does not approve a delayed bill from a different account', async (
 });
 
 
+test('Diya share link opens only on the official Swiggy host and never claims success locally', async () => {
+  const app = harness();
+  const submit = value => {
+    const form = app.document.querySelector('form[data-form="diya-link"]');
+    form.querySelector('input[name="url"]').value = value;
+    form.dispatchEvent(new app.window.Event('submit', { bubbles: true, cancelable: true }));
+  };
+  try {
+    await waitFor(() => app.document.querySelector('.ac-row.active'), 'accounts');
+    nav(app, 'tools');
+    submit('https://r.swiggy.com.evil.test/light-diya/aWPhpVsRkD-hYhN1HrKBTw');
+    await waitFor(() => app.document.querySelector('.diya-card [role="alert"]'), 'invalid link');
+    assert.equal(app.document.querySelector('.diya-card a'), null);
+    submit('https://r.swiggy.com/light-diya/aWPhpVsRkD-hYhN1HrKBTw');
+    const link = await waitFor(() => app.document.querySelector('.diya-card a'), 'official link');
+    assert.equal(link.href, 'https://r.swiggy.com/light-diya/aWPhpVsRkD-hYhN1HrKBTw');
+    assert.equal(link.rel, 'noopener noreferrer');
+    assert.match(app.document.querySelector('.diya-card').textContent, /Claim is not confirmed/);
+    assert.equal(app.calls.filter(c => c.url.includes('diya')).length, 0, 'never submits an unverified claim to the server');
+    submit('https://r.swiggy.com/light-diya/aWPhpVsRkD-hYhN1HrKBTw?redirect=https://evil.test');
+    await waitFor(() => !app.document.querySelector('.diya-card a'), 'rejected link cleared');
+  } finally { app.close(); }
+});
+
 test('Tools does not send users out to an unverified Diya claim page', async () => {
   const app = harness();
   try {
@@ -701,5 +725,18 @@ test('Tools does not send users out to an unverified Diya claim page', async () 
     await waitFor(() => app.document.querySelector('#content h1'), 'tools');
     assert.equal(app.document.querySelector('a[href*="light-diya"]'), null);
     assert.doesNotMatch(app.document.querySelector('#content').textContent, /claim successful|15\/15/i);
+  } finally { app.close(); }
+});
+
+test('checkout labels eligible but not yet deducted wallet cash as pending verification', async () => {
+  const bootstrap = baseState();
+  bootstrap.cart.quote = { ...bootstrap.cart.quote, total: 205, freeCash: 10, freeCashWallet: 10, walletSplitPayAmount: 10, walletSplitPending: true };
+  const app = harness({ bootstrap });
+  try {
+    await waitFor(() => app.document.querySelector('.ac-row.active'), 'accounts');
+    nav(app, 'cart');
+    const row = await waitFor(() => [...app.document.querySelectorAll('.saving-row')].find(r => /Free Cash/.test(r.textContent)), 'cash row');
+    assert.match(row.textContent, /Verify at pay/);
+    assert.doesNotMatch(row.textContent, /✓ Applied/);
   } finally { app.close(); }
 });

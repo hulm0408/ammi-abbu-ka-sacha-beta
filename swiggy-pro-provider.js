@@ -684,9 +684,10 @@ export const proProvider = {
     // address, cart and payable amount under the same account lock.
     const quickBill = cart.quickBill === true && !requestedCoupon;
     const budget = {
-      // Boss ko speed chahiye par offers bhi — dono: discovery 2.5s, trials 9s.
-      trialBudgetMs: Math.max(2_000, Math.min(Number(process.env.PRO_COUPON_BUDGET_MS) || 45_000, 120_000)),
-      maxTrials: Math.max(1, Math.min(Number(process.env.PRO_COUPON_TRIALS) || 24, 50))
+      // Only try codes actually returned by Swiggy. A blind code list made
+      // checkout wait through many sequential cart writes (often 45s+).
+      trialBudgetMs: Math.max(2_000, Math.min(Number(process.env.PRO_COUPON_BUDGET_MS) || 10_000, 120_000)),
+      maxTrials: Math.max(1, Math.min(Number(process.env.PRO_COUPON_TRIALS) || 10, 50))
     };
     return withSwiggyAccountLock(checkoutLockKey(account), async () => {
       // ── Round 34 (boss): "MAKE THE CHECK OUT FASTER" ──────────────────────
@@ -816,20 +817,38 @@ export const proProvider = {
       };
 
       // ── Step 0: ₹50-off / free-cash / night offers claim (bot ka same call) ─
-      // Boss (round 35): "FREE CASH ABHI BHI NAHI LAG RAHA". Pichhle round me
-      // claim sirf doosre (full) phase me chalta tha, isliye pehle bill me free
-      // cash nahi aata tha. Ab full bill = pehla bill, aur usme claim ka jawab
-      // PEHLE liya jata hai (bounded), taaki free cash/night cash usi bill me ho.
+      // Full quote checks the Night/Breakfast campaigns after the first cart
+      // flush, then reprices the same cart without flushing the reward.
       // Claim fail ho to bill phir bhi aata hai — bas sach likha jata hai.
       const claimEnabled = !(quickBill || fast || cart.skipOfferClaim === true || options.skipOfferClaim === true);
       // Bill ko sirf Night + Breakfast free cash chahiye. Fixed/event ladders
       // yahan nahi chalate — woh Tools/Claim ka kaam hai. Isse bill fast hai.
       // Restaurant offers do not depend on the mutable cart. Fetch them while
-      // the claim and initial cart work are in flight, without parallel writes.
+      // the initial cart work is in flight, without parallel writes.
       const discoverOffers = !quickBill && !fast && (autoCoupon || Boolean(requestedCoupon));
       const restaurantOffersPromise = discoverOffers
         ? dapiFetch(account, `offers/restaurant?lat=${lat}&lng=${lng}&restaurantId=${cart.restaurantId}`, { lat, lng, timeoutMs: 1600 }).catch(() => null)
         : Promise.resolve(null);
+
+      // ── Step 1: plain cart + One Lite (delivery free) ─────────────────────
+      let subscriptionItems = Array.isArray(cart.activeSubscriptionItems) ? cart.activeSubscriptionItems : [];
+      // Flush the old cart BEFORE waiting for a claim: flushFirst on the first
+      // write can otherwise discard the newly claimed cart reward.
+      let base = await push({ couponCode: requestedCoupon, subscriptionItems });
+      // Payment offers only need the initial item total; One Lite trials do
+      // not change item prices. Keep all cart updates strictly sequential.
+      const estCartVal = Math.round(Number(base.parsed?.itemTotal || 250));
+      const paymentOffersPromise = discoverOffers
+        ? dapiFetch(account, `offers/payment?lat=${lat}&lng=${lng}&restaurantId=${cart.restaurantId}&cart_value=${estCartVal}&restaurant_id=${cart.restaurantId}&sourcePage=cart&source_page=cart&page_type=PAYMENT_OFFERS_PAGE`, { lat, lng, timeoutMs: 1800 }).catch(() => null)
+        : Promise.resolve(null);
+      // MCP and event-campaign reads are independent. Start discovery here,
+      // while the claim is in flight, rather than adding another round-trip
+      // after One Lite. All cart writes below remain sequential.
+      const couponDiscoveryPromise = discoverOffers ? Promise.all([
+        callSwiggyFoodMcpTool(account, 'fetch_food_coupons', { restaurantId: String(cart.restaurantId), addressId }, 1800).catch(() => null),
+        callSwiggyFoodMcpTool(account, 'get_food_cart', { addressId }, 1600).catch(() => null),
+        paymentOffersPromise, restaurantOffersPromise
+      ]) : Promise.resolve([null, null, null, null]);
       const claimPromise = claimEnabled ? activateAllEventOffers(account, {
         offerKeys: ['lateNight', 'breakfast'],
         requestTimeoutMs: 1500,
@@ -838,10 +857,6 @@ export const proProvider = {
         parallelOffers: true,
         currentWindowOnly: true
       }).catch(err => ({ success: false, reason: String(err?.message || err).slice(0, 120) })) : Promise.resolve(null);
-
-      // ── Step 1: plain cart + One Lite (delivery free) ─────────────────────
-      let subscriptionItems = Array.isArray(cart.activeSubscriptionItems) ? cart.activeSubscriptionItems : [];
-      // Claim ka jawab pehle — free cash/night cash tabhi bill me aata hai.
       const claimResult = claimEnabled ? await claimPromise : null;
       const claimSummary = claimResult?.summary || {};
       const activeClaims = Number(claimSummary.claimed || 0) + Number(claimSummary.alreadyActive || 0);
@@ -849,7 +864,7 @@ export const proProvider = {
         if (!claimEnabled) return '';
         if (!claimResult) return 'Free Cash check pending.';
         if (claimResult.success === false) return 'Free Cash claim nahi hua.';
-        if (activeClaims > 0) return `${activeClaims} Free Cash claim active.`;
+        if (activeClaims > 0) return `${activeClaims} offer claim verified; Free Cash bill me lagega ya nahi Swiggy cart se check hoga.`;
         if (Number(claimSummary.preLocked || 0) > 0) return 'Free Cash pre-booked.';
         return 'Free Cash is bill par active nahi hua.';
       })();
@@ -857,13 +872,9 @@ export const proProvider = {
         const rec = claimResult?.offers?.[key];
         return { key, label: key === 'lateNight' ? 'Night' : 'Breakfast', status: String(rec?.status || ''), verified: rec?.verified === true, alreadyActive: rec?.alreadyActive === true };
       });
-      let base = await push({ couponCode: requestedCoupon, subscriptionItems });
-      // Payment offers only need the initial item total; One Lite trials do
-      // not change item prices. Keep all cart updates strictly sequential.
-      const estCartVal = Math.round(Number(base.parsed?.itemTotal || 250));
-      const paymentOffersPromise = discoverOffers
-        ? dapiFetch(account, `offers/payment?lat=${lat}&lng=${lng}&restaurantId=${cart.restaurantId}&cart_value=${estCartVal}&restaurant_id=${cart.restaurantId}&sourcePage=cart&source_page=cart&page_type=PAYMENT_OFFERS_PAGE`, { lat, lng, timeoutMs: 1800 }).catch(() => null)
-        : Promise.resolve(null);
+      // Reprice without a second flush so an active campaign can attach to
+      // this exact cart. Never infer an applied discount from claim status.
+      if (activeClaims > 0) base = await push({ couponCode: requestedCoupon, subscriptionItems });
       const deliveryFee = Number(base.parsed?.deliveryFee || 0);
       if (!quickBill && !fast && cart.autoOneLite !== false && deliveryFee > 1 && Number(base.parsed?.swiggyOneMembershipFee || 0) === 0) {
         const planIds = [...new Set([
@@ -918,12 +929,7 @@ export const proProvider = {
       if (base.coupon) add(base.coupon, base.coupon, 'Bill me laga hua', 2);
       if (base.parsed?.suggestedCouponCode) add(base.parsed.suggestedCouponCode, base.parsed.suggestedCouponCode, 'Swiggy ka best suggested', 3);
 
-      const [mcpCoupons, mcpCart, offersPay, offersRest] = (quickBill || fast || (!autoCoupon && !requestedCoupon)) ? [null, null, null, null] : await Promise.all([
-        callSwiggyFoodMcpTool(account, 'fetch_food_coupons', { restaurantId: String(cart.restaurantId), addressId }, 1800).catch(() => null),
-        callSwiggyFoodMcpTool(account, 'get_food_cart', { addressId }, 1600).catch(() => null),
-        paymentOffersPromise,
-        restaurantOffersPromise
-      ]);
+      const [mcpCoupons, mcpCart, offersPay, offersRest] = await couponDiscoveryPromise;
       const ineligible = new Set();
       for (const cp of (Array.isArray(mcpCoupons?.structured?.coupons) ? mcpCoupons.structured.coupons : [])) {
         const code = cp?.coupon_code || cp?.couponCode || cp?.code || '';
@@ -939,13 +945,9 @@ export const proProvider = {
       }
       const mcpSuggested = mcpCart?.structured?.offers?.coupon_applied || mcpCart?.structured?.coupon_code || mcpCart?.structured?.data?.coupon_code || '';
       if (mcpSuggested) add(mcpSuggested, mcpSuggested, 'Swiggy auto-suggested', 3);
-      if (!quickBill && autoCoupon) {
-        for (const code of ['SNACKIT', 'TRYNEW', 'STEALDEAL', 'SWIGGYIT', 'WELCOME50', 'FLAT150', 'MEALDEAL', 'DELULU4FOOD']) {
-          add(code, code, 'Swiggy promo code', 35);
-        }
-      } else if (fast) {
+      if (fast) {
         engine.notes.push('Pehla bill: offers, One Lite aur coupon check bache hue hain — agle kadam me.');
-      } else {
+      } else if (quickBill) {
         engine.notes.push('Quick bill: extra offers and One Lite were not checked.');
       }
       engine.couponsSeen = found.size;
@@ -1046,7 +1048,21 @@ export const proProvider = {
       engine.phase = phase;
       engine.addressReused = engineAddressReused;
       engine.offerClaim = claimResult ? (claimSummary || {}) : null;
-      engine.offerNote = claimNote;
+      // A verified campaign claim is not evidence of a cart discount. Do not
+      // call it applied unless Swiggy returned an actual deducted amount.
+      const reportedWallet = Math.max(0, Number(parsed?.reportedSwiggyMoneyBalance || 0));
+      const billOfferNote = campaignCash > 0
+        ? `Campaign Free Cash ₹${campaignCash} Swiggy bill me applied.`
+        : walletSplitPayAmount > 0 && walletReallyDeducted <= 0
+          ? `₹${walletSplitPayAmount} Swiggy Money eligible for split-pay; payment QR par amount verify karein.`
+          : walletReallyDeducted > 0
+            ? `₹${walletReallyDeducted} Swiggy Money Swiggy cart me deducted.`
+            : reportedWallet > 0 && Number(parsed?.freeCashBalance || 0) <= 0
+              ? `Swiggy Money balance ₹${reportedWallet} hai, par is cart par ₹0 eligible — Swiggy me offer terms check karein.`
+              : claimEnabled && activeClaims > 0
+                ? 'Offer claim verified, par Swiggy ne is cart par campaign Free Cash apply nahi kiya. Eligibility/window check karein.'
+                : claimNote;
+      engine.offerNote = billOfferNote;
       return {
         address: confirmedAddress,
         addressFingerprint: addressDigest,
@@ -1075,6 +1091,7 @@ export const proProvider = {
           freeCash: freeCashShown > 0 ? freeCashShown : null,
           freeCashWallet: walletApplied > 0 ? walletApplied : null,
           walletSplitPayAmount,
+          walletSplitPending: walletSplitPayAmount > 0 && walletReallyDeducted <= 0,
           freeCashAvailable: Math.max(0, Number(parsed?.freeCashBalance || 0)),
           // Poora trade discount (restaurant + campaign free cash) — ye Swiggy
           // ke order_total ke andar pehle se hai, isliye ek hi line me.
@@ -1084,7 +1101,7 @@ export const proProvider = {
           totalSavings: parsed?.totalSavings ?? null,
           subscriptionItems,
           engine,
-          offerNote: claimNote,
+          offerNote: billOfferNote,
           offerTracks,
           couponReason: requestedCoupon && best.coupon !== requestedCoupon ? (best.couponReason || 'Swiggy ne ye coupon accept nahi kiya.') : '',
           total

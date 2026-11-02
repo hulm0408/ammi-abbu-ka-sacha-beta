@@ -30,7 +30,9 @@ globalThis.fetch = async (raw, options = {}) => {
     if (trialMode) {
       if (failSettle && updateBodies.length > 1 && !body.couponCode) return response({ statusCode: 1, statusMessage: 'settle failed' });
       meta.order_total = body.couponCode ? 160.25 : 150.25;
-      meta.coupon_code = body.couponCode || '';
+      // Swiggy suggests a real code on the first cart readback. The provider
+      // must not try a blind hard-coded code just to exercise settlement.
+      meta.coupon_code = body.couponCode || (updateBodies.length === 1 ? 'SAVE30' : '');
       meta.is_coupon_valid = 0;
       meta.coupon_discount_total = 0;
     }

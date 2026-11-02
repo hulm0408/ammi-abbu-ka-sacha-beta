@@ -17,7 +17,7 @@
     checkoutTrackBusy: false, checkoutTrackError: '', checkoutTrackLastTry: 0,
     orderFee: null, checkoutWarning: '',
     chatHandoff: null, handoffHidden: false, handoffIgnorePending: '', handoffBusy: false, handoffError: '', handoffAutoFor: '', handoffName: null, handoffMobile: null,
-    doctor: null, doctorBusy: false, doctorNote: '', access: null, accessUser: '', accessLoading: false,
+    doctor: null, doctorBusy: false, doctorNote: '', access: null, accessUser: '', accessLoading: false, diyaLink: '', diyaError: '',
     // Boss (31-10-2026, round 13): 2 minute idle → draft order band.
     idle: null, idleClosed: null
   };
@@ -859,7 +859,9 @@
     }
     if (num(q.freeCash) > 0) {
       const tracks = Array.isArray(q.offerTracks) ? q.offerTracks.filter(t => t?.verified === true).map(t => t.label).join(' + ') : '';
-      rows.push(`<div class="saving-row"><span class="saving-icon one">cash</span><span class="row-content"><strong>${money(num(q.freeCash))} Free Cash</strong><small>${esc(tracks ? tracks + ' claim applied' : 'Bill me applied')}</small></span><span class="saving-badge on">✓ Applied</span></div>`);
+      const pendingSplit = q.walletSplitPending === true;
+      const cashStatus = pendingSplit ? 'Eligible for split-pay; check Swiggy payment amount' : (tracks ? tracks + ' claim verified; amount Swiggy bill me applied' : 'Swiggy bill me applied');
+      rows.push(`<div class="saving-row"><span class="saving-icon one">cash</span><span class="row-content"><strong>${money(num(q.freeCash))} Free Cash</strong><small>${esc(cashStatus)}</small></span><span class="saving-badge ${pendingSplit ? 'amber' : 'on'}">${pendingSplit ? 'Verify at pay' : '✓ Applied'}</span></div>`);
     }
     if (num(q.tradeDiscount) > 0) rows.push(`<div class="saving-row"><span class="saving-icon">%</span><span class="row-content"><strong>${money(num(q.tradeDiscount))} Restaurant Discount</strong></span><span class="saving-badge on">✓ Applied</span></div>`);
     if (q.oneApplied === true) rows.push(`<div class="saving-row"><span class="saving-icon one">ONE</span><span class="row-content"><strong>Free Delivery</strong><small>Swiggy One Lite</small></span><span class="saving-badge on">✓ Applied</span><button class="text-button" type="button" data-action="one-remove" ${state.couponBusy ? 'disabled' : ''}>Remove</button></div>`);
@@ -1239,6 +1241,17 @@
       return `<div class="offer-row"><span class="offer-emoji" aria-hidden="true">${t.emoji ? esc(t.emoji) : icon('spark')}</span><span class="row-content"><strong>${esc(label)}</strong></span>${outcome ? `<span class="pill ${outcome === 'Failed' ? 'amber' : 'green'}">${esc(outcome)}</span>` : ''}</div>`;
     }).join('');
   }
+  // Diya is a share/unboxing campaign, NOT an events.swiggy.com notify
+  // campaign or coupon code. No session/token is sent to a pasted link here.
+  // Only open a strictly validated official share link on Swiggy itself.
+  function validatedDiyaLink(raw) {
+    try {
+      const u = new URL(String(raw || '').trim());
+      if (u.protocol !== 'https:' || u.hostname !== 'r.swiggy.com' || u.username || u.password || u.port || u.search || u.hash) return '';
+      if (!/^\/light-diya\/[A-Za-z0-9_-]{8,100}$/.test(u.pathname)) return '';
+      return u.origin + u.pathname;
+    } catch { return ''; }
+  }
   function renderTools() {
     const access = renderAccountAccess();
     if (!state.accounts.length) return `${head('A LITTLE EXTRA', 'Offers & tools', '')}${access}${empty('tools', 'No account yet', 'Add an account first.')}`;
@@ -1249,9 +1262,10 @@
       return `<div class="card"><div class="card-title">${tile('tools')}<span class="title-copy">${esc(a.name)}<small>${a.phone ? '+91 ' + esc(a.phone) : a.phoneMasked ? '+91 ' + esc(a.phoneMasked) : ''}</small></span></div>${offerRows(a.offerTracks)}${claimButton}</div>`;
     }).join('');
     const result = state.claimResult ? `<div class="card"><div class="card-title">${icon('check')} Claim</div>${offerRows(state.claimResult.tracks)}</div>` : '';
+    const diya = `<div class="card diya-card"><div class="card-title">${tile('spark')}<span class="title-copy">Light a Diya<small>Swiggy share offer · Food &amp; Instamart</small></span></div><p class="hint">Paste your Swiggy Diya share link. Open it in Swiggy and complete the activity there. The shared page advertises ₹10 each; eligibility and any reward are decided by Swiggy, not this app.</p><form data-form="diya-link">${field('Diya share link', 'url', 'https://r.swiggy.com/light-diya/…', state.diyaLink, 'type="url" required autocomplete="off"')}<button class="button outline block" type="submit">Check link</button></form>${state.diyaError ? `<div class="warning" role="alert">${esc(state.diyaError)}</div>` : ''}${state.diyaLink ? `<a class="button soft block" href="${esc(state.diyaLink)}" target="_blank" rel="noopener noreferrer">Open on Swiggy ${icon('arrow')}</a><p class="hint">Claim is not confirmed here. After completing it in Swiggy, refresh the checkout bill. Only an actual Swiggy cart deduction counts as applied.</p>` : ''}</div>`;
     // Diagnostics/backup functions remain available to the backend; these cards
     // are deliberately not mounted in the customer-facing Tools screen.
-    return `${head('A LITTLE EXTRA', 'Offers & tools', '')}${access}${result}${accounts}`;
+    return `${head('A LITTLE EXTRA', 'Offers & tools', '')}${access}${result}${diya}${accounts}`;
   }
   function renderConnection() {
     if (!initData) return `${head('TELEGRAM MINI APP', 'Open in Telegram', 'Your private account space needs a Telegram session.')}<div class="card connection-card"><strong>Browser preview only</strong><p>Open this app from your bot using Open App or /pro. No account data is shown here.</p></div>`;
@@ -2046,6 +2060,12 @@
         const raw = String(data.get('session') || ''); let session;
         try { session = JSON.parse(raw); } catch { throw new Error('Please paste valid JSON.'); }
         const out = await api('accounts/import', 'POST', { session }); merge(out); state.addresses = []; state.orders = null; render(); toast('Session verified and added.');
+      } else if (type === 'diya-link') {
+        const link = validatedDiyaLink(data.get('url'));
+        state.diyaLink = link;
+        state.diyaError = link ? '' : 'Only a full https://r.swiggy.com/light-diya/… share link is allowed.';
+        render();
+        if (!link) toast(state.diyaError, 'bad');
       } else if (type === 'address-link') {
         const out = await api('addresses/resolve', 'POST', { url: data.get('url') }); state.pendingAddress = out.address; render();
       } else if (type === 'confirm-address' || type === 'contact') {

@@ -3807,12 +3807,15 @@ export function parseDapiCartPayload(data) {
 
   // FULL SWIGGY FREE CASH + SWIGGY MONEY SPLIT-PAY EXTRACTION:
   // 1. Campaign / Late Night / Breakfast / Reward Free Cash (`campaignFreeCash`) — auto-stacks over coupons inside `cm.order_total`!
-  const rewardSavingsRaw =
-    cm.trade_discount_reward_amount ??
-    cm.tradeDiscountRewardAmountWithoutPocketHeroDiscount ??
-    cm.offer_presentation_info?.reward_offer_savings_info?.savings ??
-    cm.offerPresentationInfo?.rewardOffersSavingsInfo?.savings ??
-    0;
+  // A present but zero-valued field must not mask a positive reward in the
+  // other cart shape (DAPI vs checkout). Do not sum aliases: they describe the
+  // same credited reward, so take the largest genuine reported saving.
+  const rewardSavingsRaw = Math.max(0,
+    Number(cm.trade_discount_reward_amount) || 0,
+    Number(cm.tradeDiscountRewardAmountWithoutPocketHeroDiscount) || 0,
+    Number(cm.offer_presentation_info?.reward_offer_savings_info?.savings) || 0,
+    Number(cm.offerPresentationInfo?.rewardOffersSavingsInfo?.savings) || 0
+  );
   let renderRewardFreeCash = 0;
   for (const [rk, rv] of renderByKey.entries()) {
     const labelStr = `${rk} ${rv?.display_text || rv?.label || ''}`;
@@ -3829,7 +3832,13 @@ export function parseDapiCartPayload(data) {
   // 2. Swiggy Money / Wallet Free Cash Split-Pay (`user_swiggy_money` / `swiggy_pay_eligible_balance`):
   // Before placing the order, `cm.swiggy_money` is `0` while `cm.user_swiggy_money` holds the available balance (e.g. ₹50 / ₹100)!
   // Passing `swiggy_pay_amount` on `chkout/payments order/place` deducts this directly from the live UPI QR!
-  const freeCashBalance = Math.max(0, Number(cm.user_swiggy_money ?? cm.swiggy_pay_eligible_balance ?? 0));
+  // Claimed Diya/other rewards can land in an eligible-balance alias while
+  // user_swiggy_money still reads 0. An explicit eligible balance wins,
+  // including 0: wallet balance alone is not proof it can pay for this cart.
+  const eligibleWallet = cm.swiggy_pay_eligible_balance;
+  const freeCashBalance = eligibleWallet !== null && eligibleWallet !== undefined && eligibleWallet !== ''
+    ? Math.max(0, Number(eligibleWallet) || 0)
+    : Math.max(0, Number(cm.user_swiggy_money) || 0);
   const alreadyDeductedWallet = Math.max(0, Number(cm.swiggy_money ?? 0));
   const walletSplitPayAmount = alreadyDeductedWallet > 0
     ? alreadyDeductedWallet
@@ -3891,6 +3900,7 @@ export function parseDapiCartPayload(data) {
     suggestedCouponCode,
     discountAmount: Math.round(couponDiscount * 100) / 100,
     freeCashBalance: Math.round(freeCashBalance * 100) / 100,
+    reportedSwiggyMoneyBalance: Math.max(0, Number(cm.user_swiggy_money) || 0),
     freeCashApplied: Math.round(freeCashApplied * 100) / 100,
     // Sirf jo Swiggy ne SACH ME kaat diya (balance hona alag baat hai).
     swiggyMoneyApplied: Math.round(alreadyDeductedWallet * 100) / 100,
