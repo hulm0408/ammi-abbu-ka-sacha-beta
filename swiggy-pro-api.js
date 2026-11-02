@@ -206,8 +206,7 @@ function maskAccountPhone(phone) {
  */
 function hasOfferTrack(account, key) {
   const rec = account?.offerAutoActivation?.[key] || account?.offers?.[key] || null;
-  if (!rec) return false;
-  return String(rec.status || rec.state || '').toUpperCase() !== 'FAILED';
+  return rec?.verified === true && ['CLAIMED', 'ALREADY_CLAIMED'].includes(offerTrackStatus(rec).toUpperCase());
 }
 function listAccounts(user, workspace) {
   const map = accountMap(user, workspace);

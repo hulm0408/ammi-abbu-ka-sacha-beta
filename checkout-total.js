@@ -101,8 +101,11 @@ export function computeFinalPayable({
     ? taxes
     : nonNeg(independentTaxesAndCharges);
   const gross = round2(Math.max(0, items + oneFee + delivery + packing + indepTaxes));
-  if (discounts > 0 && auth >= gross - tol) {
-    return round2(Math.max(0, items - discounts + oneFee + delivery + packing + indepTaxes));
+  // Compare the UNSPLIT cart amount with gross. Comparing the wallet-
+  // reduced QR amount hides stale coupons/rewards when wallet cash is present.
+  if (discounts > 0 && Math.abs(rawAuth - gross) <= tol) {
+    const wallet = walletAlreadyDeducted ? 0 : nonNeg(walletSplitPayAmount);
+    return round2(Math.max(0, items - discounts + oneFee + delivery + packing + indepTaxes - wallet));
   }
 
   if (Math.abs(auth - reconstructed) <= tol) return auth;          // consistent → authoritative
