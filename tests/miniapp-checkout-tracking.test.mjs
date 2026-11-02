@@ -98,11 +98,12 @@ test('UI: tracking link is fetched as soon as the order is placed', () => {
 const receiver = { id: 'a1', name: 'R', mobile: '9123456789', address: 'Test road', lat: '18.5204', lng: '73.8567' };
 const placedOrder = { id: ORDER_ID, restaurant: 'Mock', status: 'Order placed', amount: 150.25, placedAt: new Date().toISOString(), items: [{ name: 'Meal', qty: 1 }] };
 let ordersList = [placedOrder]; // mutable: simulate Swiggy history lag right after place
+let ordersThrow = false; // mutable: simulate order-history fetch failure (unverifiable)
 let paymentResult = { paid: false, paymentVerified: false }; // mutable: payment truth check
 const fakeProvider = {
   async verifySession() { return { valid: true, customerId: 'c-9123456789' }; },
   async addresses() { return [receiver]; },
-  async orders() { return ordersList; },
+  async orders() { if (ordersThrow) throw new Error('Swiggy order history could not be fetched.'); return ordersList; },
   async checkout() {
     return { orderId: ORDER_ID, upiIntentUrl: 'upi://pay?pa=upiswiggy%40icici&am=150.25&cu=INR&tr=offline', amount: 150.25 };
   },
@@ -297,4 +298,67 @@ test('Status check resolves no-orderId OUTCOME_UNKNOWN: no matching Swiggy order
     assert.equal(track.status, 200, JSON.stringify(track.body));
     assert.equal(track.body.tracking.trackingUrl, LIVE_LINK);
   } finally { ordersList = [placedOrder]; }
+});
+
+test('Old stuck checkouts never nag forever: unverified no-orderId → band; 15-min unpaid placed → band', async () => {
+  let gen = 1000; // pin high generations so earlier tests' placement journals never collide
+  // This file places many checkouts as user 9900; clear the checkout rate-limit bucket first.
+  const db = getDb();
+  db.config.rateLimits = {};
+  saveDb(db);
+  const seedUnknown = (ageMin) => {
+    seedWorkspace();
+    const ws = readProWorkspace('9900');
+    ws.checkoutGeneration = gen;
+    ws.checkout = { id: String(gen), status: 'OUTCOME_UNKNOWN', orderId: '', amount: 150.25, accountKey: 'mine', accountPhone: '9123456789', createdAt: new Date(Date.now() - ageMin * 60_000).toISOString(), message: 'Order Swiggy par ho sakta hai.' };
+    writeProWorkspace('9900', ws);
+  };
+  const place = async () => {
+    const quote = readProWorkspace('9900').cart.quote;
+    return call('checkout', { method: 'POST', body: { confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt } });
+  };
+  // Case C: order list fetch hi fail ho (account/session issue) — purana to band anyway.
+  seedUnknown(10);
+  ordersThrow = true;
+  try {
+    const st = await call('checkout/status', { method: 'POST', body: {} });
+    assert.equal(st.status, 200, JSON.stringify(st.body));
+    assert.equal(st.body.checkout, null, 'unverified but old → local band, card will not come back');
+    assert.ok(st.body.closed?.message);
+    assert.equal(readProWorkspace('9900').checkout, null);
+  } finally { ordersThrow = false; }
+
+  // Case D: PAYMENT_PENDING with orderId, unpaid, 20 min old → band (Swiggy unpaid auto-cancels).
+  seedWorkspace();
+  let ws = readProWorkspace('9900');
+  ws.checkoutGeneration = ++gen;
+  writeProWorkspace('9900', ws);
+  const placed = await place();
+  assert.equal(placed.status, 200, JSON.stringify(placed.body));
+  assert.equal(placed.body.checkout.status, 'PAYMENT_PENDING');
+  assert.equal(placed.body.checkout.orderId, ORDER_ID);
+  ws = readProWorkspace('9900');
+  ws.checkout.createdAt = new Date(Date.now() - 20 * 60_000).toISOString();
+  writeProWorkspace('9900', ws);
+  paymentResult = { paid: false, paymentVerified: false };
+  const st = await call('checkout/status', { method: 'POST', body: {} });
+  assert.equal(st.status, 200, JSON.stringify(st.body));
+  assert.equal(st.body.checkout, null, '20-min unpaid placed order → local band on status check');
+  const after = readProWorkspace('9900');
+  assert.equal(after.checkout, null);
+  assert.equal(after.abandoned.at(-1).kind, 'PLACED_UNPAID');
+  assert.equal(after.abandoned.at(-1).orderId, ORDER_ID);
+  // Fresh unpaid placed order must NOT be banded by the status check.
+  await call('checkout/cancel', { method: 'POST', body: { confirmCancel: true } });
+  seedWorkspace();
+  ws = readProWorkspace('9900');
+  ws.checkoutGeneration = ++gen;
+  writeProWorkspace('9900', ws);
+  const placed2 = await place();
+  assert.equal(placed2.status, 200, JSON.stringify(placed2.body));
+  assert.equal(placed2.body.checkout.status, 'PAYMENT_PENDING');
+  const st2 = await call('checkout/status', { method: 'POST', body: {} });
+  assert.equal(st2.status, 200, JSON.stringify(st2.body));
+  assert.equal(st2.body.checkout.status, 'PAYMENT_PENDING', 'fresh unpaid order must stay pending (user may be paying)');
+  assert.ok(readProWorkspace('9900').checkout, 'fresh unpaid checkout must NOT be closed');
 });
