@@ -362,3 +362,25 @@ test('Old stuck checkouts never nag forever: unverified no-orderId → band; 15-
   assert.equal(st2.body.checkout.status, 'PAYMENT_PENDING', 'fresh unpaid order must stay pending (user may be paying)');
   assert.ok(readProWorkspace('9900').checkout, 'fresh unpaid checkout must NOT be closed');
 });
+
+test('Fresh no-orderId checkout is protected from order-list lag (60s floor), banded after', async () => {
+  seedWorkspace();
+  let ws = readProWorkspace('9900');
+  ws.checkoutGeneration = 2000;
+  ws.checkout = { id: '2000', status: 'OUTCOME_UNKNOWN', orderId: '', amount: 150.25, accountKey: 'mine', accountPhone: '9123456789', createdAt: new Date(Date.now() - 30_000).toISOString(), message: 'Order Swiggy par ho sakta hai.' };
+  writeProWorkspace('9900', ws);
+  ordersList = []; // verified, no match
+  try {
+    let st = await call('checkout/status', { method: 'POST', body: {} });
+    assert.equal(st.status, 200, JSON.stringify(st.body));
+    assert.ok(st.body.checkout, 'fresh (<60s) verified-no-match must NOT be banded (order list lag)');
+    assert.equal(st.body.checkout.status, 'OUTCOME_UNKNOWN');
+    ws = readProWorkspace('9900');
+    ws.checkout.createdAt = new Date(Date.now() - 61_000).toISOString();
+    writeProWorkspace('9900', ws);
+    st = await call('checkout/status', { method: 'POST', body: {} });
+    assert.equal(st.status, 200, JSON.stringify(st.body));
+    assert.equal(st.body.checkout, null, 'past 60s verified-no-match → local band, card gone');
+    assert.equal(readProWorkspace('9900').checkout, null);
+  } finally { ordersList = [placedOrder]; }
+});

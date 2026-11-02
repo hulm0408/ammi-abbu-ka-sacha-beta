@@ -1053,22 +1053,20 @@ async function autoCloseUnpaidCheckout(user, ws, provider) {
   if (kind === 'SUBMITTING' && hadJournal) return { blocked: 'Checkout abhi chal raha hai — thodi der baad dobara try karein.' };
   const ageMs = Date.now() - (Date.parse(String(existing.createdAt || '')) || 0);
   const canClose = ageMs >= idleTimeoutMs(getDb());
-  // orderId nahi hai → Swiggy ki order list me sach dhoondho.
-  if (!normalizeSwiggyOrderId(existing.orderId)) {
+  // orderId nahi hai → Swiggy ki order list me sach dhoondho (60s floor = list lag safe).
+  if (!normalizeSwiggyOrderId(existing.orderId) && ageMs >= 60_000) {
     let found = null; let verified = false;
     try { found = await discoverUnplacedOrder(user, ws, provider, existing); verified = true; } catch { verified = false; }
     if (found) {
       existing.orderId = normalizeSwiggyOrderId(found);
       writeProWorkspace(user.id, ws);
       kind = classifyCheckout(existing);
-    } else if (verified && canClose) {
+    } else if (verified) {
       // List verify ho gayi, match nahi — placement se koi order nahi bana (ya
       // unpaid order Swiggy ne khud cancel kar diya). Abhi band, naya order free.
       return bandCheckoutLocally(user, ws, existing, { refund: !hadJournal, reason: 'naya Pay Now: Swiggy ki order list me matching order nahi mila — local band' });
-    } else if (verified && !canClose) {
-      return { blocked: 'Purane order ka check chal raha hai — 2 minute baad dobara Pay Now karein.' };
     }
-    // verify nahi ho paya → neeche age gate chalega
+    // verify nahi ho paya ya fresh → neeche age gate chalega
   }
   // Payment ka sach pehle — agar Swiggy ne paid de diya to kabhi band nahi karenge.
   if (normalizeSwiggyOrderId(existing.orderId)) {
@@ -2856,19 +2854,20 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         if (!normalizeSwiggyOrderId(checkout.orderId)) {
           // Boss (02-11-2026): status check sach me check kare — orderId nahi hai to
           // Swiggy ki order list me matching order dhoondho. Mil gaya → orderId lagao
-          // (neeche payment check + live link). Verify hui list me nahi mila aur purana
-          // hai → local band, naya Pay Now free (dead-end card nahi aayega).
+          // (neeche payment check + live link). Verify hui list me 60s+ purana match
+          // nahi mila → local band (60s = order-list lag safe floor). Verify na ho
+          // paya to sirf idle timeout ke baad band. Card baar-baar nahi aayega.
           const ageMs = Date.now() - (Date.parse(String(checkout.createdAt || '')) || 0);
-          if (ageMs >= idleTimeoutMs(getDb())) {
+          const idleFloor = idleTimeoutMs(getDb());
+          if (ageMs >= 60_000) {
             let found = null; let verified = false;
             try { found = await discoverUnplacedOrder(user, ws, provider, checkout); verified = true; } catch { verified = false; }
             if (found) {
               checkout.orderId = normalizeSwiggyOrderId(found);
               writeProWorkspace(user.id, ws);
-            } else {
-              // Boss (02-11-2026): card baar-baar nahi aana chahiye — verified-no-match
-              // YA unverified-but-old, dono me local band (cancel ka claim nahi; order
-              // agar hai to My Orders me dikhega). Refund sirf bina-journal par.
+            } else if (ageMs >= (verified ? 60_000 : idleFloor)) {
+              // verified-no-match YA unverified-but-old — dono me local band (cancel ka
+              // claim nahi; order agar hai to My Orders me dikhega). Refund bina-journal par.
               bandCheckoutLocally(user, ws, checkout, {
                 refund: !hadPlacementJournal(user, ws),
                 reason: verified
