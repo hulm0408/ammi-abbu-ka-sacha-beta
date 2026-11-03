@@ -281,13 +281,17 @@ export function buildSwiggyAndroidClientHeaders(accountOrCookies, opts = {}) {
 
 // Preserves item-level `offer_ids` (`CRAZY_DEALS`, `NBH_OFFER`, `POCKET_HERO`, `FLASH_SALE` strike-off discounts!)
 // AND `item_offer_cart_meta` across EVERY `chkout` / `dapi` cart update & rehydration call!
+// Item id ke liye `id` bhi fallback hai — sameCartItems() `id` ko count karta
+// hai, to write ise drop na kare: warna readback me item hamesha missing
+// rahega aur bill hamesha CART_ITEMS_MISMATCH par atkega.
 export function buildSwiggyCartItemsPayload(items) {
   return (Array.isArray(items) ? items : [])
-    .filter(it => it && (it.menu_item_id || it.itemId))
-    .map(it => ({
+    .map(it => ({ it, menuId: Number(it?.menu_item_id || it?.itemId || it?.id) }))
+    .filter(({ menuId }) => Number.isSafeInteger(menuId) && menuId > 0)
+    .map(({ it, menuId }) => ({
       addons: selectedSwiggyChoices(it, 'addons'),
       variants: selectedSwiggyChoices(it, 'variants'),
-      menu_item_id: Number(it.menu_item_id || it.itemId),
+      menu_item_id: menuId,
       quantity: Number(it.qty || it.quantity || 1),
       offer_ids: Array.isArray(it.offer_ids) ? it.offer_ids : [],
       item_offer_cart_meta: String(it.item_offer_cart_meta || ''),

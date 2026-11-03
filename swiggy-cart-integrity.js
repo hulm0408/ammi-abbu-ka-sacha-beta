@@ -85,18 +85,28 @@ export function sameCartItems(expected, actual) {
     if (!variants || !addons) return null;
     return JSON.stringify([id, variants, addons]);
   };
-  const aggregate = (list) => {
+  const aggregate = (list, providerSide = false) => {
     if (!Array.isArray(list) || !list.length) return null;
     const result = new Map();
     for (const item of list) {
-      const signature = makeSignature(item);
+      const id = String(item?.menu_item_id || item?.itemId || item?.id || '');
       const quantity = Number(item.qty ?? item.quantity);
-      if (!signature || !Number.isInteger(quantity) || quantity <= 0) return null;
+      // Provider readbacks can carry freebie/gift/removed lines (no numeric
+      // menu id, qty 0) that are not comparable menu lines — one such noise
+      // line must not fail the whole cart check. The expected cart is ours:
+      // any unusable line there still fails, and a real readback item whose
+      // choices cannot be verified still fails (signature null below).
+      if (!/^\d+$/.test(id) || !Number.isInteger(quantity) || quantity <= 0) {
+        if (providerSide) continue;
+        return null;
+      }
+      const signature = makeSignature(item);
+      if (!signature) return null;
       result.set(signature, (result.get(signature) || 0) + quantity);
     }
-    return result;
+    return result.size ? result : null;
   };
-  const left = aggregate(expected), right = aggregate(actual);
+  const left = aggregate(expected), right = aggregate(actual, true);
   return Boolean(left && right && left.size === right.size && [...left].every(([key, qty]) => right.get(key) === qty));
 }
 

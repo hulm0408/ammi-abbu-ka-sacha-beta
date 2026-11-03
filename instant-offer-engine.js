@@ -366,10 +366,12 @@ export async function quoteInstantCart(account, address, cart, coupon = '', opti
   );
   const writeCart = async (code, timeoutMs = writeMs) => {
     engine.autoOffer.cartWrites += 1;
-    const out = await swiggyCartUpdate(account, {
+    const updatePayload = {
       restaurantId, address_id: addressId, couponCode: code,
       cartItems: itemsPayload, mealItems: [], subscriptionItems, ...ofoFields
-    }, { lat, lng, flushFirst: !cartInitialized, timeoutMs }).catch(() => ({ status: 0, json: null }));
+    };
+    const out = await swiggyCartUpdate(account, updatePayload, { lat, lng, flushFirst: !cartInitialized, timeoutMs })
+      .catch(() => ({ status: 0, json: null }));
     cartInitialized = true;
     const data = out?.json?.data;
     const hasCart = Boolean(okCode(out?.json?.statusCode) && data?.cartMeta && Array.isArray(data?.cartMeta?.cart_menu_items));
@@ -379,7 +381,27 @@ export async function quoteInstantCart(account, address, cart, coupon = '', opti
     } catch (err) {
       // /update purana address/items bhej sakta hai — ek GET se pakka karo.
       if (!['CART_ITEMS_MISMATCH', 'CART_ADDRESS_MISMATCH'].includes(err?.code)) throw err;
-      snapshot = await readCart(Math.min(timeoutMs, 4_000));
+      try {
+        snapshot = await readCart(Math.min(timeoutMs, 4_000));
+      } catch (readErr) {
+        if (!['CART_ITEMS_MISMATCH', 'CART_ADDRESS_MISMATCH'].includes(readErr?.code)) throw readErr;
+        // Error ka apna hi ilaj: "cart check karke dobara sync karein".
+        // Confirmed GET phir bhi alag hai — wahi approved cart ek aur baar
+        // (bina flush; pehla write cart already replace kar chuka tha) aur
+        // uske baad hi verified readback. Bounded: ek hi retry — persistent
+        // mismatch ab bhi fail hota hai, loop nahi.
+        engine.autoOffer.cartWrites += 1;
+        const resync = await swiggyCartUpdate(account, updatePayload, { lat, lng, flushFirst: false, timeoutMs })
+          .catch(() => ({ status: 0, json: null }));
+        const rData = resync?.json?.data;
+        const rHasCart = Boolean(okCode(resync?.json?.statusCode) && rData?.cartMeta && Array.isArray(rData?.cartMeta?.cart_menu_items));
+        try {
+          snapshot = rHasCart ? acceptCart(resync) : await readCart(Math.min(timeoutMs, 4_000));
+        } catch {
+          // Aakhiri GET hi sach hai — uska mismatch seedha bahar jayega.
+          snapshot = await readCart(Math.min(timeoutMs, 4_000));
+        }
+      }
     }
     const settled = code && snapshot.coupon === code && Number(snapshot.parsed?.discountAmount || 0) > 0;
     if (code && !settled && applyAttempts < maxTrials + 2) {

@@ -330,6 +330,35 @@ test('quote verification rejects changed add-ons, variants, quantities and unkno
   assert.deepEqual(buildSwiggyCartItemsPayload(richReadbackChoice)[0].addons, [{ group_id: '1', choice_id: '2' }]);
 });
 
+test('provider noise lines (freebie/qty-0) do not fail an otherwise identical cart check', () => {
+  const base = [{ menu_item_id: 456, qty: 1, variants: [{ group_id: '5', variation_id: '7' }], addons: [{ group_id: '1', choice_id: '2' }] }];
+  const clone = () => structuredClone(base);
+  // Swiggy readback me freebie/gift/removed lines aa sakti hain — wo comparable
+  // menu lines nahi hain, poora cart check nahi bigadni chahiye.
+  const freebieLine = { menu_item_id: 'FREEBIE-GIFT', qty: 1, variants: [], addons: [] };
+  const removedLine = { menu_item_id: 999, quantity: 0, variants: [], addons: [] };
+  assert.equal(sameCartItems(base, [...clone(), freebieLine]), true, 'non-numeric-id noise line cart ko nahi rokti');
+  assert.equal(sameCartItems(base, [...clone(), removedLine]), true, 'qty-0 line cart me hai hi nahi');
+  // Sach me badla hua cart ab bhi block hota hai.
+  const extraReal = { menu_item_id: 777, qty: 1, variants: [], addons: [] };
+  assert.equal(sameCartItems(base, [...clone(), extraReal]), false, 'extra real item ab bhi block');
+  const qtyZeroActual = clone(); qtyZeroActual[0].qty = 0;
+  assert.equal(sameCartItems(base, qtyZeroActual), false, 'asli item hatna/zero hona ab bhi block');
+  const qtyZeroExpected = [{ menu_item_id: 456, qty: 0, variants: [], addons: [] }];
+  assert.equal(sameCartItems(qtyZeroExpected, clone()), false, 'apna cart hi saaf hona chahiye — expected side noise fail');
+});
+
+test('cart write payload never drops an item that the readback comparison counts', () => {
+  // Legacy/backup carts me item sirf `id` se ho sakti hai — comparison `id`
+  // ko count karta hai, to write bhi bhejna chahiye, warna readback me wo
+  // item hamesha missing aur bill hamesha CART_ITEMS_MISMATCH.
+  const idOnly = [{ id: '9001', qty: 2, variants: [], addons: [] }];
+  assert.deepEqual(buildSwiggyCartItemsPayload(idOnly).map(p => ({ id: p.menu_item_id, q: p.quantity })), [{ id: 9001, q: 2 }]);
+  assert.equal(sameCartItems(idOnly, [{ menu_item_id: 9001, qty: 2, variants: [], addons: [] }]), true, 'comparison bhi wahi count karta hai');
+  // Non-numeric id Swiggy reject kar chuka hota — write me jaata hi nahi.
+  assert.deepEqual(buildSwiggyCartItemsPayload([{ id: 'not-a-number', qty: 1 }]), []);
+});
+
 test('private session bootstrap cannot overwrite a boss account with the same phone', async () => {
   const before = getDb().config.accounts.shared_test;
   const savedFetch = globalThis.fetch;
