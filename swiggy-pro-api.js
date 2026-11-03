@@ -79,6 +79,52 @@ function error(statusCode, message) {
   return e;
 }
 
+// Validate choices against the menu snapshot, never against IDs/prices supplied
+// by the browser. The returned objects have the exact shape used by dapi/cart.
+function resolveItemChoices(item, body) {
+  const variantGroups = Array.isArray(item.variantGroups) ? item.variantGroups : [];
+  const addonGroups = Array.isArray(item.addonGroups) ? item.addonGroups : [];
+  if (!variantGroups.length && !addonGroups.length) {
+    if (item.customizable || item.price === null) throw error(400, 'Swiggy ne is item ke choices nahi bheje. Menu refresh karke dobara try karein.');
+    return { variants: [], addons: [], price: item.price };
+  }
+  if (!Array.isArray(body.variants) || !Array.isArray(body.addons) || body.variants.length > 50 || body.addons.length > 50) {
+    throw error(400, 'Is item ke saare required options choose karein.');
+  }
+  const variants = [];
+  for (const group of variantGroups) {
+    const selected = body.variants.filter(v => String(v?.group_id ?? '') === String(group.group_id));
+    if (selected.length !== 1) throw error(400, `${group.name || 'Variant'} ke liye ek option choose karein.`);
+    const id = String(selected[0]?.variation_id ?? '');
+    const choice = (group.variations || []).find(v => String(v.id) === id);
+    if (!choice || choice.inStock === false) throw error(400, 'Chuna hua variant available nahi hai. Options dobara check karein.');
+    variants.push({ group_id: String(group.group_id), variation_id: String(choice.id), name: choice.name, group_name: group.name, price: 0 });
+  }
+  if (body.variants.length !== variants.length) throw error(400, 'Variant choice menu se match nahi hui.');
+  const addons = [];
+  for (const group of addonGroups) {
+    const selected = body.addons.filter(a => String(a?.group_id ?? '') === String(group.group_id));
+    const ids = selected.map(a => String(a?.choice_id ?? ''));
+    if (new Set(ids).size !== ids.length || ids.length < Number(group.min || 0) || ids.length > Number(group.max || 1)) {
+      throw error(400, `${group.name || 'Add-on'} me ${Number(group.min || 0)}–${Number(group.max || 1)} options allowed hain.`);
+    }
+    for (const id of ids) {
+      const choice = (group.choices || []).find(c => String(c.id) === id);
+      if (!choice || choice.inStock === false) throw error(400, 'Chuna hua add-on available nahi hai. Options dobara check karein.');
+      addons.push({ group_id: String(group.group_id), choice_id: String(choice.id), name: choice.name, group_name: group.name, price: Number(choice.price || 0) });
+    }
+  }
+  if (body.addons.length !== addons.length) throw error(400, 'Add-on choice menu se match nahi hui.');
+  const variantPrice = variants.reduce((sum, selected) => {
+    const group = variantGroups.find(g => String(g.group_id) === selected.group_id);
+    const choice = group?.variations?.find(v => String(v.id) === selected.variation_id);
+    return Math.max(sum, Number(choice?.price || 0));
+  }, 0);
+  const pricePaise = (variantPrice > 0 ? variantPrice : Math.round(Number(item.price || 0) * 100)) + addons.reduce((sum, addon) => sum + Number(addon.price || 0), 0);
+  if (!Number.isSafeInteger(pricePaise) || pricePaise <= 0) throw error(400, 'Swiggy ne selected choices ka valid price nahi diya.');
+  return { variants, addons, price: pricePaise / 100 };
+}
+
 /**
  * Boss (31-10-2026, round 17): "PEHLE SAARI POSSIBILITIES IDENTIFY KARKE BLOCK
  * KARO". Har mehnga/nuksaan wala route ek hi jagah se rate-limited hai —
@@ -2251,7 +2297,7 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         const item = menu?.categories?.flatMap(c => c.items || []).find(i => i.id === id);
         if (!item) throw error(404, 'Menu item not found. Open its restaurant again.');
         if (menu.restaurant?.isOpen === false || item.inStock === false) throw error(400, 'This item is unavailable.');
-        if (item.customizable || item.price === null) throw error(400, 'This item needs choices that are not supported here yet. Please use Swiggy for this item.');
+        const selection = resolveItemChoices(item, body);
         if (ws.cart && ws.cart.restaurantId !== menu.restaurant.id && body.replace !== true) throw error(409, 'Your cart has items from another restaurant. Confirm replacement.');
         if (!ws.cart || ws.cart.restaurantId !== menu.restaurant.id) {
           ws.cart = { restaurantId: menu.restaurant.id, restaurantName: menu.restaurant.name, items: [], forSomeoneElse: true, quote: null };
@@ -2263,9 +2309,16 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           restaurantImage: String(menu.restaurant.image || ''),
           restaurantRating: String(menu.restaurant.rating || '')
         });
-        const existing = ws.cart.items.find(i => i.menu_item_id === Number(item.id) && !(i.variants?.length || i.addons?.length));
-        if (existing) existing.qty = Math.min(20, existing.qty + 1);
-        else ws.cart.items.push({ lineKey: crypto.randomUUID(), id: item.id, menu_item_id: Number(item.id), name: item.name, price: item.price, qty: 1, isVeg: item.isVeg === true ? true : item.isVeg === false ? false : null, variants: [], addons: [], offer_ids: item.offer_ids, item_offer_cart_meta: item.item_offer_cart_meta });
+        const choiceSignature = line => JSON.stringify([
+          (line.variants || []).map(v => `${v.group_id}:${v.variation_id}`).sort(),
+          (line.addons || []).map(a => `${a.group_id}:${a.choice_id}`).sort()
+        ]);
+        const selectedSignature = choiceSignature(selection);
+        const existing = ws.cart.items.find(i => i.menu_item_id === Number(item.id) && choiceSignature(i) === selectedSignature);
+        if (existing) {
+          if (existing.qty >= 20) throw error(400, 'Is exact item/choice ki maximum quantity 20 hai.');
+          existing.qty += 1;
+        } else ws.cart.items.push({ lineKey: crypto.randomUUID(), id: item.id, menu_item_id: Number(item.id), name: item.name, price: selection.price, qty: 1, isVeg: item.isVeg === true ? true : item.isVeg === false ? false : null, variants: selection.variants, addons: selection.addons, offer_ids: item.offer_ids, item_offer_cart_meta: item.item_offer_cart_meta });
         ws.cart.quote = null;
         writeProWorkspace(user.id, ws);
         json(res, 200, { ok: true, cart: ws.cart });

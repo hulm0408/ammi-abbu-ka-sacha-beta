@@ -234,6 +234,94 @@
       unlockBackground = lockModalBackground(overlay);
     });
   }
+  function chooseItemCustomisations(item, opener) {
+    if (confirmationOpen) return Promise.resolve(null);
+    return new Promise(resolve => {
+      const previousFocus = opener || document.activeElement;
+      const previousIdentity = describeFocus(previousFocus);
+      const overlay = document.createElement('div');
+      overlay.className = 'sheet-overlay customisation-overlay';
+      const sheet = document.createElement('section');
+      sheet.className = 'sheet customisation-sheet';
+      sheet.setAttribute('role', 'dialog');
+      sheet.setAttribute('aria-modal', 'true');
+      sheet.setAttribute('aria-labelledby', 'customisation-title');
+      const variantGroups = Array.isArray(item.variantGroups) ? item.variantGroups : [];
+      const addonGroups = Array.isArray(item.addonGroups) ? item.addonGroups : [];
+      const choicePrice = choice => Number(choice.price || 0) > 0 ? `<small>+${money(Number(choice.price || 0) / 100)}</small>` : '';
+      const variantsHtml = variantGroups.map((group, gi) => {
+        const available = (group.variations || []).filter(choice => choice.inStock !== false);
+        const selected = available.find(choice => choice.isDefault) || available[0];
+        return `<fieldset class="choice-group" data-variant-group="${esc(group.group_id)}"><legend>${esc(group.name)}<small>Required · choose 1</small></legend>${(group.variations || []).map(choice => `<label class="choice-row${choice.inStock === false ? ' unavailable' : ''}"><input type="radio" name="variant-${gi}" value="${esc(choice.id)}" data-price="${Number(choice.price || 0)}" ${choice === selected ? 'checked' : ''} ${choice.inStock === false ? 'disabled' : ''}><span>${esc(choice.name)}</span>${choice.inStock === false ? '<small>Unavailable</small>' : Number(choice.price || 0) > 0 ? `<small>${money(Number(choice.price || 0) / 100)}</small>` : ''}</label>`).join('')}</fieldset>`;
+      }).join('');
+      const addonsHtml = addonGroups.map((group, gi) => `<fieldset class="choice-group" data-addon-group="${esc(group.group_id)}" data-min="${Number(group.min || 0)}" data-max="${Number(group.max || 1)}"><legend>${esc(group.name)}<small>${Number(group.min || 0) > 0 ? `Choose ${Number(group.min || 0)}${Number(group.max || 1) !== Number(group.min || 0) ? `–${Number(group.max || 1)}` : ''}` : `Optional · up to ${Number(group.max || 1)}`}</small></legend>${(group.choices || []).map(choice => `<label class="choice-row${choice.inStock === false ? ' unavailable' : ''}"><input type="checkbox" name="addon-${gi}" value="${esc(choice.id)}" data-price="${Number(choice.price || 0)}" ${choice.isDefault && choice.inStock !== false ? 'checked' : ''} ${choice.inStock === false ? 'disabled' : ''}><span>${esc(choice.name)}</span>${choice.inStock === false ? '<small>Unavailable</small>' : choicePrice(choice)}</label>`).join('')}</fieldset>`).join('');
+      sheet.innerHTML = `<div class="sheet-grip"></div><div class="sheet-head"><div><h2 id="customisation-title">${esc(item.name)}</h2><p>Apni pasand ke options chunein</p></div><button type="button" class="icon-button" data-custom-close aria-label="Close choices">${icon('close')}</button></div><form class="customisation-form">${variantsHtml}${addonsHtml}<p class="choice-error" role="alert" hidden></p><button type="submit" class="button green block customisation-add">Add Item · ${money(item.price)}</button></form>`;
+      overlay.append(sheet);
+      document.body.append(overlay);
+      const form = sheet.querySelector('form');
+      const errorBox = sheet.querySelector('.choice-error');
+      const submit = sheet.querySelector('.customisation-add');
+      let settled = false;
+      const unlockBackground = lockModalBackground(overlay);
+      const finish = value => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener('keydown', onKeyDown);
+        overlay.remove();
+        unlockBackground();
+        restoreDialogFocus(previousFocus, previousIdentity);
+        resolve(value);
+      };
+      const update = () => {
+        for (const fieldset of form.querySelectorAll('[data-addon-group]')) {
+          const boxes = [...fieldset.querySelectorAll('input[type="checkbox"]')];
+          const max = Number(fieldset.dataset.max || 1);
+          const full = boxes.filter(box => box.checked).length >= max;
+          for (const box of boxes) box.disabled = box.dataset.soldOut === '1' || (full && !box.checked);
+        }
+        const checkedVariants = [...form.querySelectorAll('[data-variant-group] input:checked')];
+        const variantPrice = checkedVariants.reduce((max, input) => Math.max(max, Number(input.dataset.price || 0)), 0);
+        const addonPrice = [...form.querySelectorAll('[data-addon-group] input:checked')].reduce((sum, input) => sum + Number(input.dataset.price || 0), 0);
+        const total = ((variantPrice > 0 ? variantPrice : Math.round(Number(item.price || 0) * 100)) + addonPrice) / 100;
+        submit.textContent = `Add Item · ${money(total)}`;
+        errorBox.hidden = true;
+      };
+      // Preserve sold-out state separately because max-limit disabling is
+      // temporary and must not make a sold-out option selectable again.
+      for (const input of form.querySelectorAll('input:disabled')) input.dataset.soldOut = '1';
+      const onKeyDown = event => {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(null); }
+        else if (event.key === 'Tab') trapDialogTab(event, sheet);
+      };
+      document.addEventListener('keydown', onKeyDown);
+      form.addEventListener('change', update);
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        const variants = [];
+        for (const group of form.querySelectorAll('[data-variant-group]')) {
+          const selected = group.querySelector('input:checked');
+          if (!selected) { errorBox.textContent = 'Har required variant ke liye ek option chunein.'; errorBox.hidden = false; return; }
+          variants.push({ group_id: group.dataset.variantGroup, variation_id: selected.value });
+        }
+        const addons = [];
+        for (const group of form.querySelectorAll('[data-addon-group]')) {
+          const selected = [...group.querySelectorAll('input:checked')];
+          const min = Number(group.dataset.min || 0), max = Number(group.dataset.max || 1);
+          if (selected.length < min || selected.length > max) {
+            errorBox.textContent = `${group.querySelector('legend')?.firstChild?.textContent || 'Add-on'}: ${min}–${max} options chunein.`;
+            errorBox.hidden = false; return;
+          }
+          for (const input of selected) addons.push({ group_id: group.dataset.addonGroup, choice_id: input.value });
+        }
+        finish({ variants, addons });
+      });
+      sheet.querySelector('[data-custom-close]').addEventListener('click', () => finish(null));
+      overlay.addEventListener('click', event => { if (event.target === overlay) finish(null); });
+      update();
+      try { sheet.querySelector('[data-custom-close]').focus({ preventScroll: true }); } catch { /* WebView closed */ }
+    });
+  }
+
   async function api(path, method = 'GET', body, { timeoutMs = 0 } = {}) {
     if (!initData) throw new Error('Open the Mini App from your bot in Telegram.');
     const headers = { 'X-Telegram-Init-Data': initData };
@@ -698,15 +786,14 @@
     const lines = menuCartLines(item, restaurant);
     const line = lines.find(row => !(row.variants?.length || row.addons?.length));
     const total = lines.reduce((sum, row) => sum + Math.max(0, Number(row.qty) || 0), 0);
-    const disabled = cartLocked() || restaurant.isOpen === false || item.inStock === false || item.customizable || item.price === null;
+    const disabled = cartLocked() || restaurant.isOpen === false || item.inStock === false || item.price === null;
     if (line) {
       const qty = Math.max(0, Number(line.qty) || 0);
       return `<div class="stepper menu-stepper"><button type="button" data-action="qty" data-key="${esc(line.lineKey)}" data-qty="${qty - 1}" aria-label="Remove one ${esc(item.name)}" ${cartLocked() || qty > 21 ? 'disabled' : ''}>−</button><span aria-live="polite">${total}</span><button type="button" data-action="qty" data-key="${esc(line.lineKey)}" data-qty="${qty + 1}" aria-label="Add one ${esc(item.name)}" ${disabled || qty >= 20 ? 'disabled' : ''}>+</button></div>`;
     }
-    // Imported customised lines cannot be modified without choosing options;
-    // still show the real quantity instead of pretending the item is absent.
-    if (total) return `<span class="menu-qty-readonly" aria-label="${total} ${esc(item.name)} in cart">${total} in cart</span>`;
-    return `<button class="button mini outline" type="button" data-action="dish-add" data-id="${esc(item.id)}" data-restaurant="${esc(restaurant.id)}" ${disabled ? 'disabled' : ''}>${cartLocked() ? 'Checkout pending' : item.inStock === false ? 'Sold out' : item.customizable ? 'Choices needed' : 'ADD +'}</button>`;
+    // A customised line is a separate variant, not an uneditable item. Let the
+    // user open the picker again to add the same or a different configuration.
+    return `<button class="button mini outline" type="button" data-action="dish-add" data-id="${esc(item.id)}" data-restaurant="${esc(restaurant.id)}" ${disabled ? 'disabled' : ''}>${cartLocked() ? 'Checkout pending' : item.inStock === false ? 'Sold out' : item.customizable ? (total ? `${total} in cart · Add` : 'Customise +') : 'ADD +'}</button>`;
   }
   // Update only the quantity controls and dock after the server confirms a cart
   // change; the menu, scroll position and dish search stay intact.
@@ -897,7 +984,7 @@
       for (const item of category.items || []) {
         if (dishes.length >= 8) break;
         if (!item.id || inCart.has(String(item.id))) continue;
-        if (item.price === null || item.inStock === false || item.customizable) continue;
+        if (item.price === null || item.inStock === false) continue;
         dishes.push(item);
       }
     }
@@ -2511,11 +2598,15 @@
         let out;
         const itemId = button.dataset.id;
         const restaurantId = button.dataset.restaurant;
-        try { out = await api('cart/add', 'POST', { itemId, restaurantId }); }
+        const source = String(state.menu?.restaurant?.id || '') === String(restaurantId) ? state.menu : state.meal;
+        const item = source?.categories?.flatMap(category => category.items || []).find(row => String(row.id) === itemId);
+        const selection = item?.customizable ? await chooseItemCustomisations(item, button) : { variants: [], addons: [] };
+        if (!selection) return;
+        try { out = await api('cart/add', 'POST', { itemId, restaurantId, ...selection }); }
         catch (e) {
           if (e.status !== 409 || (state.checkout && state.checkout.status !== 'PAID')) throw e;
           if (!await confirmWithTrigger({ title: 'Replace draft cart?', message: 'The existing draft will be replaced with items from this restaurant.', confirmText: 'Replace draft' })) return;
-          out = await api('cart/add', 'POST', { itemId, restaurantId, replace: true });
+          out = await api('cart/add', 'POST', { itemId, restaurantId, ...selection, replace: true });
         }
         merge(out); updateMenuCartControls(button, hadFocus);
       } else if (action === 'qty') {

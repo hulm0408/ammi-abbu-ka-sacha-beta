@@ -128,19 +128,47 @@ function searchRestaurants(json) {
   return result.slice(0, 100);
 }
 
-function dishInfo(info) {
+export function dishInfo(info) {
   if (!info?.id || !info?.name || !/^\d+$/.test(String(info.id)) || !Number.isSafeInteger(Number(info.id))) return null;
   const pricePaise = Number(info.finalPrice ?? info.price ?? info.defaultPrice ?? 0);
   const variants = info.variantsV2?.variantGroups || info.variants_v2?.variant_groups || info.variants?.variantGroups || [];
   const addons = info.addons || [];
-  const customizable = (Array.isArray(variants) && variants.length > 0) || (Array.isArray(addons) && addons.length > 0);
+  // Keep Swiggy's actual option IDs. Earlier only `customizable: true` reached
+  // the client, so both the button and /cart/add had no way to build a valid
+  // customised cart line. Prices remain server-owned (all Swiggy prices are
+  // paise); the client only chooses IDs.
+  const variantGroups = (Array.isArray(variants) ? variants : []).map(group => ({
+    group_id: String(group?.group_id ?? group?.groupId ?? ''),
+    name: String(group?.name || group?.group_name || 'Choose an option'),
+    variations: (Array.isArray(group?.variations) ? group.variations : []).map(choice => ({
+      id: String(choice?.id ?? choice?.variation_id ?? ''),
+      name: String(choice?.name || 'Option'),
+      price: Number.isFinite(Number(choice?.price)) ? Number(choice.price) : 0,
+      inStock: optionalBoolean(choice?.inStock),
+      isDefault: choice?.default === 1 || choice?.default === true || choice?.selected === 1 || choice?.selected === true
+    })).filter(choice => /^\d+$/.test(choice.id))
+  })).filter(group => /^\d+$/.test(group.group_id) && group.variations.length);
+  const addonGroups = (Array.isArray(addons) ? addons : []).map(group => ({
+    group_id: String(group?.group_id ?? group?.groupId ?? ''),
+    name: String(group?.group_name ?? group?.name ?? 'Add-ons'),
+    min: Math.max(0, Number(group?.minAddons ?? group?.min_addons ?? 0) || 0),
+    max: Math.max(1, Number(group?.maxAddons ?? group?.max_addons ?? 1) || 1),
+    choices: (Array.isArray(group?.choices) ? group.choices : []).map(choice => ({
+      id: String(choice?.id ?? choice?.choice_id ?? ''),
+      name: String(choice?.name || 'Add-on'),
+      price: Number.isFinite(Number(choice?.price)) ? Number(choice.price) : 0,
+      inStock: optionalBoolean(choice?.inStock),
+      isDefault: choice?.default === 1 || choice?.default === true || choice?.selected === 1 || choice?.selected === true
+    })).filter(choice => /^\d+$/.test(choice.id))
+  })).filter(group => /^\d+$/.test(group.group_id) && group.choices.length);
+  const customizable = variantGroups.length > 0 || addonGroups.length > 0;
   const stock = optionalBoolean(info.inStock);
   const veg = optionalBoolean(info.isVeg);
   return {
     id: String(info.id), name: String(info.name),
     price: Number.isFinite(pricePaise) && pricePaise > 0 ? Math.round(pricePaise) / 100 : null,
     description: String(info.description || ''), image: imageUrl(info.imageId || info.cloudinaryImageId),
-    inStock: stock, isVeg: veg, customizable,
+    inStock: stock, isVeg: veg, customizable, variantGroups, addonGroups,
     offer_ids: Array.isArray(info.offerIds) ? info.offerIds : [],
     item_offer_cart_meta: String(info.itemOfferCartMeta || '')
   };

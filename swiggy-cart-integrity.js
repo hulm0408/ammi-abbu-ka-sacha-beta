@@ -16,15 +16,15 @@ export function sameCartItems(expected, actual) {
       if (!Array.isArray(list)) return null;
       const output = [];
       for (const choice of list) {
-        const group = String(choice?.group_id ?? choice?.groupId ?? '');
+        const group = String(choice?.group_id ?? choice?.groupId ?? choice?.variant_group_id ?? choice?.addon_group_id ?? '');
         const choiceId = String(choiceKeys.map(key => choice?.[key]).find(v => v !== undefined && v !== null) ?? '');
         if (!group || !choiceId) return null;
         output.push(`${group}:${choiceId}`);
       }
       return output.sort();
     };
-    const variants = choices(item.variants || [], ['variation_id', 'variationId', 'id']);
-    const addons = choices(item.addons || [], ['choice_id', 'choiceId', 'id']);
+    const variants = choices(item.variants || [], ['variation_id', 'variationId', 'variant_id', 'variantId', 'id']);
+    const addons = choices(item.addons || [], ['choice_id', 'choiceId', 'addon_id', 'addonId', 'id']);
     if (!variants || !addons) return null;
     return JSON.stringify([id, variants, addons]);
   };
