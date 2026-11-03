@@ -7,6 +7,32 @@ export function exactPaise(value) {
   return Number.isFinite(amount) && Number.isSafeInteger(paise) && Math.abs(amount * 100 - paise) < 1e-6 ? paise : null;
 }
 
+// Group-cart payloads can omit selected variants/add-ons and expose only the
+// provider-marked defaults in valid_* metadata. Reuse those exact IDs when the
+// selected list is empty; never invent a first option or a different variant.
+export function selectedSwiggyChoices(item, kind) {
+  const isVariant = kind === 'variants';
+  const raw = Array.isArray(item?.[kind]) ? item[kind].filter(choice => choice?.selected !== 0 && choice?.selected !== false && choice?.is_selected !== 0 && choice?.is_selected !== false) : [];
+  if (raw.length || !item) return raw;
+  const groups = isVariant
+    ? (item.valid_variants_v2?.variant_groups || item.valid_variants_v2?.variantGroups || item.valid_variants?.variantGroups || [])
+    : (Array.isArray(item.valid_addons) ? item.valid_addons : []);
+  if (!Array.isArray(groups)) return [];
+  const output = [];
+  for (const group of groups) {
+    const groupId = String(group?.group_id ?? group?.groupId ?? '');
+    const options = group?.variations || group?.choices || [];
+    const selected = options.filter(choice => choice?.selected === 1 || choice?.selected === true || choice?.is_selected === 1 || choice?.is_selected === true || choice?.default === 1 || choice?.default === true);
+    const max = isVariant ? 1 : Math.max(0, Number(group?.maxAddons ?? group?.max_addons ?? selected.length) || selected.length);
+    for (const choice of selected.slice(0, max)) {
+      const id = String(choice?.id ?? choice?.variation_id ?? choice?.choice_id ?? choice?.addon_id ?? '');
+      if (!groupId || !id) continue;
+      output.push(isVariant ? { group_id: groupId, variation_id: id } : { group_id: groupId, choice_id: id });
+    }
+  }
+  return output;
+}
+
 // Compare provider cart items without silently dropping variants or add-ons.
 export function sameCartItems(expected, actual) {
   const makeSignature = (item) => {
@@ -34,8 +60,8 @@ export function sameCartItems(expected, actual) {
       return output.sort();
     };
     const validVariants = item.valid_variants_v2?.variant_groups || item.valid_variants_v2?.variantGroups || item.valid_variants?.variantGroups || [];
-    const variants = choices(item.variants || [], ['variation_id', 'variationId', 'variant_id', 'variantId', 'id'], Array.isArray(validVariants) ? validVariants : []);
-    const addons = choices(item.addons || [], ['choice_id', 'choiceId', 'addon_choice_id', 'addon_id', 'addonId', 'id'], Array.isArray(item.valid_addons) ? item.valid_addons : []);
+    const variants = choices(selectedSwiggyChoices(item, 'variants'), ['variation_id', 'variationId', 'variant_id', 'variantId', 'id'], Array.isArray(validVariants) ? validVariants : []);
+    const addons = choices(selectedSwiggyChoices(item, 'addons'), ['choice_id', 'choiceId', 'addon_choice_id', 'addon_id', 'addonId', 'id'], Array.isArray(item.valid_addons) ? item.valid_addons : []);
     if (!variants || !addons) return null;
     return JSON.stringify([id, variants, addons]);
   };
