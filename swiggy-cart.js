@@ -8,7 +8,7 @@ import { getDb, saveDb, updateAccount, syncAccountsJsonMirror } from './store.js
 import { shouldReusePendingQr, validateUpiIntentForQr } from './payment-qr-guard.js';
 import { executeSingleSwiggyPlacement, readSwiggyPlacement, placementAlreadyAttemptedError } from './swiggy-placement-journal.js';
 import { assertChatOrderFeeStillReserved } from './wallet-order-gate.js';
-import { sameCartItems, sameDeliveryRecipient, exactPaise } from './swiggy-cart-integrity.js';
+import { sameCartItems, sameDeliveryRecipient, exactPaise, selectedSwiggyChoices } from './swiggy-cart-integrity.js';
 import { classifySwiggyAccountFailure, isAccountSuspended, markAccountSuspended, markAccountHealthy, noteAccountFailure, describeSuspendedAccount } from './account-health.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
@@ -285,8 +285,8 @@ export function buildSwiggyCartItemsPayload(items) {
   return (Array.isArray(items) ? items : [])
     .filter(it => it && (it.menu_item_id || it.itemId))
     .map(it => ({
-      addons: Array.isArray(it.addons) ? it.addons : [],
-      variants: Array.isArray(it.variants) ? it.variants : [],
+      addons: selectedSwiggyChoices(it, 'addons'),
+      variants: selectedSwiggyChoices(it, 'variants'),
       menu_item_id: Number(it.menu_item_id || it.itemId),
       quantity: Number(it.qty || it.quantity || 1),
       offer_ids: Array.isArray(it.offer_ids) ? it.offer_ids : [],
