@@ -2536,9 +2536,17 @@ bot.start(async (ctx) => {
 
 // Set an explicit HTTPS Mini App origin rather than trusting request Host
 // headers or a guessed deployment URL.
-function configuredMiniAppUrl(raw = process.env.PRO_MINIAPP_URL) {
+function configuredMiniAppUrl(raw) {
+  const explicit = raw !== undefined ? String(raw || '').trim() : String(process.env.PRO_MINIAPP_URL || '').trim();
+  const publicOrigin = [
+    process.env.PUBLIC_URL, process.env.PUBLIC_BASE_URL, process.env.RENDER_EXTERNAL_URL,
+    process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${String(process.env.RAILWAY_PUBLIC_DOMAIN).replace(/^https?:\/\//i, '')}` : ''
+  ].map(value => String(value || '').trim()).find(Boolean) || '';
+  // Explicit /pro stays authoritative. Otherwise use the public deployment
+  // origin already used by payment/tracking links instead of showing no button.
+  const candidate = explicit || (publicOrigin ? `${publicOrigin.replace(/\/$/, '')}/pro` : '');
   try {
-    const url = new URL(String(raw || '').trim());
+    const url = new URL(candidate);
     const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
     if (url.protocol !== 'https:' || url.username || url.password || !host.includes('.') || host === 'localhost' || host.endsWith('.localhost') || net.isIP(host)) return '';
     if (!/^\/pro\/?$/.test(url.pathname) || url.search || url.hash) return '';
