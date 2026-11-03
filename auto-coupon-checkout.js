@@ -1,6 +1,6 @@
 // ===== 🤖 AUTO COUPON CHECKOUT MODULE — ek START, apne aap poora batch =====
 //
-// Checkout par bhi Boss ke liye ek dedicated module:
+// Checkout par Boss ke liye dedicated module:
 //   1. Night / Breakfast event offers (free cash campaign, e.g. ₹50 OFF > ₹199) pre-claim karta hai
 //      (`claimSwiggyBreakfastAndLateNightOffers` → events.swiggy.com notify campaign).
 //   2. Live Swiggy Cart / Group Cart ko resolve + sync karti hai
@@ -14,7 +14,8 @@
 //      campaignFreeCash, walletSplitPayAmount, freeDeliveryDiscount, savings, finalPayable, totalSavings.
 //
 // Selected restaurants:
-//   - CLI flag : `--restaurant <id|name>`
+//   - CLI flag : `--restaurant <id|name>` (id ya name dono support; numeric id → id)
+//   - CLI flag : `--restaurant-id <id>` / `--restaurant-name <n>`
 //   - Env      : `AUTO_COUPON_RESTAURANT` (single) / `AUTO_COUPON_RESTAURANTS` (comma list)
 //   - Default  : koi allowlist nahi set → saari restaurants scan honge.
 //
@@ -23,7 +24,7 @@
 //
 // Usage:
 //   node auto-coupon-checkout.js --account <key> --cart <swiggy cart url> --address "<addr>"
-//   node auto-coupon-checkout.js --account <key> --restaurant <id> --cart <url> --apply
+//   node auto-coupon-checkout.js --account <key> --restaurant <id|name> --cart <url> --apply
 //   node auto-coupon-checkout.js --help
 
 import {
@@ -63,20 +64,29 @@ function parseArgs(argv) {
     else if (a === '--restaurant-name') out.restaurantName = next() || '';
     else if (a === '--order-id') out.orderId = next() || '';
   }
+  // `--restaurant <id|name>` → numeric id hai to id bhejo, naam hai to name bhejo.
+  if (out.restaurant) {
+    const r = String(out.restaurant).trim();
+    if (/^\d+$/.test(r)) {
+      if (!out.restaurantId) out.restaurantId = r;
+    } else if (r) {
+      if (!out.restaurantName) out.restaurantName = r;
+    }
+  }
   return out;
 }
 
 const HELP = `
 Auto Coupon Checkout Module — checkout par auto coupon scan + max apply + free cash + night offers
 
-  --account <key|phone>  Swiggy account key (e.g. acc_...) ya phone (default: first logged-in from vault)
-  --cart <url>           Swiggy cart / group-cart share URL (e.g. https://swig.gy/gc/...)
-  --address <text>       Delivery address text (Boss-style receipt / typed address)
-  --restaurant <id|name> Selected restaurant filter (overrides env allowlist for this run)
-  --restaurant-id <id>   Force restaurant id
-  --restaurant-name <n>  Force restaurant name
-  --order-id <id>        Logical order id (default: AUTO_COUPON_<ts>_<rand>)
-  --apply                 Capture real Swiggy payment screenshot (QR) after best bill is locked
+  --account <key>          Swiggy account key (e.g. acc_...) ya phone (default: first logged-in from vault)
+  --cart <url>             Swiggy cart / group-cart share URL (e.g. https://swig.gy/gc/...)
+  --address <text>         Delivery address text (Boss-style receipt / typed address)
+  --restaurant <id|name>   Selected restaurant filter (overrides env allowlist for this run)
+  --restaurant-id <id>     Force restaurant id
+  --restaurant-name <n>    Force restaurant name
+  --order-id <id>          Logical order id (default: AUTO_COUPON_<ts>_<rand>)
+  --apply                  Capture real Swiggy payment screenshot (QR) after best bill is locked
 
 Env:
   AUTO_COUPON_RESTAURANT     single restaurant id/name to scan
@@ -106,11 +116,13 @@ export function restaurantInAutoCouponAllowlist(restaurantId, restaurantName, al
   if (!list) return true; // default: no allowlist → scan all
   const rid = String(restaurantId || '').trim().toLowerCase();
   const rname = String(restaurantName || '').trim().toLowerCase();
+  const hay = `${rid} ${rname}`.trim().toLowerCase();
   for (const entry of list) {
     const e = String(entry || '').trim().toLowerCase();
     if (!e) continue;
-    if (rid && rid === e) return true;
-    if (rname && rname.includes(e)) return true;
+    if (rid && (rid === e || rid.includes(e))) return true;
+    if (rname && (rname === e || rname.includes(e))) return true;
+    if (hay && hay.includes(e)) return true;
   }
   return false;
 }
@@ -195,10 +207,14 @@ export async function runAutoCouponCheckout({ account, order, options = {} } = {
   }
 
   const cartData = syncRes?.cartData || {};
-  const appliedCoupon = cartData.couponCode || null;
-  const discount = Number(cartData.discountAmount || 0);
-  const finalPayable = Number(cartData.finalPayable || 0);
-  const savings = Number(cartData.totalSavings || 0);
+  const appliedCoupon = String(cartData.couponCode || order?.couponCode || '') || null;
+  const discount = Number(cartData.discountAmount || order?.discountAmount || 0);
+  const finalPayable = Number(cartData.finalPayable || order?.finalPayable || 0);
+  const savings = Number(cartData.totalSavings || cartData.discountAmount || 0);
+  const freeCashApplied = Number(cartData.freeCashApplied || 0);
+  const campaignFreeCash = Number(cartData.campaignFreeCash || 0);
+  const walletSplitPayAmount = Number(cartData.walletSplitPayAmount || 0);
+  const freeDeliveryDiscount = Number(cartData.freeDeliveryDiscount || 0);
 
   return {
     ...result,
@@ -207,17 +223,17 @@ export async function runAutoCouponCheckout({ account, order, options = {} } = {
     sessionExpired: false,
     cartData,
     appliedCoupon,
-    couponApplied: Boolean(appliedCoupon) || Number(savings) > 0 || Number(finalPayable) > 0,
+    couponApplied: Boolean(appliedCoupon) || Number(discount) > 0 || Number(savings) > 0,
     discountAmount: discount,
     finalPayable,
     savings,
     totalSavings: savings,
-    freeCashApplied: Number(cartData.freeCashApplied || 0),
-    campaignFreeCash: Number(cartData.campaignFreeCash || 0),
-    walletSplitPayAmount: Number(cartData.walletSplitPayAmount || 0),
-    freeDeliveryDiscount: Number(cartData.freeDeliveryDiscount || 0),
-    restaurantId: result.restaurantId,
-    restaurantName: result.restaurantName,
+    freeCashApplied,
+    campaignFreeCash,
+    walletSplitPayAmount,
+    freeDeliveryDiscount,
+    restaurantId: order?.restaurantId || null,
+    restaurantName: order?.restaurantName || null,
   };
 }
 
@@ -278,6 +294,15 @@ async function buildOrderFromArgs(a) {
 
   if (a.restaurantId) order.restaurantId = a.restaurantId;
   if (a.restaurantName) order.restaurantName = a.restaurantName;
+  if (a.restaurant) {
+    const r = String(a.restaurant).trim();
+    if (/^\d+$/.test(r)) {
+      if (!order.restaurantId) order.restaurantId = r;
+    } else if (r) {
+      if (!order.restaurantName) order.restaurantName = r;
+      if (!order.restaurantId) order.restaurantId = r;
+    }
+  }
   if (!restaurantId && order.restaurantId) restaurantId = String(order.restaurantId);
   if (!restaurantName && order.restaurantName) restaurantName = String(order.restaurantName);
   if (restaurantId) order.restaurantId = restaurantId;
@@ -322,6 +347,7 @@ async function main() {
 
   if (res.success) {
     console.log(`Applied Coupon: ${res.appliedCoupon || 'NONE'}`);
+    console.log(`Coupon Applied Flag: ${Boolean(res.couponApplied)}`);
     console.log(`Coupon Discount: ${fmtMoney(res.discountAmount)}`);
     console.log(`Campaign Free Cash: ${fmtMoney(res.campaignFreeCash)}`);
     console.log(`Free Cash Applied: ${fmtMoney(res.freeCashApplied)}`);
