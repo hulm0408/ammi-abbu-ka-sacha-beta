@@ -35,7 +35,8 @@
     "test:chat-handoff": "node --test test_v124_chat_miniapp.mjs test_v125_quick_bill.mjs",
     "test:lazy": "node test_v40_lazy_boss_autopilot_e2e.mjs",
     "manual:create": "node manual-account-creator.js",
-    "local:autopilot": "node local-autopilot.js"
+    "local:autopilot": "node local-autopilot.js",
+    "auto:coupon": "node auto-coupon-checkout.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
