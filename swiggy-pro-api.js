@@ -527,6 +527,10 @@ function saveProviderQuote(ws, quote) {
     // Round 35: offer claim ka SACH — free cash laga, ya Swiggy ne mana kiya.
     // Bill card par ek chhoti line, taaki "free cash nahi laga" ka andhera na rahe.
     offerNote: String(quote.bill?.offerNote || quote.offerNote || '').slice(0, 160),
+    // Swiggy jaisa auto: best offer/free cash khud laga, kitne ms me, kis source se.
+    autoOfferMode: String(quote.bill?.autoOfferMode || quote.autoOfferMode || ''),
+    autoOfferSource: String(quote.bill?.autoOfferSource || ''),
+    autoOfferMs: Number(quote.bill?.autoOfferMs || 0),
     fetchedAt: new Date().toISOString()
   };
   return ws.cart.quote;
@@ -2387,7 +2391,14 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
         // quote. `body.phase === 'fast'` sirf tab jab koi jaan-boojh kar turant
         // number maange (chat handoff) — default poora hi hai.
         const phase = body.phase === 'fast' ? 'fast' : 'full';
-        const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon, { phase, autoCoupon: ws.cart.autoCoupon !== false, previousAutoCoupon });
+        // Boss (03-11-2026): Swiggy jaisa instant auto max offer + free cash.
+        // App apna automatic bill `offerMode: 'instant'` bhejta hai; koi code
+        // na ho tab hi. `deep` / default = purana poora trial engine (refresh).
+        const instantAuto = body.offerMode === 'instant' && !coupon && ws.cart.autoCoupon !== false;
+        const quote = await provider.quoteCart(account, ws.selectedAddress, ws.cart, coupon, {
+          phase, autoCoupon: ws.cart.autoCoupon !== false, previousAutoCoupon,
+          ...(instantAuto ? { instantAuto: true } : {})
+        });
         saveProviderQuote(ws, quote);
         // Bill ke saath outlet ka sach bhi — header/outlet row ke liye.
         if (ws.menu?.restaurant && String(ws.menu.restaurant.id) === String(ws.cart.restaurantId)) {

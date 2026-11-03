@@ -74,6 +74,27 @@ Cart and address data are never shortened or guessed to save messages — only t
   order goes to **both** (`CUSTOMER_AND_BOSS`) — the customer gets the confirm card, the Boss card shows the
   same bill.
 
+## ⚡ Instant auto max offer + Free Cash (Swiggy jaisa)
+
+Mini App ka automatic bill ab Swiggy ki tarah **ek hi verified cart write** me best offer aur Free Cash lagata hai —
+`offerMode: 'instant'` (`cart/sync`). Koi 6–10 code ka trial ladder, claim ka lamba intezaar ya beech me tuta hua
+bill nahi:
+
+* address, coupon feed aur Night/Breakfast claim **ek saath** shuru hote hain (sab time-bounded),
+* Swiggy ka khud ka auto-suggested best coupon / feed me sabse bada discount / isi ID+restaurant par pehle
+  **verified** hua coupon chun kar **pehle cart write** me bheja jata hai; doosre bill par verified cache se
+  offer discovery ka ek bhi call nahi jata,
+* bill sirf Swiggy ki readback se banta hai — jo discount/cash sach me kata wahi dikhta hai, koi andaza ya
+  jhootha "applied" nahi,
+* offer feed, claim, coupon reject ya dedicated apply fail ho to bhi verified bill aata hai (error nahi);
+  sirf wahi error nikalti hai jo sach me bill rok sake (address/cart/payable verify na ho),
+* user ka khud chuna coupon, `bill-refresh` par deep check aur `/pro/api/cart/optimize` ka purana max-coupon
+  engine waise hi zinda hai.
+
+Savings Corner me chhoti line `best coupon + Free Cash auto-applied · Swiggy cart se verified` sirf tab dikhti hai
+jab readback me sach me laga ho. Tunable limits: `PRO_INSTANT_DISCOVERY_MS`, `PRO_INSTANT_CLAIM_MS`,
+`PRO_INSTANT_WRITE_MS`, `PRO_INSTANT_VERIFIED_TTL_MS`. Guard: `npm run test:instant` (9 checks).
+
 ## 🦥 Boss Lazy Mode — one forward, one tap
 
 Ammi/Abbu text the Boss on his personal chat. The Boss forwards that message into the bot and from there

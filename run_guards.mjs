@@ -104,7 +104,8 @@ const TESTS = [
   "test_v121_five_minute_verify_and_share_link.mjs",
   "test_v122_round33_payment_actions_bill_speed_filters.mjs",
   "test_v123_round34_bill_faster_pay_window.mjs",
-  "test_v124_round35_cancel_and_consistent_bill.mjs"
+  "test_v124_round35_cancel_and_consistent_bill.mjs",
+  "tests/instant-auto-offer.test.mjs"
 ];
 
 const CLEAN_FILES = ['data/db.json', 'accounts.json'];
