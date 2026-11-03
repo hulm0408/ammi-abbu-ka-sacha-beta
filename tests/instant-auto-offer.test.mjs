@@ -52,19 +52,25 @@ const cart = () => ({
 
 const state = {
   coupon: '', trade: 0, reward: 0, coupons: [], suggested: '', suggestInCart: '',
-  discoveryFail: false, claimFail: false, bulkHonorsCoupon: true, requests: [], updateCalls: 0, applyCalls: 0
-};
+  discoveryFail: false, claimFail: false, bulkHonorsCoupon: true, requests: [], updateCalls: 0, applyCalls: 0,
+    delivery: 0, oneLiteApplied: false, oneLiteFee: 1, discounts: {}, oneLitePlan: '', oneLitePlanRequired: ''
+  };
 function reset() {
   Object.assign(state, {
     coupon: '', trade: 0, reward: 0, coupons: [], suggested: '', suggestInCart: '',
-    discoveryFail: false, claimFail: false, bulkHonorsCoupon: true, requests: [], updateCalls: 0, applyCalls: 0
+    discoveryFail: false, claimFail: false, bulkHonorsCoupon: true, requests: [], updateCalls: 0, applyCalls: 0,
+    delivery: 0, oneLiteApplied: false, oneLiteFee: 1, discounts: {}, oneLitePlan: '', oneLitePlanRequired: ''
   });
   resetInstantOfferCache();
 }
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 function cartPayload() {
-  const discount = state.coupon === 'BEST80' ? 80 : state.coupon === 'SAVE50' ? 50 : 0;
-  const total = 270 - discount - state.trade;
+  const discount = state.discounts[state.coupon] ?? (state.coupon === 'BEST80' ? 80 : state.coupon === 'SAVE50' ? 50 : 0);
+  const oneFee = state.oneLiteApplied ? state.oneLiteFee : 0;
+  const delivery = state.oneLiteApplied ? 0 : state.delivery;
+  // 230 items + 30 taxes + 10 packing = 270, plus delivery/One fee, minus
+  // verified coupon discount and campaign cash. Swiggy ka hi order_total.
+  const total = 270 + delivery + oneFee - discount - state.trade;
   return { statusCode: 0, data: { cartMeta: {
     address_id: 'addr-1', cartId: 'cart-1', order_total: total, item_total: 230,
     restaurant_details: { id: '201', name: 'Mock' },
@@ -73,9 +79,14 @@ function cartPayload() {
     is_coupon_valid: state.coupon ? 1 : 0,
     coupon_discount_total: discount, coupon_discount_effective: discount,
     trade_discount_total: state.trade, trade_discount_reward_amount: state.reward,
+    positiveDeliveryChargesExclusive: delivery, delivery_charges: delivery,
+    subscription_total: oneFee, free_delivery_discount: state.oneLiteApplied ? state.delivery : 0,
     user_swiggy_money: 0, swiggy_pay_eligible_balance: 0, swiggy_money: 0,
-    taxesAndCharges: 30, total_packing_charges: 10, is_order_for_someone_else: false
-  } } };
+    taxesAndCharges: 30, total_packing_charges: 10, is_order_for_someone_else: false,
+    ...(state.oneLitePlan ? { rendering_details: [{ key: 'super_v3_nudge', meta: { plan_details: { plan_id: state.oneLitePlan } } }] } : {})
+  },
+  // Swiggy chkout `data.subscriptionItems` (cartMeta ke bahar) hi parser padhta hai.
+  subscriptionItems: state.oneLiteApplied ? [{ plan_id: '773', final_price: oneFee * 100 }] : [] } };
 }
 const mockFetch = async (raw, options = {}) => {
   const u = String(raw);
@@ -104,6 +115,10 @@ const mockFetch = async (raw, options = {}) => {
       state.updateCalls++;
       const code = String(body.couponCode || '').toUpperCase();
       if (state.bulkHonorsCoupon) state.coupon = code;
+      // Swiggy cart One Lite sub ke saath delivery FREE + membership fee deta hai.
+      const subs = Array.isArray(body.subscriptionItems) ? body.subscriptionItems : [];
+      state.oneLiteApplied = subs.length > 0 &&
+        (!state.oneLitePlanRequired || subs.some(s => String(s.plan_id) === state.oneLitePlanRequired));
       return json(cartPayload());
     }
     return json(cartPayload());
@@ -237,11 +252,125 @@ test('selector: ineligible / jhootha discount chun kar bill nahi bigadta', () =>
     ] } }, mcpCart: null, itemTotal: 300
   });
   assert.equal(picked.code, 'REAL60');
-  assert.equal(selectInstantCoupon({ mcpCoupons: null, mcpCart: null, itemTotal: 0 }), null);
+  assert.equal(selectInstantCoupon({
+    mcpCoupons: { structured: { coupons: [{ coupon_code: 'BIG150', is_applicable: true, title: 'Flat ₹150 off' }] } },
+    mcpCart: { structured: { offers: { coupon_applied: 'SWIGGYBEST' } } }, itemTotal: 300
+  }).code, 'BIG150', 'likha hua ₹150 suggested ko andhe se override nahi hone deta');
+  assert.equal(selectInstantCoupon({ mcpCoupons: null, mcpCart: null, itemTotal: 0 }).code, '');
   assert.equal(selectInstantCoupon({
     mcpCoupons: null,
     mcpCart: { structured: { offers: { coupon_applied: 'SWIGGYBEST' } } }, itemTotal: 300
   }).code, 'SWIGGYBEST');
+});
+
+// ── 6b. Restaurant ka MAX coupon: feed ka pehla code final nahi, asli bill ─
+test('max coupon: feed me chhota code pehle ho to bhi sabka live bill compare karke sabse bada discount lagta hai', async () => {
+  reset();
+  state.discounts = { AAA10: 10, BBB50: 50, ZZZ80: 80 };
+  // Koi discount text nahi — sirf live readback se MAX pata chalega.
+  state.coupons = ['AAA10', 'BBB50', 'ZZZ80'].map(code => ({ coupon_code: code, is_applicable: true }));
+  const out = await withMock(() => proProvider.quoteCart(account(), address, cart(), '', {
+    phase: 'full', autoCoupon: true, instantAuto: true
+  }));
+  assert.equal(out.bill.couponCode, 'ZZZ80', 'restaurant ka max coupon auto laga');
+  assert.equal(out.bill.discount, 80);
+  assert.equal(out.bill.total, 190);
+  assert.equal(state.coupon, 'ZZZ80', 'Swiggy cart me bhi wahi winner settle hua');
+  assert.equal(out.bill.engine.autoOffer.source, 'max_verified');
+  assert.equal(out.bill.engine.autoOffer.maxVerifiedDiscount, 80);
+  assert.equal(out.bill.engine.autoOffer.couponTrials, 2);
+  assert.deepEqual([...new Set(out.bill.engine.couponTrials.map(t => t.code))].sort(), ['AAA10', 'BBB50', 'ZZZ80']);
+  assert.ok(out.bill.engine.autoOffer.cartWrites <= 4, 'bounded ladder — koi 8-blind-code storm nahi');
+});
+
+test('max coupon: estimated saving verified discount se chhota ho to trial skip (tez bill)', async () => {
+  reset();
+  state.coupons = [
+    { coupon_code: 'BEST80', is_applicable: true, title: 'Flat ₹80 off' },
+    { coupon_code: 'SAVE20', is_applicable: true, title: 'Flat ₹20 off' }
+  ];
+  const out = await withMock(() => proProvider.quoteCart(account(), address, cart(), '', {
+    phase: 'full', autoCoupon: true, instantAuto: true
+  }));
+  assert.equal(out.bill.couponCode, 'BEST80');
+  assert.equal(out.bill.engine.autoOffer.couponTrials, 0, '₹20 wala code ₹80 ke baad try hi nahi hua');
+  assert.equal(out.bill.engine.autoOffer.cartWrites, 1, 'ek hi cart write');
+});
+
+// ── 6c. One Lite free delivery ────────────────────────────────────────────
+test('one lite: +₹1 membership se delivery FREE, total sach me kam — bill aur cart dono me sub', async () => {
+  reset();
+  state.delivery = 49;
+  state.coupons = [{ coupon_code: 'BEST80', is_applicable: true, title: 'Flat ₹80 off' }];
+  const out = await withMock(() => proProvider.quoteCart(account(), address, cart(), '', {
+    phase: 'full', autoCoupon: true, instantAuto: true
+  }));
+  assert.equal(out.bill.engine.oneLite, 'applied');
+  assert.equal(out.bill.deliveryFee, 0, 'delivery FREE');
+  assert.equal(out.bill.deliveryFree, true);
+  assert.equal(out.bill.deliverySaved, 49);
+  assert.equal(out.bill.oneMembershipFee, 1);
+  assert.equal(out.bill.oneApplied, true);
+  assert.equal(out.bill.total, 191, '239 se 191 — ₹48 sach me bacha');
+  assert.equal(out.bill.subscriptionItems.length, 1, 'checkout ko wahi sub milega');
+  assert.equal(out.bill.engine.autoOffer.cartWrites, 2, 'coupon write + One Lite write');
+});
+
+test('one lite: membership fee delivery se zyada ho to turant revert — FREE ka jhooth nahi', async () => {
+  reset();
+  state.delivery = 49; state.oneLiteFee = 60;
+  state.coupons = [{ coupon_code: 'BEST80', is_applicable: true, title: 'Flat ₹80 off' }];
+  const out = await withMock(() => proProvider.quoteCart(account(), address, cart(), '', {
+    phase: 'full', autoCoupon: true, instantAuto: true
+  }));
+  assert.equal(out.bill.engine.oneLite, 'not_profitable');
+  assert.equal(out.bill.deliveryFee, 49, 'delivery wapas');
+  assert.equal(out.bill.oneApplied, false);
+  assert.equal(out.bill.subscriptionItems.length, 0, 'cart se One fee hat gayi');
+  assert.equal(out.bill.total, 239);
+});
+
+test('one lite: eligible plan free delivery na de to 773 fallback try hota hai', async () => {
+  reset();
+  state.delivery = 49; state.oneLitePlan = 'PLAN-X'; state.oneLitePlanRequired = '773';
+  state.coupons = [{ coupon_code: 'BEST80', is_applicable: true, title: 'Flat ₹80 off' }];
+  const out = await withMock(() => proProvider.quoteCart(account(), address, cart(), '', {
+    phase: 'full', autoCoupon: true, instantAuto: true
+  }));
+  assert.equal(out.bill.engine.oneLite, 'applied');
+  assert.equal(out.bill.deliveryFee, 0);
+  assert.equal(out.bill.oneApplied, true);
+  assert.equal(out.bill.subscriptionItems[0].plan_id, '773', 'fallback plan hi settle hua');
+  assert.equal(out.bill.engine.autoOffer.cartWrites, 3, 'coupon + do plan attempts');
+});
+
+test('one lite: autoOneLite=false par kabhi membership nahi lagti', async () => {
+  reset();
+  state.delivery = 49;
+  state.coupons = [{ coupon_code: 'BEST80', is_applicable: true, title: 'Flat ₹80 off' }];
+  const out = await withMock(() => proProvider.quoteCart(account(), address, { ...cart(), autoOneLite: false }, '', {
+    phase: 'full', autoCoupon: true, instantAuto: true
+  }));
+  assert.equal(out.bill.engine.oneLite, 'disabled');
+  assert.equal(out.bill.deliveryFee, 49);
+  assert.equal(out.bill.oneApplied, false);
+  assert.equal(out.bill.engine.autoOffer.cartWrites, 1);
+});
+
+test('free cash: max coupon + one lite ke baad bhi wahi Swiggy cash (free cash ko chheda nahi)', async () => {
+  reset();
+  state.delivery = 49; state.trade = 50; state.reward = 50;
+  state.discounts = { AAA10: 10, ZZZ80: 80 };
+  state.coupons = ['AAA10', 'ZZZ80'].map(code => ({ coupon_code: code, is_applicable: true }));
+  const out = await withMock(() => proProvider.quoteCart(account(), address, cart(), '', {
+    phase: 'full', autoCoupon: true, instantAuto: true
+  }));
+  assert.equal(out.bill.couponCode, 'ZZZ80');
+  assert.equal(out.bill.freeCash, 50, 'campaign free cash waisa hi');
+  assert.equal(out.bill.tradeDiscount, null, 'cash ek hi baar gina');
+  assert.equal(out.bill.engine.oneLite, 'applied');
+  assert.match(out.bill.offerNote, /Free Cash ₹50.*auto-applied/i);
+  assert.equal(out.bill.total, 141, '270 + 1 One − 80 coupon − 50 cash');
 });
 
 // ── 7. Server + app wiring ────────────────────────────────────────────────
