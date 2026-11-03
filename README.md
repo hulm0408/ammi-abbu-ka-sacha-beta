@@ -76,14 +76,18 @@ Cart and address data are never shortened or guessed to save messages — only t
 
 ## ⚡ Instant auto max offer + Free Cash (Swiggy jaisa)
 
-Mini App ka automatic bill ab Swiggy ki tarah **ek hi verified cart write** me best offer aur Free Cash lagata hai —
-`offerMode: 'instant'` (`cart/sync`). Koi 6–10 code ka trial ladder, claim ka lamba intezaar ya beech me tuta hua
-bill nahi:
+Mini App ka automatic bill ab Swiggy ki tarah **verified cart writes** me max offer, One Lite free delivery aur
+Free Cash lagata hai — `offerMode: 'instant'` (`cart/sync`). Claim ka lamba intezaar ya beech me tuta hua bill nahi:
 
 * address, coupon feed aur Night/Breakfast claim **ek saath** shuru hote hain (sab time-bounded),
-* Swiggy ka khud ka auto-suggested best coupon / feed me sabse bada discount / isi ID+restaurant par pehle
-  **verified** hua coupon chun kar **pehle cart write** me bheja jata hai; doosre bill par verified cache se
-  offer discovery ka ek bhi call nahi jata,
+* **Restaurant ka MAX coupon**: Swiggy ke applicable coupons ka *asli Swiggy bill* compare hota hai (bounded
+  ladder: `PRO_INSTANT_MAX_COUPON_TRIALS` / `PRO_INSTANT_MAX_COUPON_BUDGET_MS`). Jin codes ka discount likha
+  nahi hai ya Swiggy ne suggest kiya hai, unka live bill zarur check hota hai; jo feed ka estimated saving
+  verified discount se chhota ho wo skip. Jeetne wala coupon aakhiri write me cart me bhi settle hota hai.
+  Pehle verified MAX coupon cache se agla bill **1 write / 0 offer-discovery calls** me taiyar hota hai,
+* **One Lite free delivery**: eligible Super plan (fallback `773`) +₹1 membership ke saath try hota hai; sirf
+  tab rakha jata hai jab readback me delivery sach me FREE ho aur total kam ho — warna turant revert. Wahi
+  `subscriptionItems` checkout ko jate hain, isliye QR par delivery fee wapas nahi aati,
 * bill sirf Swiggy ki readback se banta hai — jo discount/cash sach me kata wahi dikhta hai, koi andaza ya
   jhootha "applied" nahi,
 * offer feed, claim, coupon reject ya dedicated apply fail ho to bhi verified bill aata hai (error nahi);
@@ -92,8 +96,10 @@ bill nahi:
   engine waise hi zinda hai.
 
 Savings Corner me chhoti line `best coupon + Free Cash auto-applied · Swiggy cart se verified` sirf tab dikhti hai
-jab readback me sach me laga ho. Tunable limits: `PRO_INSTANT_DISCOVERY_MS`, `PRO_INSTANT_CLAIM_MS`,
-`PRO_INSTANT_WRITE_MS`, `PRO_INSTANT_VERIFIED_TTL_MS`. Guard: `npm run test:instant` (9 checks).
+jab readback me sach me laga ho; One Lite lagi ho to `Free Delivery ✓ Applied` row bhi dikhti hai. Tunable limits:
+`PRO_INSTANT_DISCOVERY_MS`, `PRO_INSTANT_CLAIM_MS`, `PRO_INSTANT_WRITE_MS`, `PRO_INSTANT_VERIFIED_TTL_MS`,
+`PRO_INSTANT_MAX_COUPON_TRIALS`, `PRO_INSTANT_MAX_COUPON_BUDGET_MS`. Guard: `npm run test:instant` (16 checks).
+Free Cash ka claim/readback/note/bill hisaab is round me **bilkul badla nahi gaya**.
 
 ## 🦥 Boss Lazy Mode — one forward, one tap
 

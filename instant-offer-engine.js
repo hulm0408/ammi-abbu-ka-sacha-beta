@@ -13,15 +13,23 @@
  *
  * Ye engine bilkul Swiggy wala rasta leta hai:
  *   1. address + coupon feed + Night/Breakfast claim EK SAATH (parallel) shuru,
- *   2. Swiggy ka khud ka best coupon (auto-suggested / feed me sabse bada
- *      discount / isi account+restaurant par pehle VERIFY hua coupon) chunna,
- *   3. wo code PEHLE cart write me bhejna — free cash claim bhi tab tak aa
- *      chuka hota hai,
- *   4. cart ki readback se hi bill banana. Jo Swiggy ne sach me kata wahi
+ *   2. restaurant ke applicable coupons ka ASLI bill compare karke MAX coupon
+ *      chunna (bounded ladder + verified cache; pehla code hi final nahi),
+ *   3. One Lite (+₹1) se FREE delivery — sirf jab readback me total sach me
+ *      kam ho, warna turant revert,
+ *   4. jeetne wala coupon + One Lite ek hi final verified cart write me settle,
+ *   5. cart ki readback se hi bill banana. Jo Swiggy ne sach me kata wahi
  *      discount/free cash dikhta hai; koi andaza, koi jhootha "applied" nahi.
  *
+ * Boss (03-11-2026, agla round): "free cash ko mat chedna wo theek hogaya bas
+ * one lite free delivery usko sahi kar and auto jo coupon ho restaurant par
+ * max usko sahi kar" — free cash ka claim/readback/note/bill code yahan waisa
+ * hi hai; badlav sirf coupon max-verification + One Lite cart write me.
+ *
  * Guarantee:
- *   • typical bill = 1 cart write (fallback mila kar max 3), blind trial 0.
+ *   • verified cache wala bill = 1 cart write / 0 discovery calls / 0 trials;
+ *     naya bill bhi bounded ladder (max 10 trials / 4.5s) me MAX pakka karta hai,
+ *     blind promo-code list kabhi nahi.
  *   • offer feed / claim / coupon reject / dedicated apply — inme se kisi ke
  *     fail hone par bill phir bhi verified readback se aata hai, error nahi.
  *   • sirf wahi error nikalti hai jo sach me bill rok sake (address/cart/payable
@@ -114,10 +122,13 @@ export function extractCouponSaving(coupon, itemTotal = 0) {
 }
 
 /**
- * EK hi coupon chunta hai — jaise Swiggy khud karti hai. Blind promo list,
- * sequential trials ya "8 code try karo" yahan bilkul nahi.
- * Priority: Swiggy ka auto-suggested > sabse bada likha hua discount >
- * pehle verified > pichhla auto coupon > feed ka pehla applicable code.
+ * Restaurant ke coupons ko rank karta hai. Pehla code pehle cart write me
+ * jata hai, baaki `candidates` me rehte hain taaki engine unka ASLI bill
+ * compare karke MAX coupon pakka kar sake (blind promo list kabhi nahi).
+ * Priority: sabse bada likha hua discount > Swiggy ka auto-suggested >
+ * feed ka "best" flag > pehle verified > pichhla auto coupon > feed codes.
+ * Ye sirf pehle write ki ranking hai; final MAX verified bill comparison se
+ * pakka hota hai (neeche 3a), isliye galat ranking bhi bill nahi bigadti.
  */
 export function selectInstantCoupon({
   mcpCoupons = null, mcpCart = null, previousAutoCoupon = '',
@@ -129,9 +140,12 @@ export function selectInstantCoupon({
     if (!/^[A-Z0-9_-]{3,28}$/.test(clean)) return;
     if (['NOT', 'NONE', 'NULL', 'UNDEFINED', 'NOFOMO', 'REMOVE'].includes(clean)) return;
     if (excluded instanceof Set && excluded.has(clean)) return;
-    const score = source === 'swiggy_suggested' ? 100_000
-      : saving !== null ? 10_000 + Number(saving)
-        : source === 'previous' ? 5_000 : 1_000;
+    // Jis coupon ka discount likha hai wo sabse pehle; Swiggy ka suggested
+    // bhi upar, par kisi ₹150 wale code ko andhe se override nahi karta.
+    const score = saving !== null ? 30_000 + Number(saving)
+      : source === 'swiggy_suggested' ? 20_000
+        : source === 'feed_best' ? 8_000
+          : source === 'previous' ? 5_000 : 1_000;
     const prior = candidates.get(clean);
     if (!prior || score > prior.score) candidates.set(clean, { code: clean, source, saving, trust, score });
   };
@@ -168,7 +182,10 @@ export function selectInstantCoupon({
     .filter(c => !ineligible.has(c.code))
     .sort((a, b) => b.score - a.score || a.trust - b.trust || a.code.localeCompare(b.code));
   const winner = ranked[0] || null;
-  return winner ? { code: winner.code, source: winner.source, estimatedSaving: winner.saving, considered: ranked.length } : null;
+  return {
+    code: winner?.code || '', source: winner?.source || '', estimatedSaving: winner?.saving ?? null,
+    considered: ranked.length, candidates: ranked, ineligible: [...ineligible]
+  };
 }
 
 /** Bill card par chhoti sachchi line — claim ko "cash lag gaya" kabhi nahi bolte. */
@@ -205,13 +222,17 @@ export async function quoteInstantCart(account, address, cart, coupon = '', opti
   const discoveryMs = envMs('PRO_INSTANT_DISCOVERY_MS', 1_400, 300, 4_000);
   const claimMs = envMs('PRO_INSTANT_CLAIM_MS', 1_600, 300, 4_000);
   const writeMs = envMs('PRO_INSTANT_WRITE_MS', 5_000, 1_500, 9_000);
+  // Restaurant ka MAX coupon: applicable codes ka asli bill compare, par
+  // strict budget me. Verified winner cache agle bill ko 1-write bana deta hai.
+  const maxTrials = Math.max(1, Math.min(Number(process.env.PRO_INSTANT_MAX_COUPON_TRIALS) || 10, 20));
+  const maxBudgetMs = envMs('PRO_INSTANT_MAX_COUPON_BUDGET_MS', 4_500, 1_000, 12_000);
   const restaurantId = String(cart?.restaurantId || '');
   const itemTotal = (Array.isArray(cart?.items) ? cart.items : [])
     .reduce((sum, i) => sum + (Number(i?.price) || 0) * (Number(i?.qty ?? i?.quantity) || 0), 0);
   const engine = {
     instantAuto: true, phase: 'instant', offersClaimed: 0, offersNote: '',
-    oneLite: 'skipped_instant', couponTrials: [], couponsSeen: 0, notes: [],
-    offerTracks: [], autoOffer: { source: '', code: '', ms: 0, discoveryMs: 0, claimMs: 0, cartWrites: 0 }
+    oneLite: 'not_tried', couponTrials: [], couponsSeen: 0, notes: [],
+    offerTracks: [], autoOffer: { source: '', code: '', ms: 0, discoveryMs: 0, claimMs: 0, cartWrites: 0, couponTrials: 0, maxVerifiedDiscount: 0 }
   };
 
   // ── 1. Teen kaam EK SAATH: address, coupon feed, free-cash claim ──────────
@@ -279,7 +300,7 @@ export async function quoteInstantCart(account, address, cart, coupon = '', opti
     return { key, label: key === 'lateNight' ? 'Night' : 'Breakfast', status: String(rec?.status || ''), verified: rec?.verified === true, alreadyActive: rec?.alreadyActive === true };
   });
 
-  // ── 2. Swiggy ka best coupon: EK code, zero blind trials ─────────────────
+  // ── 2. Restaurant ke coupons: ranked list (pehla code + verified trials) ──
   const [mcpCoupons, mcpCart, offersRest, offersPay] = Array.isArray(discovery) ? discovery : [null, null, null, null];
   const feedCodes = [];
   for (const blob of [offersRest?.json, offersPay?.json]) {
@@ -290,7 +311,7 @@ export async function quoteInstantCart(account, address, cart, coupon = '', opti
   }
   engine.couponsSeen = (Array.isArray(mcpCoupons?.structured?.coupons) ? mcpCoupons.structured.coupons.length : 0) + feedCodes.length;
   const choice = requestedCoupon
-    ? { code: requestedCoupon, source: 'user', estimatedSaving: null, considered: 1 }
+    ? { code: requestedCoupon, source: 'user', estimatedSaving: null, considered: 1, candidates: [], ineligible: [] }
     : selectInstantCoupon({
       mcpCoupons, mcpCart, itemTotal,
       previousAutoCoupon: String(options.previousAutoCoupon || ''),
@@ -303,9 +324,12 @@ export async function quoteInstantCart(account, address, cart, coupon = '', opti
   // ── 3. Cart write + readback (har optional failure yahin absorb hoti hai) ─
   const itemsPayload = buildSwiggyCartItemsPayload(cart.items);
   const ofoFields = cart.forSomeoneElse ? buildOfoCartFields({ addressDetails: address }) : {};
-  const subscriptionItems = Array.isArray(cart.activeSubscriptionItems) ? cart.activeSubscriptionItems : [];
+  // One Lite sub yahan mutable hai: final write me add / revert hota hai aur
+  // bill me wahi final sub jata hai (checkout usi ke saath place hota hai).
+  let subscriptionItems = Array.isArray(cart.activeSubscriptionItems) ? cart.activeSubscriptionItems : [];
   let cartInitialized = false;
   let lastReadback = null;
+  let applyAttempts = 0;
   const acceptCart = out => {
     if (!okCode(out?.json?.statusCode)) {
       const msg = String(out?.json?.statusMessage || '').slice(0, 120) || `HTTP ${out?.status || '?'}`;
@@ -358,10 +382,12 @@ export async function quoteInstantCart(account, address, cart, coupon = '', opti
       snapshot = await readCart(Math.min(timeoutMs, 4_000));
     }
     const settled = code && snapshot.coupon === code && Number(snapshot.parsed?.discountAmount || 0) > 0;
-    if (code && !settled && engine.autoOffer.cartWrites < 3) {
+    if (code && !settled && applyAttempts < maxTrials + 2) {
       // Bulk endpoint kabhi couponCode ignore kar deta hai — Swiggy ka dedicated
       // endpoint EK baar, phir verified readback. Fail = coupon nahi laga, bill
-      // phir bhi wahi (error nahi, jhootha "applied" bhi nahi).
+      // phir bhi wahi (error nahi, jhootha "applied" bhi nahi). Har coupon ke
+      // liye ek baar, poore ladder me bounded.
+      applyAttempts += 1;
       const applied = await applySwiggyCartCoupon(account, { couponCode: code, addressId, lat, lng, timeoutMs: Math.min(1_800, timeoutMs) }).catch(() => null);
       if (okCode(applied?.json?.statusCode) && applied?.json?.data) {
         try { snapshot = acceptCart(applied); } catch { /* neeche GET */ }
@@ -394,27 +420,147 @@ export async function quoteInstantCart(account, address, cart, coupon = '', opti
     if (lastReadback) best = lastReadback;
   }
   if (choice?.code && best.coupon !== choice.code) couponReason = best.couponReason;
-  // Swiggy ne readback me apna best code suggest kiya ho (feed empty thi) to
-  // EK targeted write — aur koi ladder nahi.
-  if (!requestedCoupon && autoCoupon && !choice?.code && best.parsed?.suggestedCouponCode && engine.autoOffer.cartWrites < 3) {
-    const suggested = String(best.parsed.suggestedCouponCode).toUpperCase();
+  if (lastReadback && lastReadback !== best) best = lastReadback;
+
+  // ── 3a. Restaurant ka MAX coupon: applicable codes ka ASLI bill compare ──
+  // Feed ka likha hua discount sirf ranking hai; jeet tabhi maani jati hai jab
+  // Swiggy ki readback me coupon + discount dono confirm ho. Jin codes ka
+  // discount likha nahi hai (ya Swiggy ne suggest kiya hai), unka live bill
+  // zarur check hota hai — strict trial/time budget ke andar.
+  let winner = {
+    code: String(best.coupon || '').toUpperCase(),
+    total: Number(best.total),
+    discount: Math.max(0, Number(best.parsed?.discountAmount || 0)),
+    source: best.coupon && best.coupon === choice?.code ? choice?.source : ''
+  };
+  let maxVerifiedDiscount = winner.discount;
+  const blocked = new Set((choice?.ineligible || []).map(c => String(c).toUpperCase()));
+  const candidateList = [];
+  const pushCandidate = (code, source, saving = null, trust = 50) => {
+    const clean = String(code || '').trim().toUpperCase();
+    if (!/^[A-Z0-9_-]{3,28}$/.test(clean) || blocked.has(clean)) return;
+    if (candidateList.some(c => c.code === clean)) return;
+    candidateList.push({ code: clean, source, saving, trust });
+  };
+  for (const cand of (choice?.candidates || [])) pushCandidate(cand.code, cand.source, cand.saving, cand.trust);
+  for (const code of feedCodes) pushCandidate(code, 'offer_feed');
+  if (best.parsed?.suggestedCouponCode) pushCandidate(best.parsed.suggestedCouponCode, 'cart_suggested');
+  const savingOf = c => (c.saving === null || c.saving === undefined || !Number.isFinite(Number(c.saving)) ? -1 : Number(c.saving));
+  candidateList.sort((a, b) => savingOf(b) - savingOf(a) || a.trust - b.trust || a.code.localeCompare(b.code));
+  const tried = new Set([String(choice?.code || '').toUpperCase()].filter(Boolean));
+  const trialStarted = Date.now();
+  for (const cand of candidateList) {
+    if (tried.has(cand.code)) continue;
+    const remainingMs = maxBudgetMs - (Date.now() - trialStarted);
+    if (engine.autoOffer.couponTrials >= maxTrials || remainingMs <= 0) {
+      engine.notes.push('max-coupon trial budget khatam — jo verify hua wahi final');
+      break;
+    }
+    // Sirf tab skip jab likha hua discount (upper bound) verified discount se
+    // chhota ho. Unknown-saving / Swiggy-suggested codes ka live bill zarur.
+    if (cand.saving !== null && cand.saving !== undefined && Number(cand.saving) <= maxVerifiedDiscount + 0.005
+      && !['swiggy_suggested', 'feed_best', 'cart_suggested'].includes(cand.source)) {
+      engine.notes.push(`${cand.code}: estimated ₹${cand.saving} ≤ verified ₹${maxVerifiedDiscount} — skip`);
+      continue;
+    }
+    tried.add(cand.code);
+    engine.autoOffer.couponTrials += 1;
     try {
-      const attempt = await writeCart(suggested, Math.min(writeMs, 3_500));
-      if (attempt.coupon === suggested && Number(attempt.parsed?.discountAmount || 0) > 0) {
-        engine.autoOffer.source = 'cart_suggested';
-        engine.autoOffer.code = suggested;
+      const attempt = await writeCart(cand.code, Math.min(writeMs, Math.max(1_500, remainingMs)));
+      if (attempt.coupon === cand.code && Number(attempt.parsed?.discountAmount || 0) > 0) {
+        const discount = Number(attempt.parsed.discountAmount);
+        maxVerifiedDiscount = Math.max(maxVerifiedDiscount, discount);
+        if (attempt.total < winner.total - 0.005 || discount > winner.discount + 0.005) {
+          winner = { code: cand.code, total: Number(attempt.total), discount, source: cand.source };
+        }
       }
-      best = lastReadback || attempt; // hamesha aakhiri VERIFIED readback
-    } catch { writeUncertain = true; /* pehla verified bill hi sach hai */ }
+    } catch (err) {
+      engine.notes.push(`${cand.code}: ${String(err?.message || err).slice(0, 80)}`);
+      writeUncertain = true;
+    }
+  }
+  engine.autoOffer.maxVerifiedDiscount = maxVerifiedDiscount;
+  if (winner.code && engine.autoOffer.couponTrials > 0) {
+    engine.autoOffer.source = winner.source === 'cart_suggested' ? 'cart_suggested' : 'max_verified';
+  }
+  if (!winner.code) engine.autoOffer.source = 'none';
+  engine.autoOffer.code = winner.code;
+
+  // ── 3b. Final write: MAX coupon + One Lite FREE delivery settle ──────────
+  // Trials cart me koi doosra code chhod de to yahin winner wapas lagta hai.
+  // One Lite bhi isi write me try hota hai: readback me total sach me kam na ho
+  // to ek write me revert. Bill aur Swiggy cart hamesha ek hi state me rehte.
+  best = lastReadback || best;
+  const noOneTotal = Number(best.total);
+  const needsSettle = Boolean(lastReadback && String(lastReadback.coupon || '').toUpperCase() !== winner.code);
+  const deliveryFee = Number(best.parsed?.deliveryFee || 0);
+  const oneFeeAlready = Number(best.parsed?.swiggyOneMembershipFee || 0);
+  let oneLiteSub = null;
+  if (cart.autoOneLite !== false && deliveryFee > 1 && oneFeeAlready <= 0 && !subscriptionItems.length) {
+    const planId = String(best.parsed?.eligibleSuperPlan?.planId || '773').trim() || '773';
+    oneLiteSub = [{ plan_id: planId, quantity: 1 }];
+  } else {
+    engine.oneLite = oneFeeAlready > 0 || subscriptionItems.length ? 'already_applied'
+      : cart.autoOneLite === false ? 'disabled' : 'not_needed';
+  }
+  if (needsSettle || oneLiteSub) {
+    const codeToSettle = winner.code;
+    // Deep engine ki tarah: eligible Super plan, phir '773' fallback. Jo bhi
+    // readback me delivery FREE + sasta total de, wahi rehta hai.
+    const planIds = oneLiteSub ? [...new Set([String(oneLiteSub[0].plan_id), '773'].filter(Boolean))] : [];
+    try {
+      if (!oneLiteSub) {
+        best = await writeCart(codeToSettle, writeMs); // sirf winner coupon settle
+      } else {
+        let kept = false;
+        for (const planId of planIds) {
+          subscriptionItems = [{ plan_id: planId, quantity: 1 }];
+          const attempt = await writeCart(codeToSettle, writeMs);
+          const oneFee = Number(attempt.parsed?.swiggyOneMembershipFee || 0);
+          const deliveryNow = Number(attempt.parsed?.deliveryFee || 0);
+          if (oneFee > 0 && deliveryNow <= 0 && attempt.total < noOneTotal - 0.005) {
+            best = attempt;
+            engine.oneLite = 'applied';
+            kept = true;
+            break;
+          }
+          engine.notes.push(`One Lite plan ${planId} ne delivery FREE nahi ki`);
+        }
+        if (!kept) {
+          // FREE ka jhooth nahi: membership wapas hata kar verified bill.
+          engine.oneLite = 'not_profitable';
+          subscriptionItems = [];
+          best = await writeCart(codeToSettle, writeMs);
+        }
+      }
+    } catch {
+      engine.notes.push('final coupon/One Lite write fail — verified bill rakha');
+      if (oneLiteSub) {
+        subscriptionItems = [];
+        engine.oneLite = 'failed';
+        try { best = await writeCart(codeToSettle, writeMs); } catch { writeUncertain = true; }
+      } else writeUncertain = true;
+    }
   }
   // Koi write beech me chhuti ho to Swiggy se cart dobara padh kar pakka karo —
-  // kabhi purana / andaze ka bill nahi dikhte. Har successful write `lastReadback`
-  // update karta hai, isliye yahi final cart state hai.
+  // kabhi purana / andaze ka bill nahi dikhte.
   if (lastReadback && lastReadback !== best) best = lastReadback;
   if (writeUncertain) {
     try { best = await readCart(Math.min(writeMs, 3_000)); } catch { /* aakhiri verified readback hi sach hai */ }
   }
   if (!best) throw unavailable('Swiggy ne is cart ka bill confirm nahi kiya. Dobara sync karein.');
+  // Diagnostics bhi aakhiri verified cart state bolte hain, purana plan nahi.
+  engine.autoOffer.code = String(best.coupon || '');
+  if (!best.coupon) engine.autoOffer.source = 'none';
+  // Checkout ko wahi subscription state bhejo jo Swiggy ke final cart me hai.
+  const finalOneFee = Number(best.parsed?.swiggyOneMembershipFee || 0);
+  if (finalOneFee > 0 && !subscriptionItems.length) {
+    const planId = String(best.parsed?.eligibleSuperPlan?.planId || '773').trim() || '773';
+    subscriptionItems = [{ plan_id: planId, quantity: 1 }];
+    if (engine.oneLite === 'not_tried') engine.oneLite = 'already_applied';
+  } else if (finalOneFee <= 0 && subscriptionItems.length) {
+    subscriptionItems = [];
+  }
 
   const { parsed, meta, total } = best;
   if (best.coupon && Number(parsed.discountAmount || 0) > 0) {
@@ -440,7 +586,7 @@ export async function quoteInstantCart(account, address, cart, coupon = '', opti
   engine.autoOffer.ms = Date.now() - startedAt;
   engine.autoOffer.discoveryMs = discoveryMs;
   engine.autoOffer.claimMs = claimMs;
-  engine.notes.push(`Instant auto-offer: ${engine.autoOffer.cartWrites} cart write, 0 coupon trial ladder, ${engine.autoOffer.ms}ms.`);
+  engine.notes.push(`Instant auto-offer: ${engine.autoOffer.cartWrites} cart write, ${engine.autoOffer.couponTrials} max-coupon trial, One Lite ${engine.oneLite}, ${engine.autoOffer.ms}ms.`);
 
   const returnedNumber = (...values) => {
     const raw = values.find(v => v !== undefined && v !== null && v !== '');
@@ -463,7 +609,7 @@ export async function quoteInstantCart(account, address, cart, coupon = '', opti
       coupon: best.coupon,
       couponCode: best.coupon,
       autoCoupon: Boolean(best.coupon) && !requestedCoupon,
-      couponTried: engine.couponTrials.map(t => t.code).slice(0, 5),
+      couponTried: [...new Set(engine.couponTrials.map(t => t.code))].slice(0, 5),
       couponReason: requestedCoupon && best.coupon !== requestedCoupon ? (couponReason || 'Swiggy ne ye coupon accept nahi kiya.') : '',
       freeCash: freeCashShown > 0 ? freeCashShown : null,
       freeCashWallet: walletApplied > 0 ? walletApplied : null,
