@@ -177,6 +177,28 @@ test('outlet discovery returns only distinct provider IDs with an exact normaliz
   assert.deepEqual(out.body.outlets.map(row => row.id), ['101', '102']);
 });
 
+test('cart add validates real variant/add-on IDs and derives customised price on the server', async () => {
+  const item = { id: '457', name: 'Special Veg Thali', price: 440, inStock: true, customizable: true,
+    variantGroups: [{ group_id: '10', name: 'Quantity', variations: [{ id: '20', name: 'Sweet', price: 44000 }] }],
+    addonGroups: [{ group_id: '30', name: 'Extras', min: 0, max: 1, choices: [{ id: '40', name: 'Kheer', price: 5000 }] }] };
+  writeProWorkspace('1004', { version: 1, accounts: {}, activeAccountKey: 'shared',
+    selectedAddress: { id: 'home', name: 'Receiver', mobile: '9123456789', address: 'Road', lat: '18', lng: '73' },
+    cart: null, menu: { restaurant: { id: '111', name: 'One', isOpen: true }, categories: [{ title: 'Items', items: [item] }] } });
+  const missing = await req(1004, 'cart/add', { itemId: '457', restaurantId: '111' });
+  assert.equal(missing.status, 400);
+  const forged = await req(1004, 'cart/add', { itemId: '457', restaurantId: '111', variants: [{ group_id: '10', variation_id: '999' }], addons: [] });
+  assert.equal(forged.status, 400);
+  const valid = await req(1004, 'cart/add', { itemId: '457', restaurantId: '111', price: 1,
+    variants: [{ group_id: '10', variation_id: '20' }], addons: [{ group_id: '30', choice_id: '40' }] });
+  assert.equal(valid.status, 200, JSON.stringify(valid.body));
+  assert.equal(valid.body.cart.items[0].price, 490);
+  assert.deepEqual(valid.body.cart.items[0].variants.map(v => [v.group_id, v.variation_id]), [['10', '20']]);
+  assert.deepEqual(valid.body.cart.items[0].addons.map(a => [a.group_id, a.choice_id]), [['30', '40']]);
+  const again = await req(1004, 'cart/add', { itemId: '457', restaurantId: '111', variants: [{ group_id: '10', variation_id: '20' }], addons: [{ group_id: '30', choice_id: '40' }] });
+  assert.equal(again.body.cart.items.length, 1);
+  assert.equal(again.body.cart.items[0].qty, 2);
+});
+
 test('cart add rejects an item tap when a different restaurant menu replaced the server workspace', async () => {
   writeProWorkspace('1004', { version: 1, accounts: {}, activeAccountKey: 'shared',
     selectedAddress: { id: 'home', name: 'Receiver', mobile: '9123456789', address: 'Road', lat: '18', lng: '73' },

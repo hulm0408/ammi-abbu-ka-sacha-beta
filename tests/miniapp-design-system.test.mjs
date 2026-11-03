@@ -530,22 +530,41 @@ test('outlet chooser appears only for another distinct exact-name result', async
   } finally { app.close(); }
 });
 
-test('menu shows imported customised quantities without offering an unsupported edit', async () => {
+test('customised menu items open a real variant/add-on picker and submit selected Swiggy IDs', async () => {
   const bootstrap = baseState();
-  bootstrap.cart = { restaurantId: 'r', restaurantName: 'Cafe', items: [{ id: 'i', lineKey: 'custom', name: 'Bowl', qty: 3, price: 100, variants: [{ id: 'option' }] }], quote: null };
+  bootstrap.cart = { restaurantId: 'r', restaurantName: 'Cafe', items: [{ id: 'i', lineKey: 'custom', name: 'Bowl', qty: 3, price: 100, variants: [{ group_id: '10', variation_id: '20' }], addons: [] }], quote: null };
   const restaurant = { id: 'r', name: 'Cafe', area: 'One', isOpen: true };
+  const item = {
+    id: 'i', name: 'Bowl', price: 100, customizable: true, inStock: true,
+    variantGroups: [{ group_id: '10', name: 'Size', variations: [{ id: '20', name: 'Regular', price: 10000, isDefault: true }, { id: '21', name: 'Large', price: 14000 }] }],
+    addonGroups: [{ group_id: '30', name: 'Extras', min: 0, max: 1, choices: [{ id: '40', name: 'Cheese', price: 2000 }, { id: '41', name: 'Unavailable dip', price: 0, inStock: false }] }]
+  };
   const app = harness({ bootstrap, responder: call => {
     if (call.url.includes('/search?')) return response({ ok: true, restaurants: [restaurant] });
-    if (call.url.includes('/menu?')) return response({ ok: true, restaurant, categories: [{ title: 'Menu', items: [{ id: 'i', name: 'Bowl', price: 100, customizable: true, inStock: true }] }] });
+    if (call.url.includes('/menu?')) return response({ ok: true, restaurant, categories: [{ title: 'Menu', items: [item] }] });
     if (call.url.includes('/restaurants/outlets?')) return response({ ok: true, outlets: [restaurant] });
+    if (call.url.endsWith('/cart/add')) return response({ ok: true, cart: { restaurantId: 'r', restaurantName: 'Cafe', items: [{ ...bootstrap.cart.items[0], qty: 3 }, { id: 'i', lineKey: 'new', name: 'Bowl', qty: 1, price: 160, variants: call.body.variants, addons: call.body.addons }], quote: null } });
   } });
   try {
     await waitFor(() => app.document.querySelector('.ac-row.active'), 'accounts'); nav(app, 'search');
     const form = app.document.querySelector('form[data-form="search"]'); form.querySelector('input').value = 'Cafe'; form.dispatchEvent(new app.window.Event('submit', { bubbles: true, cancelable: true }));
     await waitFor(() => app.document.querySelector('[data-action="restaurant"]'), 'restaurant'); app.document.querySelector('[data-action="restaurant"]').click();
-    const qty = await waitFor(() => app.document.querySelector('.menu-qty-readonly'), 'customised count');
-    assert.match(qty.textContent, /3 in cart/);
-    assert.equal(app.document.querySelector('[data-action="dish-add"]'), null);
+    const add = await waitFor(() => app.document.querySelector('[data-action="dish-add"]'), 'customise button');
+    assert.match(add.textContent, /3 in cart/);
+    assert.equal(add.disabled, false);
+    add.click();
+    const sheet = await waitFor(() => app.document.querySelector('.customisation-sheet'), 'customisation sheet');
+    assert.ok(app.document.querySelector('.app-shell[inert]'));
+    sheet.querySelector('input[name="variant-0"][value="21"]').click();
+    sheet.querySelector('input[name="addon-0"][value="40"]').click();
+    assert.match(sheet.querySelector('.customisation-add').textContent, /₹160/);
+    assert.equal(sheet.querySelector('input[value="41"]').disabled, true);
+    sheet.querySelector('.customisation-add').click();
+    await waitFor(() => app.calls.some(call => call.url.endsWith('/cart/add')), 'add request');
+    const request = app.calls.find(call => call.url.endsWith('/cart/add'));
+    assert.deepEqual(request.body.variants, [{ group_id: '10', variation_id: '21' }]);
+    assert.deepEqual(request.body.addons, [{ group_id: '30', choice_id: '40' }]);
+    await waitFor(() => !app.document.querySelector('.customisation-sheet'), 'sheet closed');
   } finally { app.close(); }
 });
 

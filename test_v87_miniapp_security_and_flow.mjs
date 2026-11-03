@@ -22,7 +22,7 @@ process.env.BOSS_ID = '7000';
 process.env.DB_ASYNC_WRITE = '0';
 
 const { handleSwiggyProHttp, verifyTelegramWebAppInitData } = await import('./swiggy-pro-api.js');
-const { expandProShareLink, sameCartItems, sameDeliveryRecipient } = await import('./swiggy-pro-provider.js');
+const { expandProShareLink, sameCartItems, sameDeliveryRecipient, dishInfo } = await import('./swiggy-pro-provider.js');
 const { bootstrapSwiggyWebSessionFromAndroidTokens } = await import('./swiggy-cart.js');
 const { getDb, saveDb } = await import('./store.js');
 const db = getDb();
@@ -250,6 +250,17 @@ test('share links reject internal and non-Swiggy hosts before any network reques
   assert.match(await expandProShareLink('https://www.swiggy.com/ofo/address/Name/token'), /ofo\/address/);
 });
 
+test('menu parser preserves Swiggy variant/add-on IDs and defaults for the customisation picker', () => {
+  const item = dishInfo({ id: '457', name: 'Special Veg Thali', price: 44000, inStock: 1,
+    variantsV2: { variantGroups: [{ group_id: '10', name: 'Quantity', variations: [{ id: '20', name: 'Sweet', price: 44000, inStock: 1, default: 1 }] }] },
+    addons: [{ group_id: '30', group_name: 'Extras', minAddons: 0, maxAddons: 1, choices: [{ id: '40', name: 'Kheer', price: 5000, inStock: 1 }] }] });
+  assert.equal(item.customizable, true);
+  assert.equal(item.variantGroups[0].group_id, '10');
+  assert.equal(item.variantGroups[0].variations[0].id, '20');
+  assert.equal(item.variantGroups[0].variations[0].isDefault, true);
+  assert.equal(item.addonGroups[0].choices[0].id, '40');
+});
+
 test('quote verification rejects changed add-ons, variants, quantities and unknown IDs', () => {
   const base = [{ menu_item_id: 456, qty: 1, variants: [{ group_id: '5', variation_id: '7' }], addons: [{ group_id: '1', choice_id: '2' }] }];
   assert.equal(sameCartItems(base, structuredClone(base)), true);
@@ -263,6 +274,9 @@ test('quote verification rejects changed add-ons, variants, quantities and unkno
   assert.equal(sameCartItems(base, changedQty), false);
   const invalid = structuredClone(base); invalid[0].variants = [{ group_id: '5' }];
   assert.equal(sameCartItems(invalid, invalid), false);
+  const swiggyAliases = [{ menu_item_id: 456, quantity: 1,
+    variants: [{ variant_group_id: '5', variant_id: '7' }], addons: [{ addon_group_id: '1', addon_id: '2' }] }];
+  assert.equal(sameCartItems(base, swiggyAliases), true, 'Swiggy ke equivalent custom-choice aliases mismatch nahi hone chahiye');
 });
 
 test('private session bootstrap cannot overwrite a boss account with the same phone', async () => {
