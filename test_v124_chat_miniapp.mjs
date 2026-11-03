@@ -122,26 +122,23 @@ function seed(user, accounts = { privateA: { phone: '9234567890', token: 'sessio
 function fund(user) { const db = getDb(); creditWallet(db, String(user), 1500, { reason: 'offline test', actor: 'test' }); saveDb(db); }
 after(async () => { await new Promise(resolve => server.close(resolve)); resetProWorkspaceHydrationCache(); fs.rmSync(tmp, { recursive: true, force: true }); });
 
-test('chat accepts separate/together links, encrypts them, preserves drafts and never starts a bill', async () => {
+test('chat links and arbitrary text return only Open Order Placer without saving links or starting work', async () => {
   const beforeOrders = Object.keys(getDb().orders).length;
   const db = getDb(); db.drafts['5101'] = { legacy: 'keep', cart: 'old-chat-draft' }; saveDb(db);
-  await send(5101, cartLink);
-  assert.equal(readChatHandoff(5101).cartUrl, cartLink);
-  assert.equal(readChatHandoff(5101).addressUrl, '');
-  await send(5101, addressLink);
-  const one = readChatHandoff(5101);
-  assert.equal(one.addressUrl, addressLink);
+  for (const text of [cartLink, addressLink, `${addressLink}\n${cartLink}`, 'kuch bhi']) await send(5101, text);
+  assert.equal(readChatHandoff(5101), null, 'chat input is not stored');
   assert.equal(getDb().drafts['5101'].legacy, 'keep');
   assert.equal(getDb().drafts['5101'].cart, 'old-chat-draft');
-  assert.doesNotMatch(JSON.stringify(getDb().drafts['5101'].miniAppLinks), /offline-cart|offline-address/);
-  assert.throws(() => openProHandoff(5102, getDb().drafts['5101'].miniAppLinks.encrypted));
-  await send(5102, `${addressLink}\n${cartLink}`);
-  assert.equal(readChatHandoff(5102).cartUrl, cartLink);
-  assert.notEqual(readChatHandoff(5101).id, readChatHandoff(5102).id);
   assert.equal(Object.keys(getDb().orders).length, beforeOrders);
   assert.equal(calls.length, 0, 'chat never asks provider for address, cart or bill');
-  assert(telegramCalls.some(c => String(c.payload.chat_id) === '5101' && JSON.stringify(c.payload.reply_markup || {}).includes('https://example.test/pro')));
-  assert(telegramCalls.some(c => String(c.payload.chat_id) === '5102' && String(c.payload.text || '').includes('Mini App')));
+  const replies = telegramCalls.filter(c => String(c.payload.chat_id) === '5101' && c.method === 'sendMessage');
+  const launchers = replies.filter(c => JSON.stringify(c.payload.reply_markup || {}).includes('Open Order Placer'));
+  assert.equal(launchers.length, 4);
+  for (const reply of launchers) {
+    const rows = reply.payload.reply_markup.inline_keyboard;
+    assert.equal(rows.length, 1); assert.equal(rows[0].length, 1);
+    assert.deepEqual(rows[0][0].web_app, { url: 'https://example.test/pro' });
+  }
 });
 
 test('legacy draft cleanup does not erase newer links unless the user explicitly cancels', () => {
@@ -152,150 +149,24 @@ test('legacy draft cleanup does not erase newer links unless the user explicitly
   assert.equal(readChatHandoff(5190), null);
 });
 
-test('production link handoff still works when legacy screen mode is selected', async () => {
+test('launcher behaviour does not depend on the legacy screen theme', async () => {
   const oldTest = process.env.TEST_MODE, oldSimple = process.env.SIMPLE_CHAT_MODE;
   process.env.TEST_MODE = '0'; process.env.SIMPLE_CHAT_MODE = '0';
   try {
     await send(5191, `${cartLink}\n${addressLink}`);
-    assert.equal(readChatHandoff(5191).cartUrl, cartLink);
-    assert.equal(readChatHandoff(5191).addressUrl, addressLink);
+    assert.equal(readChatHandoff(5191), null);
+    const reply = telegramCalls.filter(c => String(c.payload.chat_id) === '5191').at(-1);
+    assert.equal(reply.payload.reply_markup.inline_keyboard[0][0].text, 'Open Order Placer');
   } finally { process.env.TEST_MODE = oldTest; process.env.SIMPLE_CHAT_MODE = oldSimple; }
 });
 
-test('opaque links are explicitly classified; unsafe hosts are not handed to provider', async () => {
-  const a = 'https://swiggy.onelink.me/opaque/aaa111';
-  const b = 'https://swiggy.onelink.me/opaque/bbb222';
-  assert.equal(parseChatShareLinks(`${a} ${b}`).ambiguous.length, 2);
-  assert.equal(parseChatShareLinks('https://swig.gy/opaque-short').ambiguous.length, 1, 'opaque short URLs are not guessed as carts');
-  await send(5103, `${a} ${b}`);
-  assert.equal(readChatHandoff(5103), null);
-  const buttons = () => telegramCalls.filter(c => c.method === 'sendMessage' && String(c.payload.chat_id) === '5103' && c.payload.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data?.startsWith('mini_link_')).at(-1).payload.reply_markup.inline_keyboard[0];
-  const first = buttons();
-  await tap(5103, first[1].callback_data);
-  const second = buttons();
-  assert.notEqual(first[0].callback_data, second[0].callback_data);
-  await tap(5103, first[0].callback_data); // stale button cannot classify b
-  assert.equal(readChatHandoff(5103), null);
-  await tap(5103, second[0].callback_data);
-  assert.equal(readChatHandoff(5103).addressUrl, a);
-  assert.equal(readChatHandoff(5103).cartUrl, b);
-  assert.equal(safeSwiggyShareUrl('https://swiggy.com.evil.test/gc/x'), '');
-  assert.equal(safeSwiggyShareUrl('http://www.swiggy.com/gc/x'), '');
-  await send(5104, 'https://swiggy.com.evil.test/gc/x');
-  assert.equal(readChatHandoff(5104), null);
-  assert.equal(calls.length, 0);
-});
-
-test('authenticated handoff supports auto choice, failures, resume, recipient autofill and explicit cart consent', async () => {
-  seed(5101, {
-    unknown: { phone: '9234567890', token: 'session-unknown', name: 'Unknown', isLoggedIn: true },
-    ready: { phone: '9345678901', token: 'session-ready', name: 'Ready', isLoggedIn: true, ordersVerifiedLive: true, totalOrdersCount: 0 },
-    unavailable: { phone: '9456789012', token: 'unavailable', name: 'Offline', isLoggedIn: true }
-  });
-  const id = readChatHandoff(5101).id;
-  let r = await req(5102, 'chat-handoff/start', { handoffId: id });
-  assert.equal(r.status, 409, 'another user cannot consume this handoff');
-  r = await req(5101, 'bootstrap');
-  assert.equal(r.body.chatHandoff.pendingId, id);
-  assert.equal(r.body.activeAccount, null, 'no silent ID selection for new handoff');
-  assert.doesNotMatch(JSON.stringify(r.body), /offline-cart|offline-address|session-ready/);
-  r = await req(5101, 'chat-handoff/start', { handoffId: id });
-  assert.equal(r.status, 200); assert.equal(r.body.chatHandoff.stage, 'ACCOUNT');
-  r = await req(5101, 'chat-handoff/select', { handoffId: id, key: 'not-my-id' });
-  assert.equal(r.status, 404);
-  r = await req(5101, 'chat-handoff/select', { handoffId: id, key: 'unavailable' });
-  assert.equal(r.status, 409); assert.equal(readProWorkspace('5101').chatFlow.stage, 'ACCOUNT');
-  r = await req(5101, 'chat-handoff/select', { handoffId: id, auto: true });
-  assert.equal(r.status, 200); assert.equal(r.body.activeAccount.key, 'ready');
-  assert.equal(r.body.chatHandoff.stage, 'ADDRESS');
-  failAddress = true;
-  r = await req(5101, 'chat-handoff/address', { handoffId: id });
-  assert.equal(r.status, 502); assert.equal(readProWorkspace('5101').chatFlow.stage, 'ADDRESS');
-  r = await req(5101, 'chat-handoff/address', { handoffId: id });
-  assert.equal(r.status, 200); assert.equal(r.body.chatHandoff.address.name, receiver.name);
-  assert.equal(r.body.chatHandoff.address.mobile, receiver.mobile);
-  const addressCount = calls.filter(c => c.kind === 'address').length;
-  await req(5101, 'chat-handoff/address', { handoffId: id });
-  assert.equal(calls.filter(c => c.kind === 'address').length, addressCount, 'retry does not consume link twice');
-  r = await req(5101, 'bootstrap'); assert.equal(r.body.chatHandoff.address.address, receiver.address);
-  r = await req(5101, 'chat-handoff/confirm-address', { handoffId: id, name: receiver.name, mobile: receiver.mobile });
-  assert.equal(r.status, 400);
-  r = await req(5101, 'chat-handoff/confirm-address', { handoffId: id, confirmAddress: true, name: receiver.name, mobile: receiver.mobile });
-  assert.equal(r.status, 200); assert.equal(r.body.chatHandoff.stage, 'CART');
-  failCart = true;
-  r = await req(5101, 'chat-handoff/cart', { handoffId: id }); assert.equal(r.status, 502);
-  r = await req(5101, 'chat-handoff/cart', { handoffId: id }); assert.equal(r.status, 200);
-  assert.equal(r.body.cart.items[0].name, 'Meal');
-  assert.equal(r.body.cart.quote, null);
-  const quotedBefore = calls.filter(c => c.kind === 'quote').length;
-  r = await req(5101, 'chat-handoff/bill', { handoffId: id });
-  assert.equal(r.status, 400); assert.equal(calls.filter(c => c.kind === 'quote').length, quotedBefore);
-  failQuote = true;
-  r = await req(5101, 'chat-handoff/bill', { handoffId: id, confirmReplaceSwiggyCart: true }); assert.equal(r.status, 502);
-  assert.equal(readProWorkspace('5101').cart.quote, null);
-  r = await req(5101, 'chat-handoff/bill', { handoffId: id, confirmReplaceSwiggyCart: true });
-  assert.equal(r.status, 200); assert.equal(r.body.chatHandoff.stage, 'BILL');
-  assert.equal(r.body.cart.quote.total, 150.25);
-  assert.equal(r.body.cart.quote.quickBill, true);
-  const quoteCall = calls.filter(c => c.kind === 'quote').at(-1);
-  assert.equal(quoteCall.quick, true); assert.equal(quoteCall.autoOneLite, false);
-  assert.equal(r.body.selectedAddress.name, receiver.name);
-  assert.equal(placeCalls, 0);
-});
-
-test('handoff checkout preserves consent, wallet gate, exact quote and single-placement barrier', async () => {
-  const quote = readProWorkspace('5101').cart.quote;
-  const confirm = { confirmCheckout: true, expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt };
-  let r = await req(5101, 'checkout', { expectedTotal: quote.total, quoteFetchedAt: quote.fetchedAt });
-  assert.equal(r.status, 400); assert.equal(placeCalls, 0);
-  r = await req(5101, 'checkout', { ...confirm, expectedTotal: 150.26 });
-  assert.equal(r.status, 400); assert.equal(placeCalls, 0);
-  r = await req(5101, 'checkout', confirm);
-  assert.equal(r.body.code, 'WALLET_LOW_BALANCE'); assert.equal(placeCalls, 0);
-  fund(5101);
-  const both = await Promise.all([req(5101, 'checkout', confirm), req(5101, 'checkout', confirm)]);
-  assert.equal(both.filter(x => x.status === 200).length, 1);
-  assert.equal(placeCalls, 1);
-  assert.equal(walletBalancePaise(getDb(), '5101'), 0);
-  assert.equal(readSwiggyPlacement('pro:5101:0').state, 'PROVIDER_ACCEPTED');
-  const workspace = readProWorkspace('5101');
-  assert.equal(workspace.checkout.status, 'PAYMENT_PENDING');
-  assert.equal(workspace.checkout.receiverPhone, receiver.mobile);
-  assert.equal(calls.find(c => c.kind === 'checkout').cart.forSomeoneElse, true);
-  r = await req(5101, 'checkout/status', {});
-  assert.equal(r.status, 200);
-  assert.equal(calls.filter(c => c.kind === 'status').at(-1).customerId, 'customer-session-ready');
-});
-
-test('existing Mini App/chat orders and drafts are never silently replaced', async () => {
-  seed(5102, undefined, { checkout: { status: 'OUTCOME_UNKNOWN', accountKey: 'privateA', message: 'Maybe placed' } });
-  const id2 = readChatHandoff(5102).id;
-  let r = await req(5102, 'chat-handoff/start', { handoffId: id2 });
-  assert.equal(r.status, 409); assert.equal(readProWorkspace('5102').checkout.status, 'OUTCOME_UNKNOWN');
-
-  const uid = 5105;
-  saveChatHandoffLinks(uid, { cart: cartLink, address: addressLink });
-  const db = getDb(); db.orders['offline-active'] = { id: 'offline-active', userId: String(uid), status: 'PENDING' }; saveDb(db);
-  seed(uid);
-  const id5 = readChatHandoff(uid).id;
-  r = await req(uid, 'chat-handoff/start', { handoffId: id5 });
-  assert.equal(r.status, 409); assert.equal(getDb().orders['offline-active'].status, 'PENDING');
-
-  const other = 5106;
-  const oldCart = { restaurantId: 'old', items: [{ name: 'Old meal', qty: 1 }] };
-  seed(other, undefined, { selectedAddress: { ...receiver }, cart: oldCart });
-  saveChatHandoffLinks(other, { cart: cartLink, address: addressLink });
-  const id6 = readChatHandoff(other).id;
-  r = await req(other, 'chat-handoff/start', { handoffId: id6 });
-  assert.equal(r.status, 409); assert.equal(r.body.code, 'DRAFT_EXISTS');
-  assert.equal(readProWorkspace(String(other)).cart.restaurantId, 'old');
-  r = await req(other, 'chat-handoff/start', { handoffId: id6, confirmReplaceDraft: true });
-  assert.equal(r.status, 200); assert.equal(r.body.chatHandoff.stage, 'ACCOUNT');
-  assert.equal(readProWorkspace(String(other)).handoffDraftBackups[0].cart.restaurantId, 'old');
-  assert.equal(workspaceHasContent({ chatFlow: { id: 'only-handoff' } }), true);
-  saveChatHandoffLinks(other, { cart: 'https://www.swiggy.com/gc/new-cart' });
-  assert.equal(readChatHandoff(other).addressUrl, '', 'new order does not inherit previous address link');
-  assert.equal(readProWorkspace(String(other)).chatFlow.id, id6, 'in-progress workspace remains resumable');
+test('opaque links need no classification buttons or follow-up questions', async () => {
+  await send(5192, 'https://swiggy.onelink.me/opaque/aaa111');
+  const reply = telegramCalls.filter(c => String(c.payload.chat_id) === '5192').at(-1);
+  const rows = reply.payload.reply_markup.inline_keyboard;
+  assert.equal(rows.flat().length, 1);
+  assert.equal(rows[0][0].text, 'Open Order Placer');
+  assert.equal(rows[0][0].callback_data, undefined);
 });
 
 test('manual used-ID selection requires consent; shared session identity remains bound for recovery', async () => {
@@ -303,8 +174,6 @@ test('manual used-ID selection requires consent; shared session identity remains
   const db = getDb(); db.config.accounts.shared = { phone: '9567890123', token: 'shared-session', name: 'Operator ID', isLoggedIn: true, ordersVerifiedLive: true, totalOrdersCount: 2 };
   db.knownUsers[String(uid)] = { id: String(uid), firstName: 'Family', lastSeen: Date.now() }; saveDb(db);
   seed(uid, {});
-  saveChatHandoffLinks(uid, { cart: cartLink, address: addressLink });
-  const id = readChatHandoff(uid).id;
   let r = await req(uid, 'bootstrap'); assert.equal(r.body.accounts[0].key, 'shared', 'operator ID is shared by default');
   r = await req(uid, 'accounts/select', { key: 'shared' }); assert.equal(r.body.code, 'ACCOUNT_NEEDS_CONFIRM');
   r = await req(uid, 'accounts/session?key=shared'); assert.equal(r.status, 403, 'shared sessions are never exported');
@@ -320,15 +189,12 @@ test('manual used-ID selection requires consent; shared session identity remains
   const changed = getDb(); changed.config.accounts.shared.phone = '9678901234'; saveDb(changed);
   assert((await req(uid, 'bootstrap')).body.accounts.some(a => a.key === 'shared'), 'default sharing also covers replacement identities');
   const restored = getDb(); restored.config.accounts.shared.phone = '9567890123'; saveDb(restored);
-  r = await req(uid, 'chat-handoff/start', { handoffId: id }); assert.equal(r.status, 200);
-  r = await req(uid, 'chat-handoff/select', { handoffId: id, auto: true }); assert.equal(r.status, 404);
-  r = await req(uid, 'chat-handoff/select', { handoffId: id, key: 'shared' }); assert.equal(r.body.code, 'ACCOUNT_NEEDS_CONFIRM');
-  r = await req(uid, 'chat-handoff/select', { handoffId: id, key: 'shared', confirmUsed: true });
-  assert.equal(r.status, 200); assert.doesNotMatch(JSON.stringify(r.body), /shared-session/);
-  await req(uid, 'chat-handoff/address', { handoffId: id });
-  await req(uid, 'chat-handoff/confirm-address', { handoffId: id, confirmAddress: true, name: receiver.name, mobile: receiver.mobile });
-  await req(uid, 'chat-handoff/cart', { handoffId: id });
-  r = await req(uid, 'chat-handoff/bill', { handoffId: id, confirmReplaceSwiggyCart: true }); assert.equal(r.status, 200);
+  r = await req(uid, 'accounts/select', { key: 'shared', confirmUsed: true });
+  assert.equal(r.status, 200); assert.equal(r.body.chatHandoff, null); assert.doesNotMatch(JSON.stringify(r.body), /shared-session/);
+  r = await req(uid, 'addresses/resolve', { url: addressLink }); assert.equal(r.status, 200);
+  r = await req(uid, 'addresses/confirm', { name: receiver.name, mobile: receiver.mobile }); assert.equal(r.status, 200);
+  r = await req(uid, 'cart/import-group', { url: cartLink, replace: true }); assert.equal(r.status, 200);
+  r = await req(uid, 'cart/sync', { confirmReplaceSwiggyCart: true, forSomeoneElse: true }); assert.equal(r.status, 200);
   fund(uid);
   r = await req(uid, 'checkout', { confirmCheckout: true, expectedTotal: r.body.cart.quote.total, quoteFetchedAt: r.body.cart.quote.fetchedAt });
   assert.equal(r.status, 200); assert.equal(r.body.checkout.status, 'PAYMENT_PENDING');
@@ -349,10 +215,11 @@ async function waitFor(fn, label) {
   for (let i = 0; i < 400; i++) { if (fn()) return; await new Promise(r => setTimeout(r, 10)); }
   assert.fail(`Timed out: ${label}`);
 }
-test('Mini App UI walks from links to ID, fetched address, cart, consent and provider bill', async () => {
+test('saved legacy chat links never reopen the removed ID/address wizard', async () => {
   const uid = 5108;
   seed(uid, { self: { phone: '9234567890', token: 'ui-session', name: 'UI ID', isLoggedIn: true, ordersVerifiedLive: true, totalOrdersCount: 0 } });
   saveChatHandoffLinks(uid, { cart: cartLink, address: addressLink });
+  const providerCallsBefore = calls.length;
   const html = fs.readFileSync(new URL('./swiggy-pro.html', import.meta.url), 'utf8');
   const script = fs.readFileSync(new URL('./swiggy-pro-app.js', import.meta.url), 'utf8');
   const dom = new JSDOM(html, { url: 'https://example.test/pro', runScripts: 'outside-only', pretendToBeVisual: true });
@@ -362,30 +229,14 @@ test('Mini App UI walks from links to ID, fetched address, cart, consent and pro
   w.fetch = (url, options) => fetch(base + String(url), options);
   w.eval(script);
   try {
-    await waitFor(() => d.querySelector('[data-action="handoff-start"]'), 'chat links');
-    d.querySelector('[data-action="handoff-start"]').click();
-    await waitFor(() => d.querySelector('[data-action="handoff-auto"]:not([disabled])'), 'ID picker');
-    d.querySelector('[data-action="handoff-auto"]').click();
-    await waitFor(() => d.querySelector('form[data-form="handoff-address"]'), 'fetched address form');
-    assert.equal(d.querySelector('[name="receiver_name"]').value, receiver.name);
-    assert.equal(d.querySelector('[name="receiver_mobile"]').value, receiver.mobile);
-    d.querySelector('form[data-form="handoff-address"]').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
-    await waitFor(() => d.querySelector('[data-action="handoff-bill"]'), 'fetched cart');
-    const before = calls.filter(c => c.kind === 'quote').length;
-    d.querySelector('[data-action="handoff-bill"]').click();
-    await waitFor(() => d.querySelector('.confirm-dialog'), 'cart replace dialog');
-    d.querySelector('.confirm-dialog .button.soft').click();
-    await new Promise(r => setTimeout(r, 40));
-    assert.equal(calls.filter(c => c.kind === 'quote').length, before, 'cancel does not sync');
-    d.querySelector('[data-action="handoff-bill"]').click();
-    await waitFor(() => d.querySelector('.confirm-dialog .button.primary'), 'confirm cart replacement');
-    d.querySelector('.confirm-dialog .button.primary').click();
-    await waitFor(() => d.querySelector('[data-action="checkout-start"]'), 'real-provider-shaped bill');
-    assert.match(d.body.textContent, /150\.25/);
-    assert.match(d.body.textContent, /offers abhi check nahi/i);
-    assert.equal(calls.filter(c => c.kind === 'quote').length, before + 1);
-    assert(d.querySelector('[data-action="handoff-offers"]'));
-    assert.equal(placeCalls, 2, 'opening bill is not an order');
+    await waitFor(() => d.querySelector('.ac-row.active'), 'normal accounts screen');
+    assert.equal(d.querySelector('[data-action="handoff-start"]'), null);
+    assert.equal(d.querySelector('[data-action="handoff-auto"]'), null);
+    assert.equal(d.querySelector('form[data-form="handoff-address"]'), null);
+    assert(d.querySelector('[data-action="nav"][data-tab="search"]'));
+    const state = await req(uid, 'bootstrap');
+    assert.equal(state.body.chatHandoff, null);
+    assert.equal(calls.slice(providerCallsBefore).some(c => c.kind === 'address' || c.kind === 'cart' || c.kind === 'quote'), false);
   } finally { w.close(); }
 });
 

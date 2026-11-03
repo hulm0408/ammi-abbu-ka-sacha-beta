@@ -822,8 +822,9 @@ function classifyLink(url) {
 // a fresh order, past orders, and the tracking-link retriever.
 function getUserReplyKeyboard(draft = {}) {
   if (isSimpleChatEnabled()) {
+    const miniAppUrl = configuredMiniAppUrl();
     return Markup.keyboard([
-      [{ text: '🛒 New Order', style: 'success' }],
+      [miniAppUrl ? { text: 'Open Order Placer', web_app: { url: miniAppUrl }, style: 'success' } : { text: '🛒 New Order', style: 'success' }],
       [
         { text: '📦 Orders Done', style: 'primary' },
         { text: '🔗 Extract Tracking Link', style: 'primary' }
@@ -1386,8 +1387,7 @@ function getUserScreen(userId, user) {
   }
 
   const draft = getDraft(userId);
-  if (draft.miniAppLinks) return chatHandoffCard(readChatHandoff(userId));
-  if (simpleMode) return buildSimpleHomeScreen(draft);
+  if (simpleMode) return orderPlacerCard();
   const hasCart = Boolean(draft.cart);
   const hasAddr = Boolean(draft.address);
   const bothReady = hasCart && hasAddr;
@@ -2496,20 +2496,11 @@ bot.start(async (ctx) => {
       return;
     }
 
-    // SIMPLE CHAT MODE: no reply-keyboard clutter, no second bubble — just the
-    // one card that asks for the two Swiggy links.
+    // SIMPLE CHAT MODE: one launcher, no link instructions or second bubble.
     if (simpleChatForUser(userId)) {
       const simpleScreen = getUserScreen(userId, ctx.from);
-      const simpleMsg = await ctx.reply(
-        '🙏 <b>Assalamu Alaikum!</b> Sirf <b>Cart link</b> + <b>Address link</b> bhejein — baaki sab bot karega.',
-        { parse_mode: 'HTML' }
-      ).catch(() => null);
       const cardMsg = await ctx.reply(simpleScreen.text, { parse_mode: 'HTML', ...simpleScreen.keyboard });
       rememberUserCard(userId, cardMsg);
-      if (simpleMsg?.message_id && simpleMsg.message_id !== cardMsg?.message_id) {
-        // Greeting is kept only as the very first line of the chat; the card is the screen.
-        userCardState(userId).promptIds.push(simpleMsg.message_id);
-      }
       return;
     }
 
@@ -2555,25 +2546,16 @@ function configuredMiniAppUrl(raw = process.env.PRO_MINIAPP_URL) {
   } catch { return ''; }
 }
 
-function chatHandoffCard(links = {}) {
-  const cart = Boolean(links.cartUrl);
-  const address = Boolean(links.addressUrl);
-  const ready = cart && address;
+function orderPlacerCard() {
   const url = configuredMiniAppUrl();
-  const prompt = ready
-    ? (url ? 'Mini App mein continue karein.' : 'Mini App configured nahi hai. Admin se baat karein.')
-    : (!cart && !address ? 'Swiggy cart aur address links bhejein.' : !cart ? 'Ab cart link bhejein.' : 'Ab address link bhejein.');
-  const rows = [];
-  if (ready && url) rows.push([{ text: 'Open Mini App', web_app: { url } }]);
-  rows.push([{ text: '👛 Wallet', callback_data: 'wallet_home' }]);
   return {
-    text: `🛒 Cart ${cart ? '✓' : '—'}  ·  📍 Address ${address ? '✓' : '—'}\n${prompt}`,
-    keyboard: { reply_markup: { inline_keyboard: rows } }
+    text: url ? 'Order Placer' : 'Mini App configured nahi hai. Admin se baat karein.',
+    keyboard: { reply_markup: { inline_keyboard: url ? [[{ text: 'Open Order Placer', web_app: { url } }]] : [] } }
   };
 }
 
-async function showChatHandoff(ctx, entry) {
-  const card = chatHandoffCard(entry);
+async function showChatHandoff(ctx) {
+  const card = orderPlacerCard();
   await ctx.reply(card.text, card.keyboard);
 }
 
@@ -2717,7 +2699,8 @@ bot.action('boss_maintenance_heal', async (ctx) => {
 bot.command('help', async (ctx) => {
   const isBossUser = isBoss(ctx.from?.id);
   if (chatHandoffEnabled() && !isBossUser) {
-    return ctx.reply('Swiggy ka cart aur address link bhejein, phir Mini App mein ID, address, cart aur bill check karein.');
+    const card = orderPlacerCard();
+    return ctx.reply(card.text, card.keyboard);
   }
   const text =
     `🍽 <b>Order Kaise Karein</b>\n\n` +
@@ -9130,39 +9113,18 @@ bot.on('text', async (ctx, next) => {
     return sendBossWalletList(ctx, { query: rawText, notice: '' }).catch(() => {});
   }
 
-  // New private-chat links are only collected here. No account is chosen and
-  // no Swiggy request, bill, or order starts in Telegram chat. Forwarded/admin
-  // work and unrelated wait states keep their existing paths.
+  // Customer chat is only a launcher. Links, arbitrary text and old handoff
+  // wait-states all get the same single app button; nothing is classified,
+  // stored, or turned into the removed ID/address wizard. Active order/admin
+  // flows above keep their own explicit input handling.
   const handoffWaits = new Set(['waiting_cart', 'waiting_address', 'waiting_both_links',
     'waiting_miniapp_cart', 'waiting_miniapp_address', 'classify_miniapp_link']);
-  if (chatHandoffEnabled() && ctx.chat?.type === 'private' && (!isBoss(userId) || !extractForwardSenderInfo(ctx.message)) &&
+  if (chatHandoffEnabled() && ctx.chat?.type === 'private' && !isBoss(userId) &&
       (!state || handoffWaits.has(state.action))) {
-    const parsed = parseChatShareLinks(rawText);
-    const found = Boolean(parsed.cart || parsed.address || parsed.ambiguous.length);
-    if (parsed.duplicates.length) {
-      await ctx.reply('Ek cart aur ek address link bhejein.');
-      return;
-    }
-    if (found) {
-      const links = { ...(parsed.cart ? { cart: parsed.cart } : {}), ...(parsed.address ? { address: parsed.address } : {}) };
-      if (parsed.ambiguous.length) {
-        const pending = { action: 'classify_miniapp_link', links, urls: [...parsed.ambiguous], number: 1 };
-        userWaitState[userId] = pending;
-        await askChatLinkKind(ctx, pending);
-      } else {
-        await recordChatHandoffLinks(ctx, links);
-      }
-      return;
-    }
-    if (parsed.unsupported.some(link => /(?:swiggy|swig\.gy|maps\.app|maps\.google|goo\.gl\/maps)/i.test(link) && !isOfficialSwiggyTrackingUrl(link))) {
-      await ctx.reply('Swiggy ka cart aur address share link bhejein.');
-      return;
-    }
-    if (state && ['waiting_miniapp_cart', 'waiting_miniapp_address', 'classify_miniapp_link'].includes(state.action) &&
-        !rawText.startsWith('/')) {
-      await ctx.reply('Sahi Swiggy cart ya address link bhejein.');
-      return;
-    }
+    delete userWaitState[userId];
+    const card = orderPlacerCard();
+    await ctx.reply(card.text, card.keyboard);
+    return;
   }
 
   // ================= PRIORITY #1: ZERO-OTP CART / ADDRESS / JSON GUARD (BOTH BOSS & CUSTOMERS!) =================
@@ -16459,7 +16421,7 @@ export async function configureTelegramBotMenu(telegram, rawUrl = process.env.PR
   if (miniAppUrl) {
     try {
       await telegram.setChatMenuButton({
-        menuButton: { type: 'web_app', text: 'Open', web_app: { url: miniAppUrl } }
+        menuButton: { type: 'web_app', text: 'Open Order Placer', web_app: { url: miniAppUrl } }
       });
     } catch (e) {
       ok = false;

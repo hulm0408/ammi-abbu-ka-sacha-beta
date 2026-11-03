@@ -1175,23 +1175,9 @@ function reconcileChatFlow(user, ws) {
   }
   return changed;
 }
-function chatHandoffView(user, ws) {
-  const pending = readChatHandoff(user.id);
-  const ready = pending?.id && safeSwiggyShareUrl(pending.cartUrl) && safeSwiggyShareUrl(pending.addressUrl) && pending.cartUrl !== pending.addressUrl;
-  const flow = ws.chatFlow && ws.chatFlow.stage !== 'DONE' ? ws.chatFlow : null;
-  const newLink = ready && pending.id !== ws.chatFlow?.id ? pending.id : '';
-  if (!flow && !newLink) return null;
-  let stage = flow?.stage || '';
-  if (stage === 'BILL' && !ws.cart?.quote) stage = 'CART';
-  if (['CART', 'BILL'].includes(stage) && !ws.selectedAddress) stage = 'ADDRESS';
-  if (flow?.accountKey && ws.activeAccountKey !== flow.accountKey) stage = 'ACCOUNT';
-  return {
-    pendingId: String(newLink || ''), activeId: String(flow?.id || ''), stage,
-    address: stage === 'ADDRESS' ? (ws.pendingAddress || null) : null,
-    cartFetched: stage === 'CART' && Boolean(ws.cart?.items?.length),
-    existingDraft: Boolean(ws.cart || ws.selectedAddress || ws.pendingAddress || flow),
-    blockedByCheckout: Boolean(ws.checkout), blockedByChatOrder: Boolean(getActiveUserOrder(user.id))
-  };
+function chatHandoffView() {
+  // Chat only launches the normal Mini App; saved links never start a wizard.
+  return null;
 }
 function bossAccountAccessView() {
   const db = getDb();
@@ -1262,9 +1248,8 @@ async function quoteChatHandoff(provider, user, ws, flow, { quick }) {
   writeProWorkspace(user.id, ws);
 }
 function publicState(user, ws) {
-  const handoff = chatHandoffView(user, ws);
-  // For a chat handoff the customer must explicitly choose or auto-choose.
-  if (!handoff) autoSelectAccount(user, ws);
+  // Normal app launch always uses the regular account/cart/address screens.
+  autoSelectAccount(user, ws);
   return {
     user: { name: user.firstName || 'Friend', isBoss: isBoss(user.id) },
     orderFee: { paise: serviceFeePaiseFor(getDb()), exempt: isBoss(user.id) || Boolean(getWallet(getDb(), user.id)?.feeExempt) },
@@ -2706,13 +2691,6 @@ export async function handleSwiggyProHttp(req, res, { provider = proProvider, ot
           // order apne aap cancel ho jata hai). PAID/in-flight/fresh → 409.
           const auto = await autoCloseUnpaidCheckout(user, ws, provider);
           if (auto?.blocked) throw error(409, auto.blocked);
-        }
-        if (ws.chatFlow && ws.chatFlow.stage !== 'DONE') {
-          const flow = requireChatFlow(user, ws, { handoffId: ws.chatFlow.id }, ['BILL']);
-          if (flow.cartDigest !== chatCartDigest(ws.cart) || flow.addressDigest !== draftDigest(ws.selectedAddress)) {
-            throw error(409, 'Cart ya address badal gaya. Pehle naya bill check karein.');
-          }
-          if (getActiveUserOrder(user.id)) throw error(409, 'Chat mein active order hai. Pehle usko check karein.');
         }
         const account = currentAccount(user, ws);
         const customerId = String(account.customerId || '').trim();

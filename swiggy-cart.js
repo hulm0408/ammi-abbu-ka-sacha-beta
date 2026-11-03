@@ -3659,32 +3659,37 @@ export function parseDapiCartPayload(data) {
     ? Object.values(ciMap)
     : (Array.isArray(cm.cart_menu_items) ? cm.cart_menu_items.map(mi => ({ itemId: mi.menu_item_id, quantity: mi.quantity, items: [mi] })) : []);
 
-  const items = rawEntries.map(ci => {
-    const itemInfo = ci.items?.[0] || ci || {};
-    const qty = Number(ci.quantity || itemInfo.quantity || 1);
-    const subPaise = Number(itemInfo.subtotal ?? (Number(itemInfo.base_price || itemInfo.price || 0) * qty));
-    const finalPaise = Number(itemInfo.final_price ?? subPaise);
-    const tradeDiscPaise = Number(itemInfo.subtotal_trade_discount || 0);
-    const unitPrice = subPaise > 0 ? Math.round((subPaise / 100 / qty) * 100) / 100 : 0;
-    const lineTotal = Math.round((subPaise / 100) * 100) / 100;
-    const finalLineTotal = Math.round((finalPaise / 100) * 100) / 100;
+  // One cartItems entry can contain several customised lines for the same dish.
+  // Reading only items[0] silently dropped the other variants and caused a
+  // false CART_ITEMS_MISMATCH even though Swiggy had the exact requested cart.
+  const items = rawEntries.flatMap(ci => {
+    const itemInfos = Array.isArray(ci?.items) && ci.items.length ? ci.items : [ci || {}];
+    return itemInfos.map(itemInfo => {
+      const qty = Number((itemInfos.length > 1 ? itemInfo.quantity : ci.quantity) || itemInfo.quantity || 1);
+      const subPaise = Number(itemInfo.subtotal ?? (Number(itemInfo.base_price || itemInfo.price || 0) * qty));
+      const finalPaise = Number(itemInfo.final_price ?? subPaise);
+      const tradeDiscPaise = Number(itemInfo.subtotal_trade_discount || 0);
+      const unitPrice = subPaise > 0 ? Math.round((subPaise / 100 / qty) * 100) / 100 : 0;
+      const lineTotal = Math.round((subPaise / 100) * 100) / 100;
+      const finalLineTotal = Math.round((finalPaise / 100) * 100) / 100;
 
-    return {
-      itemId: String(ci.itemId || itemInfo.menu_item_id || ''),
-      menu_item_id: Number(ci.itemId || itemInfo.menu_item_id || 0),
-      name: String(itemInfo.name || 'Dish Item').trim(),
-      qty,
-      quantity: qty,
-      price: unitPrice,
-      lineTotal,
-      finalLineTotal,
-      tradeDiscount: Math.round((tradeDiscPaise / 100) * 100) / 100,
-      addons: Array.isArray(itemInfo.addons) ? itemInfo.addons : [],
-      variants: Array.isArray(itemInfo.variants) ? itemInfo.variants : [],
-      offer_ids: Array.isArray(itemInfo.offer_ids) ? itemInfo.offer_ids : [],
-      item_offer_cart_meta: String(itemInfo.item_offer_cart_meta || ''),
-      item_offer_tags: Array.isArray(itemInfo.item_offer_tags) ? itemInfo.item_offer_tags : []
-    };
+      return {
+        itemId: String(ci.itemId || itemInfo.menu_item_id || ''),
+        menu_item_id: Number(ci.itemId || itemInfo.menu_item_id || 0),
+        name: String(itemInfo.name || 'Dish Item').trim(),
+        qty,
+        quantity: qty,
+        price: unitPrice,
+        lineTotal,
+        finalLineTotal,
+        tradeDiscount: Math.round((tradeDiscPaise / 100) * 100) / 100,
+        addons: Array.isArray(itemInfo.addons) ? itemInfo.addons : [],
+        variants: Array.isArray(itemInfo.variants) ? itemInfo.variants : [],
+        offer_ids: Array.isArray(itemInfo.offer_ids) ? itemInfo.offer_ids : [],
+        item_offer_cart_meta: String(itemInfo.item_offer_cart_meta || ''),
+        item_offer_tags: Array.isArray(itemInfo.item_offer_tags) ? itemInfo.item_offer_tags : []
+      };
+    });
   }).filter(it => it.name && it.qty > 0);
 
   const restDetails = cm.restaurant_details || {};
