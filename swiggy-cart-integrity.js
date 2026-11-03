@@ -13,11 +13,31 @@ export function exactPaise(value) {
 export function selectedSwiggyChoices(item, kind) {
   const isVariant = kind === 'variants';
   const raw = Array.isArray(item?.[kind]) ? item[kind].filter(choice => choice?.selected !== 0 && choice?.selected !== false && choice?.is_selected !== 0 && choice?.is_selected !== false) : [];
-  if (raw.length || !item) return raw;
   const groups = isVariant
     ? (item.valid_variants_v2?.variant_groups || item.valid_variants_v2?.variantGroups || item.valid_variants?.variantGroups || [])
     : (Array.isArray(item.valid_addons) ? item.valid_addons : []);
-  if (!Array.isArray(groups)) return [];
+  if (!Array.isArray(groups)) return raw;
+  const idKeys = isVariant
+    ? ['variation_id', 'variationId', 'variant_id', 'variantId', 'id']
+    : ['choice_id', 'choiceId', 'addon_choice_id', 'addon_id', 'addonId', 'id'];
+  const canonical = (choice, fallbackGroup = '') => {
+    const id = String(idKeys.map(key => choice?.[key]).find(value => value !== undefined && value !== null) ?? '');
+    let groupId = String(choice?.group_id ?? choice?.groupId ?? choice?.variant_group_id ?? choice?.variantGroupId ?? choice?.addon_group_id ?? choice?.addonGroupId ?? fallbackGroup ?? '');
+    // A selected choice can carry only its ID while its group exists solely in
+    // valid_* metadata. The write payload needs that group too, not merely the
+    // comparator: otherwise Swiggy silently applies its default variant.
+    if (!groupId && id) {
+      const owner = groups.find(group => (group?.variations || group?.choices || []).some(option =>
+        idKeys.some(key => String(option?.[key] ?? '') === id) || String(option?.id ?? '') === id));
+      groupId = String(owner?.group_id ?? owner?.groupId ?? '');
+    }
+    // Preserve malformed choices so strict verification still rejects them;
+    // never silently discard an unknown/customized selection.
+    if (!groupId || !id) return choice;
+    return isVariant ? { group_id: groupId, variation_id: id } : { group_id: groupId, choice_id: id };
+  };
+  if (raw.length) return raw.map(choice => canonical(choice));
+  if (!item) return [];
   const output = [];
   for (const group of groups) {
     const groupId = String(group?.group_id ?? group?.groupId ?? '');
@@ -25,9 +45,9 @@ export function selectedSwiggyChoices(item, kind) {
     const selected = options.filter(choice => choice?.selected === 1 || choice?.selected === true || choice?.is_selected === 1 || choice?.is_selected === true || choice?.default === 1 || choice?.default === true);
     const max = isVariant ? 1 : Math.max(0, Number(group?.maxAddons ?? group?.max_addons ?? selected.length) || selected.length);
     for (const choice of selected.slice(0, max)) {
-      const id = String(choice?.id ?? choice?.variation_id ?? choice?.choice_id ?? choice?.addon_id ?? '');
-      if (!groupId || !id) continue;
-      output.push(isVariant ? { group_id: groupId, variation_id: id } : { group_id: groupId, choice_id: id });
+      const choiceId = String(choice?.id ?? choice?.variation_id ?? choice?.choice_id ?? choice?.addon_id ?? '');
+      if (!groupId || !choiceId) continue;
+      output.push(isVariant ? { group_id: groupId, variation_id: choiceId } : { group_id: groupId, choice_id: choiceId });
     }
   }
   return output;

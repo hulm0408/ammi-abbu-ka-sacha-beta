@@ -320,6 +320,14 @@ test('quote verification rejects changed add-ons, variants, quantities and unkno
     variants: [{ variation_id: '7' }], valid_variants_v2: { variant_groups: [{ group_id: '5', variations: [{ id: '7' }] }] },
     addons: [{ choice_id: '2' }], valid_addons: [{ group_id: '1', choices: [{ id: '2' }] }] }];
   assert.equal(sameCartItems(base, splitChoiceMetadata), true, 'selected IDs ko unke valid groups se resolve karna hai');
+  const canonicalPayload = buildSwiggyCartItemsPayload(splitChoiceMetadata)[0];
+  assert.deepEqual(canonicalPayload.variants, [{ group_id: '5', variation_id: '7' }], 'write payload mein bhi metadata se variant group bharana hai');
+  assert.deepEqual(canonicalPayload.addons, [{ group_id: '1', choice_id: '2' }], 'write payload mein bhi metadata se add-on group bharana hai');
+  const richReadbackChoice = [{ menu_item_id: 456, quantity: 1,
+    variants: [{ group_id: 5, variation_id: 7, name: '500 Gms', price: 50000 }],
+    addons: [{ group_id: 1, choice_id: 2, name: 'Coke', price: 0, addon_tax_charges: { GST: '0' } }] }];
+  assert.deepEqual(buildSwiggyCartItemsPayload(richReadbackChoice)[0].variants, [{ group_id: '5', variation_id: '7' }]);
+  assert.deepEqual(buildSwiggyCartItemsPayload(richReadbackChoice)[0].addons, [{ group_id: '1', choice_id: '2' }]);
 });
 
 test('private session bootstrap cannot overwrite a boss account with the same phone', async () => {
