@@ -458,6 +458,32 @@ function attemptedPlacementError(message, code, orderId = '') {
   return err;
 }
 
+// Keep the complete provider choice metadata through the Mini App boundary.
+// selectedSwiggyChoices() needs valid_* when Swiggy omits selected variants or
+// add-ons; dropping it here undoes the parser's default-choice hydration.
+export function normalizeProGroupCartItems(live) {
+  return (live?.items || [])
+    .filter(it => it && it.menu_item_id && Number(it.qty ?? it.quantity) > 0)
+    .map(it => ({
+      id: String(it.menu_item_id),
+      menu_item_id: Number(it.menu_item_id),
+      name: String(it.name || 'Item'),
+      qty: Number(it.qty ?? it.quantity) || 1,
+      price: it.price === null || it.price === undefined || !Number.isFinite(Number(it.price)) ? null : Number(it.price),
+      lineTotal: it.lineTotal === null || it.lineTotal === undefined || !Number.isFinite(Number(it.lineTotal)) ? null : Number(it.lineTotal),
+      // Vendor parser sirf `true` se veg confirm karta hai; `false` ka matlab
+      // "veg nahi bataya" ho sakta hai — jhootha non-veg mark nahi lagate.
+      isVeg: it.isVeg === true ? true : null,
+      inStock: it.inStock === false ? false : true,
+      variants: Array.isArray(it.variants) ? it.variants : [],
+      addons: Array.isArray(it.addons) ? it.addons : [],
+      valid_variants_v2: it.valid_variants_v2 && typeof it.valid_variants_v2 === 'object' ? it.valid_variants_v2 : null,
+      valid_addons: Array.isArray(it.valid_addons) ? it.valid_addons : [],
+      offer_ids: Array.isArray(it.offer_ids) ? it.offer_ids : [],
+      item_offer_cart_meta: String(it.item_offer_cart_meta || '')
+    }));
+}
+
 export const proProvider = {
   async verifySession(account) {
     const live = await verifySwiggySessionLive(account);
@@ -537,24 +563,7 @@ export const proProvider = {
     const ref = await resolveGroupCartLink(link);
     const auth = await getSwiggySessionAuth(account);
     if (!auth?.jwtTid || !auth?.userId) throw unavailable('The selected Swiggy session could not be verified.');
-    const normalizeItems = live => (live?.items || [])
-      .filter(it => it && it.menu_item_id && Number(it.qty ?? it.quantity) > 0)
-      .map(it => ({
-        id: String(it.menu_item_id),
-        menu_item_id: Number(it.menu_item_id),
-        name: String(it.name || 'Item'),
-        qty: Number(it.qty ?? it.quantity) || 1,
-        price: it.price === null || it.price === undefined || !Number.isFinite(Number(it.price)) ? null : Number(it.price),
-        lineTotal: it.lineTotal === null || it.lineTotal === undefined || !Number.isFinite(Number(it.lineTotal)) ? null : Number(it.lineTotal),
-        // Vendor parser sirf `true` se veg confirm karta hai; `false` ka matlab
-        // "veg nahi bataya" ho sakta hai — jhootha non-veg mark nahi lagate.
-        isVeg: it.isVeg === true ? true : null,
-        inStock: it.inStock === false ? false : true,
-        variants: Array.isArray(it.variants) ? it.variants : [],
-        addons: Array.isArray(it.addons) ? it.addons : [],
-        offer_ids: Array.isArray(it.offer_ids) ? it.offer_ids : [],
-        item_offer_cart_meta: String(it.item_offer_cart_meta || '')
-      }));
+    const normalizeItems = normalizeProGroupCartItems;
     const cartShape = (live, items) => ({
       restaurantId: String(live?.restaurantId || ref.restaurantId || ref.cartId),
       restaurantName: String(live?.restaurantName || 'Restaurant'),
@@ -601,6 +610,8 @@ export const proProvider = {
           is_veg: it.is_veg,
           inStock: it.in_stock === 0 ? false : true,
           variants: Array.isArray(it.variants) ? it.variants : [], addons: Array.isArray(it.addons) ? it.addons : [],
+          valid_variants_v2: it.valid_variants_v2 && typeof it.valid_variants_v2 === 'object' ? it.valid_variants_v2 : null,
+          valid_addons: Array.isArray(it.valid_addons) ? it.valid_addons : [],
           offer_ids: Array.isArray(it.offer_ids) ? it.offer_ids : [], item_offer_cart_meta: String(it.item_offer_cart_meta || '')
         });
       }

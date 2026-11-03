@@ -22,7 +22,7 @@ process.env.BOSS_ID = '7000';
 process.env.DB_ASYNC_WRITE = '0';
 
 const { handleSwiggyProHttp, verifyTelegramWebAppInitData } = await import('./swiggy-pro-api.js');
-const { expandProShareLink, sameCartItems, sameDeliveryRecipient, dishInfo } = await import('./swiggy-pro-provider.js');
+const { expandProShareLink, sameCartItems, sameDeliveryRecipient, dishInfo, normalizeProGroupCartItems } = await import('./swiggy-pro-provider.js');
 const { bootstrapSwiggyWebSessionFromAndroidTokens, parseDapiCartPayload, buildSwiggyCartItemsPayload } = await import('./swiggy-cart.js');
 const { getDb, saveDb } = await import('./store.js');
 const db = getDb();
@@ -289,12 +289,15 @@ test('group-cart default choices are sent and compared instead of becoming false
   const imported = { menu_item_id: 456, qty: 1, variants: [], addons: [],
     valid_variants_v2: { variant_groups: [{ group_id: '5', variations: [{ id: '7', default: 1 }, { id: '8', default: 0 }] }] },
     valid_addons: [{ group_id: '1', maxAddons: 1, choices: [{ id: '2', selected: 1 }, { id: '3', selected: 0 }] }] };
-  assert.deepEqual(buildSwiggyCartItemsPayload([imported])[0].variants, [{ group_id: '5', variation_id: '7' }]);
-  assert.deepEqual(buildSwiggyCartItemsPayload([imported])[0].addons, [{ group_id: '1', choice_id: '2' }]);
+  // Exercise the real Mini App normalization boundary, not just the vendor
+  // parser: this step previously discarded valid_* before quote generation.
+  const [normalized] = normalizeProGroupCartItems({ items: [imported] });
+  assert.deepEqual(buildSwiggyCartItemsPayload([normalized])[0].variants, [{ group_id: '5', variation_id: '7' }]);
+  assert.deepEqual(buildSwiggyCartItemsPayload([normalized])[0].addons, [{ group_id: '1', choice_id: '2' }]);
   const readback = [{ menu_item_id: 456, quantity: 1, variants: [{ group_id: '5', variation_id: '7' }], addons: [{ group_id: '1', choice_id: '2' }] }];
-  assert.equal(sameCartItems([imported], readback), true);
+  assert.equal(sameCartItems([normalized], readback), true);
   const different = structuredClone(readback); different[0].variants[0].variation_id = '8';
-  assert.equal(sameCartItems([imported], different), false, 'default hydration genuine variant change ko allow nahi karti');
+  assert.equal(sameCartItems([normalized], different), false, 'default hydration genuine variant change ko allow nahi karti');
 });
 
 test('quote verification rejects changed add-ons, variants, quantities and unknown IDs', () => {
