@@ -177,6 +177,21 @@ export async function runAutoCouponCheckout({ account, order, options = {} } = {
     return { ...base, code: 'ACCOUNT_SESSION_EXPIRED_OR_PARTIAL', error: `Swiggy session expired for account ${account?.phone || account?.name || account?.id || 'ID'} — re-login first.` };
   }
 
+  // CUSTOMIZE / ADD-ON SAFETY: keep customized lines intact (addons + variants + ids) so the live
+  // cart ADD behaves exactly like Swiggy (customize item copy + add, then bill + coupon + free cash).
+  if (Array.isArray(order.items)) {
+    order.items = order.items
+      .filter(Boolean)
+      .map((it) => ({
+        ...it,
+        itemId: it.itemId || it.menu_item_id || it.menuItemId || it.item_id || '',
+        menu_item_id: it.menu_item_id || it.menuItemId || it.item_id || it.itemId || '',
+        addons: Array.isArray(it.addons) ? it.addons : (Array.isArray(it.addOns) ? it.addOns : []),
+        variants: Array.isArray(it.variants) ? it.variants : (Array.isArray(it.optionChoices) ? it.optionChoices : []),
+        quantity: it.quantity || it.qty || 1
+      }));
+  }
+
   // 1) Night / Breakfast event offers (free cash campaign) pre-claim.
   let eventsClaimSummary = null;
   try {
