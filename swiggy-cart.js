@@ -1630,6 +1630,8 @@ export async function fetchLiveGroupCart(groupCartId, restaurantId = null, hostN
             gst: Math.round(itemGst * 100) / 100,
             addons,
             variants,
+            valid_addons: Array.isArray(rawItem.valid_addons) ? rawItem.valid_addons : [],
+            valid_variants_v2: rawItem.valid_variants_v2 && typeof rawItem.valid_variants_v2 === 'object' ? rawItem.valid_variants_v2 : null,
             offer_ids: Array.isArray(rawItem.offer_ids) ? [...rawItem.offer_ids] : [],
             item_offer_cart_meta: String(rawItem.item_offer_cart_meta || ''),
             item_offer_tags: Array.isArray(rawItem.item_offer_tags) ? rawItem.item_offer_tags : [],
@@ -3685,6 +3687,8 @@ export function parseDapiCartPayload(data) {
         tradeDiscount: Math.round((tradeDiscPaise / 100) * 100) / 100,
         addons: Array.isArray(itemInfo.addons) ? itemInfo.addons : [],
         variants: Array.isArray(itemInfo.variants) ? itemInfo.variants : [],
+        valid_addons: Array.isArray(itemInfo.valid_addons) ? itemInfo.valid_addons : [],
+        valid_variants_v2: itemInfo.valid_variants_v2 && typeof itemInfo.valid_variants_v2 === 'object' ? itemInfo.valid_variants_v2 : null,
         offer_ids: Array.isArray(itemInfo.offer_ids) ? itemInfo.offer_ids : [],
         item_offer_cart_meta: String(itemInfo.item_offer_cart_meta || ''),
         item_offer_tags: Array.isArray(itemInfo.item_offer_tags) ? itemInfo.item_offer_tags : []

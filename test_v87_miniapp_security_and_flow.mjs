@@ -301,6 +301,10 @@ test('quote verification rejects changed add-ons, variants, quantities and unkno
   const swiggyAliases = [{ menu_item_id: 456, quantity: 1,
     variants: [{ variant_group_id: '5', variant_id: '7' }], addons: [{ addon_group_id: '1', addon_id: '2' }] }];
   assert.equal(sameCartItems(base, swiggyAliases), true, 'Swiggy ke equivalent custom-choice aliases mismatch nahi hone chahiye');
+  const splitChoiceMetadata = [{ menu_item_id: 456, quantity: 1,
+    variants: [{ variation_id: '7' }], valid_variants_v2: { variant_groups: [{ group_id: '5', variations: [{ id: '7' }] }] },
+    addons: [{ choice_id: '2' }], valid_addons: [{ group_id: '1', choices: [{ id: '2' }] }] }];
+  assert.equal(sameCartItems(base, splitChoiceMetadata), true, 'selected IDs ko unke valid groups se resolve karna hai');
 });
 
 test('private session bootstrap cannot overwrite a boss account with the same phone', async () => {
@@ -365,6 +369,15 @@ test('chat menu uses the configured HTTPS app and preserves a manually configure
     menuButton: { type: 'web_app', text: 'Open Order Placer', web_app: { url: 'https://example.test/pro' } }
   });
   assert(calls.find(c => c.method === 'commands').commands.some(c => c.command === 'pro'));
+
+  const previousPro = process.env.PRO_MINIAPP_URL, previousRender = process.env.RENDER_EXTERNAL_URL;
+  delete process.env.PRO_MINIAPP_URL;
+  process.env.RENDER_EXTERNAL_URL = 'https://order-placer.example';
+  calls.length = 0;
+  assert.equal(await configureTelegramBotMenu(telegram), true);
+  assert.equal(calls.find(c => c.method === 'menu')?.payload.menuButton.web_app.url, 'https://order-placer.example/pro');
+  if (previousPro === undefined) delete process.env.PRO_MINIAPP_URL; else process.env.PRO_MINIAPP_URL = previousPro;
+  if (previousRender === undefined) delete process.env.RENDER_EXTERNAL_URL; else process.env.RENDER_EXTERNAL_URL = previousRender;
 
   for (const url of ['', 'http://example.test/pro', 'https://127.0.0.1/pro', 'https://user:password@example.test/pro', 'https://example.test/pro?x=1']) {
     calls.length = 0;

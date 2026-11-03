@@ -12,19 +12,30 @@ export function sameCartItems(expected, actual) {
   const makeSignature = (item) => {
     const id = String(item?.menu_item_id || item?.itemId || item?.id || '');
     if (!/^\d+$/.test(id)) return null;
-    const choices = (list, choiceKeys) => {
+    const choices = (list, choiceKeys, validGroups) => {
       if (!Array.isArray(list)) return null;
       const output = [];
       for (const choice of list) {
-        const group = String(choice?.group_id ?? choice?.groupId ?? choice?.variant_group_id ?? choice?.addon_group_id ?? '');
         const choiceId = String(choiceKeys.map(key => choice?.[key]).find(v => v !== undefined && v !== null) ?? '');
+        let group = String(choice?.group_id ?? choice?.groupId ?? choice?.variant_group_id ?? choice?.variantGroupId ?? choice?.addon_group_id ?? choice?.addonGroupId ?? '');
+        // Some Swiggy readbacks put the selected choice in `variants/addons`
+        // but keep its group only in valid_variants_v2/valid_addons. Resolve
+        // that exact ID instead of rejecting an otherwise identical cart.
+        if (!group && choiceId) {
+          const owner = validGroups.find(candidate => {
+            const options = candidate?.variations || candidate?.choices || [];
+            return options.some(option => choiceKeys.some(key => String(option?.[key] ?? '') === choiceId) || String(option?.id ?? '') === choiceId);
+          });
+          group = String(owner?.group_id ?? owner?.groupId ?? '');
+        }
         if (!group || !choiceId) return null;
         output.push(`${group}:${choiceId}`);
       }
       return output.sort();
     };
-    const variants = choices(item.variants || [], ['variation_id', 'variationId', 'variant_id', 'variantId', 'id']);
-    const addons = choices(item.addons || [], ['choice_id', 'choiceId', 'addon_id', 'addonId', 'id']);
+    const validVariants = item.valid_variants_v2?.variant_groups || item.valid_variants_v2?.variantGroups || item.valid_variants?.variantGroups || [];
+    const variants = choices(item.variants || [], ['variation_id', 'variationId', 'variant_id', 'variantId', 'id'], Array.isArray(validVariants) ? validVariants : []);
+    const addons = choices(item.addons || [], ['choice_id', 'choiceId', 'addon_choice_id', 'addon_id', 'addonId', 'id'], Array.isArray(item.valid_addons) ? item.valid_addons : []);
     if (!variants || !addons) return null;
     return JSON.stringify([id, variants, addons]);
   };
