@@ -53,12 +53,14 @@ const cart = () => ({
 const state = {
   coupon: '', trade: 0, reward: 0, coupons: [], suggested: '', suggestInCart: '',
   discoveryFail: false, claimFail: false, bulkHonorsCoupon: true, requests: [], updateCalls: 0, applyCalls: 0,
+  getCalls: 0, wrongItemsRemaining: 0, wrongItemsAlways: false,
     delivery: 0, oneLiteApplied: false, oneLiteFee: 1, discounts: {}, oneLitePlan: '', oneLitePlanRequired: ''
   };
 function reset() {
   Object.assign(state, {
     coupon: '', trade: 0, reward: 0, coupons: [], suggested: '', suggestInCart: '',
     discoveryFail: false, claimFail: false, bulkHonorsCoupon: true, requests: [], updateCalls: 0, applyCalls: 0,
+    getCalls: 0, wrongItemsRemaining: 0, wrongItemsAlways: false,
     delivery: 0, oneLiteApplied: false, oneLiteFee: 1, discounts: {}, oneLitePlan: '', oneLitePlanRequired: ''
   });
   resetInstantOfferCache();
@@ -71,7 +73,7 @@ function cartPayload() {
   // 230 items + 30 taxes + 10 packing = 270, plus delivery/One fee, minus
   // verified coupon discount and campaign cash. Swiggy ka hi order_total.
   const total = 270 + delivery + oneFee - discount - state.trade;
-  return { statusCode: 0, data: { cartMeta: {
+  const payload = { statusCode: 0, data: { cartMeta: {
     address_id: 'addr-1', cartId: 'cart-1', order_total: total, item_total: 230,
     restaurant_details: { id: '201', name: 'Mock' },
     cart_menu_items: [{ menu_item_id: 9001, quantity: 1, name: 'Biryani', subtotal: 23000, final_price: 23000, addons: [], variants: [] }],
@@ -87,6 +89,16 @@ function cartPayload() {
   },
   // Swiggy chkout `data.subscriptionItems` (cartMeta ke bahar) hi parser padhta hai.
   subscriptionItems: state.oneLiteApplied ? [{ plan_id: '773', final_price: oneFee * 100 }] : [] } };
+  // Stale/purana cart: pehle N cart responses (ya hamesha, flag par) alag
+  // items dikhati hain — bill engine ko cart check + dobara sync se guzarna
+  // chahiye, warna bill "alag items/variants" par atak jaata hai.
+  if (state.wrongItemsAlways || state.wrongItemsRemaining > 0) {
+    if (!state.wrongItemsAlways) state.wrongItemsRemaining -= 1;
+    payload.data.cartMeta.cart_menu_items = [
+      { menu_item_id: 9001, quantity: 2, name: 'Biryani', subtotal: 46000, final_price: 46000, addons: [], variants: [] }
+    ];
+  }
+  return payload;
 }
 const mockFetch = async (raw, options = {}) => {
   const u = String(raw);
@@ -121,6 +133,7 @@ const mockFetch = async (raw, options = {}) => {
         (!state.oneLitePlanRequired || subs.some(s => String(s.plan_id) === state.oneLitePlanRequired));
       return json(cartPayload());
     }
+    state.getCalls++;
     return json(cartPayload());
   }
   return json({ statusCode: 0, data: {} });
@@ -371,6 +384,35 @@ test('free cash: max coupon + one lite ke baad bhi wahi Swiggy cash (free cash k
   assert.equal(out.bill.engine.oneLite, 'applied');
   assert.match(out.bill.offerNote, /Free Cash ₹50.*auto-applied/i);
   assert.equal(out.bill.total, 141, '270 + 1 One − 80 coupon − 50 cash');
+});
+
+// ── 6b. Cart check + dobara sync: "Swiggy cart me alag items/variants aaye" ──
+test('stale cart readback par engine khud cart check karke dobara sync karta hai', async () => {
+  reset();
+  // Pehla update aur pehla confirming GET purana (galat) cart dikhati hain —
+  // jaisa live me hota hai jab /update stale jawab de. Engine ko ek bounded
+  // re-sync ke baad verified bill dena chahiye, error nahi.
+  state.wrongItemsRemaining = 2;
+  const out = await withMock(() => proProvider.quoteCart(account(), address, cart(), '', {
+    phase: 'full', autoCoupon: true, instantAuto: true
+  }));
+  assert.equal(out.bill.total, 270, 're-sync ke baad asli verified bill aaya');
+  assert.equal(state.updateCalls, 2, 'ek hi bounded re-sync write — loop nahi');
+  assert.equal(out.bill.engine.autoOffer.cartWrites, 2, 'initial write + ek re-sync');
+  assert.ok(state.getCalls >= 1, 're-sync se pehle cart check (GET) hua');
+});
+
+test('persistent alag items bounded retry ke baad hi asli error deti hai', async () => {
+  reset();
+  state.wrongItemsAlways = true;
+  await assert.rejects(
+    () => withMock(() => proProvider.quoteCart(account(), address, cart(), '', {
+      phase: 'full', autoCoupon: true, instantAuto: true
+    })),
+    /alag items\/variants/
+  );
+  assert.equal(state.updateCalls, 2, 'initial + ek hi re-sync — infinite loop nahi');
+  assert.equal(state.getCalls, 2, 'har write ke baad ek confirming cart check');
 });
 
 // ── 7. Server + app wiring ────────────────────────────────────────────────
