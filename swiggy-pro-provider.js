@@ -16,6 +16,7 @@ import crypto from 'node:crypto';
 import { sameCartItems, sameDeliveryRecipient, exactPaise } from './swiggy-cart-integrity.js';
 import { executeSingleSwiggyPlacement } from './swiggy-placement-journal.js';
 import { planQrGeneration } from './qr-generation-plan.js';
+import { quoteInstantCart } from './instant-offer-engine.js';
 export { sameCartItems, sameDeliveryRecipient } from './swiggy-cart-integrity.js';
 
 const bootFetch = globalThis.fetch;
@@ -708,6 +709,11 @@ export const proProvider = {
     // optional offer/One Lite search. It still saves and reads back the exact
     // address, cart and payable amount under the same account lock.
     const quickBill = cart.quickBill === true && !requestedCoupon;
+    // Boss (03-11-2026): "Swiggy me max offer + free cash auto lag jata hai,
+    // time bhi nahi lagta aur error bhi nahi". `instantAuto` wahi Swiggy wala
+    // rasta hai — EK verified cart write, zero blind coupon trials. Purana
+    // poora trial engine `deep` mode me waise hi zinda hai (refresh/optimize).
+    const instantAuto = options.instantAuto === true && autoCoupon && !requestedCoupon && !fast && !quickBill;
     const budget = {
       // Only try codes actually returned by Swiggy. A blind code list made
       // checkout wait through many sequential cart writes (often 45s+).
@@ -715,6 +721,14 @@ export const proProvider = {
       maxTrials: Math.max(1, Math.min(Number(process.env.PRO_COUPON_TRIALS) || 10, 50))
     };
     return withSwiggyAccountLock(checkoutLockKey(account), async () => {
+      if (instantAuto) {
+        return quoteInstantCart(account, address, cart, '', {
+          previousAutoCoupon: options.previousAutoCoupon,
+          addressDigest: addressFingerprint(address),
+          addressTtlMs: ADDRESS_CONFIRM_TTL_MS,
+          autoCoupon
+        });
+      }
       // ── Round 34 (boss): "MAKE THE CHECK OUT FASTER" ──────────────────────
       // Bill ke raste me sabse mehnga hissa address tha: har baar saveAddress
       // (POST) + addresses (GET) + readback. Ab:

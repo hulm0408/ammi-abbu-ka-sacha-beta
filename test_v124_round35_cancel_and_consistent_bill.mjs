@@ -154,7 +154,8 @@ test('free cash: offer claim quote se pehle hota hai (bill me hi lage)', () => {
   // aata tha aur user ko \"free cash nahi lag raha\" dikhta tha.
   const claimAt = providerSource.indexOf('const claimPromise = claimEnabled');
   const awaitAt = providerSource.indexOf('const claimResult = claimEnabled ? await claimPromise : null;');
-  const pushAt = providerSource.indexOf('let base = await push({ couponCode: requestedCoupon, subscriptionItems });');
+  // Claim ke jawab ke baad wala re-push (free cash usi bill me aata hai).
+  const pushAt = providerSource.indexOf('if (activeClaims > 0) base = await push({ couponCode: requestedCoupon, subscriptionItems });');
   assert.ok(claimAt > 0 && awaitAt > claimAt, 'claim shuru hota hai');
   assert.ok(pushAt > awaitAt, 'claim ka jawab cart push se pehle — free cash usi bill me');
   assert.match(providerSource, /deadlineAt: Date\.now\(\) \+ 6500/);
@@ -163,7 +164,8 @@ test('free cash: offer claim quote se pehle hota hai (bill me hi lage)', () => {
   assert.match(providerSource, /claimSummary\.claimed/);
   // Claim fail/used ho to sach likha jata hai, jhoothi \"applied\" nahi.
   assert.match(providerSource, /pre-booked|PRE_LOCKED/);
-  assert.match(providerSource, /engine\.offerNote = claimNote/);
+  assert.match(providerSource, /engine\.offersNote = claimNote/);
+  assert.match(providerSource, /engine\.offerNote = billOfferNote/);
   assert.match(apiSource, /quote\.bill\?\.offerNote \|\| quote\.offerNote/);
 });
 
