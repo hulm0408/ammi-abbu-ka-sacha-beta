@@ -23,7 +23,7 @@ process.env.DB_ASYNC_WRITE = '0';
 
 const { handleSwiggyProHttp, verifyTelegramWebAppInitData } = await import('./swiggy-pro-api.js');
 const { expandProShareLink, sameCartItems, sameDeliveryRecipient, dishInfo } = await import('./swiggy-pro-provider.js');
-const { bootstrapSwiggyWebSessionFromAndroidTokens } = await import('./swiggy-cart.js');
+const { bootstrapSwiggyWebSessionFromAndroidTokens, parseDapiCartPayload } = await import('./swiggy-cart.js');
 const { getDb, saveDb } = await import('./store.js');
 const db = getDb();
 db.config.accounts.shared_test = { id: 'shared_test', isLoggedIn: true, name: 'Boss vault account', phone: '9876543210', token: 'boss-secret-sentinel' };
@@ -261,6 +261,30 @@ test('menu parser preserves Swiggy variant/add-on IDs and defaults for the custo
   assert.equal(item.addonGroups[0].choices[0].id, '40');
 });
 
+test('menu variant rupees are normalised to paise without turning ₹500 into ₹5', () => {
+  const item = dishInfo({ id: '999', name: 'Khoya Badam Barfi', price: 50000, inStock: 1,
+    variantsV2: { variantGroups: [{ group_id: '10', name: 'Quantity', variations: [
+      { id: '20', name: '500 Gms', price: 500, default: 1 },
+      { id: '21', name: '1 Kg', price: 1000 }
+    ] }] } });
+  assert.deepEqual(item.variantGroups[0].variations.map(v => v.price), [50000, 100000]);
+});
+
+test('cart parser retains every customised line inside the same menu-item entry', () => {
+  const parsed = parseDapiCartPayload({
+    cartMeta: { order_total: 1500, cart_menu_items: [] },
+    cartItems: { '999': { itemId: '999', quantity: 2, items: [
+      { menu_item_id: 999, name: 'Barfi', quantity: 1, subtotal: 50000, variants: [{ group_id: '10', variation_id: '20' }], addons: [] },
+      { menu_item_id: 999, name: 'Barfi', quantity: 1, subtotal: 100000, variants: [{ group_id: '10', variation_id: '21' }], addons: [] }
+    ] } }
+  });
+  assert.equal(parsed.items.length, 2);
+  assert.equal(sameCartItems([
+    { menu_item_id: 999, qty: 1, variants: [{ group_id: '10', variation_id: '20' }], addons: [] },
+    { menu_item_id: 999, qty: 1, variants: [{ group_id: '10', variation_id: '21' }], addons: [] }
+  ], parsed.items), true);
+});
+
 test('quote verification rejects changed add-ons, variants, quantities and unknown IDs', () => {
   const base = [{ menu_item_id: 456, qty: 1, variants: [{ group_id: '5', variation_id: '7' }], addons: [{ group_id: '1', choice_id: '2' }] }];
   assert.equal(sameCartItems(base, structuredClone(base)), true);
@@ -338,7 +362,7 @@ test('chat menu uses the configured HTTPS app and preserves a manually configure
 
   assert.equal(await configureTelegramBotMenu(telegram, 'https://example.test/pro'), true);
   assert.deepEqual(calls.find(c => c.method === 'menu')?.payload, {
-    menuButton: { type: 'web_app', text: 'Open', web_app: { url: 'https://example.test/pro' } }
+    menuButton: { type: 'web_app', text: 'Open Order Placer', web_app: { url: 'https://example.test/pro' } }
   });
   assert(calls.find(c => c.method === 'commands').commands.some(c => c.command === 'pro'));
 
@@ -356,7 +380,7 @@ test('chat menu uses the configured HTTPS app and preserves a manually configure
   try {
     await configureTelegramBotMenu(bot.telegram, 'https://example.test/pro');
     assert.deepEqual(apiCalls.find(c => c.method === 'setChatMenuButton')?.payload.menu_button, {
-      type: 'web_app', text: 'Open', web_app: { url: 'https://example.test/pro' }
+      type: 'web_app', text: 'Open Order Placer', web_app: { url: 'https://example.test/pro' }
     });
   } finally { bot.telegram.callApi = originalCallApi; }
 

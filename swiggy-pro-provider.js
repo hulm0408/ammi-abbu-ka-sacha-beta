@@ -131,23 +131,31 @@ function searchRestaurants(json) {
 export function dishInfo(info) {
   if (!info?.id || !info?.name || !/^\d+$/.test(String(info.id)) || !Number.isSafeInteger(Number(info.id))) return null;
   const pricePaise = Number(info.finalPrice ?? info.price ?? info.defaultPrice ?? 0);
+  const variantReferencePaise = Number(info.defaultPrice ?? info.price ?? info.finalPrice ?? 0);
   const variants = info.variantsV2?.variantGroups || info.variants_v2?.variant_groups || info.variants?.variantGroups || [];
   const addons = info.addons || [];
-  // Keep Swiggy's actual option IDs. Earlier only `customizable: true` reached
-  // the client, so both the button and /cart/add had no way to build a valid
-  // customised cart line. Prices remain server-owned (all Swiggy prices are
-  // paise); the client only chooses IDs.
-  const variantGroups = (Array.isArray(variants) ? variants : []).map(group => ({
-    group_id: String(group?.group_id ?? group?.groupId ?? ''),
-    name: String(group?.name || group?.group_name || 'Choose an option'),
-    variations: (Array.isArray(group?.variations) ? group.variations : []).map(choice => ({
-      id: String(choice?.id ?? choice?.variation_id ?? ''),
-      name: String(choice?.name || 'Option'),
-      price: Number.isFinite(Number(choice?.price)) ? Number(choice.price) : 0,
-      inStock: optionalBoolean(choice?.inStock),
-      isDefault: choice?.default === 1 || choice?.default === true || choice?.selected === 1 || choice?.selected === true
-    })).filter(choice => /^\d+$/.test(choice.id))
-  })).filter(group => /^\d+$/.test(group.group_id) && group.variations.length);
+  // Keep Swiggy's actual option IDs. Menu variants are inconsistent: some
+  // endpoints return 50000 paise, others return 500 rupees for the same ₹500
+  // option. Detect the unit against the item's own server price, never by
+  // blindly dividing every value by 100.
+  const variantGroups = (Array.isArray(variants) ? variants : []).map(group => {
+    const rawChoices = Array.isArray(group?.variations) ? group.variations : [];
+    const positivePrices = rawChoices.map(choice => Number(choice?.price)).filter(price => Number.isFinite(price) && price > 0);
+    const defaultPrice = Number(rawChoices.find(choice => choice?.default === 1 || choice?.default === true || choice?.selected === 1 || choice?.selected === true)?.price || 0);
+    const pricesAreRupees = variantReferencePaise > 0 && ((defaultPrice > 0 && defaultPrice * 100 === variantReferencePaise) ||
+      (positivePrices.length > 0 && Math.min(...positivePrices) * 100 === variantReferencePaise));
+    return {
+      group_id: String(group?.group_id ?? group?.groupId ?? ''),
+      name: String(group?.name || group?.group_name || 'Choose an option'),
+      variations: rawChoices.map(choice => ({
+        id: String(choice?.id ?? choice?.variation_id ?? ''),
+        name: String(choice?.name || 'Option'),
+        price: Number.isFinite(Number(choice?.price)) ? Number(choice.price) * (pricesAreRupees ? 100 : 1) : 0,
+        inStock: optionalBoolean(choice?.inStock),
+        isDefault: choice?.default === 1 || choice?.default === true || choice?.selected === 1 || choice?.selected === true
+      })).filter(choice => /^\d+$/.test(choice.id))
+    };
+  }).filter(group => /^\d+$/.test(group.group_id) && group.variations.length);
   const addonGroups = (Array.isArray(addons) ? addons : []).map(group => ({
     group_id: String(group?.group_id ?? group?.groupId ?? ''),
     name: String(group?.group_name ?? group?.name ?? 'Add-ons'),
