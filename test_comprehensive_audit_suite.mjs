@@ -406,7 +406,28 @@ try {
     }
     if (url.includes('mcp.swiggy.com/food')) {
       const request = JSON.parse(init.body || '{}');
-      const structuredContent = request.params?.name === 'fetch_food_coupons' ? { coupons: [] } : {};
+      const toolName = request.params?.name || '';
+      let structuredContent = {};
+      if (toolName === 'fetch_food_coupons') {
+        structuredContent = { coupons: [] };
+      } else if (toolName === 'get_addresses') {
+        // The selected delivery contact differs from the account phone, so the
+        // strict OFO path verifies the saved address through Swiggy's MCP tool.
+        // Return the receiver-tagged form Swiggy itself renders:
+        // "<receiver name>: <street>" + masked "****<last4>" phone.
+        structuredContent = {
+          addresses: ['781001', '781002', '781003', '781004'].map((id) => ({
+            id: `addr-${id}__SIG`,
+            addressLine: 'Delivery Recipient: Flat 1, Hazratganj, Lucknow 226001',
+            phoneNumber: '****3210',
+            addressCategory: 'Friends & Family',
+            addressTag: 'Friends and Family'
+          })),
+          pagination: { page: 1, pageSize: 10, total: 4, totalPages: 1, hasMore: false }
+        };
+      } else if (toolName === 'create_address') {
+        structuredContent = { addressId: `addr-${uid || '781001'}` };
+      }
       return responseJson({
         jsonrpc: '2.0',
         id: request.id || 1,

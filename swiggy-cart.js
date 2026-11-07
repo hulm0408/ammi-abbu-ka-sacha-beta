@@ -5,6 +5,7 @@ import fs from 'fs';
 import puppeteer from 'puppeteer-core';
 import QRCode from 'qrcode';
 import { getDb, saveDb, updateAccount, syncAccountsJsonMirror } from './store.js';
+import { persistTrackingEntry, getPersistedTrackingUrl } from './tracking-vault.js';
 import { extractSharedUrls, normalizeSharedUrl } from './link-utils.js';
 import * as wafPool from './waf-pool.js';
 import { findChromePath, decodeJwtPayload, claimSwiggyBreakfastAndLateNightOffers, getLiveSwiggyWafToken } from './swiggy-bridge.js';
@@ -3034,7 +3035,12 @@ export async function resolveSwiggyLink(input) {
         noteOfoFailure(addressShareUrl, 'UNEXPANDED');
       }
       if (socialAddr) {
-        addressDetails = socialAddr;
+        addressDetails = {
+          ...socialAddr,
+          ofo: true,
+          ofoToken,
+          sharedAddressId: String(socialAddr.id || '')
+        };
       } else if (mapCoords) {
         addressDetails = await reverseGeocodedDetails();
       } else {
@@ -3562,6 +3568,10 @@ export function isOfficialSwiggyTrackingUrl(value, { allowProviderShortLink = fa
     const pathLower = url.pathname.toLowerCase();
     const searchLower = url.search.toLowerCase();
 
+    // HARD BAN: `/track-order/<orderId>` is a fabricated share pattern, never a
+    // real Swiggy OFO link. Only `/ofo/track/<token>` may be presented.
+    if (/\/track-order(?:\/|$)/i.test(pathLower)) return false;
+
     if (STATIC_ASSET_EXT_RE.test(pathLower)) return false;
     if (NON_TRACKING_PATH_RE.test(pathLower)) return false;
 
@@ -3631,6 +3641,7 @@ export function isFabricatedTrackingUrl(url, orderId = '') {
   const u = String(url).trim();
   const oid = String(orderId || '').trim();
   if (!u) return false;
+  if (/\/track-order(?:\/|$)/i.test(u)) return true;
   if (u === 'https://www.swiggy.com/track' || u === 'https://www.swiggy.com/orders' || u === 'https://www.swiggy.com/' || u === 'https://www.swiggy.com/track/') return true;
   if (/^https?:\/\/(www\.)?swiggy\.com\/(track|orders)\/?$/i.test(u)) return true;
   if (oid && u.toLowerCase().includes(oid.toLowerCase()) && /swiggy\.com/i.test(u)) {
@@ -3703,6 +3714,8 @@ export function hasValidTrackingForOrder(order) {
 
 export function getStoredSwiggyTrackingUrl(order) {
   if (!order || typeof order !== 'object') return '';
+  const orderId = String(order.swiggyOrderId || order.pendingSwiggyOrderId || order.id || '').trim();
+  const persisted = /^\d{10,20}$/.test(orderId) ? getPersistedTrackingUrl(orderId) : '';
   const source = String(order?.trackingLinkSource || '').trim();
   const hasApiField = Boolean(
     order?.trackingUrl ||
@@ -3710,10 +3723,10 @@ export function getStoredSwiggyTrackingUrl(order) {
     order?.swiggyWebTrackUrl ||
     order?.shareable_url
   );
-  if (!source && !hasApiField) return '';
+  if (!source && !hasApiField) return persisted || '';
 
   const effectiveSource = source || 'SWIGGY_API';
-  if (!['SWIGGY_API', 'BOSS_PROVIDED'].includes(effectiveSource)) return '';
+  if (!['SWIGGY_API', 'BOSS_PROVIDED'].includes(effectiveSource)) return persisted || '';
 
   const candidate = String(
     order?.trackingLink ||
@@ -3724,16 +3737,30 @@ export function getStoredSwiggyTrackingUrl(order) {
     order?.shareable_url ||
     ''
   ).trim();
-  if (!candidate) return '';
+  if (!candidate) return persisted || '';
 
-  if (!validateTrackingUrlForOrder(candidate, order, effectiveSource)) return '';
+  if (!validateTrackingUrlForOrder(candidate, order, effectiveSource)) return persisted || '';
   const allowShort = effectiveSource === 'SWIGGY_API';
   const valid = isOfficialSwiggyTrackingUrl(candidate, { allowProviderShortLink: allowShort }) ? candidate : '';
+  // `/ofo/track` is the only true OFO share link. If the order row only has a
+  // provider short link but the vault captured a real OFO link, prefer the OFO.
+  if (persisted && (!valid || !/\/ofo\/track\//i.test(valid))) return persisted;
   if (valid && !order.trackingLink) {
     order.trackingLink = valid;
     order.trackingLinkSource = effectiveSource;
   }
-  return valid;
+  return valid || persisted || '';
+}
+
+/** True when the link currently shown for this order came from the disk vault. */
+export function isTrackingUrlFromPersistentVault(order) {
+  if (!order || typeof order !== 'object') return false;
+  const orderId = String(order.swiggyOrderId || order.pendingSwiggyOrderId || order.id || '').trim();
+  if (!/^\d{10,20}$/.test(orderId)) return false;
+  const persisted = getPersistedTrackingUrl(orderId);
+  if (!persisted) return false;
+  const own = String(order.trackingLink || order.trackingUrl || order.nativeShareUrl || '').trim();
+  return !own || own === persisted;
 }
 
 function cleanCandidateUrlToken(rawToken) {
@@ -4182,6 +4209,29 @@ function rememberSwiggyOrderTracking(orderId, meta = {}) {
     if (oldestKey) liveSwiggyOrderTrackingVault.delete(oldestKey);
   }
 
+  // Permanent per-order vault: a real link/OTP is never lost when the order
+  // disappears from Swiggy's history or the link stops resolving.
+  try {
+    persistTrackingEntry({
+      orderId: cleanId,
+      trackingUrl: nextUrl,
+      trackingUrlTrusted: Boolean(nextUrl),
+      deliveryOtp: nextOtp,
+      status: merged.status,
+      restaurantName: merged.restaurantName,
+      orderTotal: merged.orderTotal,
+      orderTime: merged.orderTime,
+      customerName: merged.customerName,
+      accountPhone: merged.accPhone,
+      accKey: merged.accKey,
+      deliveryAddress: merged.deliveryAddress,
+      deliveryBoy: merged.deliveryBoy,
+      source: 'SWIGGY_API'
+    });
+  } catch (err) {
+    console.warn('[TrackingVault] persist failed:', err?.message || err);
+  }
+
   // Also hydrate any matching tracked bot order in `db.orders` so Delivered orders
   // never lose a genuine Swiggy link captured while the order was live.
   if (nextUrl || nextOtp) {
@@ -4255,6 +4305,11 @@ function recallSwiggyOrderTracking(orderId) {
       }
     }
   } catch {}
+  if (!trackingUrl) {
+    try {
+      trackingUrl = getPersistedTrackingUrl(cleanId) || '';
+    } catch {}
+  }
   return { trackingUrl, deliveryOtp };
 }
 
@@ -4595,6 +4650,199 @@ export async function fetchAllAccountsSavedAddresses() {
 
 // Match or save delivery address into target Swiggy account via verified `POST /dapi/address`
 // Ensures Swiggy binds a real `address_id` and calculates exact distance-based delivery charges!
+// ---------------------------------------------------------------------------
+// TRUE OFO / "ORDERING FOR SOMEONE" ADDRESS SUPPORT
+// ---------------------------------------------------------------------------
+// Swiggy only marks an order as OFO (and only then generates a real
+// `/ofo/track/<token>` link) when the delivery address itself carries the
+// receiver's name + phone. The normal web `/dapi/address` route cannot do that:
+// it stores the placing account's name and produces a plain REGULAR address.
+// The official Food MCP `create_address` tool is the only server-side path that
+// accepts `userName`/`userPhone` (account holder) plus `receiverName`/
+// `receiverPhone` (receiver) and saves the receiver-tagged address Swiggy uses
+// for OFO. This is why the OFO branch below never falls back to a REGULAR
+// address and never reuses a plain address with the same street text.
+// ---------------------------------------------------------------------------
+function normalizePersonName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function baseAddressId(value) {
+  return String(value || '').split('__')[0].trim();
+}
+
+function isReceiverOfoAddress(addrDetails, account) {
+  if (!addrDetails || typeof addrDetails !== 'object') return false;
+  if (addrDetails.ofo === true || addrDetails.isOfo === true) return true;
+  if (String(addrDetails.receiverName || '').trim() || String(addrDetails.receiverPhone || '').trim()) return true;
+  if (String(addrDetails.ofoToken || '').trim() || String(addrDetails.sharedAddressId || '').trim()) return true;
+
+  const accountPhone = normalizeIndianMobile(account?.phone || account?.mobile || account?.swiggyPhone || '');
+  const receiverPhone = normalizeIndianMobile(addrDetails.mobile || addrDetails.phone || '');
+  if (accountPhone && receiverPhone && receiverPhone !== accountPhone) return true;
+
+  // A shared `/ofo/address` link always carries the receiver's contact name.
+  if (String(addrDetails.addressSource || '').toUpperCase() === 'URL') {
+    const accountName = normalizePersonName(account?.swiggyName || account?.name || '');
+    const receiverName = normalizePersonName(addrDetails.name || addrDetails.receiverName || '');
+    if (accountName && receiverName && receiverName !== accountName) return true;
+  }
+  return false;
+}
+
+function isSavedAddressReceiverTagged(savedAddress, receiverName, receiverMobile) {
+  const savedMobile = normalizeIndianMobile(savedAddress?.mobile || '');
+  if (!receiverMobile || savedMobile !== receiverMobile) return false;
+  const wantedName = normalizePersonName(receiverName);
+  const savedName = normalizePersonName(savedAddress?.name || '');
+  if (!wantedName || !savedName) return false;
+  return savedName === wantedName || savedName.includes(wantedName) || wantedName.includes(savedName);
+}
+
+function mcpAddressBaseId(value) {
+  return baseAddressId(value);
+}
+
+async function fetchMcpSavedAddressEntries(account, timeoutMs = 7000) {
+  const out = [];
+  for (let page = 1; page <= 3; page++) {
+    const res = await callSwiggyFoodMcpTool(account, 'get_addresses', { page, pageSize: 10 }, timeoutMs).catch(() => null);
+    const list = Array.isArray(res?.structured?.addresses) ? res.structured.addresses : [];
+    for (const address of list) {
+      const id = String(address?.id || '').trim();
+      if (!id) continue;
+      out.push({ ...address, id, baseId: mcpAddressBaseId(id) });
+    }
+    const pagination = res?.structured?.pagination || {};
+    if (!pagination?.hasMore || list.length === 0) break;
+  }
+  return out;
+}
+
+// Swiggy's `get_addresses` renders a receiver-tagged address as
+// `"<receiver name>: <street>"` with a masked `****<last4>` phone. Both must
+// match before we let an OFO payment QR be generated.
+async function verifyMcpReceiverAddress(account, addressId, receiverName, receiverMobile, timeoutMs = 7000) {
+  const wantedBase = mcpAddressBaseId(addressId);
+  if (!wantedBase) return { ok: false, signedId: '', error: 'Missing Swiggy address id.' };
+  const entries = await fetchMcpSavedAddressEntries(account, timeoutMs);
+  const entry = entries.find((item) => item.baseId === wantedBase);
+  if (!entry) {
+    return { ok: false, signedId: '', error: 'Swiggy did not return the saved receiver address.' };
+  }
+  const wantedName = normalizePersonName(receiverName);
+  const savedName = normalizePersonName(String(entry.addressLine || '').split(':')[0]);
+  const nameOk = Boolean(wantedName && savedName &&
+    (savedName === wantedName || savedName.includes(wantedName) || wantedName.includes(savedName)));
+  const wantedMobile = normalizeIndianMobile(receiverMobile);
+  const savedPhoneDigits = String(entry.phoneNumber || '').replace(/\D/g, '');
+  const phoneOk = Boolean(wantedMobile && savedPhoneDigits && savedPhoneDigits.endsWith(wantedMobile.slice(-4)));
+  if (!nameOk || !phoneOk) {
+    return {
+      ok: false,
+      signedId: entry.id,
+      error: `Swiggy saved "${entry.addressLine || 'unknown'}" (${entry.phoneNumber || 'unknown phone'}) instead of receiver ${receiverName} / ${receiverMobile}.`
+    };
+  }
+  return { ok: true, signedId: entry.id, entry };
+}
+
+async function createAddressViaMcp(account, enriched, options = {}) {
+  const {
+    ofo = false,
+    receiverName = '',
+    receiverMobile = '',
+    fullAddr = '',
+    flatNo = '',
+    areaStr = '',
+    landmarkStr = '',
+    citySlug = '',
+    postalCode = ''
+  } = options;
+  const accountHolderName = String(account?.swiggyName || account?.name || enriched?.name || 'Customer').trim();
+  const accountHolderPhone = normalizeIndianMobile(account?.phone || account?.mobile || '') ||
+    normalizeIndianMobile(enriched?.mobile || '');
+  if (!accountHolderPhone) return { ok: false, error: 'Swiggy account phone is missing; cannot create a delivery address.' };
+  if (!citySlug) return { ok: false, error: 'Delivery city is missing; cannot create a Swiggy address.' };
+  if (!postalCode) return { ok: false, error: 'Delivery PIN code is missing; cannot create a Swiggy address.' };
+
+  const args = {
+    fullAddress: fullAddr,
+    addressLine: flatNo || String(fullAddr).split(',')[0].trim() || fullAddr,
+    addressLine2: landmarkStr || '',
+    locality: areaStr || '',
+    city: citySlug,
+    postalCode,
+    latitude: Number(enriched.lat),
+    longitude: Number(enriched.lng),
+    addressCategory: ofo ? 'FRIENDS_AND_FAMILY' : 'OTHER',
+    addressTag: String(enriched.annotation || (ofo ? 'Friends and Family' : 'Order Delivery')).slice(0, 30),
+    userName: accountHolderName,
+    userPhone: accountHolderPhone,
+    ...(ofo ? { receiverName, receiverPhone: receiverMobile } : {})
+  };
+
+  const res = await callSwiggyFoodMcpTool(account, 'create_address', args, 8000).catch(() => null);
+  const createdId = mcpAddressBaseId(
+    res?.structured?.addressId ||
+    res?.structured?.id ||
+    res?.structured?.address_id ||
+    res?.structured?.data?.addressId ||
+    res?.structured?.data?.id ||
+    ''
+  );
+  if (!createdId) {
+    return { ok: false, error: res?.text || 'Swiggy MCP create_address did not return an address id.' };
+  }
+  return { ok: true, baseId: createdId, args };
+}
+
+// Verify that the cart's selected delivery contact is the receiver before a
+// payment QR is generated. Works with both the raw `chkout` cart (`addresses`)
+// and the parsed cart (`addressDetails` / `savedAddresses`).
+export function verifyReceiverCommunication(cart, addressId, addressDetails, { ofo = false } = {}) {
+  if (!ofo) return { ok: true };
+  const receiverName = String(addressDetails?.receiverName || addressDetails?.name || '').trim();
+  const receiverMobile = normalizeIndianMobile(addressDetails?.receiverPhone || addressDetails?.mobile || '');
+  if (!receiverName || !receiverMobile) {
+    return { ok: false, reason: 'OFO order is missing the receiver name or mobile number.' };
+  }
+  const wantedBase = baseAddressId(addressId);
+  const candidates = [];
+  if (cart?.addressDetails && (!wantedBase || baseAddressId(cart.addressDetails.id) === wantedBase)) {
+    candidates.push(cart.addressDetails);
+  }
+  if (Array.isArray(cart?.savedAddresses)) {
+    for (const address of cart.savedAddresses) {
+      if (!wantedBase || baseAddressId(address?.id) === wantedBase) candidates.push(address);
+    }
+  }
+  if (Array.isArray(cart?.addresses)) {
+    for (const address of cart.addresses) {
+      if (!wantedBase || baseAddressId(address?.id) === wantedBase) candidates.push(address);
+    }
+  }
+  const selected = candidates.find((address) => address && (address.name || address.mobile)) || null;
+  if (!selected) {
+    return { ok: false, reason: 'Swiggy cart does not expose the selected receiver address; payment was stopped.' };
+  }
+  const selectedName = String(selected.name || '').trim();
+  const selectedMobile = normalizeIndianMobile(selected.mobile || '');
+  const nameOk = normalizePersonName(selectedName) === normalizePersonName(receiverName);
+  const mobileOk = Boolean(selectedMobile && selectedMobile === receiverMobile);
+  if (!nameOk || !mobileOk) {
+    return {
+      ok: false,
+      reason: `Swiggy delivery communication is bound to ${selectedName || 'unknown'} / ${selectedMobile || 'unknown'}, expected ${receiverName} / ${receiverMobile}. Payment was stopped.`
+    };
+  }
+  return { ok: true, selected };
+}
+
 export async function saveAddressToAccount(account, addrDetails, existingAddresses = null) {
   if (!account || !addrDetails) return { addressId: '', addressDetails: addrDetails || null, createdNew: false };
 
@@ -4625,11 +4873,37 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
   }
   enriched.mobile = rawPhone;
 
+  const ofo = isReceiverOfoAddress(enriched, account);
+  // OFO must never silently fall back to the account holder's name/phone: Swiggy
+  // would then save a normal REGULAR address and no `/ofo/track` link would ever
+  // be generated. The receiver identity must come from the shared address/link.
+  const receiverName = ofo
+    ? String(enriched.receiverName || enriched.name || '').trim()
+    : String(enriched.receiverName || enriched.name || account.swiggyName || account.name || '').trim();
+  const explicitReceiverPhone = String(enriched.receiverPhone || '').trim();
+  const receiverMobile = ofo
+    ? normalizeIndianMobile(explicitReceiverPhone || enriched.mobile)
+    : (normalizeIndianMobile(enriched.receiverPhone || enriched.mobile) || rawPhone);
+  const ofoMeta = ofo ? { ofo: true, receiverName, receiverMobile } : {};
+  if (ofo && (!receiverName || !receiverMobile)) {
+    return {
+      addressId: '',
+      addressDetails: { ...enriched, ...ofoMeta },
+      createdNew: false,
+      ...ofoMeta,
+      error: 'Receiver name and 10-digit mobile are required. Swiggy will not create a true Ordering-for-someone address without them.'
+    };
+  }
+
   // 1. Match or reuse an existing address on THIS account.
-  // Address on Swiggy stores physical delivery location; receiver phone is passed with order instructions.
+  // A plain address with the same street text must NEVER be reused for an OFO
+  // order: it carries the account holder's name and Swiggy will not mark the
+  // order as OFO. Only a receiver-tagged address (same receiver name + mobile)
+  // is eligible for reuse.
   if (savedList.length > 0) {
     const existing = savedList.find(sa => {
       if (!sa.id) return false;
+      if (ofo && !isSavedAddressReceiverTagged(sa, receiverName, receiverMobile)) return false;
       const textMatch = hasSameAddressText(enriched.address, sa.address);
       const coordsValid = isValidIndianDeliveryCoordinates(enriched.lat, enriched.lng) && isValidIndianDeliveryCoordinates(sa.lat, sa.lng);
       const dist = coordsValid ? distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng) : Infinity;
@@ -4638,43 +4912,63 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
       return false;
     });
     if (existing) {
-      const savedMobile = normalizeIndianMobile(enriched.mobile) || rawPhone;
-      if (!savedMobile) {
+      const existingId = baseAddressId(existing.id);
+      if (ofo) {
+        const verified = await verifyMcpReceiverAddress(account, existingId, receiverName, receiverMobile);
+        if (verified.ok) {
+          return {
+            addressId: existingId,
+            mcpAddressId: existingId,
+            mcpSignedAddressId: verified.signedId,
+            addressDetails: {
+              ...enriched,
+              id: existingId,
+              lat: enriched.lat || existing.lat,
+              lng: enriched.lng || existing.lng,
+              name: receiverName,
+              mobile: receiverMobile,
+              ...ofoMeta,
+              mcpSignedAddressId: verified.signedId
+            },
+            createdNew: false,
+            receiverVerified: true,
+            ...ofoMeta
+          };
+        }
+        console.warn('[saveAddressToAccount] Existing address is not a verified receiver address:', verified.error);
+      } else {
+        const savedMobile = normalizeIndianMobile(enriched.mobile) || rawPhone;
+        if (!savedMobile) {
+          return {
+            addressId: '',
+            addressDetails: enriched,
+            createdNew: false,
+            error: 'Recipient mobile number is missing or invalid. Add the receiver’s correct 10-digit Indian mobile number before ordering.'
+          };
+        }
         return {
-          addressId: '',
-          addressDetails: enriched,
-          createdNew: false,
-          error: 'Recipient mobile number is missing or invalid. Add the receiver’s correct 10-digit Indian mobile number before ordering.'
+          addressId: existingId,
+          addressDetails: {
+            ...enriched,
+            id: existingId,
+            lat: enriched.lat || existing.lat,
+            lng: enriched.lng || existing.lng,
+            name: enriched.name || existing.name,
+            mobile: savedMobile,
+            city: enriched.city || existing.city
+          },
+          createdNew: false
         };
       }
-      return {
-        addressId: String(existing.id),
-        addressDetails: {
-          ...enriched,
-          id: String(existing.id),
-          lat: enriched.lat || existing.lat,
-          lng: enriched.lng || existing.lng,
-          name: enriched.name || existing.name,
-          mobile: savedMobile,
-          city: enriched.city || existing.city
-        },
-        createdNew: false
-      };
     }
   }
 
   // 2. Create the explicitly supplied delivery address on the selected Swiggy account.
-  // Automatically mints `_session_tid` + `_csrf` in ~650ms via Zero-Chromium HTTP & retries with fresh session if needed!
+  // OFO goes through the official Food MCP `create_address` receiver flow ONLY.
+  // Normal self-orders keep the fast web `/dapi/address` path with MCP fallback.
 
   for (let saveAttempt = 0; saveAttempt < 2; saveAttempt++) {
     try {
-      const mustForce = saveAttempt > 0;
-      if (mustForce || !cleanSwiggyCookieString(account.cookies || '', account).includes('_session_tid=')) {
-        await bootstrapSwiggyWebSessionFromAndroidTokens(account, { force: mustForce });
-      }
-      const auth = await getSwiggySessionAuth(account, mustForce);
-      if (!auth?.userId) continue;
-
       const cityLabel = String(enriched.city || '').trim();
       const citySlug = /^(?:address|delivery|shared location)$/i.test(cityLabel)
         ? ''
@@ -4683,6 +4977,57 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
       const areaStr = String(enriched.area || '').trim().slice(0, 80);
       const landmarkStr = String(enriched.landmark || '').trim().slice(0, 80);
       const fullAddr = String(enriched.address || '').trim();
+      const postalMatch = fullAddr.match(/\b([1-8]\d{5})\b/);
+      const postalCode = String(postalMatch?.[1] || enriched.pincode || '').trim();
+
+      if (ofo) {
+        const created = await createAddressViaMcp(account, enriched, {
+          ofo: true,
+          receiverName,
+          receiverMobile,
+          fullAddr,
+          flatNo,
+          areaStr,
+          landmarkStr,
+          citySlug,
+          postalCode
+        });
+        if (!created.ok) {
+          console.warn('[saveAddressToAccount] OFO MCP create_address failed:', created.error);
+          continue;
+        }
+        const verified = await verifyMcpReceiverAddress(account, created.baseId, receiverName, receiverMobile);
+        if (!verified.ok) {
+          console.warn('[saveAddressToAccount] OFO receiver verification failed:', verified.error);
+          continue;
+        }
+        return {
+          addressId: created.baseId,
+          mcpAddressId: created.baseId,
+          mcpSignedAddressId: verified.signedId,
+          addressDetails: {
+            ...enriched,
+            id: created.baseId,
+            name: receiverName,
+            mobile: receiverMobile,
+            ...ofoMeta,
+            mcpSignedAddressId: verified.signedId
+          },
+          createdNew: true,
+          receiverVerified: true,
+          ...ofoMeta
+        };
+      }
+
+      const mustForce = saveAttempt > 0;
+      if (mustForce || !cleanSwiggyCookieString(account.cookies || '', account).includes('_session_tid=')) {
+        await bootstrapSwiggyWebSessionFromAndroidTokens(account, { force: mustForce });
+      }
+      const auth = await getSwiggySessionAuth(account, mustForce);
+      if (!auth?.userId) continue;
+
+      const accountHolderName = String(account.swiggyName || account.name || enriched.name || 'Customer').trim();
+      const accountHolderPhone = normalizeIndianMobile(account.phone || account.mobile || '') || rawPhone;
 
       const { json } = await dapiFetch(account, 'address', {
         method: 'POST',
@@ -4699,8 +5044,8 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
           landmark: landmarkStr,
           annotation: enriched.annotation || 'Order Delivery',
           addressCategory: 3,
-          name: String(enriched.name || account.swiggyName || account.name || 'Customer').trim(),
-          mobile: rawPhone,
+          name: accountHolderName,
+          mobile: accountHolderPhone,
           city: citySlug.toLowerCase(),
           is_edited: 1,
           cart_type: 'REGULAR',
@@ -4711,40 +5056,26 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
       const newId = json?.data?.id || json?.data?.address_id || '';
       if (json?.statusCode === 0 && newId) {
         return {
-          addressId: String(newId),
-          addressDetails: { ...enriched, id: String(newId) },
+          addressId: baseAddressId(newId),
+          addressDetails: { ...enriched, id: baseAddressId(newId), name: accountHolderName, mobile: accountHolderPhone },
           createdNew: true
         };
       }
 
       // Zero-Chromium Official Swiggy Food MCP `create_address` fallback (`200ms`, zero `_csrf` / WebView dependency!)
-      const postalMatch = fullAddr.match(/\b([1-8]\d{5})\b/);
-      const mcpCreated = await callSwiggyFoodMcpTool(account, 'create_address', {
-        fullAddress: fullAddr,
-        addressLine: flatNo,
-        addressLine2: landmarkStr,
-        locality: areaStr,
-        city: citySlug,
-        postalCode: postalMatch?.[1] || String(enriched.pincode || ''),
-        latitude: Number(enriched.lat),
-        longitude: Number(enriched.lng),
-        addressCategory: 'OTHER',
-        addressTag: String(enriched.annotation || 'Order Delivery').slice(0, 30),
-        userName: String(enriched.name || account.swiggyName || account.name || 'Customer').trim(),
-        userPhone: rawPhone,
-        receiverName: String(enriched.name || account.swiggyName || account.name || 'Customer').trim(),
-        receiverPhone: rawPhone
-      }, 6500).catch(() => null);
-      const mcpId =
-        mcpCreated?.structured?.id ||
-        mcpCreated?.structured?.addressId ||
-        mcpCreated?.structured?.address_id ||
-        mcpCreated?.structured?.data?.id ||
-        '';
-      if (mcpId) {
+      const mcpCreated = await createAddressViaMcp(account, enriched, {
+        ofo: false,
+        fullAddr,
+        flatNo,
+        areaStr,
+        landmarkStr,
+        citySlug,
+        postalCode
+      });
+      if (mcpCreated.ok) {
         return {
-          addressId: String(mcpId),
-          addressDetails: { ...enriched, id: String(mcpId) },
+          addressId: mcpCreated.baseId,
+          addressDetails: { ...enriched, id: mcpCreated.baseId, name: accountHolderName, mobile: accountHolderPhone },
           createdNew: true
         };
       }
@@ -4753,42 +5084,14 @@ export async function saveAddressToAccount(account, addrDetails, existingAddress
     }
   }
 
-  // Fallback: If address creation failed or was blocked by WAF, check if the account has
-  // ANY saved address (preferring closest) so cart, distance fees and coupons can be evaluated!
-  if (savedList && savedList.length > 0) {
-    const withCoords = savedList.filter(sa => sa.id && isValidIndianDeliveryCoordinates(sa.lat, sa.lng) && isValidIndianDeliveryCoordinates(enriched.lat, enriched.lng));
-    let bestNear = null;
-    let bestDist = Infinity;
-    for (const sa of withCoords) {
-      const d = distanceMeters(sa.lat, sa.lng, enriched.lat, enriched.lng);
-      if (d < bestDist) {
-        bestDist = d;
-        bestNear = sa;
-      }
-    }
-    const fallbackSa = bestNear || savedList.find(sa => sa.id) || null;
-    if (fallbackSa) {
-      return {
-        addressId: String(fallbackSa.id),
-        addressDetails: {
-          ...enriched,
-          id: String(fallbackSa.id),
-          lat: enriched.lat || fallbackSa.lat,
-          lng: enriched.lng || fallbackSa.lng,
-          name: enriched.name || fallbackSa.name,
-          mobile: rawPhone,
-          city: enriched.city || fallbackSa.city
-        },
-        createdNew: false
-      };
-    }
-  }
-
   return {
     addressId: '',
-    addressDetails: enriched,
+    addressDetails: { ...enriched, ...ofoMeta },
     createdNew: false,
-    error: 'Swiggy did not accept the verified delivery address. No default or first-saved address was selected; please recheck the pin, street, and receiver number.'
+    ...ofoMeta,
+    error: ofo
+      ? 'Swiggy did not create or verify a receiver-tagged Ordering-for-someone address. No normal REGULAR address was used. Recheck the receiver name, mobile, and PIN code.'
+      : 'Swiggy did not accept the verified delivery address. No default or first-saved address was selected; please recheck the pin, street, and receiver number.'
   };
 }
 
@@ -6281,6 +6584,23 @@ export async function syncGroupCartAndCheckoutForAccount(account, order, options
       applyMaxOfferToOrder(order);
     }
 
+    // OFO safety gate: the payment QR must never be generated unless Swiggy's
+    // selected delivery contact is the receiver (name + mobile), because that is
+    // the contact Swiggy uses for delivery calls/SMS and the OFO tracking link.
+    const receiverCommunication = verifyReceiverCommunication(
+      liveCart,
+      targetAddressId,
+      order.addressDetails,
+      { ofo: order.addressDetails?.ofo === true }
+    );
+    if (!receiverCommunication.ok) {
+      return {
+        success: false,
+        code: 'OFO_RECEIVER_COMMUNICATION_MISMATCH',
+        error: receiverCommunication.reason
+      };
+    }
+
     const cartData = {
       restaurantId: order.restaurantId,
       restaurantName: order.restaurantName,
@@ -7335,6 +7655,24 @@ export async function generateRealSwiggyMerchantUpiQr(accountOrOpts, maybeOrder)
         stage: 'GENERATE_REAL_QR',
         requestedAddressId,
         cartAddressId
+      };
+      throw err;
+    }
+
+    const receiverCommunication = verifyReceiverCommunication(
+      cm,
+      requestedAddressId,
+      order.addressDetails,
+      { ofo: savedRes.ofo === true }
+    );
+    if (!receiverCommunication.ok) {
+      const err = new Error(receiverCommunication.reason);
+      err.diag = {
+        code: 'QR_OFO_RECEIVER_COMMUNICATION_MISMATCH',
+        stage: 'GENERATE_REAL_QR',
+        requestedAddressId,
+        receiverName: savedRes.receiverName || '',
+        receiverMobile: savedRes.receiverMobile || ''
       };
       throw err;
     }
